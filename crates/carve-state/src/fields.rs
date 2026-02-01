@@ -31,6 +31,13 @@ fn deserialize_at<T: DeserializeOwned>(doc: &Value, path: &Path) -> CarveResult<
 // ============================================================================
 
 /// A field proxy for scalar types (i32, i64, f64, bool, String, etc.).
+///
+/// Provides get/set operations for all serializable types.
+/// AddAssign (`+=`) and SubAssign (`-=`) operators are only implemented for:
+/// - `i32`, `i64`, `f64`
+///
+/// Other numeric types (i8, i16, u8, u16, u32, u64, i128, u128, isize, usize, f32)
+/// can still use `.get()` and `.set()` but do not have operator support.
 pub struct ScalarField<'a, T> {
     doc: &'a Value,
     path: Path,

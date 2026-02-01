@@ -121,6 +121,55 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
                 }
             }
         }
+        FieldKind::Option(inner) if inner.is_nested() => {
+            // Option<Nested>: provide guard for fine-grained patching + set/none methods
+            let inner_ty = extract_inner_type(field_ty);
+            let guard_name = {
+                let field_str = field_name.to_string();
+                let pascal = to_pascal_case(&field_str);
+                format_ident!("{}WriterGuard", pascal)
+            };
+            let none_name = format_ident!("{}_none", field_name);
+            let set_name = format_ident!("set_{}", field_name);
+
+            quote! {
+                /// Get a writer for the optional nested field.
+                ///
+                /// This allows fine-grained patching of the nested structure.
+                /// The nested writer's operations are automatically merged
+                /// into the parent when the guard is dropped.
+                pub fn #field_name(&mut self) -> #guard_name<'_> {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    #guard_name {
+                        parent_ops: &mut self.ops,
+                        writer: <#inner_ty as ::carve_state::CarveViewModel>::writer(path),
+                    }
+                }
+
+                /// Set the entire optional field value.
+                pub fn #set_name(&mut self, value: #field_ty) -> &mut Self {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    self.ops.push(::carve_state::Op::Set {
+                        path,
+                        value: ::serde_json::to_value(&value).unwrap_or(::serde_json::Value::Null),
+                    });
+                    self
+                }
+
+                /// Set the optional field to null (None).
+                pub fn #none_name(&mut self) -> &mut Self {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    self.ops.push(::carve_state::Op::Set {
+                        path,
+                        value: ::serde_json::Value::Null,
+                    });
+                    self
+                }
+            }
+        }
         FieldKind::Option(_) => {
             let none_name = format_ident!("{}_none", field_name);
             quote! {
@@ -317,13 +366,27 @@ fn generate_nested_guards(struct_name: &syn::Ident, fields: &[&FieldInput]) -> s
 
     for field in fields {
         let kind = FieldKind::from_type(&field.ty, field.nested);
-        if kind.is_nested() {
+
+        // Generate guard for both Nested and Option<Nested>
+        let needs_guard = match &kind {
+            FieldKind::Nested => true,
+            FieldKind::Option(inner) if inner.is_nested() => true,
+            _ => false,
+        };
+
+        if needs_guard {
             // P0-3: Include field name in guard to avoid conflicts
             // when same nested type appears multiple times
             let field_name = field.ident();
             let pascal = to_pascal_case(&field_name.to_string());
             let guard_name = format_ident!("{}WriterGuard", pascal);
-            let field_ty = &field.ty;
+
+            // For Option<Nested>, use the inner type
+            let inner_ty = match &kind {
+                FieldKind::Option(_) => extract_inner_type(&field.ty),
+                _ => field.ty.clone(),
+            };
+            let field_ty = &inner_ty;
 
             guards.extend(quote! {
                 /// Guard for nested writer that auto-merges on drop.

@@ -74,21 +74,24 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
 fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
     let field_extractions: Vec<_> = fields
         .iter()
-        .map(|f| {
+        .map(|f| -> syn::Result<proc_macro2::TokenStream> {
             let name = f.ident();
             let json_key = f.json_key();
 
             if f.skip {
                 // Skipped fields use Default::default()
-                quote! {
+                Ok(quote! {
                     #name: Default::default()
-                }
+                })
             } else if let Some(default) = &f.default {
                 let default_expr: syn::Expr = syn::parse_str(default)
-                    .unwrap_or_else(|_| syn::parse_quote!(Default::default()));
+                    .map_err(|e| syn::Error::new_spanned(
+                        &f.ty,
+                        format!("invalid default expression '{}': {}", default, e)
+                    ))?;
                 let field_ty = &f.ty;
                 // Problem 4 fix: missing → default, present but wrong type → error
-                quote! {
+                Ok(quote! {
                     #name: {
                         let mut field_path = ::carve_state::Path::root();
                         field_path.push_key(#json_key);
@@ -107,7 +110,7 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                             }
                         }
                     }
-                }
+                })
             } else {
                 // P1-4 + P1-3: Better error messages with path information
                 // and recursive CarveViewModel::from_value for nested types
@@ -117,7 +120,7 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                 match &kind {
                     FieldKind::Nested => {
                         // Nested type: use CarveViewModel::from_value recursively
-                        quote! {
+                        Ok(quote! {
                             #name: {
                                 let mut field_path = ::carve_state::Path::root();
                                 field_path.push_key(#json_key);
@@ -134,12 +137,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                                     }
                                 }
                             }
-                        }
+                        })
                     }
                     FieldKind::Option(inner) if inner.is_nested() => {
                         // Option<Nested>: handle null/missing, then recurse
                         let inner_ty = extract_inner_type(field_ty);
-                        quote! {
+                        Ok(quote! {
                             #name: {
                                 let mut field_path = ::carve_state::Path::root();
                                 field_path.push_key(#json_key);
@@ -155,12 +158,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                                     }
                                 }
                             }
-                        }
+                        })
                     }
                     FieldKind::Vec(inner) if inner.is_nested() => {
                         // Vec<Nested>: iterate array elements with indexed paths
                         let inner_ty = extract_inner_type(field_ty);
-                        quote! {
+                        Ok(quote! {
                             #name: {
                                 let mut field_path = ::carve_state::Path::root();
                                 field_path.push_key(#json_key);
@@ -192,12 +195,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                                     }
                                 }
                             }
-                        }
+                        })
                     }
                     FieldKind::Map { value: value_kind, .. } if value_kind.is_nested() => {
                         // Map<String, Nested>: iterate object entries with keyed paths
                         let inner_ty = extract_second_generic_arg(field_ty);
-                        quote! {
+                        Ok(quote! {
                             #name: {
                                 let mut field_path = ::carve_state::Path::root();
                                 field_path.push_key(#json_key);
@@ -229,12 +232,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                                     }
                                 }
                             }
-                        }
+                        })
                     }
                     _ => {
                         // Non-nested: use serde_json::from_value
                         // Fix problem 2: use field type, not Self
-                        quote! {
+                        Ok(quote! {
                             #name: {
                                 let mut field_path = ::carve_state::Path::root();
                                 field_path.push_key(#json_key);
@@ -256,12 +259,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                                     }
                                 }
                             }
-                        }
+                        })
                     }
                 }
             }
         })
-        .collect();
+        .collect::<syn::Result<Vec<_>>>()?;
 
     Ok(quote! {
         // Verify the value is an object

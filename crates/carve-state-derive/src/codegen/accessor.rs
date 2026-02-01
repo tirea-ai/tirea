@@ -350,10 +350,12 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
             let set_name = format_ident!("set_{}", field_name);
             let delete_name = format_ident!("delete_{}", field_name);
 
-            // Check for numeric types to return ScalarField with operator support
+            // Check for numeric types that have AddAssign/SubAssign operator support.
+            // Only i32, i64, and f64 have operators implemented in ScalarField.
+            // Other numeric types can still use ScalarField for get/set but without operators.
             let is_numeric = matches!(
                 type_name.as_str(),
-                "i32" | "i64" | "f32" | "f64" | "u32" | "u64" | "i8" | "i16" | "u8" | "u16"
+                "i32" | "i64" | "f64"
             );
 
             if is_numeric || type_name == "String" || type_name == "bool" {
@@ -388,7 +390,8 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
                 quote! {
                     /// Get the field as a ScalarField proxy.
                     ///
-                    /// This provides both read access and operator support (+=, -=, etc).
+                    /// Provides read/write access. For i32, i64, and f64, also provides
+                    /// AddAssign (`+=`) and SubAssign (`-=`) operator support.
                     pub fn #field_name(&self) -> ::carve_state::ScalarField<'_, #field_ty> {
                         let mut path = self.base.clone();
                         path.push_key(#json_key);

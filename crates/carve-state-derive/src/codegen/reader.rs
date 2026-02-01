@@ -176,12 +176,14 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
 }
 
 /// Generate the `get()` method that returns the entire struct.
+///
+/// This method reuses each field's getter to ensure consistent semantics
+/// (default values, error paths, Option handling, etc.).
 fn generate_get_method(struct_name: &syn::Ident, fields: &[&FieldInput]) -> syn::Result<TokenStream> {
     let field_reads: Vec<_> = fields
         .iter()
         .map(|f| {
             let name = f.ident();
-            let json_key = f.json_key();
             let kind = FieldKind::from_type(&f.ty, f.nested);
 
             if f.skip {
@@ -189,19 +191,27 @@ fn generate_get_method(struct_name: &syn::Ident, fields: &[&FieldInput]) -> syn:
                 quote! {
                     #name: Default::default()
                 }
-            } else if kind.is_nested() {
-                // For nested, recursively call get()
-                quote! {
-                    #name: self.#name().get()?
-                }
             } else {
-                quote! {
-                    #name: {
-                        let mut path = self.base.clone();
-                        path.push_key(#json_key);
-                        let value = ::carve_state::get_at_path(self.doc, &path)
-                            .unwrap_or(&::serde_json::Value::Null);
-                        ::serde_json::from_value(value.clone())?
+                match &kind {
+                    FieldKind::Nested => {
+                        // For Nested, reader.field() returns Reader, call .get() on it
+                        quote! {
+                            #name: self.#name().get()?
+                        }
+                    }
+                    FieldKind::Option(inner) if inner.is_nested() => {
+                        // For Option<Nested>, reader.field()? returns Result<Option<Reader>>
+                        // Need to map the Option to call .get() on inner Reader
+                        quote! {
+                            #name: self.#name()?.map(|r| r.get()).transpose()?
+                        }
+                    }
+                    _ => {
+                        // For all other fields (primitive, Option, Vec, Map, etc.),
+                        // call the field getter to reuse its logic (default, error paths, etc.)
+                        quote! {
+                            #name: self.#name()?
+                        }
                     }
                 }
             }
