@@ -18,10 +18,13 @@ use serde_json::Value;
 ///
 /// # Examples
 ///
-/// ```ignore
-/// use carve_state::CarveViewModel;
+/// ```
+/// use carve_state::{CarveViewModel, CarveViewModelExt};
+/// use carve_state_derive::CarveViewModel;
+/// use serde::{Serialize, Deserialize};
+/// use serde_json::json;
 ///
-/// #[derive(CarveViewModel)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, CarveViewModel)]
 /// struct User {
 ///     name: String,
 ///     age: u32,
@@ -30,13 +33,14 @@ use serde_json::Value;
 /// // Read from document
 /// let doc = json!({"name": "Alice", "age": 30});
 /// let reader = User::read(&doc);
-/// assert_eq!(reader.name()?, "Alice");
+/// assert_eq!(reader.name().unwrap(), "Alice");
 ///
 /// // Write changes
 /// let mut writer = User::write();
 /// writer.name("Bob");
 /// writer.age(25);
 /// let patch = writer.build();
+/// assert_eq!(patch.len(), 2);
 /// ```
 pub trait CarveViewModel: Sized {
     /// Strongly-typed reader for this view model.

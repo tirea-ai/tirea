@@ -64,10 +64,13 @@
 //!
 //! For type-safe access, use the derive macro (requires `derive` feature):
 //!
-//! ```ignore
-//! use carve_state::CarveViewModel;
+//! ```
+//! use carve_state::{CarveViewModel, CarveViewModelExt, apply_patch};
+//! use carve_state_derive::CarveViewModel;
+//! use serde::{Serialize, Deserialize};
+//! use serde_json::json;
 //!
-//! #[derive(CarveViewModel)]
+//! #[derive(Debug, Clone, Serialize, Deserialize, CarveViewModel)]
 //! struct User {
 //!     name: String,
 //!     age: u32,
@@ -77,13 +80,19 @@
 //! // Read with typed accessors
 //! let doc = json!({"name": "Alice", "age": 30, "roles": ["admin"]});
 //! let reader = User::read(&doc);
-//! assert_eq!(reader.name()?, "Alice");
+//! assert_eq!(reader.name().unwrap(), "Alice");
+//! assert_eq!(reader.age().unwrap(), 30);
 //!
 //! // Write with typed setters
 //! let mut writer = User::write();
 //! writer.name("Bob");
+//! writer.age(25);
 //! writer.roles_push("moderator");
 //! let patch = writer.build();
+//!
+//! // Apply patch to get new state
+//! let new_doc = apply_patch(&doc, &patch).unwrap();
+//! assert_eq!(new_doc["name"], "Bob");
 //! ```
 
 mod apply;
