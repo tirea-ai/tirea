@@ -90,7 +90,8 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
         .collect();
 
     Ok(quote! {
-        let obj = value.as_object()
+        // Verify the value is an object
+        let _ = value.as_object()
             .ok_or_else(|| ::carve_state::CarveError::type_mismatch(
                 ::carve_state::Path::root(),
                 "object",

@@ -197,8 +197,31 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
             }
         }
         FieldKind::Map { .. } => {
-            let insert_name = format_ident!("{}_insert", field_name);
             let (key_ty, value_ty) = extract_map_types(field_ty);
+            let key_type_name = get_type_name(&key_ty);
+
+            // Only generate insert method for String keys (JSON object keys must be strings)
+            let insert_method = if key_type_name == "String" {
+                let insert_name = format_ident!("{}_insert", field_name);
+                quote! {
+                    /// Insert a key-value pair into the map.
+                    pub fn #insert_name(&mut self, key: impl Into<String>, value: impl Into<#value_ty>) -> &mut Self {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        let k: String = key.into();
+                        path.push_key(k);
+                        let v: #value_ty = value.into();
+                        self.ops.push(::carve_state::Op::Set {
+                            path,
+                            value: ::serde_json::to_value(&v).unwrap_or(::serde_json::Value::Null),
+                        });
+                        self
+                    }
+                }
+            } else {
+                // Non-String key maps: only support setting entire map
+                quote! {}
+            };
 
             quote! {
                 /// Set the entire map.
@@ -212,19 +235,7 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
                     self
                 }
 
-                /// Insert a key-value pair into the map.
-                pub fn #insert_name(&mut self, key: impl Into<#key_ty>, value: impl Into<#value_ty>) -> &mut Self {
-                    let mut path = self.base.clone();
-                    path.push_key(#json_key);
-                    let k: #key_ty = key.into();
-                    path.push_key(k.to_string());
-                    let v: #value_ty = value.into();
-                    self.ops.push(::carve_state::Op::Set {
-                        path,
-                        value: ::serde_json::to_value(&v).unwrap_or(::serde_json::Value::Null),
-                    });
-                    self
-                }
+                #insert_method
             }
         }
         FieldKind::Primitive => {

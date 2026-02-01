@@ -28,10 +28,9 @@ pub struct Profile {
     pub website: Option<String>,
 }
 
-// NOTE: Option<NestedType> with #[carve(nested)] is not yet fully supported.
-// This is tracked as a future enhancement.
-// For now, Option<NestedType> can be used without the nested attribute,
-// but it will be serialized/deserialized as a whole value.
+// Option<NestedType> can be used in two ways:
+// 1. Without #[carve(nested)]: treated as a primitive value (serialized/deserialized as whole)
+// 2. With #[carve(nested)]: returns CarveResult<Option<Reader>> for fine-grained access
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, CarveViewModel)]
 pub struct UserWithOptionalProfile {
