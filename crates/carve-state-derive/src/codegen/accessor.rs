@@ -3,6 +3,7 @@
 //! Generates a unified Accessor type that combines Reader and Writer functionality
 //! with field-like access using proxy types.
 
+use super::utils::{extract_inner_type, extract_map_types, get_type_name, guard_name};
 use crate::field_kind::FieldKind;
 use crate::parse::{FieldInput, ViewModelInput};
 use proc_macro2::TokenStream;
@@ -82,26 +83,44 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
     let field_name = field.ident();
     let field_ty = &field.ty;
     let json_key = field.json_key();
-    let kind = FieldKind::from_type(field_ty, field.nested);
+    // flatten is implicitly nested
+    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested);
 
     let methods = match &kind {
         FieldKind::Nested => {
             // P0-3: Guard name includes field name to avoid conflicts
-            // Convert to PascalCase
-            let pascal = to_pascal_case(&field_name.to_string());
-            let guard_name = format_ident!("{}AccessorGuard", pascal);
-            quote! {
-                /// Get an accessor for the nested field.
-                ///
-                /// The nested accessor's operations are automatically merged
-                /// into the parent when the guard is dropped.
-                pub fn #field_name(&self) -> #guard_name<'_> {
-                    let mut path = self.base.clone();
-                    path.push_key(#json_key);
-                    #guard_name {
-                        parent_ops: &self.ops,
-                        // P0-2: Use trait associated type
-                        accessor: <#field_ty as ::carve_state::CarveViewModel>::accessor(self.doc, path),
+            let guard = guard_name(field_name, "AccessorGuard");
+
+            if field.flatten {
+                // Flatten: do not push_key, access at the same level
+                quote! {
+                    /// Get an accessor for the flattened nested field.
+                    ///
+                    /// The nested struct's fields are accessed at the current level,
+                    /// not under a separate key. Operations are automatically merged
+                    /// into the parent when the guard is dropped.
+                    pub fn #field_name(&self) -> #guard<'_> {
+                        #guard {
+                            parent_ops: &self.ops,
+                            accessor: <#field_ty as ::carve_state::CarveViewModel>::accessor(self.doc, self.base.clone()),
+                        }
+                    }
+                }
+            } else {
+                // Normal nested: push_key to descend into nested object
+                quote! {
+                    /// Get an accessor for the nested field.
+                    ///
+                    /// The nested accessor's operations are automatically merged
+                    /// into the parent when the guard is dropped.
+                    pub fn #field_name(&self) -> #guard<'_> {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        #guard {
+                            parent_ops: &self.ops,
+                            // P0-2: Use trait associated type
+                            accessor: <#field_ty as ::carve_state::CarveViewModel>::accessor(self.doc, path),
+                        }
                     }
                 }
             }
@@ -109,8 +128,7 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
         FieldKind::Option(inner) if inner.is_nested() => {
             // Option<NestedType> - Use Guard pattern to merge ops on Drop
             let inner_ty = extract_inner_type(field_ty);
-            let pascal = to_pascal_case(&field_name.to_string());
-            let guard_name = format_ident!("{}AccessorGuard", pascal);
+            let guard = guard_name(field_name, "AccessorGuard");
             let set_name = format_ident!("set_{}", field_name);
             let set_none_name = format_ident!("set_{}_none", field_name);
             let delete_name = format_ident!("delete_{}", field_name);
@@ -124,7 +142,7 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
                 ///
                 /// The guard's operations are automatically merged into the parent
                 /// when the guard is dropped, ensuring modifications are not lost.
-                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<#guard_name<'_>>> {
+                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<#guard<'_>>> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
                     match ::carve_state::get_at_path(self.doc, &path) {
@@ -139,7 +157,7 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
                                     found: ::carve_state::value_type_name(value),
                                 });
                             }
-                            Ok(Some(#guard_name {
+                            Ok(Some(#guard {
                                 parent_ops: &self.ops,
                                 accessor: <#inner_ty as ::carve_state::CarveViewModel>::accessor(self.doc, path),
                             }))
@@ -488,7 +506,8 @@ fn generate_nested_accessor_guards(
     let mut guards = TokenStream::new();
 
     for field in fields {
-        let kind = FieldKind::from_type(&field.ty, field.nested);
+        // flatten is implicitly nested
+        let kind = FieldKind::from_type(&field.ty, field.flatten || field.nested);
 
         // Generate guard for both Nested and Option<Nested>
         let needs_guard = match &kind {
@@ -499,9 +518,8 @@ fn generate_nested_accessor_guards(
 
         if needs_guard {
             // P0-3: Include field name in guard to avoid conflicts
-            let field_name = field.ident();
-            let pascal = to_pascal_case(&field_name.to_string());
-            let guard_name = format_ident!("{}AccessorGuard", pascal);
+            let field_ident = field.ident();
+            let guard = guard_name(field_ident, "AccessorGuard");
 
             // For Option<Nested>, use the inner type
             let field_ty = match &kind {
@@ -511,13 +529,13 @@ fn generate_nested_accessor_guards(
 
             guards.extend(quote! {
                 /// Guard for nested accessor that auto-merges on drop.
-                pub struct #guard_name<'a> {
+                pub struct #guard<'a> {
                     parent_ops: &'a ::std::cell::RefCell<Vec<::carve_state::Op>>,
                     // P0-2: Use trait associated type
                     accessor: <#field_ty as ::carve_state::CarveViewModel>::Accessor<'a>,
                 }
 
-                impl<'a> ::std::ops::Deref for #guard_name<'a> {
+                impl<'a> ::std::ops::Deref for #guard<'a> {
                     type Target = <#field_ty as ::carve_state::CarveViewModel>::Accessor<'a>;
 
                     fn deref(&self) -> &Self::Target {
@@ -525,13 +543,13 @@ fn generate_nested_accessor_guards(
                     }
                 }
 
-                impl<'a> ::std::ops::DerefMut for #guard_name<'a> {
+                impl<'a> ::std::ops::DerefMut for #guard<'a> {
                     fn deref_mut(&mut self) -> &mut Self::Target {
                         &mut self.accessor
                     }
                 }
 
-                impl<'a> Drop for #guard_name<'a> {
+                impl<'a> Drop for #guard<'a> {
                     fn drop(&mut self) {
                         use ::carve_state::AccessorOps;
                         // P1-6: Use drain instead of clone
@@ -549,70 +567,3 @@ fn generate_nested_accessor_guards(
     Ok(guards)
 }
 
-/// Convert snake_case or camelCase to PascalCase.
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => {
-                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
-                }
-            }
-        })
-        .collect()
-}
-
-/// Extract the type name from a Type.
-#[allow(dead_code)]
-fn get_type_name(ty: &syn::Type) -> String {
-    match ty {
-        syn::Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                segment.ident.to_string()
-            } else {
-                "Unknown".to_string()
-            }
-        }
-        _ => "Unknown".to_string(),
-    }
-}
-
-/// Extract the inner type from Option<T> or Vec<T>.
-fn extract_inner_type(ty: &syn::Type) -> syn::Type {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner)) = ab.args.first() {
-                    return inner.clone();
-                }
-            }
-        }
-    }
-    ty.clone()
-}
-
-/// Extract key and value types from Map<K, V>.
-fn extract_map_types(ty: &syn::Type) -> (syn::Type, syn::Type) {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
-                let mut iter = ab.args.iter();
-                if let (
-                    Some(syn::GenericArgument::Type(key)),
-                    Some(syn::GenericArgument::Type(value)),
-                ) = (iter.next(), iter.next())
-                {
-                    return (key.clone(), value.clone());
-                }
-            }
-        }
-    }
-    // Fallback to String, Value
-    (
-        syn::parse_quote!(String),
-        syn::parse_quote!(::serde_json::Value),
-    )
-}

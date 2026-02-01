@@ -1,5 +1,6 @@
 //! Reader code generation.
 
+use super::utils::extract_inner_type;
 use crate::field_kind::FieldKind;
 use crate::parse::{FieldInput, ViewModelInput};
 use proc_macro2::TokenStream;
@@ -58,17 +59,32 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
     let field_name = field.ident();
     let field_ty = &field.ty;
     let json_key = field.json_key();
-    let kind = FieldKind::from_type(field_ty, field.nested);
+    // flatten is implicitly nested
+    let kind = FieldKind::from_type(field_ty, field.flatten || field.nested);
 
     let method = match &kind {
         FieldKind::Nested => {
             // For nested types, use trait associated type (no string-based type name)
-            quote! {
-                /// Get a reader for the nested field.
-                pub fn #field_name(&self) -> <#field_ty as ::carve_state::CarveViewModel>::Reader<'a> {
-                    let mut path = self.base.clone();
-                    path.push_key(#json_key);
-                    <#field_ty as ::carve_state::CarveViewModel>::reader(self.doc, path)
+            if field.flatten {
+                // Flatten: do not push_key, fields are at the same level
+                quote! {
+                    /// Get a reader for the flattened nested field.
+                    ///
+                    /// The nested struct's fields are accessed at the current level,
+                    /// not under a separate key.
+                    pub fn #field_name(&self) -> <#field_ty as ::carve_state::CarveViewModel>::Reader<'a> {
+                        <#field_ty as ::carve_state::CarveViewModel>::reader(self.doc, self.base.clone())
+                    }
+                }
+            } else {
+                // Normal nested: push_key to descend into nested object
+                quote! {
+                    /// Get a reader for the nested field.
+                    pub fn #field_name(&self) -> <#field_ty as ::carve_state::CarveViewModel>::Reader<'a> {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        <#field_ty as ::carve_state::CarveViewModel>::reader(self.doc, path)
+                    }
                 }
             }
         }
@@ -194,7 +210,8 @@ fn generate_get_method(struct_name: &syn::Ident, fields: &[&FieldInput]) -> syn:
         .iter()
         .map(|f| {
             let name = f.ident();
-            let kind = FieldKind::from_type(&f.ty, f.nested);
+            // flatten is implicitly nested
+            let kind = FieldKind::from_type(&f.ty, f.flatten || f.nested);
 
             if f.skip {
                 // Skipped fields use Default::default()
@@ -260,31 +277,3 @@ fn generate_has_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
     Ok(methods)
 }
 
-/// Extract the type name from a Type.
-#[allow(dead_code)]
-fn get_type_name(ty: &syn::Type) -> String {
-    match ty {
-        syn::Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                segment.ident.to_string()
-            } else {
-                "Unknown".to_string()
-            }
-        }
-        _ => "Unknown".to_string(),
-    }
-}
-
-/// Extract the inner type from Option<T> or Vec<T>.
-fn extract_inner_type(ty: &syn::Type) -> syn::Type {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner)) = ab.args.first() {
-                    return inner.clone();
-                }
-            }
-        }
-    }
-    ty.clone()
-}

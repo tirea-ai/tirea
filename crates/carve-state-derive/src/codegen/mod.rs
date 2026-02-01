@@ -2,9 +2,11 @@
 
 mod accessor;
 mod reader;
+mod utils;
 mod view_model;
 mod writer;
 
+use crate::field_kind::FieldKind;
 use crate::parse::ViewModelInput;
 use darling::FromDeriveInput;
 use proc_macro2::TokenStream;
@@ -15,14 +17,24 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let parsed = ViewModelInput::from_derive_input(input)
         .map_err(|e| syn::Error::new_spanned(input, e.to_string()))?;
 
-    // P1-7: Reject flatten attribute (not yet implemented)
+    // Validate flatten fields
     for field in parsed.fields() {
         if field.flatten {
-            return Err(syn::Error::new_spanned(
-                &field.ty,
-                "#[carve(flatten)] is not yet implemented. \
-                 Please use nested types with explicit paths instead."
-            ));
+            // flatten is treated as implicitly nested
+            // Validate that flatten is only used on struct fields (not Option/Vec/Map)
+            let kind = FieldKind::from_type(&field.ty, /* is_nested_attr = */ true);
+            match kind {
+                FieldKind::Nested => {
+                    // Valid: flatten on a struct field
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &field.ty,
+                        "#[carve(flatten)] currently only supports struct fields (non-Option/Vec/Map). \
+                         The field must be a type that implements CarveViewModel."
+                    ));
+                }
+            }
         }
     }
 

@@ -23,5 +23,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 criterion.workspace = true
 
+[[bench]]
+name = "performance"
+harness = false
+
 [lints]
 workspace = true
