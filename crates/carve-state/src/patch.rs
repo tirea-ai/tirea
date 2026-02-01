@@ -631,8 +631,17 @@ mod tests {
             assert_eq!(result_original["x"], json!(2));
         }
 
-        // Canonical should ideally be just: set(x, 2)
-        // But current implementation has bug where it keeps increment
-        println!("Canonical ops: {:?}", canonical.ops());
+        // Canonical should be just: set(x, 2)
+        // The final Set should have covered both previous Set and Increment
+        assert_eq!(canonical.len(), 1, "Expected 1 op after canonicalization, got: {:?}", canonical.ops());
+
+        // Verify it's a Set operation for path "x" with value 2
+        match &canonical.ops()[0] {
+            Op::Set { path, value } => {
+                assert_eq!(path, &path!("x"));
+                assert_eq!(value, &json!(2));
+            }
+            _ => panic!("Expected Set operation, got: {:?}", canonical.ops()[0]),
+        }
     }
 }

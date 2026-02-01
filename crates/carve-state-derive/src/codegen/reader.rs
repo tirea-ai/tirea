@@ -80,13 +80,24 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 ///
                 /// Returns `Ok(None)` if the field is missing or null.
                 /// Returns `Ok(Some(reader))` if the field exists and is not null.
+                /// Returns `Err(TypeMismatch)` if the field exists but is not an object.
                 pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<<#inner_ty as ::carve_state::CarveViewModel>::Reader<'a>>> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
                     match ::carve_state::get_at_path(self.doc, &path) {
                         None => Ok(None),
                         Some(value) if value.is_null() => Ok(None),
-                        Some(_) => Ok(Some(<#inner_ty as ::carve_state::CarveViewModel>::reader(self.doc, path))),
+                        Some(value) => {
+                            // Validate that the value is an object before creating the nested reader
+                            if !value.is_object() {
+                                return Err(::carve_state::CarveError::TypeMismatch {
+                                    path,
+                                    expected: "object",
+                                    found: ::carve_state::value_type_name(value),
+                                });
+                            }
+                            Ok(Some(<#inner_ty as ::carve_state::CarveViewModel>::reader(self.doc, path)))
+                        }
                     }
                 }
             }
