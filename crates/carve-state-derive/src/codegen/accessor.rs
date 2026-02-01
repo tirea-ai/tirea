@@ -32,8 +32,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
         #vis struct #accessor_name<'a> {
             doc: &'a ::serde_json::Value,
             base: ::carve_state::Path,
-            // P0-2: ops needs to be pub so guards can access it in Drop
-            pub ops: ::std::cell::RefCell<Vec<::carve_state::Op>>,
+            // Private: guards can access because they're in the same generated code scope
+            ops: ::std::cell::RefCell<Vec<::carve_state::Op>>,
         }
 
         impl<'a> #accessor_name<'a> {
@@ -45,6 +45,15 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
                     base,
                     ops: ::std::cell::RefCell::new(Vec::new()),
                 }
+            }
+
+            /// Internal accessor for ops (used by guards).
+            ///
+            /// This is public only for generated code access and should not be used directly.
+            #[doc(hidden)]
+            #[inline]
+            pub fn ops_cell(&self) -> &::std::cell::RefCell<Vec<::carve_state::Op>> {
+                &self.ops
             }
 
             #field_accessors
@@ -490,9 +499,8 @@ fn generate_nested_accessor_guards(
                     fn drop(&mut self) {
                         use ::carve_state::AccessorOps;
                         // P1-6: Use drain instead of clone
-                        // We need to move ops out, but accessor.ops is a RefCell
-                        // The ops are consumed by the guard, clearing the accessor's ops
-                        let mut ops = self.accessor.ops.borrow_mut();
+                        // Access ops through the internal accessor method
+                        let mut ops = self.accessor.ops_cell().borrow_mut();
                         if !ops.is_empty() {
                             self.parent_ops.borrow_mut().extend(ops.drain(..));
                         }

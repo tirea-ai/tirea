@@ -157,6 +157,80 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                             }
                         }
                     }
+                    FieldKind::Vec(inner) if inner.is_nested() => {
+                        // Vec<Nested>: iterate array elements with indexed paths
+                        let inner_ty = extract_inner_type(field_ty);
+                        quote! {
+                            #name: {
+                                let mut field_path = ::carve_state::Path::root();
+                                field_path.push_key(#json_key);
+
+                                match value.get(#json_key) {
+                                    None => {
+                                        return Err(::carve_state::CarveError::PathNotFound {
+                                            path: field_path,
+                                        });
+                                    }
+                                    Some(field_value) => {
+                                        let arr = field_value.as_array()
+                                            .ok_or_else(|| ::carve_state::CarveError::TypeMismatch {
+                                                path: field_path.clone(),
+                                                expected: "array",
+                                                found: ::carve_state::value_type_name(field_value),
+                                            })?;
+
+                                        let mut result = Vec::with_capacity(arr.len());
+                                        for (i, elem) in arr.iter().enumerate() {
+                                            let mut elem_path = field_path.clone();
+                                            elem_path.push_index(i);
+
+                                            let item = <#inner_ty as ::carve_state::CarveViewModel>::from_value(elem)
+                                                .map_err(|e| e.with_prefix(&elem_path))?;
+                                            result.push(item);
+                                        }
+                                        result
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    FieldKind::Map { value: value_kind, .. } if value_kind.is_nested() => {
+                        // Map<String, Nested>: iterate object entries with keyed paths
+                        let inner_ty = extract_second_generic_arg(field_ty);
+                        quote! {
+                            #name: {
+                                let mut field_path = ::carve_state::Path::root();
+                                field_path.push_key(#json_key);
+
+                                match value.get(#json_key) {
+                                    None => {
+                                        return Err(::carve_state::CarveError::PathNotFound {
+                                            path: field_path,
+                                        });
+                                    }
+                                    Some(field_value) => {
+                                        let obj = field_value.as_object()
+                                            .ok_or_else(|| ::carve_state::CarveError::TypeMismatch {
+                                                path: field_path.clone(),
+                                                expected: "object",
+                                                found: ::carve_state::value_type_name(field_value),
+                                            })?;
+
+                                        let mut result = std::collections::HashMap::new();
+                                        for (key, val) in obj.iter() {
+                                            let mut entry_path = field_path.clone();
+                                            entry_path.push_key(key);
+
+                                            let item = <#inner_ty as ::carve_state::CarveViewModel>::from_value(val)
+                                                .map_err(|e| e.with_prefix(&entry_path))?;
+                                            result.insert(key.clone(), item);
+                                        }
+                                        result
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {
                         // Non-nested: use serde_json::from_value
                         // Fix problem 2: use field type, not Self
@@ -211,6 +285,20 @@ fn extract_inner_type(ty: &syn::Type) -> syn::Type {
             if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
                 if let Some(syn::GenericArgument::Type(inner)) = ab.args.first() {
                     return inner.clone();
+                }
+            }
+        }
+    }
+    ty.clone()
+}
+
+/// Extract the second generic argument from Map<K, V>.
+fn extract_second_generic_arg(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(second)) = ab.args.iter().nth(1) {
+                    return second.clone();
                 }
             }
         }

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::ops::{AddAssign, SubAssign, MulAssign, DivAssign};
+use std::ops::{AddAssign, SubAssign};
 
 /// Internal helper to get value at path.
 fn get_at_path<'a>(doc: &'a Value, path: &Path) -> Option<&'a Value> {
@@ -119,23 +119,17 @@ impl<'a> SubAssign<f64> for ScalarField<'a, f64> {
     }
 }
 
-impl<'a> MulAssign<f64> for ScalarField<'a, f64> {
-    fn mul_assign(&mut self, rhs: f64) {
-        // Multiply requires read-then-write
-        if let Ok(current) = self.get() {
-            self.set(current * rhs);
-        }
-    }
-}
-
-impl<'a> DivAssign<f64> for ScalarField<'a, f64> {
-    fn div_assign(&mut self, rhs: f64) {
-        // Divide requires read-then-write
-        if let Ok(current) = self.get() {
-            self.set(current / rhs);
-        }
-    }
-}
+// Note: MulAssign and DivAssign are intentionally NOT implemented.
+//
+// These operations would require reading the current value from the document,
+// which has two problems:
+// 1. They ignore pending ops in the same accessor (semantically inconsistent)
+// 2. They're not "pure patch operations" - they bake doc state into the patch
+//
+// If you need multiplication/division, either:
+// - Read the value, compute, then set: `let v = accessor.field()?; accessor.set_field(v * 2);`
+// - Use explicit increment/decrement for additive changes
+// - Define Op::Multiply/Op::Divide if needed (requires apply_patch support)
 
 // ============================================================================
 // Option Field

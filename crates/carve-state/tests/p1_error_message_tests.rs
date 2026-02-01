@@ -345,6 +345,189 @@ fn test_option_nested_missing_vs_null() {
 }
 
 // ============================================================================
+// Vec<Nested> and Map<String, Nested> from_value with indexed paths
+// ============================================================================
+
+#[test]
+fn test_vec_nested_from_value_with_indexed_path() {
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Item {
+        pub id: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Container {
+        #[carve(nested)]
+        pub items: Vec<Item>,
+    }
+
+    // Success case
+    let value = json!({
+        "items": [
+            {"id": 1},
+            {"id": 2},
+            {"id": 3}
+        ]
+    });
+    let result = Container::from_value(&value);
+    assert!(result.is_ok());
+    let container = result.unwrap();
+    assert_eq!(container.items.len(), 3);
+    assert_eq!(container.items[1].id, 2);
+
+    // Error case: missing field in element[1]
+    let value_error = json!({
+        "items": [
+            {"id": 1},
+            {}, // Missing id in index 1
+            {"id": 3}
+        ]
+    });
+    let result = Container::from_value(&value_error);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::PathNotFound { path } => {
+            // Should have full indexed path: $.items[1].id
+            assert_eq!(
+                path.to_string(),
+                "$.items[1].id",
+                "Vec<Nested> error should include array index in path"
+            );
+        }
+        other => panic!("Expected PathNotFound with indexed path, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_vec_nested_type_mismatch_with_indexed_path() {
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Item {
+        pub value: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Container {
+        #[carve(nested)]
+        pub items: Vec<Item>,
+    }
+
+    let value = json!({
+        "items": [
+            {"value": "ok"},
+            {"value": 123}, // Wrong type at index 1
+            {"value": "ok"}
+        ]
+    });
+
+    let result = Container::from_value(&value);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(
+                path.to_string(),
+                "$.items[1].value",
+                "Vec<Nested> type error should include array index"
+            );
+            assert!(expected.contains("String") || expected.contains("str"));
+            assert_eq!(found, "number");
+        }
+        other => panic!("Expected TypeMismatch with indexed path, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_map_nested_from_value_with_keyed_path() {
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Profile {
+        pub age: i32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Team {
+        #[carve(nested)]
+        pub members: HashMap<String, Profile>,
+    }
+
+    // Success case
+    let value = json!({
+        "members": {
+            "alice": {"age": 30},
+            "bob": {"age": 25}
+        }
+    });
+    let result = Team::from_value(&value);
+    assert!(result.is_ok());
+    let team = result.unwrap();
+    assert_eq!(team.members.len(), 2);
+    assert_eq!(team.members.get("alice").unwrap().age, 30);
+
+    // Error case: missing field in entry "bob"
+    let value_error = json!({
+        "members": {
+            "alice": {"age": 30},
+            "bob": {} // Missing age
+        }
+    });
+    let result = Team::from_value(&value_error);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::PathNotFound { path } => {
+            // Should have full keyed path: $.members.bob.age
+            assert_eq!(
+                path.to_string(),
+                "$.members.bob.age",
+                "Map<String, Nested> error should include map key in path"
+            );
+        }
+        other => panic!("Expected PathNotFound with keyed path, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_map_nested_type_mismatch_with_keyed_path() {
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub enabled: bool,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Settings {
+        #[carve(nested)]
+        pub features: HashMap<String, Config>,
+    }
+
+    let value = json!({
+        "features": {
+            "feature1": {"enabled": true},
+            "feature2": {"enabled": "yes"} // Wrong type
+        }
+    });
+
+    let result = Settings::from_value(&value);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(
+                path.to_string(),
+                "$.features.feature2.enabled",
+                "Map<String, Nested> type error should include map key"
+            );
+            assert!(expected.contains("bool"));
+            assert_eq!(found, "string");
+        }
+        other => panic!("Expected TypeMismatch with keyed path, got: {:?}", other),
+    }
+}
+
+// ============================================================================
 // Problem 4: default attribute error handling
 // ============================================================================
 
@@ -453,6 +636,92 @@ fn test_default_field_null_is_type_error() {
         }
         other => panic!("Expected TypeMismatch for null, got: {:?}", other),
     }
+}
+
+// ============================================================================
+// Reader default behavior unified with from_value
+// ============================================================================
+
+#[test]
+fn test_reader_default_field_missing_uses_default() {
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "100")]
+        pub timeout: i32,
+    }
+
+    let doc = json!({"name": "test"});
+    let reader = Config::read(&doc);
+
+    // Missing field should use default
+    let timeout = reader.timeout().unwrap();
+    assert_eq!(timeout, 100);
+}
+
+#[test]
+fn test_reader_default_field_present_uses_value() {
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "100")]
+        pub timeout: i32,
+    }
+
+    let doc = json!({"name": "test", "timeout": 200});
+    let reader = Config::read(&doc);
+
+    // Present field should use actual value
+    let timeout = reader.timeout().unwrap();
+    assert_eq!(timeout, 200);
+}
+
+#[test]
+fn test_reader_default_field_type_mismatch_errors() {
+    // Unified fix: Reader should ERROR on type mismatch, not silently use default
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "100")]
+        pub timeout: i32,
+    }
+
+    let doc = json!({"name": "test", "timeout": "not_a_number"});
+    let reader = Config::read(&doc);
+
+    // Type mismatch should error, not silently use default
+    let result = reader.timeout();
+    assert!(result.is_err(), "Reader should error on type mismatch, not use default");
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.timeout");
+            assert!(expected.contains("i32"));
+            assert_eq!(found, "string");
+        }
+        other => panic!("Expected TypeMismatch, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_reader_default_field_null_uses_default() {
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "100")]
+        pub timeout: i32,
+    }
+
+    let doc = json!({"name": "test", "timeout": null});
+    let reader = Config::read(&doc);
+
+    // Null should use default
+    let timeout = reader.timeout().unwrap();
+    assert_eq!(timeout, 100);
 }
 
 // ============================================================================
