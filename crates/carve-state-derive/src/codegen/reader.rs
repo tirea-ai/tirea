@@ -135,21 +135,20 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
             if let Some(default) = &field.default {
                 let expr: syn::Expr = syn::parse_str(default)
                     .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
-                // Unified behavior with from_value: missing → default, present but wrong type → error
+                // Strict semantics: missing → default, null or wrong type → error
                 quote! {
                     /// Read the field value.
                     ///
-                    /// Returns the default value if the field is missing or null.
-                    /// Returns an error if the field is present but has the wrong type.
+                    /// Returns the default value if the field is missing.
+                    /// Returns an error if the field is null or has the wrong type.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                         let mut path = self.base.clone();
                         path.push_key(#json_key);
 
                         match ::carve_state::get_at_path(self.doc, &path) {
                             None => Ok(#expr), // Field missing: use default
-                            Some(value) if value.is_null() => Ok(#expr), // Field is null: use default
                             Some(value) => {
-                                // Field present: deserialize or error
+                                // Field present (including null): deserialize or error
                                 ::serde_json::from_value(value.clone()).map_err(|_| {
                                     ::carve_state::CarveError::TypeMismatch {
                                         path,

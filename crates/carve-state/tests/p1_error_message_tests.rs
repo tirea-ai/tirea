@@ -707,7 +707,9 @@ fn test_reader_default_field_type_mismatch_errors() {
 }
 
 #[test]
-fn test_reader_default_field_null_uses_default() {
+fn test_reader_default_field_null_is_type_error() {
+    // Strict semantics: null ≠ missing, even for default fields
+    // This maintains consistency with from_value behavior
     #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
     pub struct Config {
         pub name: String,
@@ -719,9 +721,18 @@ fn test_reader_default_field_null_uses_default() {
     let doc = json!({"name": "test", "timeout": null});
     let reader = Config::read(&doc);
 
-    // Null should use default
-    let timeout = reader.timeout().unwrap();
-    assert_eq!(timeout, 100);
+    // Null should be a type error, not use default
+    let result = reader.timeout();
+    assert!(result.is_err(), "null should be type error even for default field");
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.timeout");
+            assert!(expected.contains("i32"));
+            assert_eq!(found, "null");
+        }
+        other => panic!("Expected TypeMismatch for null, got: {:?}", other),
+    }
 }
 
 // ============================================================================
