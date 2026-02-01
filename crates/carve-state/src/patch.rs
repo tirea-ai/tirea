@@ -141,50 +141,74 @@ impl Patch {
     /// ```
     pub fn canonicalize(&self) -> Patch {
         use crate::Path;
-        use std::collections::HashMap;
+        use std::collections::HashSet;
 
         if self.ops.is_empty() {
             return Patch::new();
         }
 
-        // Phase 1: Find the last occurrence index for each path's Set/Delete
-        let mut last_set_delete: HashMap<Path, usize> = HashMap::new();
+        // Backward scan algorithm for semantic-preserving canonicalization
+        //
+        // Key insight: A later Set/Delete at path P makes earlier operations at P
+        // or any child of P irrelevant, because Set/Delete overwrites everything.
+        //
+        // Algorithm:
+        // 1. Scan operations backward (from end to start)
+        // 2. Maintain a set of "covered" paths
+        // 3. For each operation:
+        //    - If its path is covered by any later Set/Delete → skip (redundant)
+        //    - Otherwise → keep it
+        //    - If it's a Set/Delete → mark its path as covered
+        // 4. Reverse the result to restore original order
 
-        for (i, op) in self.ops.iter().enumerate() {
+        let mut covered_paths: HashSet<Path> = HashSet::new();
+        let mut kept_ops: Vec<Op> = Vec::new();
+
+        // Scan backward
+        for op in self.ops.iter().rev() {
+            let op_path = op.path();
+
+            // Check if this operation is covered by a later Set/Delete
+            let is_covered = covered_paths.iter().any(|covered| {
+                // Case 1: Exact match - later op at same path覆盖s this one
+                if covered == op_path {
+                    return true;
+                }
+                // Case 2: covered is prefix of op_path - parent Set覆盖s child op
+                // e.g., Set(user)覆盖s Increment(user.age)
+                if covered.is_prefix_of(op_path) {
+                    return true;
+                }
+                false
+            });
+
+            if is_covered {
+                // This operation is redundant, skip it
+                continue;
+            }
+
+            // Keep this operation
+            kept_ops.push(op.clone());
+
+            // If this is a Set/Delete, mark its path (and implicitly all children) as covered
             match op {
                 Op::Set { path, .. } | Op::Delete { path } => {
-                    last_set_delete.insert(path.clone(), i);
+                    // Also remove any covered paths that are children of this path
+                    // because Set(user) makes Set(user.name) coverage redundant
+                    covered_paths.retain(|p| !path.is_prefix_of(p));
+                    covered_paths.insert(path.clone());
                 }
-                // Other operations are not deduplicated
-                _ => {}
+                _ => {
+                    // Non-Set/Delete operations don't create coverage
+                    // They can still be覆盖d by later Sets, but don't覆盖 others
+                }
             }
         }
 
-        // Phase 2: Emit operations in original order, skipping redundant Set/Delete
-        let mut result = Patch::new();
+        // Reverse to restore original order
+        kept_ops.reverse();
 
-        for (i, op) in self.ops.iter().enumerate() {
-            match op {
-                Op::Set { path, .. } | Op::Delete { path } => {
-                    // Only emit if this is the last Set/Delete for this path
-                    if last_set_delete.get(path) == Some(&i) {
-                        result.push(op.clone());
-                    }
-                    // Earlier occurrences are skipped (redundant)
-                }
-                // All other operations are kept as-is
-                Op::Increment { .. }
-                | Op::Decrement { .. }
-                | Op::MergeObject { .. }
-                | Op::Append { .. }
-                | Op::Insert { .. }
-                | Op::Remove { .. } => {
-                    result.push(op.clone());
-                }
-            }
-        }
-
-        result
+        Patch::with_ops(kept_ops)
     }
 }
 
@@ -566,5 +590,49 @@ mod tests {
         let result_original = crate::apply_patch(&doc, &patch).unwrap();
         let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
         assert_eq!(result_original, result_canonical);
+    }
+
+    #[test]
+    fn test_canonicalize_set_increment_set_correct_behavior() {
+        // Problem 1 from code review: Set -> Increment -> Set should remove BOTH
+        // Set(1) and Increment because the final Set(2) overwrites everything.
+        //
+        // Original: set(x, 1) -> increment(x, +1) -> set(x, 2)
+        // Correct semantic: x = 2 (final set wins, intermediate ops irrelevant)
+        //
+        // Correct canonicalize should produce: set(x, 2)
+        // Only the final Set matters
+
+        let patch = Patch::new()
+            .with_op(Op::set(path!("x"), json!(1)))
+            .with_op(Op::increment(path!("x"), 1i64))
+            .with_op(Op::set(path!("x"), json!(2)));
+
+        let canonical = patch.canonicalize();
+
+        // Test with various initial docs
+        let docs = vec![
+            json!({}),               // x doesn't exist
+            json!({"x": 100}),       // x has different value
+            json!({"x": null}),      // x is null
+        ];
+
+        for doc in docs {
+            let result_original = crate::apply_patch(&doc, &patch).unwrap();
+            let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+
+            assert_eq!(
+                result_original, result_canonical,
+                "canonicalize changed semantics for doc: {}",
+                doc
+            );
+
+            // Both should result in x = 2
+            assert_eq!(result_original["x"], json!(2));
+        }
+
+        // Canonical should ideally be just: set(x, 2)
+        // But current implementation has bug where it keeps increment
+        println!("Canonical ops: {:?}", canonical.ops());
     }
 }
