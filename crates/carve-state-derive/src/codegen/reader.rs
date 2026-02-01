@@ -92,16 +92,30 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
             }
         }
         FieldKind::Option(_) => {
-            // Option<T> for primitive types - missing or null returns None
+            // P1-5: Explicitly distinguish missing, null, and present values
             quote! {
                 /// Read the optional field value.
+                ///
+                /// Returns `Ok(None)` if the field is missing or explicitly null.
+                /// Returns `Ok(Some(value))` if the field is present and not null.
                 pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
-                    let value = ::carve_state::get_at_path(self.doc, &path)
-                        .unwrap_or(&::serde_json::Value::Null);
-                    ::serde_json::from_value(value.clone())
-                        .map_err(::carve_state::CarveError::from)
+
+                    match ::carve_state::get_at_path(self.doc, &path) {
+                        None => Ok(None), // Field missing
+                        Some(value) if value.is_null() => Ok(None), // Field is null
+                        Some(value) => {
+                            // Field present, deserialize with better error
+                            ::serde_json::from_value(value.clone()).map_err(|_| {
+                                ::carve_state::CarveError::TypeMismatch {
+                                    path,
+                                    expected: std::any::type_name::<#field_ty>(),
+                                    found: ::carve_state::value_type_name(value),
+                                }
+                            })
+                        }
+                    }
                 }
             }
         }
@@ -121,6 +135,7 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     }
                 }
             } else {
+                // P1-4: Provide better error messages with path and type info
                 quote! {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
@@ -128,8 +143,13 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
                         path.push_key(#json_key);
                         let value = ::carve_state::get_at_path(self.doc, &path)
                             .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
-                        ::serde_json::from_value(value.clone())
-                            .map_err(::carve_state::CarveError::from)
+                        ::serde_json::from_value(value.clone()).map_err(|_| {
+                            ::carve_state::CarveError::TypeMismatch {
+                                path,
+                                expected: std::any::type_name::<#field_ty>(),
+                                found: ::carve_state::value_type_name(value),
+                            }
+                        })
                     }
                 }
             }

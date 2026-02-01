@@ -106,6 +106,55 @@
 
 ---
 
+#### P1-4: from_value 错误包含 path 信息
+
+**问题**:
+- `from_value()` 错误不包含字段路径
+- 嵌套结构错误难以定位
+- 用户无法知道具体哪个字段出错
+
+**修复**:
+- 缺失字段返回 `PathNotFound { path }` 错误
+- 类型不匹配返回 `TypeMismatch { path, expected, found }` 错误
+- 所有错误包含完整的字段路径（JSON Pointer 格式 `$.field`）
+
+**文件**: `crates/carve-state-derive/src/codegen/view_model.rs`
+
+**测试覆盖**:
+- `test_from_value_missing_field_error_has_path` - 缺失字段有路径
+- `test_from_value_type_mismatch_error_has_path` - 类型错误有路径
+- `test_from_value_null_for_required_field` - null 作为必需字段
+- `test_nested_from_value_error_has_full_path` - 嵌套错误完整路径
+- `test_error_display_includes_path` - 错误显示包含路径
+- `test_type_mismatch_error_display` - 类型错误显示
+
+---
+
+#### P1-5: Reader Option 语义区分 missing/null/present
+
+**问题**:
+- Reader 中 Option 字段未明确区分缺失和 null
+- 语义不清晰，用户难以理解行为
+
+**修复**:
+- 字段缺失 (missing) → `Ok(None)`
+- 字段为 null → `Ok(None)`
+- 字段存在且非 null → 反序列化值
+- 类型错误 → `Err(TypeMismatch { path, expected, found })`
+- 明确的文档注释说明三种情况
+
+**文件**: `crates/carve-state-derive/src/codegen/reader.rs`
+
+**测试覆盖**:
+- `test_reader_option_field_missing` - 缺失字段返回 None
+- `test_reader_option_field_null` - null 字段返回 None
+- `test_reader_option_field_present` - 存在字段返回 Some
+- `test_reader_option_field_type_mismatch` - 类型错误有路径
+- `test_reader_required_field_missing` - 必需字段缺失错误
+- `test_reader_required_field_type_mismatch` - 必需字段类型错误
+
+---
+
 ## 测试结果
 
 ### 新增测试
@@ -120,6 +169,12 @@
 - 验证 Accessor 不修改文档
 - 验证历史重放和分叉
 
+**P1 错误消息测试** (`tests/p1_error_message_tests.rs`):
+- 12 个测试覆盖 P1-4/P1-5 修复
+- 验证 from_value 错误包含路径
+- 验证 Reader Option 语义
+- 验证嵌套类型错误传播
+
 ### 测试通过统计
 
 ```
@@ -130,8 +185,9 @@ Derive 集成:    33 passed
 边界情况:       37 passed
 不可变性:       13 passed
 P0 回归:        10 passed
+P1 错误消息:    12 passed
 -------------------------
-总计:          203 passed
+总计:          215 passed
 ```
 
 **编译失败测试**: flatten 正确产生编译错误 ✅
@@ -203,25 +259,13 @@ profile: Option<Profile>  // → FieldKind::Option(Nested) ✅
 
 ---
 
-## 未修复的 P1/P2 问题（建议后续处理）
-
-### P1-4: from_value 错误不带 path
-**影响**: 错误信息难以调试
-**优先级**: 中等
-
-### P1-5: Reader Option 分支语义
-**影响**: 缺失字段和 null 混淆
-**优先级**: 低
-
----
-
 ## 向后兼容性
 
 ✅ **完全向后兼容**
 - Reader/Writer API 保持不变
 - Accessor 作为新增功能
 - 现有代码无需修改
-- 所有 203 个测试通过（包括原有 193 个）
+- 所有 215 个测试通过（包括原有 193 个 + 新增 22 个）
 
 ---
 
@@ -232,9 +276,10 @@ profile: Option<Profile>  // → FieldKind::Option(Nested) ✅
 | 文件 | 变更 | 说明 |
 |------|------|------|
 | `field_kind.rs` | 重构 `from_type` | P0-1: nested 传播到叶子 |
-| `reader.rs` | Nested 分支 | P0-2: 使用 trait 关联类型 |
+| `reader.rs` | Nested 分支 + Option 语义 | P0-2: trait 关联类型 + P1-5: 区分 missing/null |
 | `writer.rs` | Nested 分支 + Guard | P0-2/P0-3: trait + PascalCase |
 | `accessor.rs` | Nested 分支 + Guard | P0-2/P0-3 + P1-6: drain |
+| `view_model.rs` | from_value 错误处理 | P1-4: 包含 path 信息 |
 | `codegen/mod.rs` | flatten 检查 | P1-7: compile_error |
 
 ### 新增函数
@@ -250,9 +295,13 @@ fn to_pascal_case(s: &str) -> String  // writer.rs, accessor.rs
 - [x] P0-1: 容器 nested 正确解析 (Option/Vec/Map)
 - [x] P0-2: 跨模块 nested 编译通过
 - [x] P0-3: 重复 nested 类型编译通过
+- [x] P1-4: from_value 错误包含 path 信息
+- [x] P1-5: Reader Option 语义区分 missing/null/present
 - [x] P1-6: Guard Drop 使用 drain
 - [x] P1-7: flatten 产生编译错误
 - [x] 所有原有测试通过 (193)
-- [x] 新增测试通过 (10)
+- [x] P0 回归测试通过 (10)
 - [x] 不可变性验证通过 (13)
+- [x] P1 错误消息测试通过 (12)
 - [x] 编译警告清理完成
+- [x] 总计 215 个测试全部通过

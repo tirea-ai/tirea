@@ -91,12 +91,28 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                         .unwrap_or_else(|| #default_expr)
                 }
             } else {
+                // P1-4: Provide better error messages with path information
                 quote! {
                     #name: {
-                        let field_value = value.get(#json_key)
-                            .cloned()
-                            .unwrap_or(::serde_json::Value::Null);
-                        ::serde_json::from_value(field_value)?
+                        let mut field_path = ::carve_state::Path::root();
+                        field_path.push_key(#json_key);
+
+                        match value.get(#json_key) {
+                            None => {
+                                return Err(::carve_state::CarveError::PathNotFound {
+                                    path: field_path,
+                                });
+                            }
+                            Some(field_value) => {
+                                ::serde_json::from_value(field_value.clone()).map_err(|e| {
+                                    ::carve_state::CarveError::TypeMismatch {
+                                        path: field_path,
+                                        expected: std::any::type_name::<Self>(),
+                                        found: ::carve_state::value_type_name(field_value),
+                                    }
+                                })?
+                            }
+                        }
                     }
                 }
             }
