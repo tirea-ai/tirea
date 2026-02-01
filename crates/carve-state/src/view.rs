@@ -1,9 +1,9 @@
 //! CarveViewModel trait for typed views.
 //!
 //! This trait is typically implemented via the derive macro `#[derive(CarveViewModel)]`.
-//! It provides the interface for creating strongly-typed readers and writers.
+//! It provides the interface for creating strongly-typed readers, writers, and accessors.
 
-use crate::{CarveResult, Patch, Path, WriterOps};
+use crate::{AccessorOps, CarveResult, Patch, Path, WriterOps};
 use serde_json::Value;
 
 /// A typed view model for a portion of a JSON document.
@@ -15,6 +15,7 @@ use serde_json::Value;
 ///
 /// - `Reader<'a>`: A strongly-typed reader that provides field accessors
 /// - `Writer`: A strongly-typed writer that provides field setters
+/// - `Accessor<'a>`: A unified accessor that combines read and write capabilities
 ///
 /// # Examples
 ///
@@ -51,6 +52,14 @@ pub trait CarveViewModel: Sized {
     /// Strongly-typed writer for this view model.
     type Writer: WriterOps;
 
+    /// Unified accessor combining read and write capabilities.
+    ///
+    /// The Accessor type provides field-like access with operator support
+    /// for numeric types and collection methods for Vec/Map types.
+    type Accessor<'a>: AccessorOps
+    where
+        Self: 'a;
+
     /// Create a reader at the specified base path.
     ///
     /// This is typically used by frameworks that manage path routing.
@@ -64,6 +73,13 @@ pub trait CarveViewModel: Sized {
     /// For simple cases, use `T::write()` instead.
     #[doc(hidden)]
     fn writer(base: Path) -> Self::Writer;
+
+    /// Create an accessor at the specified base path.
+    ///
+    /// This is typically used by frameworks that manage path routing.
+    /// For simple cases, use `T::access(&doc)` instead.
+    #[doc(hidden)]
+    fn accessor(doc: &Value, base: Path) -> Self::Accessor<'_>;
 
     /// Deserialize this type from a JSON value.
     fn from_value(value: &Value) -> CarveResult<Self>;
@@ -96,6 +112,14 @@ pub trait CarveViewModelExt: CarveViewModel {
     /// to specify a base path.
     fn write() -> Self::Writer {
         Self::writer(Path::root())
+    }
+
+    /// Create an accessor at the document root.
+    ///
+    /// This is the primary way to create an accessor when you don't need
+    /// to specify a base path. The accessor combines read and write capabilities.
+    fn access(doc: &Value) -> Self::Accessor<'_> {
+        Self::accessor(doc, Path::root())
     }
 }
 

@@ -9,6 +9,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let reader_name = format_ident!("{}Reader", struct_name);
     let writer_name = format_ident!("{}Writer", struct_name);
+    let accessor_name = format_ident!("{}Accessor", struct_name);
     let vis = &input.vis;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -22,6 +23,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
         impl #impl_generics ::carve_state::CarveViewModel for #struct_name #ty_generics #where_clause {
             type Reader<'a> = #reader_name<'a> where Self: 'a;
             type Writer = #writer_name;
+            type Accessor<'a> = #accessor_name<'a> where Self: 'a;
 
             fn reader(doc: &::serde_json::Value, base: ::carve_state::Path) -> Self::Reader<'_> {
                 #reader_name::new(doc, base)
@@ -29,6 +31,10 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
 
             fn writer(base: ::carve_state::Path) -> Self::Writer {
                 #writer_name::new(base)
+            }
+
+            fn accessor(doc: &::serde_json::Value, base: ::carve_state::Path) -> Self::Accessor<'_> {
+                #accessor_name::new(doc, base)
             }
 
             fn from_value(value: &::serde_json::Value) -> ::carve_state::CarveResult<Self> {
@@ -40,7 +46,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             }
         }
 
-        /// Convenience methods for creating readers and writers.
+        /// Convenience methods for creating readers, writers, and accessors.
         impl #impl_generics #struct_name #ty_generics #where_clause {
             /// Create a reader at the document root.
             #vis fn read(doc: &::serde_json::Value) -> #reader_name<'_> {
@@ -50,6 +56,14 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             /// Create a writer at the document root.
             #vis fn write() -> #writer_name {
                 #writer_name::new(::carve_state::Path::root())
+            }
+
+            /// Create an accessor at the document root.
+            ///
+            /// The accessor combines read and write capabilities with
+            /// field proxy types for operator support.
+            #vis fn access(doc: &::serde_json::Value) -> #accessor_name<'_> {
+                #accessor_name::new(doc, ::carve_state::Path::root())
             }
         }
     })

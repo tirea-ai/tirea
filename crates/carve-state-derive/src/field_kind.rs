@@ -26,19 +26,22 @@ pub enum FieldKind {
 
 impl FieldKind {
     /// Analyze a type and determine its kind.
+    ///
+    /// The `is_nested_attr` flag marks the **leaf type** as nested,
+    /// while container structure (Option/Vec/Map) is preserved.
+    ///
+    /// Examples:
+    /// - `Option<Profile>` with `nested=true` → `Option(Nested)`
+    /// - `Vec<Profile>` with `nested=true` → `Vec(Nested)`
+    /// - `Profile` with `nested=true` → `Nested`
     pub fn from_type(ty: &Type, is_nested_attr: bool) -> Self {
-        // If explicitly marked as nested, use Nested
-        if is_nested_attr {
-            return FieldKind::Nested;
-        }
-
         match ty {
-            Type::Path(type_path) => Self::from_type_path(type_path),
+            Type::Path(type_path) => Self::from_type_path(type_path, is_nested_attr),
             _ => FieldKind::Primitive,
         }
     }
 
-    fn from_type_path(type_path: &TypePath) -> Self {
+    fn from_type_path(type_path: &TypePath, is_nested_attr: bool) -> Self {
         let path = &type_path.path;
 
         // Get the last segment (the actual type name)
@@ -48,14 +51,16 @@ impl FieldKind {
             match type_name.as_str() {
                 "Option" => {
                     if let Some(inner) = extract_single_generic_arg(&segment.arguments) {
-                        FieldKind::Option(Box::new(Self::from_type(inner, false)))
+                        // Propagate nested attr to inner type
+                        FieldKind::Option(Box::new(Self::from_type(inner, is_nested_attr)))
                     } else {
                         FieldKind::Primitive
                     }
                 }
                 "Vec" => {
                     if let Some(inner) = extract_single_generic_arg(&segment.arguments) {
-                        FieldKind::Vec(Box::new(Self::from_type(inner, false)))
+                        // Propagate nested attr to inner type
+                        FieldKind::Vec(Box::new(Self::from_type(inner, is_nested_attr)))
                     } else {
                         FieldKind::Primitive
                     }
@@ -63,8 +68,10 @@ impl FieldKind {
                 "BTreeMap" | "HashMap" => {
                     if let Some((key, value)) = extract_two_generic_args(&segment.arguments) {
                         FieldKind::Map {
+                            // JSON keys are always strings, never nested
                             key: Box::new(Self::from_type(key, false)),
-                            value: Box::new(Self::from_type(value, false)),
+                            // Propagate nested attr to value type
+                            value: Box::new(Self::from_type(value, is_nested_attr)),
                         }
                     } else {
                         FieldKind::Primitive
@@ -75,13 +82,12 @@ impl FieldKind {
                 | "isize" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "f32" | "f64" => {
                     FieldKind::Primitive
                 }
-                // Unknown types - assume nested if it starts with uppercase (struct convention)
+                // Unknown types - check nested attr
                 _ => {
-                    if segment.ident.to_string().chars().next().unwrap_or('a').is_uppercase() {
-                        // Could be a nested struct - but we require explicit #[carve(nested)]
-                        // for safety. Without it, treat as primitive (will use serde).
-                        FieldKind::Primitive
+                    if is_nested_attr {
+                        FieldKind::Nested
                     } else {
+                        // Treat as primitive (will use serde for serialization)
                         FieldKind::Primitive
                     }
                 }

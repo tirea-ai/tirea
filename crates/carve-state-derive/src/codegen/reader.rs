@@ -62,33 +62,31 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
 
     let method = match &kind {
         FieldKind::Nested => {
-            // For nested types, return a sub-reader
-            let nested_reader = format_ident!("{}Reader", get_type_name(field_ty));
+            // For nested types, use trait associated type (no string-based type name)
             quote! {
                 /// Get a reader for the nested field.
-                pub fn #field_name(&self) -> #nested_reader<'a> {
+                pub fn #field_name(&self) -> <#field_ty as ::carve_state::CarveViewModel>::Reader<'a> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
-                    #nested_reader::new(self.doc, path)
+                    <#field_ty as ::carve_state::CarveViewModel>::reader(self.doc, path)
                 }
             }
         }
         FieldKind::Option(inner) if inner.is_nested() => {
-            // Option<NestedType> - return CarveResult<Option<SubReader>> for consistency
+            // Option<NestedType> - use trait associated type
             let inner_ty = extract_inner_type(field_ty);
-            let nested_reader = format_ident!("{}Reader", get_type_name(&inner_ty));
             quote! {
                 /// Get a reader for the optional nested field.
                 ///
                 /// Returns `Ok(None)` if the field is missing or null.
                 /// Returns `Ok(Some(reader))` if the field exists and is not null.
-                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<#nested_reader<'a>>> {
+                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<<#inner_ty as ::carve_state::CarveViewModel>::Reader<'a>>> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
                     match ::carve_state::get_at_path(self.doc, &path) {
                         None => Ok(None),
                         Some(value) if value.is_null() => Ok(None),
-                        Some(_) => Ok(Some(#nested_reader::new(self.doc, path))),
+                        Some(_) => Ok(Some(<#inner_ty as ::carve_state::CarveViewModel>::reader(self.doc, path))),
                     }
                 }
             }
@@ -207,6 +205,7 @@ fn generate_has_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
 }
 
 /// Extract the type name from a Type.
+#[allow(dead_code)]
 fn get_type_name(ty: &syn::Type) -> String {
     match ty {
         syn::Type::Path(type_path) => {

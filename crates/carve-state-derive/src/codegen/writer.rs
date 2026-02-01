@@ -97,8 +97,14 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
 
     let methods = match &kind {
         FieldKind::Nested => {
-            let guard_name = format_ident!("{}WriterGuard", get_type_name(field_ty));
-            let nested_writer = format_ident!("{}Writer", get_type_name(field_ty));
+            // P0-3: Guard name includes field name to avoid conflicts
+            // when same nested type appears multiple times
+            // Convert field_name to UpperCamelCase for guard name
+            let guard_name = {
+                let field_str = field_name.to_string();
+                let pascal = to_pascal_case(&field_str);
+                format_ident!("{}WriterGuard", pascal)
+            };
             quote! {
                 /// Get a writer for the nested field.
                 ///
@@ -109,7 +115,8 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
                     path.push_key(#json_key);
                     #guard_name {
                         parent_ops: &mut self.ops,
-                        writer: #nested_writer::new(path),
+                        // P0-2: Use trait associated type instead of string-based type name
+                        writer: <#field_ty as ::carve_state::CarveViewModel>::writer(path),
                     }
                 }
             }
@@ -311,19 +318,23 @@ fn generate_nested_guards(struct_name: &syn::Ident, fields: &[&FieldInput]) -> s
     for field in fields {
         let kind = FieldKind::from_type(&field.ty, field.nested);
         if kind.is_nested() {
-            let type_name = get_type_name(&field.ty);
-            let guard_name = format_ident!("{}WriterGuard", type_name);
-            let nested_writer = format_ident!("{}Writer", type_name);
+            // P0-3: Include field name in guard to avoid conflicts
+            // when same nested type appears multiple times
+            let field_name = field.ident();
+            let pascal = to_pascal_case(&field_name.to_string());
+            let guard_name = format_ident!("{}WriterGuard", pascal);
+            let field_ty = &field.ty;
 
             guards.extend(quote! {
                 /// Guard for nested writer that auto-merges on drop.
                 pub struct #guard_name<'a> {
                     parent_ops: &'a mut Vec<::carve_state::Op>,
-                    writer: #nested_writer,
+                    // P0-2: Use trait associated type
+                    writer: <#field_ty as ::carve_state::CarveViewModel>::Writer,
                 }
 
                 impl<'a> std::ops::Deref for #guard_name<'a> {
-                    type Target = #nested_writer;
+                    type Target = <#field_ty as ::carve_state::CarveViewModel>::Writer;
 
                     fn deref(&self) -> &Self::Target {
                         &self.writer
@@ -339,6 +350,7 @@ fn generate_nested_guards(struct_name: &syn::Ident, fields: &[&FieldInput]) -> s
                 impl<'a> Drop for #guard_name<'a> {
                     fn drop(&mut self) {
                         use ::carve_state::WriterOps;
+                        // P1-6: Use take_ops (drain) instead of cloning
                         self.parent_ops.extend(self.writer.take_ops());
                     }
                 }
@@ -352,7 +364,24 @@ fn generate_nested_guards(struct_name: &syn::Ident, fields: &[&FieldInput]) -> s
     Ok(guards)
 }
 
+/// Convert snake_case or camelCase to PascalCase.
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
+            }
+        })
+        .collect()
+}
+
 /// Extract the type name from a Type.
+#[allow(dead_code)]
 fn get_type_name(ty: &syn::Type) -> String {
     match ty {
         syn::Type::Path(type_path) => {

@@ -95,9 +95,12 @@
 //! assert_eq!(new_doc["name"], "Bob");
 //! ```
 
+mod accessor;
 mod apply;
 mod conflict;
+mod container;
 mod error;
+mod fields;
 mod op;
 mod patch;
 mod path;
@@ -105,9 +108,12 @@ mod view;
 mod writer;
 
 // Re-export main types
+pub use accessor::AccessorOps;
 pub use apply::{apply_patch, get_at_path};
 pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
+pub use container::State;
 pub use error::{value_type_name, CarveError, CarveResult};
+pub use fields::{MapField, OptionField, ScalarField, SetField, VecField};
 pub use op::{Number, Op};
 pub use patch::{Patch, TrackedPatch};
 pub use path::{Path, Seg};
