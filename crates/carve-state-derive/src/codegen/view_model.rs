@@ -12,10 +12,11 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let vis = &input.vis;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    let fields: Vec<_> = input.fields().into_iter().filter(|f| f.is_included()).collect();
+    let all_fields: Vec<_> = input.fields();
+    let included_fields: Vec<_> = all_fields.iter().filter(|f| f.is_included()).copied().collect();
 
-    let from_value_body = generate_from_value(&fields)?;
-    let to_value_body = generate_to_value(&fields)?;
+    let from_value_body = generate_from_value(&all_fields)?;
+    let to_value_body = generate_to_value(&included_fields)?;
 
     Ok(quote! {
         impl #impl_generics ::carve_state::CarveViewModel for #struct_name #ty_generics #where_clause {
@@ -62,7 +63,12 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
             let name = f.ident();
             let json_key = f.json_key();
 
-            if let Some(default) = &f.default {
+            if f.skip {
+                // Skipped fields use Default::default()
+                quote! {
+                    #name: Default::default()
+                }
+            } else if let Some(default) = &f.default {
                 let default_expr: syn::Expr = syn::parse_str(default)
                     .unwrap_or_else(|_| syn::parse_quote!(Default::default()));
                 quote! {

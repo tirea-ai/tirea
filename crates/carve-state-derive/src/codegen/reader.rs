@@ -11,11 +11,12 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let reader_name = format_ident!("{}Reader", struct_name);
     let vis = &input.vis;
 
-    let fields: Vec<_> = input.fields().into_iter().filter(|f| f.is_included()).collect();
+    let all_fields: Vec<_> = input.fields();
+    let included_fields: Vec<_> = all_fields.iter().filter(|f| f.is_included()).copied().collect();
 
-    let field_methods = generate_field_methods(&fields)?;
-    let get_method = generate_get_method(struct_name, &fields)?;
-    let has_methods = generate_has_methods(&fields)?;
+    let field_methods = generate_field_methods(&included_fields)?;
+    let get_method = generate_get_method(struct_name, &all_fields)?;
+    let has_methods = generate_has_methods(&included_fields)?;
 
     Ok(quote! {
         /// Strongly-typed reader for accessing fields.
@@ -90,26 +91,46 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 }
             }
         }
-        _ => {
-            // For primitive types, deserialize the value
-            let default_expr = if let Some(default) = &field.default {
-                let expr: syn::Expr = syn::parse_str(default)
-                    .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
-                quote! { .unwrap_or_else(|_| #expr) }
-            } else {
-                quote! {}
-            };
-
+        FieldKind::Option(_) => {
+            // Option<T> for primitive types - missing or null returns None
             quote! {
-                /// Read the field value.
+                /// Read the optional field value.
                 pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
                     let value = ::carve_state::get_at_path(self.doc, &path)
-                        .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
+                        .unwrap_or(&::serde_json::Value::Null);
                     ::serde_json::from_value(value.clone())
                         .map_err(::carve_state::CarveError::from)
-                        #default_expr
+                }
+            }
+        }
+        _ => {
+            // For primitive types, deserialize the value
+            if let Some(default) = &field.default {
+                let expr: syn::Expr = syn::parse_str(default)
+                    .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
+                quote! {
+                    /// Read the field value.
+                    pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        let value = ::carve_state::get_at_path(self.doc, &path)
+                            .unwrap_or(&::serde_json::Value::Null);
+                        Ok(::serde_json::from_value(value.clone()).unwrap_or_else(|_| #expr))
+                    }
+                }
+            } else {
+                quote! {
+                    /// Read the field value.
+                    pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        let value = ::carve_state::get_at_path(self.doc, &path)
+                            .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
+                        ::serde_json::from_value(value.clone())
+                            .map_err(::carve_state::CarveError::from)
+                    }
                 }
             }
         }
@@ -127,7 +148,12 @@ fn generate_get_method(struct_name: &syn::Ident, fields: &[&FieldInput]) -> syn:
             let json_key = f.json_key();
             let kind = FieldKind::from_type(&f.ty, f.nested);
 
-            if kind.is_nested() {
+            if f.skip {
+                // Skipped fields use Default::default()
+                quote! {
+                    #name: Default::default()
+                }
+            } else if kind.is_nested() {
                 // For nested, recursively call get()
                 quote! {
                     #name: self.#name().get()?
