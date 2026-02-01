@@ -314,3 +314,64 @@ fn test_guards_are_field_scoped() {
     // If guards had same name, this would be a compile error
     // The fact that this compiles proves P0-3 fix works
 }
+
+// ============================================================================
+// FIXED: Option<Nested> accessor now correctly merges ops via Guard
+// ============================================================================
+
+#[test]
+fn test_option_nested_accessor_merges_ops_correctly() {
+    // This test verifies that Option<Nested> accessor modifications are now
+    // correctly merged back to the parent via the Guard pattern with Drop.
+
+    let doc = json!({
+        "id": "user1",
+        "profile": {"name": "Alice", "age": 30},
+        "friends": []
+    });
+
+    let accessor = User::access(&doc);
+
+    // Modify the optional nested field using Guard
+    if let Some(mut profile_guard) = accessor.profile().unwrap() {
+        // Guard holds parent_ops reference and nested accessor
+        // Modifications go into the nested accessor's ops
+        profile_guard.set_name("Bob".to_string());
+        // When guard is dropped, ops are drained and merged to parent
+    }
+
+    // Build patch from parent accessor
+    let patch = accessor.build();
+
+    // Apply patch
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    // FIXED: The name change is now preserved via Guard Drop merging
+    assert_eq!(result["profile"]["name"], "Bob");
+    assert_eq!(result["profile"]["age"], 30); // Other fields unchanged
+}
+
+#[test]
+fn test_direct_nested_accessor_works_correctly() {
+    // This test shows that direct nested (non-Option) works correctly
+    // because it uses Guard pattern with Drop merging.
+
+    let doc = json!({
+        "name": "Acme Corp",
+        "headquarters": {"street": "123 Main St", "city": "Springfield"}
+    });
+
+    let accessor = Company::access(&doc);
+
+    // Direct nested uses Guard, so ops are merged on Drop
+    {
+        let mut hq = accessor.headquarters();
+        hq.set_street("456 Oak Ave".to_string());
+    } // Guard dropped, ops merged
+
+    let patch = accessor.build();
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    // This works correctly
+    assert_eq!(result["headquarters"]["street"], "456 Oak Ave");
+}

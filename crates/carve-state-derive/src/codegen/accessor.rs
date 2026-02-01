@@ -107,19 +107,24 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
             }
         }
         FieldKind::Option(inner) if inner.is_nested() => {
-            // Option<NestedType> - P0-2: Use trait associated type
+            // Option<NestedType> - Use Guard pattern to merge ops on Drop
             let inner_ty = extract_inner_type(field_ty);
+            let pascal = to_pascal_case(&field_name.to_string());
+            let guard_name = format_ident!("{}AccessorGuard", pascal);
             let set_name = format_ident!("set_{}", field_name);
             let set_none_name = format_ident!("set_{}_none", field_name);
             let delete_name = format_ident!("delete_{}", field_name);
 
             quote! {
-                /// Get an accessor for the optional nested field.
+                /// Get an accessor guard for the optional nested field.
                 ///
                 /// Returns `Ok(None)` if the field is missing or null.
-                /// Returns `Ok(Some(accessor))` if the field exists and is not null.
+                /// Returns `Ok(Some(guard))` if the field exists and is not null.
                 /// Returns `Err(TypeMismatch)` if the field exists but is not an object.
-                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<<#inner_ty as ::carve_state::CarveViewModel>::Accessor<'a>>> {
+                ///
+                /// The guard's operations are automatically merged into the parent
+                /// when the guard is dropped, ensuring modifications are not lost.
+                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<#guard_name<'_>>> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
                     match ::carve_state::get_at_path(self.doc, &path) {
@@ -134,7 +139,10 @@ fn generate_field_accessor(field: &FieldInput) -> syn::Result<TokenStream> {
                                     found: ::carve_state::value_type_name(value),
                                 });
                             }
-                            Ok(Some(<#inner_ty as ::carve_state::CarveViewModel>::accessor(self.doc, path)))
+                            Ok(Some(#guard_name {
+                                parent_ops: &self.ops,
+                                accessor: <#inner_ty as ::carve_state::CarveViewModel>::accessor(self.doc, path),
+                            }))
                         }
                     }
                 }
@@ -481,12 +489,25 @@ fn generate_nested_accessor_guards(
 
     for field in fields {
         let kind = FieldKind::from_type(&field.ty, field.nested);
-        if kind.is_nested() {
+
+        // Generate guard for both Nested and Option<Nested>
+        let needs_guard = match &kind {
+            FieldKind::Nested => true,
+            FieldKind::Option(inner) if inner.is_nested() => true,
+            _ => false,
+        };
+
+        if needs_guard {
             // P0-3: Include field name in guard to avoid conflicts
             let field_name = field.ident();
             let pascal = to_pascal_case(&field_name.to_string());
             let guard_name = format_ident!("{}AccessorGuard", pascal);
-            let field_ty = &field.ty;
+
+            // For Option<Nested>, use the inner type
+            let field_ty = match &kind {
+                FieldKind::Option(_) => extract_inner_type(&field.ty),
+                _ => field.ty.clone(),
+            };
 
             guards.extend(quote! {
                 /// Guard for nested accessor that auto-merges on drop.
