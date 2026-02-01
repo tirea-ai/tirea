@@ -128,7 +128,10 @@ fn generate_field_setter(field: &FieldInput) -> syn::Result<TokenStream> {
                     self
                 }
 
-                /// Clear the optional field (set to null).
+                /// Set the optional field to null (None).
+                ///
+                /// This is different from `delete_*()`: this sets the field to JSON `null`,
+                /// while `delete_*()` removes the field entirely from the object.
                 pub fn #none_name(&mut self) -> &mut Self {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
@@ -285,7 +288,10 @@ fn generate_delete_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
         let json_key = field.json_key();
 
         methods.extend(quote! {
-            /// Delete this field.
+            /// Delete this field entirely from the object.
+            ///
+            /// This removes the field from the JSON object. For `Option` fields,
+            /// use `*_none()` to set the value to `null` instead.
             pub fn #delete_name(&mut self) -> &mut Self {
                 let mut path = self.base.clone();
                 path.push_key(#json_key);

@@ -111,12 +111,19 @@ impl Patch {
 
     /// Canonicalize the patch by removing redundant operations.
     ///
-    /// This optimization preserves operation order while:
-    /// - Removing earlier `Set` operations when a later `Set` or `Delete` targets the same path
-    /// - Combining consecutive `Increment`/`Decrement` on the same path (in place)
-    /// - Combining consecutive `MergeObject` operations on the same path (in place)
+    /// This is a **safe, semantics-preserving** optimization that:
+    /// - Removes earlier `Set` operations when a later `Set` targets the same path
+    /// - Removes earlier `Set` operations when a later `Delete` targets the same path
+    /// - Removes earlier `Delete` operations when a later `Set` or `Delete` targets the same path
     ///
-    /// Array operations (Append, Insert, Remove) are kept as-is in their original positions.
+    /// **Important**: This function only *removes* redundant operations. It never reorders
+    /// the remaining operations. The output is always a subsequence of the input in the
+    /// same relative order.
+    ///
+    /// Operations that are **not** optimized (kept as-is):
+    /// - `Increment`, `Decrement`, `MergeObject`: These have cumulative effects and
+    ///   cannot be safely deduplicated without semantic analysis
+    /// - `Append`, `Insert`, `Remove`: Array operations are order-sensitive
     ///
     /// # Examples
     ///
@@ -140,184 +147,44 @@ impl Patch {
             return Patch::new();
         }
 
-        // Phase 1: Find the last significant index for each path
-        // For Set/Delete: the last occurrence wins
-        // For Increment/Decrement/MergeObject: track first occurrence for combining
+        // Phase 1: Find the last occurrence index for each path's Set/Delete
         let mut last_set_delete: HashMap<Path, usize> = HashMap::new();
-        let mut first_combinable: HashMap<Path, usize> = HashMap::new();
 
         for (i, op) in self.ops.iter().enumerate() {
-            let path = op.path();
             match op {
-                Op::Set { .. } | Op::Delete { .. } => {
+                Op::Set { path, .. } | Op::Delete { path } => {
                     last_set_delete.insert(path.clone(), i);
-                    // Set/Delete invalidates previous combinables
-                    first_combinable.remove(path);
                 }
-                Op::Increment { .. } | Op::Decrement { .. } => {
-                    if !first_combinable.contains_key(path) && !last_set_delete.contains_key(path) {
-                        first_combinable.insert(path.clone(), i);
-                    }
-                }
-                Op::MergeObject { .. } => {
-                    if !first_combinable.contains_key(path) && !last_set_delete.contains_key(path) {
-                        first_combinable.insert(path.clone(), i);
-                    }
-                }
-                // Array ops don't participate in deduplication
-                Op::Append { .. } | Op::Insert { .. } | Op::Remove { .. } => {}
-            }
-        }
-
-        // Phase 2: Build result preserving order
-        // - For Set/Delete: only emit at the last occurrence
-        // - For Increment/Decrement: combine at first occurrence, skip later ones
-        // - For MergeObject: combine at first occurrence, skip later ones
-        // - Array ops: always emit
-        let mut combined_increments: HashMap<Path, crate::Number> = HashMap::new();
-        let mut combined_merges: HashMap<Path, serde_json::Map<String, Value>> = HashMap::new();
-        let mut emitted_combinable: std::collections::HashSet<Path> = std::collections::HashSet::new();
-
-        // Pre-compute combined values
-        for (i, op) in self.ops.iter().enumerate() {
-            let path = op.path();
-            match op {
-                Op::Set { .. } | Op::Delete { .. } => {
-                    // These invalidate any prior increments/merges
-                    combined_increments.remove(path);
-                    combined_merges.remove(path);
-                }
-                Op::Increment { amount, .. } => {
-                    // Only combine if no Set/Delete came before this index
-                    if last_set_delete.get(path).is_none_or(|&idx| idx >= i) {
-                        let entry = combined_increments.entry(path.clone()).or_insert(crate::Number::Int(0));
-                        *entry = combine_numbers(entry, amount, true);
-                    }
-                }
-                Op::Decrement { amount, .. } => {
-                    if last_set_delete.get(path).is_none_or(|&idx| idx >= i) {
-                        let entry = combined_increments.entry(path.clone()).or_insert(crate::Number::Int(0));
-                        *entry = combine_numbers(entry, amount, false);
-                    }
-                }
-                Op::MergeObject { value, .. } => {
-                    if last_set_delete.get(path).is_none_or(|&idx| idx >= i) {
-                        if let Some(obj) = value.as_object() {
-                            let entry = combined_merges.entry(path.clone()).or_default();
-                            for (k, v) in obj {
-                                entry.insert(k.clone(), v.clone());
-                            }
-                        }
-                    }
-                }
+                // Other operations are not deduplicated
                 _ => {}
             }
         }
 
-        // Phase 3: Emit operations in original order
+        // Phase 2: Emit operations in original order, skipping redundant Set/Delete
         let mut result = Patch::new();
 
         for (i, op) in self.ops.iter().enumerate() {
-            let path = op.path();
             match op {
-                Op::Set { .. } => {
+                Op::Set { path, .. } | Op::Delete { path } => {
                     // Only emit if this is the last Set/Delete for this path
                     if last_set_delete.get(path) == Some(&i) {
                         result.push(op.clone());
                     }
+                    // Earlier occurrences are skipped (redundant)
                 }
-                Op::Delete { .. } => {
-                    if last_set_delete.get(path) == Some(&i) {
-                        result.push(op.clone());
-                    }
-                }
-                Op::Increment { .. } | Op::Decrement { .. } => {
-                    // Emit combined value at first occurrence only
-                    if first_combinable.get(path) == Some(&i) && !emitted_combinable.contains(path) {
-                        if let Some(amount) = combined_increments.get(path) {
-                            if !is_zero(amount) {
-                                if is_negative(amount) {
-                                    result.push(Op::Decrement {
-                                        path: path.clone(),
-                                        amount: negate_number(amount),
-                                    });
-                                } else {
-                                    result.push(Op::Increment {
-                                        path: path.clone(),
-                                        amount: amount.clone(),
-                                    });
-                                }
-                            }
-                            emitted_combinable.insert(path.clone());
-                        }
-                    }
-                }
-                Op::MergeObject { .. } => {
-                    if first_combinable.get(path) == Some(&i) && !emitted_combinable.contains(path) {
-                        if let Some(map) = combined_merges.get(path) {
-                            if !map.is_empty() {
-                                result.push(Op::MergeObject {
-                                    path: path.clone(),
-                                    value: Value::Object(map.clone()),
-                                });
-                            }
-                            emitted_combinable.insert(path.clone());
-                        }
-                    }
-                }
-                // Array operations always emit in place
-                Op::Append { .. } | Op::Insert { .. } | Op::Remove { .. } => {
+                // All other operations are kept as-is
+                Op::Increment { .. }
+                | Op::Decrement { .. }
+                | Op::MergeObject { .. }
+                | Op::Append { .. }
+                | Op::Insert { .. }
+                | Op::Remove { .. } => {
                     result.push(op.clone());
                 }
             }
         }
 
         result
-    }
-}
-
-// Helper functions for Number arithmetic
-use serde_json::Value;
-
-fn combine_numbers(a: &crate::Number, b: &crate::Number, add: bool) -> crate::Number {
-    match (a, b) {
-        (crate::Number::Int(x), crate::Number::Int(y)) => {
-            if add {
-                crate::Number::Int(x + y)
-            } else {
-                crate::Number::Int(x - y)
-            }
-        }
-        _ => {
-            let x = a.as_f64();
-            let y = b.as_f64();
-            if add {
-                crate::Number::Float(x + y)
-            } else {
-                crate::Number::Float(x - y)
-            }
-        }
-    }
-}
-
-fn negate_number(n: &crate::Number) -> crate::Number {
-    match n {
-        crate::Number::Int(i) => crate::Number::Int(-i),
-        crate::Number::Float(f) => crate::Number::Float(-f),
-    }
-}
-
-fn is_zero(n: &crate::Number) -> bool {
-    match n {
-        crate::Number::Int(i) => *i == 0,
-        crate::Number::Float(f) => f.abs() < f64::EPSILON,
-    }
-}
-
-fn is_negative(n: &crate::Number) -> bool {
-    match n {
-        crate::Number::Int(i) => *i < 0,
-        crate::Number::Float(f) => *f < 0.0,
     }
 }
 
@@ -529,89 +396,75 @@ mod tests {
     }
 
     #[test]
-    fn test_canonicalize_combine_increments() {
+    fn test_canonicalize_increments_not_combined() {
+        // Safe canonicalize does NOT combine increments (they have cumulative effects)
         let patch = Patch::new()
             .with_op(Op::increment(path!("count"), 1i64))
             .with_op(Op::increment(path!("count"), 2i64))
             .with_op(Op::increment(path!("count"), 3i64));
 
         let canonical = patch.canonicalize();
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(
-            canonical.ops()[0],
-            Op::increment(path!("count"), 6i64)
-        );
+        // All increments are kept
+        assert_eq!(canonical.len(), 3);
+
+        // Verify semantics are preserved
+        let doc = json!({"count": 0});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+        assert_eq!(result_original, result_canonical);
     }
 
     #[test]
-    fn test_canonicalize_combine_increment_decrement() {
+    fn test_canonicalize_increment_decrement_not_combined() {
+        // Safe canonicalize does NOT combine increment/decrement
         let patch = Patch::new()
             .with_op(Op::increment(path!("count"), 10i64))
             .with_op(Op::decrement(path!("count"), 3i64));
 
         let canonical = patch.canonicalize();
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(
-            canonical.ops()[0],
-            Op::increment(path!("count"), 7i64)
-        );
+        assert_eq!(canonical.len(), 2);
+
+        // Verify semantics
+        let doc = json!({"count": 0});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+        assert_eq!(result_original, result_canonical);
     }
 
     #[test]
-    fn test_canonicalize_decrement_to_negative() {
-        let patch = Patch::new()
-            .with_op(Op::increment(path!("count"), 5i64))
-            .with_op(Op::decrement(path!("count"), 10i64));
-
-        let canonical = patch.canonicalize();
-        assert_eq!(canonical.len(), 1);
-        // Result is -5, so should be emitted as Decrement(5)
-        assert_eq!(
-            canonical.ops()[0],
-            Op::decrement(path!("count"), 5i64)
-        );
-    }
-
-    #[test]
-    fn test_canonicalize_zero_increment_removed() {
-        let patch = Patch::new()
-            .with_op(Op::increment(path!("count"), 5i64))
-            .with_op(Op::decrement(path!("count"), 5i64));
-
-        let canonical = patch.canonicalize();
-        // Net zero - operation should be removed
-        assert!(canonical.is_empty());
-    }
-
-    #[test]
-    fn test_canonicalize_combine_merge_objects() {
+    fn test_canonicalize_merge_objects_not_combined() {
+        // Safe canonicalize does NOT combine merge objects
         let patch = Patch::new()
             .with_op(Op::merge_object(path!("user"), json!({"name": "Alice"})))
-            .with_op(Op::merge_object(path!("user"), json!({"age": 30})))
-            .with_op(Op::merge_object(path!("user"), json!({"email": "alice@example.com"})));
+            .with_op(Op::merge_object(path!("user"), json!({"age": 30})));
 
         let canonical = patch.canonicalize();
-        assert_eq!(canonical.len(), 1);
-        if let Op::MergeObject { value, .. } = &canonical.ops()[0] {
-            assert_eq!(value["name"], "Alice");
-            assert_eq!(value["age"], 30);
-            assert_eq!(value["email"], "alice@example.com");
-        } else {
-            panic!("Expected MergeObject");
-        }
+        assert_eq!(canonical.len(), 2);
+
+        // Verify semantics
+        let doc = json!({"user": {}});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+        assert_eq!(result_original, result_canonical);
     }
 
     #[test]
     fn test_canonicalize_preserves_different_paths() {
+        // Input: set(a,1), set(b,2), set(a,10)
+        // Canonicalize removes set(a,1) because set(a,10) is the last for path "a"
+        // Result is a subsequence: set(b,2), set(a,10)
+        //
+        // IMPORTANT: This is NOT reordering. The output preserves the relative
+        // order of the remaining operations. b was at index 1, a's last occurrence
+        // was at index 2, so the output order is b -> a.
         let patch = Patch::new()
-            .with_op(Op::set(path!("a"), json!(1)))
-            .with_op(Op::set(path!("b"), json!(2)))
-            .with_op(Op::set(path!("a"), json!(10)));
+            .with_op(Op::set(path!("a"), json!(1)))   // index 0 - REMOVED (not last for "a")
+            .with_op(Op::set(path!("b"), json!(2)))   // index 1 - KEPT (last for "b")
+            .with_op(Op::set(path!("a"), json!(10))); // index 2 - KEPT (last for "a")
 
         let canonical = patch.canonicalize();
         assert_eq!(canonical.len(), 2);
-        // Order preserved: b at index 1, a's last occurrence at index 2
-        // So output order is: b, then a
+        // Output is a subsequence in original order: ops at index 1, then index 2
         assert_eq!(canonical.ops()[0], Op::set(path!("b"), json!(2)));
         assert_eq!(canonical.ops()[1], Op::set(path!("a"), json!(10)));
     }
@@ -648,6 +501,49 @@ mod tests {
     }
 
     #[test]
+    fn test_canonicalize_interleaved_increment_set() {
+        // Increment, Set, Increment 交错序列
+        // 正确行为：Set 会重置值，后续的 Increment 应该保留
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("x"), 1i64))
+            .with_op(Op::set(path!("x"), json!(0)))
+            .with_op(Op::increment(path!("x"), 2i64));
+
+        let canonical = patch.canonicalize();
+
+        // 验证语义一致性
+        let doc = json!({"x": 100});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+
+        assert_eq!(
+            result_original, result_canonical,
+            "canonicalize changed semantics! original={}, canonical={}",
+            result_original["x"], result_canonical["x"]
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_interleaved_merge_set() {
+        // MergeObject, Set, MergeObject 交错序列
+        let patch = Patch::new()
+            .with_op(Op::merge_object(path!("user"), json!({"a": 1})))
+            .with_op(Op::set(path!("user"), json!({})))
+            .with_op(Op::merge_object(path!("user"), json!({"b": 2})));
+
+        let canonical = patch.canonicalize();
+
+        let doc = json!({"user": {"existing": true}});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+
+        assert_eq!(
+            result_original, result_canonical,
+            "canonicalize changed semantics!"
+        );
+    }
+
+    #[test]
     fn test_canonicalize_empty_patch() {
         let patch = Patch::new();
         let canonical = patch.canonicalize();
@@ -655,17 +551,20 @@ mod tests {
     }
 
     #[test]
-    fn test_canonicalize_float_increments() {
+    fn test_canonicalize_semantics_preserved() {
+        // Comprehensive test: canonicalize must never change semantics
         let patch = Patch::new()
             .with_op(Op::increment(path!("value"), 1.5f64))
             .with_op(Op::increment(path!("value"), 2.5f64));
 
         let canonical = patch.canonicalize();
-        assert_eq!(canonical.len(), 1);
-        if let Op::Increment { amount, .. } = &canonical.ops()[0] {
-            assert!((amount.as_f64() - 4.0).abs() < f64::EPSILON);
-        } else {
-            panic!("Expected Increment");
-        }
+        // Increments are not combined in safe mode
+        assert_eq!(canonical.len(), 2);
+
+        // But semantics must be identical
+        let doc = json!({"value": 0.0});
+        let result_original = crate::apply_patch(&doc, &patch).unwrap();
+        let result_canonical = crate::apply_patch(&doc, &canonical).unwrap();
+        assert_eq!(result_original, result_canonical);
     }
 }
