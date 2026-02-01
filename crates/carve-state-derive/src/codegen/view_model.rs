@@ -1,5 +1,6 @@
 //! CarveViewModel trait implementation code generation.
 
+use crate::field_kind::FieldKind;
 use crate::parse::{FieldInput, ViewModelInput};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -91,26 +92,78 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                         .unwrap_or_else(|| #default_expr)
                 }
             } else {
-                // P1-4: Provide better error messages with path information
-                quote! {
-                    #name: {
-                        let mut field_path = ::carve_state::Path::root();
-                        field_path.push_key(#json_key);
+                // P1-4 + P1-3: Better error messages with path information
+                // and recursive CarveViewModel::from_value for nested types
+                let field_ty = &f.ty;
+                let kind = FieldKind::from_type(field_ty, f.nested);
 
-                        match value.get(#json_key) {
-                            None => {
-                                return Err(::carve_state::CarveError::PathNotFound {
-                                    path: field_path,
-                                });
-                            }
-                            Some(field_value) => {
-                                ::serde_json::from_value(field_value.clone()).map_err(|e| {
-                                    ::carve_state::CarveError::TypeMismatch {
-                                        path: field_path,
-                                        expected: std::any::type_name::<Self>(),
-                                        found: ::carve_state::value_type_name(field_value),
+                match &kind {
+                    FieldKind::Nested => {
+                        // Nested type: use CarveViewModel::from_value recursively
+                        quote! {
+                            #name: {
+                                let mut field_path = ::carve_state::Path::root();
+                                field_path.push_key(#json_key);
+
+                                match value.get(#json_key) {
+                                    None => {
+                                        return Err(::carve_state::CarveError::PathNotFound {
+                                            path: field_path,
+                                        });
                                     }
-                                })?
+                                    Some(field_value) => {
+                                        <#field_ty as ::carve_state::CarveViewModel>::from_value(field_value)
+                                            .map_err(|e| e.with_prefix(&field_path))?
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    FieldKind::Option(inner) if inner.is_nested() => {
+                        // Option<Nested>: handle null/missing, then recurse
+                        let inner_ty = extract_inner_type(field_ty);
+                        quote! {
+                            #name: {
+                                let mut field_path = ::carve_state::Path::root();
+                                field_path.push_key(#json_key);
+
+                                match value.get(#json_key) {
+                                    None => None,
+                                    Some(field_value) if field_value.is_null() => None,
+                                    Some(field_value) => {
+                                        Some(
+                                            <#inner_ty as ::carve_state::CarveViewModel>::from_value(field_value)
+                                                .map_err(|e| e.with_prefix(&field_path))?
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // Non-nested: use serde_json::from_value
+                        // Fix problem 2: use field type, not Self
+                        quote! {
+                            #name: {
+                                let mut field_path = ::carve_state::Path::root();
+                                field_path.push_key(#json_key);
+
+                                match value.get(#json_key) {
+                                    None => {
+                                        return Err(::carve_state::CarveError::PathNotFound {
+                                            path: field_path,
+                                        });
+                                    }
+                                    Some(field_value) => {
+                                        ::serde_json::from_value(field_value.clone()).map_err(|_| {
+                                            ::carve_state::CarveError::TypeMismatch {
+                                                path: field_path,
+                                                expected: std::any::type_name::<#field_ty>(),
+                                                found: ::carve_state::value_type_name(field_value),
+                                            }
+                                        })?
+                                    }
+                                }
                             }
                         }
                     }
@@ -132,6 +185,20 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
             #(#field_extractions),*
         })
     })
+}
+
+/// Extract the inner type from Option<T> or Vec<T>.
+fn extract_inner_type(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(inner)) = ab.args.first() {
+                    return inner.clone();
+                }
+            }
+        }
+    }
+    ty.clone()
 }
 
 /// Generate the to_value implementation.

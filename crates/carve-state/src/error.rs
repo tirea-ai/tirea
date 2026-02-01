@@ -119,6 +119,52 @@ impl CarveError {
             message: message.into(),
         }
     }
+
+    /// Add a path prefix to this error.
+    ///
+    /// This is used when deserializing nested structures to maintain
+    /// the full path context. For example, if a nested struct at path
+    /// "address" has an error at "city", this will combine them into
+    /// "address.city".
+    pub fn with_prefix(self, prefix: &Path) -> Self {
+        match self {
+            CarveError::PathNotFound { path } => {
+                let mut new_path = prefix.clone();
+                for seg in path.iter() {
+                    new_path.push(seg.clone());
+                }
+                CarveError::PathNotFound { path: new_path }
+            }
+            CarveError::TypeMismatch {
+                path,
+                expected,
+                found,
+            } => {
+                let mut new_path = prefix.clone();
+                for seg in path.iter() {
+                    new_path.push(seg.clone());
+                }
+                CarveError::TypeMismatch {
+                    path: new_path,
+                    expected,
+                    found,
+                }
+            }
+            CarveError::IndexOutOfBounds { path, index, len } => {
+                let mut new_path = prefix.clone();
+                for seg in path.iter() {
+                    new_path.push(seg.clone());
+                }
+                CarveError::IndexOutOfBounds {
+                    path: new_path,
+                    index,
+                    len,
+                }
+            }
+            // For other error types, path prefix doesn't apply
+            other => other,
+        }
+    }
 }
 
 /// Get the type name of a JSON value.

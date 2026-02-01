@@ -52,7 +52,8 @@ fn test_from_value_type_mismatch_error_has_path() {
     match result.unwrap_err() {
         CarveError::TypeMismatch { path, expected, found } => {
             assert_eq!(path.to_string(), "$.age");
-            assert!(expected.contains("Person")); // Type name included
+            // After fix: expected should be field type (u32), not struct type (Person)
+            assert!(expected.contains("u32"), "Expected should contain field type 'u32', got: {}", expected);
             assert_eq!(found, "string"); // Value type included
         }
         other => panic!("Expected TypeMismatch, got: {:?}", other),
@@ -221,7 +222,7 @@ fn test_nested_from_value_error_has_full_path() {
         }
     });
 
-    // First, Address::from_value should fail with path "city"
+    // Direct Address::from_value should fail with path "$.city"
     let addr_value = value.get("address").unwrap();
     let addr_result = Address::from_value(addr_value);
     assert!(addr_result.is_err());
@@ -231,6 +232,115 @@ fn test_nested_from_value_error_has_full_path() {
             assert_eq!(path.to_string(), "$.city");
         }
         other => panic!("Expected PathNotFound, got: {:?}", other),
+    }
+
+    // Problem 3 fix: Company::from_value should have FULL path "$.address.city"
+    let company_result = Company::from_value(&value);
+    assert!(company_result.is_err());
+
+    match company_result.unwrap_err() {
+        CarveError::PathNotFound { path } => {
+            assert_eq!(
+                path.to_string(),
+                "$.address.city",
+                "Nested error should have full path from root"
+            );
+        }
+        other => panic!("Expected PathNotFound with full path, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_nested_type_mismatch_has_full_path() {
+    let value = json!({
+        "name": "Acme Corp",
+        "address": {
+            "street": "123 Main St",
+            "city": 12345 // Wrong type
+        }
+    });
+
+    let result = Company::from_value(&value);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(
+                path.to_string(),
+                "$.address.city",
+                "Nested type error should have full path"
+            );
+            assert!(expected.contains("String") || expected.contains("str"));
+            assert_eq!(found, "number");
+        }
+        other => panic!("Expected TypeMismatch with full path, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_option_nested_missing_vs_null() {
+    // Test Option<Nested> handling
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Profile {
+        pub bio: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct User {
+        pub name: String,
+
+        #[carve(nested)]
+        pub profile: Option<Profile>,
+    }
+
+    // Missing optional nested field
+    let value1 = json!({
+        "name": "Alice"
+    });
+    let user1 = User::from_value(&value1).unwrap();
+    assert_eq!(user1.name, "Alice");
+    assert!(user1.profile.is_none());
+
+    // Null optional nested field
+    let value2 = json!({
+        "name": "Bob",
+        "profile": null
+    });
+    let user2 = User::from_value(&value2).unwrap();
+    assert_eq!(user2.name, "Bob");
+    assert!(user2.profile.is_none());
+
+    // Present optional nested field
+    let value3 = json!({
+        "name": "Charlie",
+        "profile": {
+            "bio": "Developer"
+        }
+    });
+    let user3 = User::from_value(&value3).unwrap();
+    assert_eq!(user3.name, "Charlie");
+    assert!(user3.profile.is_some());
+    assert_eq!(user3.profile.unwrap().bio, "Developer");
+
+    // Nested field with error should propagate full path
+    let value4 = json!({
+        "name": "Dave",
+        "profile": {
+            // bio missing
+        }
+    });
+    let result = User::from_value(&value4);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::PathNotFound { path } => {
+            assert_eq!(
+                path.to_string(),
+                "$.profile.bio",
+                "Nested optional error should have full path"
+            );
+        }
+        other => panic!("Expected PathNotFound with full path, got: {:?}", other),
     }
 }
 
@@ -279,4 +389,58 @@ fn test_type_mismatch_error_display() {
         "Error should indicate type issue: {}",
         error_str
     );
+}
+
+#[test]
+fn test_expected_type_is_field_type_not_struct_type() {
+    // Problem 2 fix: expected should be field type, not struct type
+    let value = json!({
+        "name": "Test",
+        "age": "not_a_number"
+    });
+
+    let result = Person::from_value(&value);
+    assert!(result.is_err());
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.age");
+            // Expected should mention "u32" (field type), NOT "Person" (struct type)
+            assert!(
+                expected.contains("u32"),
+                "Expected should be field type 'u32', got: {}",
+                expected
+            );
+            assert!(
+                !expected.contains("Person"),
+                "Expected should NOT be struct type 'Person', got: {}",
+                expected
+            );
+            assert_eq!(found, "string");
+        }
+        other => panic!("Expected TypeMismatch, got: {:?}", other),
+    }
+
+    // Also test for other field types
+    let value2 = json!({
+        "name": 123, // Wrong type for String
+        "age": 30
+    });
+
+    let result2 = Person::from_value(&value2);
+    assert!(result2.is_err());
+
+    match result2.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.name");
+            // Should mention String or alloc::string::String
+            assert!(
+                expected.contains("String") || expected.contains("string"),
+                "Expected should be field type 'String', got: {}",
+                expected
+            );
+            assert_eq!(found, "number");
+        }
+        other => panic!("Expected TypeMismatch, got: {:?}", other),
+    }
 }
