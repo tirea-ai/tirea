@@ -1,0 +1,21 @@
+[package]
+name = "carve-state"
+description = "Typed view + JSON patch library for deterministic immutable state management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+carve-state-derive = { workspace = true, optional = true }
+
+[features]
+default = []
+derive = ["carve-state-derive"]
+
+[lints]
+workspace = true

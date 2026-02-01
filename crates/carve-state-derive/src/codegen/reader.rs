@@ -1,0 +1,207 @@
+//! Reader code generation.
+
+use crate::field_kind::FieldKind;
+use crate::parse::{FieldInput, ViewModelInput};
+use proc_macro2::TokenStream;
+use quote::{format_ident, quote};
+
+/// Generate the reader struct and impl.
+pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
+    let struct_name = &input.ident;
+    let reader_name = format_ident!("{}Reader", struct_name);
+    let vis = &input.vis;
+
+    let fields: Vec<_> = input.fields().into_iter().filter(|f| f.is_included()).collect();
+
+    let field_methods = generate_field_methods(&fields)?;
+    let get_method = generate_get_method(struct_name, &fields)?;
+    let has_methods = generate_has_methods(&fields)?;
+
+    Ok(quote! {
+        /// Strongly-typed reader for accessing fields.
+        #vis struct #reader_name<'a> {
+            doc: &'a ::serde_json::Value,
+            base: ::carve_state::Path,
+        }
+
+        impl<'a> #reader_name<'a> {
+            /// Create a new reader at the specified base path.
+            #[doc(hidden)]
+            pub fn new(doc: &'a ::serde_json::Value, base: ::carve_state::Path) -> Self {
+                Self { doc, base }
+            }
+
+            #field_methods
+
+            #get_method
+
+            #has_methods
+        }
+    })
+}
+
+/// Generate getter methods for each field.
+fn generate_field_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
+    let mut methods = TokenStream::new();
+
+    for field in fields {
+        let method = generate_field_method(field)?;
+        methods.extend(method);
+    }
+
+    Ok(methods)
+}
+
+/// Generate a getter method for a single field.
+fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
+    let field_name = field.ident();
+    let field_ty = &field.ty;
+    let json_key = field.json_key();
+    let kind = FieldKind::from_type(field_ty, field.nested);
+
+    let method = match &kind {
+        FieldKind::Nested => {
+            // For nested types, return a sub-reader
+            let nested_reader = format_ident!("{}Reader", get_type_name(field_ty));
+            quote! {
+                /// Get a reader for the nested field.
+                pub fn #field_name(&self) -> #nested_reader<'a> {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    #nested_reader::new(self.doc, path)
+                }
+            }
+        }
+        FieldKind::Option(inner) if inner.is_nested() => {
+            // Option<NestedType> - return Option<SubReader>
+            let inner_ty = extract_inner_type(field_ty);
+            let nested_reader = format_ident!("{}Reader", get_type_name(&inner_ty));
+            quote! {
+                /// Get a reader for the optional nested field.
+                pub fn #field_name(&self) -> Option<#nested_reader<'a>> {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    let value = ::carve_state::get_at_path(self.doc, &path)?;
+                    if value.is_null() {
+                        None
+                    } else {
+                        Some(#nested_reader::new(self.doc, path))
+                    }
+                }
+            }
+        }
+        _ => {
+            // For primitive types, deserialize the value
+            let default_expr = if let Some(default) = &field.default {
+                let expr: syn::Expr = syn::parse_str(default)
+                    .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
+                quote! { .unwrap_or_else(|_| #expr) }
+            } else {
+                quote! {}
+            };
+
+            quote! {
+                /// Read the field value.
+                pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
+                    let mut path = self.base.clone();
+                    path.push_key(#json_key);
+                    let value = ::carve_state::get_at_path(self.doc, &path)
+                        .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
+                    ::serde_json::from_value(value.clone())
+                        .map_err(::carve_state::CarveError::from)
+                        #default_expr
+                }
+            }
+        }
+    };
+
+    Ok(method)
+}
+
+/// Generate the `get()` method that returns the entire struct.
+fn generate_get_method(struct_name: &syn::Ident, fields: &[&FieldInput]) -> syn::Result<TokenStream> {
+    let field_reads: Vec<_> = fields
+        .iter()
+        .map(|f| {
+            let name = f.ident();
+            let json_key = f.json_key();
+            let kind = FieldKind::from_type(&f.ty, f.nested);
+
+            if kind.is_nested() {
+                // For nested, recursively call get()
+                quote! {
+                    #name: self.#name().get()?
+                }
+            } else {
+                quote! {
+                    #name: {
+                        let mut path = self.base.clone();
+                        path.push_key(#json_key);
+                        let value = ::carve_state::get_at_path(self.doc, &path)
+                            .unwrap_or(&::serde_json::Value::Null);
+                        ::serde_json::from_value(value.clone())?
+                    }
+                }
+            }
+        })
+        .collect();
+
+    Ok(quote! {
+        /// Get the entire struct value.
+        pub fn get(&self) -> ::carve_state::CarveResult<#struct_name> {
+            Ok(#struct_name {
+                #(#field_reads),*
+            })
+        }
+    })
+}
+
+/// Generate `has_*` methods for checking field existence.
+fn generate_has_methods(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
+    let mut methods = TokenStream::new();
+
+    for field in fields {
+        let field_name = field.ident();
+        let has_name = format_ident!("has_{}", field_name);
+        let json_key = field.json_key();
+
+        methods.extend(quote! {
+            /// Check if the field exists.
+            pub fn #has_name(&self) -> bool {
+                let mut path = self.base.clone();
+                path.push_key(#json_key);
+                ::carve_state::get_at_path(self.doc, &path).is_some()
+            }
+        });
+    }
+
+    Ok(methods)
+}
+
+/// Extract the type name from a Type.
+fn get_type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                segment.ident.to_string()
+            } else {
+                "Unknown".to_string()
+            }
+        }
+        _ => "Unknown".to_string(),
+    }
+}
+
+/// Extract the inner type from Option<T> or Vec<T>.
+fn extract_inner_type(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(ab) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(inner)) = ab.args.first() {
+                    return inner.clone();
+                }
+            }
+        }
+    }
+    ty.clone()
+}
