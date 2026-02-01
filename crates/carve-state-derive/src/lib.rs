@@ -39,10 +39,14 @@ mod parse;
 /// ## Field Attributes
 ///
 /// - `#[carve(rename = "json_name")]`: Use a different name in JSON
-/// - `#[carve(default = "expr")]`: Default value if field is missing
-/// - `#[carve(skip)]`: Exclude from reader/writer
-/// - `#[carve(nested)]`: Treat as nested CarveViewModel (auto-detected for structs)
-/// - `#[carve(flatten)]`: Flatten nested struct fields
+/// - `#[carve(default = "expr")]`: Default value expression if field is missing
+/// - `#[carve(skip)]`: Exclude from reader/writer (field must implement `Default`)
+/// - `#[carve(nested)]`: Treat as nested CarveViewModel. **Required** for struct fields
+///   that should have their own Reader/Writer. Without this, the field is serialized as a whole value.
+///
+/// ## Not Yet Implemented
+///
+/// - `#[carve(flatten)]`: Flatten nested struct fields (parsed but not implemented)
 ///
 /// # Examples
 ///

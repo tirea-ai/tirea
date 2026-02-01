@@ -26,7 +26,7 @@ impl ViewModelInput {
         self.data
             .as_ref()
             .take_struct()
-            .map(|s| s.fields.iter().copied().collect())
+            .map(|s| s.fields.to_vec())
             .unwrap_or_default()
     }
 }
@@ -39,6 +39,7 @@ pub struct FieldInput {
     pub ident: Option<Ident>,
 
     /// Field visibility.
+    #[allow(dead_code)]
     pub vis: Visibility,
 
     /// Field type.
@@ -60,8 +61,9 @@ pub struct FieldInput {
     #[darling(default)]
     pub nested: bool,
 
-    /// Flatten nested struct fields.
+    /// Flatten nested struct fields (not yet implemented).
     #[darling(default)]
+    #[allow(dead_code)]
     pub flatten: bool,
 }
 

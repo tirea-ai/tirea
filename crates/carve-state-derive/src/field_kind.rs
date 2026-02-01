@@ -92,21 +92,25 @@ impl FieldKind {
     }
 
     /// Check if this is a primitive type.
+    #[allow(dead_code)]
     pub fn is_primitive(&self) -> bool {
         matches!(self, FieldKind::Primitive)
     }
 
     /// Check if this is an Option type.
+    #[allow(dead_code)]
     pub fn is_option(&self) -> bool {
         matches!(self, FieldKind::Option(_))
     }
 
     /// Check if this is a Vec type.
+    #[allow(dead_code)]
     pub fn is_vec(&self) -> bool {
         matches!(self, FieldKind::Vec(_))
     }
 
     /// Check if this is a Map type.
+    #[allow(dead_code)]
     pub fn is_map(&self) -> bool {
         matches!(self, FieldKind::Map { .. })
     }

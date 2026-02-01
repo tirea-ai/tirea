@@ -321,7 +321,8 @@ fn generate_nested_guards(struct_name: &syn::Ident, fields: &[&FieldInput]) -> s
 
                 impl<'a> Drop for #guard_name<'a> {
                     fn drop(&mut self) {
-                        self.parent_ops.extend(self.writer.ops.drain(..));
+                        use ::carve_state::WriterOps;
+                        self.parent_ops.extend(self.writer.take_ops());
                     }
                 }
             });

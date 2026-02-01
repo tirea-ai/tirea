@@ -96,6 +96,7 @@
 //! ```
 
 mod apply;
+mod conflict;
 mod error;
 mod op;
 mod patch;
@@ -105,6 +106,7 @@ mod writer;
 
 // Re-export main types
 pub use apply::{apply_patch, get_at_path};
+pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use error::{value_type_name, CarveError, CarveResult};
 pub use op::{Number, Op};
 pub use patch::{Patch, TrackedPatch};

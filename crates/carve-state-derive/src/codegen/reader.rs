@@ -74,19 +74,21 @@ fn generate_field_method(field: &FieldInput) -> syn::Result<TokenStream> {
             }
         }
         FieldKind::Option(inner) if inner.is_nested() => {
-            // Option<NestedType> - return Option<SubReader>
+            // Option<NestedType> - return CarveResult<Option<SubReader>> for consistency
             let inner_ty = extract_inner_type(field_ty);
             let nested_reader = format_ident!("{}Reader", get_type_name(&inner_ty));
             quote! {
                 /// Get a reader for the optional nested field.
-                pub fn #field_name(&self) -> Option<#nested_reader<'a>> {
+                ///
+                /// Returns `Ok(None)` if the field is missing or null.
+                /// Returns `Ok(Some(reader))` if the field exists and is not null.
+                pub fn #field_name(&self) -> ::carve_state::CarveResult<Option<#nested_reader<'a>>> {
                     let mut path = self.base.clone();
                     path.push_key(#json_key);
-                    let value = ::carve_state::get_at_path(self.doc, &path)?;
-                    if value.is_null() {
-                        None
-                    } else {
-                        Some(#nested_reader::new(self.doc, path))
+                    match ::carve_state::get_at_path(self.doc, &path) {
+                        None => Ok(None),
+                        Some(value) if value.is_null() => Ok(None),
+                        Some(_) => Ok(Some(#nested_reader::new(self.doc, path))),
                     }
                 }
             }

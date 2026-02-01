@@ -108,6 +108,232 @@ impl Patch {
     pub fn iter(&self) -> impl Iterator<Item = &Op> {
         self.ops.iter()
     }
+
+    /// Canonicalize the patch by removing redundant operations.
+    ///
+    /// This optimization:
+    /// - Combines multiple `Set` operations to the same path (keeps last)
+    /// - Removes `Set` followed by `Delete` on the same path (keeps Delete)
+    /// - Combines consecutive `Increment`/`Decrement` on the same path
+    /// - Combines consecutive `MergeObject` operations on the same path
+    ///
+    /// Note: Operations that affect parent/child paths or array operations
+    /// (Append, Insert, Remove) are not optimized as they have complex interactions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use carve_state::{Patch, Op, path};
+    /// use serde_json::json;
+    ///
+    /// let patch = Patch::new()
+    ///     .with_op(Op::set(path!("name"), json!("Alice")))
+    ///     .with_op(Op::set(path!("name"), json!("Bob")))  // overwrites Alice
+    ///     .with_op(Op::increment(path!("count"), 1i64))
+    ///     .with_op(Op::increment(path!("count"), 2i64)); // combine with above
+    ///
+    /// let canonical = patch.canonicalize();
+    /// assert_eq!(canonical.len(), 2); // Set(name, Bob) + Increment(count, 3)
+    /// ```
+    pub fn canonicalize(&self) -> Patch {
+        use crate::{Number, Path};
+        use std::collections::HashMap;
+
+        // Track the effective operation for each path
+        // We use indices to preserve order for paths we haven't seen
+        #[derive(Clone)]
+        enum Effective {
+            Set(Value),
+            Delete,
+            IncrementAmount(Number),
+            MergeObject(serde_json::Map<String, Value>),
+        }
+
+        let mut path_effects: HashMap<Path, Effective> = HashMap::new();
+        let mut path_order: Vec<Path> = Vec::new();
+        let mut non_optimizable: Vec<Op> = Vec::new();
+
+        for op in &self.ops {
+            let path = op.path().clone();
+
+            match op {
+                Op::Set { value, .. } => {
+                    if !path_effects.contains_key(&path) {
+                        path_order.push(path.clone());
+                    }
+                    // Set always overwrites previous Set or IncrementAmount
+                    path_effects.insert(path, Effective::Set(value.clone()));
+                }
+                Op::Delete { .. } => {
+                    if !path_effects.contains_key(&path) {
+                        path_order.push(path.clone());
+                    }
+                    // Delete overwrites any previous operation on this exact path
+                    path_effects.insert(path, Effective::Delete);
+                }
+                Op::Increment { amount, .. } => {
+                    match path_effects.get(&path) {
+                        Some(Effective::IncrementAmount(existing)) => {
+                            // Combine increments
+                            let combined = combine_numbers(existing, amount, true);
+                            path_effects.insert(path, Effective::IncrementAmount(combined));
+                        }
+                        Some(Effective::Set(_)) | Some(Effective::Delete) => {
+                            // Can't combine with Set or Delete - emit as separate op
+                            non_optimizable.push(op.clone());
+                        }
+                        Some(Effective::MergeObject(_)) => {
+                            non_optimizable.push(op.clone());
+                        }
+                        None => {
+                            path_order.push(path.clone());
+                            path_effects.insert(path, Effective::IncrementAmount(amount.clone()));
+                        }
+                    }
+                }
+                Op::Decrement { amount, .. } => {
+                    match path_effects.get(&path) {
+                        Some(Effective::IncrementAmount(existing)) => {
+                            // Combine: existing - amount
+                            let combined = combine_numbers(existing, amount, false);
+                            path_effects.insert(path, Effective::IncrementAmount(combined));
+                        }
+                        Some(Effective::Set(_)) | Some(Effective::Delete) => {
+                            non_optimizable.push(op.clone());
+                        }
+                        Some(Effective::MergeObject(_)) => {
+                            non_optimizable.push(op.clone());
+                        }
+                        None => {
+                            path_order.push(path.clone());
+                            // Decrement by X is same as Increment by -X
+                            let neg = negate_number(amount);
+                            path_effects.insert(path, Effective::IncrementAmount(neg));
+                        }
+                    }
+                }
+                Op::MergeObject { value, .. } => {
+                    if let Some(obj) = value.as_object() {
+                        match path_effects.get(&path) {
+                            Some(Effective::MergeObject(existing)) => {
+                                // Combine merge objects
+                                let mut combined = existing.clone();
+                                for (k, v) in obj {
+                                    combined.insert(k.clone(), v.clone());
+                                }
+                                path_effects.insert(path, Effective::MergeObject(combined));
+                            }
+                            Some(Effective::Set(_)) | Some(Effective::Delete) => {
+                                non_optimizable.push(op.clone());
+                            }
+                            Some(Effective::IncrementAmount(_)) => {
+                                non_optimizable.push(op.clone());
+                            }
+                            None => {
+                                path_order.push(path.clone());
+                                path_effects.insert(path, Effective::MergeObject(obj.clone()));
+                            }
+                        }
+                    } else {
+                        non_optimizable.push(op.clone());
+                    }
+                }
+                // Array operations are not optimized - they have complex order-dependent behavior
+                Op::Append { .. } | Op::Insert { .. } | Op::Remove { .. } => {
+                    non_optimizable.push(op.clone());
+                }
+            }
+        }
+
+        // Build the canonicalized patch in order
+        let mut result = Patch::new();
+
+        for path in path_order {
+            if let Some(effect) = path_effects.remove(&path) {
+                match effect {
+                    Effective::Set(value) => {
+                        result.push(Op::Set { path, value });
+                    }
+                    Effective::Delete => {
+                        result.push(Op::Delete { path });
+                    }
+                    Effective::IncrementAmount(amount) => {
+                        // If amount is negative, emit Decrement; otherwise Increment
+                        // But first check if it's zero - skip if so
+                        if is_zero(&amount) {
+                            continue;
+                        }
+                        if is_negative(&amount) {
+                            result.push(Op::Decrement {
+                                path,
+                                amount: negate_number(&amount),
+                            });
+                        } else {
+                            result.push(Op::Increment { path, amount });
+                        }
+                    }
+                    Effective::MergeObject(map) => {
+                        result.push(Op::MergeObject {
+                            path,
+                            value: Value::Object(map),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Add non-optimizable operations at the end (preserving their order)
+        for op in non_optimizable {
+            result.push(op);
+        }
+
+        result
+    }
+}
+
+// Helper functions for Number arithmetic
+use serde_json::Value;
+
+fn combine_numbers(a: &crate::Number, b: &crate::Number, add: bool) -> crate::Number {
+    match (a, b) {
+        (crate::Number::Int(x), crate::Number::Int(y)) => {
+            if add {
+                crate::Number::Int(x + y)
+            } else {
+                crate::Number::Int(x - y)
+            }
+        }
+        _ => {
+            let x = a.as_f64();
+            let y = b.as_f64();
+            if add {
+                crate::Number::Float(x + y)
+            } else {
+                crate::Number::Float(x - y)
+            }
+        }
+    }
+}
+
+fn negate_number(n: &crate::Number) -> crate::Number {
+    match n {
+        crate::Number::Int(i) => crate::Number::Int(-i),
+        crate::Number::Float(f) => crate::Number::Float(-f),
+    }
+}
+
+fn is_zero(n: &crate::Number) -> bool {
+    match n {
+        crate::Number::Int(i) => *i == 0,
+        crate::Number::Float(f) => f.abs() < f64::EPSILON,
+    }
+}
+
+fn is_negative(n: &crate::Number) -> bool {
+    match n {
+        crate::Number::Int(i) => *i < 0,
+        crate::Number::Float(f) => *f < 0.0,
+    }
 }
 
 impl FromIterator<Op> for Patch {
@@ -289,5 +515,152 @@ mod tests {
         assert_eq!(tracked.id, Some("test-001".into()));
         assert_eq!(tracked.source, Some("test".into()));
         assert_eq!(tracked.timestamp, Some(1234567890));
+    }
+
+    #[test]
+    fn test_canonicalize_multiple_sets() {
+        let patch = Patch::new()
+            .with_op(Op::set(path!("name"), json!("Alice")))
+            .with_op(Op::set(path!("name"), json!("Bob")))
+            .with_op(Op::set(path!("name"), json!("Charlie")));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(
+            canonical.ops()[0],
+            Op::set(path!("name"), json!("Charlie"))
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_set_then_delete() {
+        let patch = Patch::new()
+            .with_op(Op::set(path!("x"), json!(42)))
+            .with_op(Op::delete(path!("x")));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical.ops()[0], Op::delete(path!("x")));
+    }
+
+    #[test]
+    fn test_canonicalize_combine_increments() {
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("count"), 1i64))
+            .with_op(Op::increment(path!("count"), 2i64))
+            .with_op(Op::increment(path!("count"), 3i64));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(
+            canonical.ops()[0],
+            Op::increment(path!("count"), 6i64)
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_combine_increment_decrement() {
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("count"), 10i64))
+            .with_op(Op::decrement(path!("count"), 3i64));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(
+            canonical.ops()[0],
+            Op::increment(path!("count"), 7i64)
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_decrement_to_negative() {
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("count"), 5i64))
+            .with_op(Op::decrement(path!("count"), 10i64));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        // Result is -5, so should be emitted as Decrement(5)
+        assert_eq!(
+            canonical.ops()[0],
+            Op::decrement(path!("count"), 5i64)
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_zero_increment_removed() {
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("count"), 5i64))
+            .with_op(Op::decrement(path!("count"), 5i64));
+
+        let canonical = patch.canonicalize();
+        // Net zero - operation should be removed
+        assert!(canonical.is_empty());
+    }
+
+    #[test]
+    fn test_canonicalize_combine_merge_objects() {
+        let patch = Patch::new()
+            .with_op(Op::merge_object(path!("user"), json!({"name": "Alice"})))
+            .with_op(Op::merge_object(path!("user"), json!({"age": 30})))
+            .with_op(Op::merge_object(path!("user"), json!({"email": "alice@example.com"})));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        if let Op::MergeObject { value, .. } = &canonical.ops()[0] {
+            assert_eq!(value["name"], "Alice");
+            assert_eq!(value["age"], 30);
+            assert_eq!(value["email"], "alice@example.com");
+        } else {
+            panic!("Expected MergeObject");
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_preserves_different_paths() {
+        let patch = Patch::new()
+            .with_op(Op::set(path!("a"), json!(1)))
+            .with_op(Op::set(path!("b"), json!(2)))
+            .with_op(Op::set(path!("a"), json!(10)));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 2);
+        // Order preserved: a first (with last value), then b
+        assert_eq!(canonical.ops()[0], Op::set(path!("a"), json!(10)));
+        assert_eq!(canonical.ops()[1], Op::set(path!("b"), json!(2)));
+    }
+
+    #[test]
+    fn test_canonicalize_array_ops_not_optimized() {
+        let patch = Patch::new()
+            .with_op(Op::append(path!("items"), json!(1)))
+            .with_op(Op::append(path!("items"), json!(2)))
+            .with_op(Op::insert(path!("items"), 0, json!(0)));
+
+        let canonical = patch.canonicalize();
+        // Array ops are passed through unchanged
+        assert_eq!(canonical.len(), 3);
+    }
+
+    #[test]
+    fn test_canonicalize_empty_patch() {
+        let patch = Patch::new();
+        let canonical = patch.canonicalize();
+        assert!(canonical.is_empty());
+    }
+
+    #[test]
+    fn test_canonicalize_float_increments() {
+        let patch = Patch::new()
+            .with_op(Op::increment(path!("value"), 1.5f64))
+            .with_op(Op::increment(path!("value"), 2.5f64));
+
+        let canonical = patch.canonicalize();
+        assert_eq!(canonical.len(), 1);
+        if let Op::Increment { amount, .. } = &canonical.ops()[0] {
+            assert!((amount.as_f64() - 4.0).abs() < f64::EPSILON);
+        } else {
+            panic!("Expected Increment");
+        }
     }
 }

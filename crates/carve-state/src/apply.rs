@@ -190,7 +190,7 @@ fn delete_at_path(current: &mut Value, segments: &[Seg]) -> bool {
 
 /// Apply an Append operation.
 fn apply_append(doc: &mut Value, path: &Path, value: Value) -> CarveResult<()> {
-    let target = get_or_create_at_path(doc, path.segments(), || Value::Array(vec![]))?;
+    let target = get_or_create_at_path(doc, path, 0, || Value::Array(vec![]))?;
 
     match target {
         Value::Array(arr) => {
@@ -207,7 +207,7 @@ fn apply_merge_object(doc: &mut Value, path: &Path, value: &Value) -> CarveResul
         .as_object()
         .ok_or_else(|| CarveError::merge_requires_object(path.clone()))?;
 
-    let target = get_or_create_at_path(doc, path.segments(), || Value::Object(Map::new()))?;
+    let target = get_or_create_at_path(doc, path, 0, || Value::Object(Map::new()))?;
 
     match target {
         Value::Object(obj) => {
@@ -341,12 +341,14 @@ fn get_at_path_mut<'a>(current: &'a mut Value, segments: &[Seg]) -> Option<&'a m
 /// Get or create a value at a path.
 fn get_or_create_at_path<'a, F>(
     current: &'a mut Value,
-    segments: &[Seg],
+    full_path: &Path,
+    consumed: usize,
     default: F,
 ) -> CarveResult<&'a mut Value>
 where
     F: Fn() -> Value,
 {
+    let segments = &full_path.segments()[consumed..];
     match segments {
         [] => {
             if current.is_null() {
@@ -354,20 +356,23 @@ where
             }
             Ok(current)
         }
-        [Seg::Key(key), rest @ ..] => {
+        [Seg::Key(key), ..] => {
             if !current.is_object() {
                 *current = Value::Object(Map::new());
             }
 
             let obj = current.as_object_mut().unwrap();
             let entry = obj.entry(key.clone()).or_insert(Value::Null);
-            get_or_create_at_path(entry, rest, default)
+            get_or_create_at_path(entry, full_path, consumed + 1, default)
         }
-        [Seg::Index(idx), rest @ ..] => {
+        [Seg::Index(idx), ..] => {
+            // Build the path up to and including this segment for error reporting
+            let error_path = Path::from_segments(full_path.segments()[..=consumed].to_vec());
+
             // Check type first to avoid borrow issues
             if !current.is_array() {
                 return Err(CarveError::type_mismatch(
-                    Path::root(),
+                    error_path,
                     "array",
                     value_type_name(current),
                 ));
@@ -376,10 +381,10 @@ where
             let arr = current.as_array_mut().unwrap();
 
             if *idx >= arr.len() {
-                return Err(CarveError::index_out_of_bounds(Path::root(), *idx, arr.len()));
+                return Err(CarveError::index_out_of_bounds(error_path, *idx, arr.len()));
             }
 
-            get_or_create_at_path(&mut arr[*idx], rest, default)
+            get_or_create_at_path(&mut arr[*idx], full_path, consumed + 1, default)
         }
     }
 }

@@ -116,6 +116,12 @@ impl Path {
         Self::new()
     }
 
+    /// Create a path from a vector of segments.
+    #[inline]
+    pub fn from_segments(segments: Vec<Seg>) -> Self {
+        Self(segments)
+    }
+
     /// Create a path with pre-allocated capacity.
     #[inline]
     pub fn with_capacity(capacity: usize) -> Self {
@@ -202,6 +208,39 @@ impl Path {
         let mut result = self.clone();
         result.0.extend(other.0.iter().cloned());
         result
+    }
+
+    /// Append a segment and return a new path (non-mutating builder).
+    #[inline]
+    pub fn with_segment(&self, seg: Seg) -> Path {
+        let mut result = self.clone();
+        result.0.push(seg);
+        result
+    }
+
+    /// Check if this path is a prefix of another path.
+    ///
+    /// A path is a prefix of another if all of its segments match
+    /// the beginning of the other path's segments.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use carve_state::path;
+    ///
+    /// let parent = path!("user");
+    /// let child = path!("user", "name");
+    ///
+    /// assert!(parent.is_prefix_of(&child));
+    /// assert!(!child.is_prefix_of(&parent));
+    /// assert!(parent.is_prefix_of(&parent)); // A path is a prefix of itself
+    /// ```
+    #[inline]
+    pub fn is_prefix_of(&self, other: &Path) -> bool {
+        if self.len() > other.len() {
+            return false;
+        }
+        self.0.iter().zip(other.0.iter()).all(|(a, b)| a == b)
     }
 
     /// Extend this path with segments from another path.
