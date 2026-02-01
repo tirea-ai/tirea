@@ -21,6 +21,7 @@ derive = ["carve-state-derive"]
 carve-state-derive.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+criterion.workspace = true
 
 [lints]
 workspace = true

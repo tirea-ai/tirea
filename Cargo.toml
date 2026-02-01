@@ -31,6 +31,7 @@ darling = "0.20"
 
 # Testing
 trybuild = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
