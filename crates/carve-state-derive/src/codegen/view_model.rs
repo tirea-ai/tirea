@@ -86,10 +86,27 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
             } else if let Some(default) = &f.default {
                 let default_expr: syn::Expr = syn::parse_str(default)
                     .unwrap_or_else(|_| syn::parse_quote!(Default::default()));
+                let field_ty = &f.ty;
+                // Problem 4 fix: missing → default, present but wrong type → error
                 quote! {
-                    #name: value.get(#json_key)
-                        .and_then(|v| ::serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_else(|| #default_expr)
+                    #name: {
+                        let mut field_path = ::carve_state::Path::root();
+                        field_path.push_key(#json_key);
+
+                        match value.get(#json_key) {
+                            None => #default_expr, // Field missing: use default
+                            Some(field_value) => {
+                                // Field present: deserialize or error
+                                ::serde_json::from_value(field_value.clone()).map_err(|_| {
+                                    ::carve_state::CarveError::TypeMismatch {
+                                        path: field_path,
+                                        expected: std::any::type_name::<#field_ty>(),
+                                        found: ::carve_state::value_type_name(field_value),
+                                    }
+                                })?
+                            }
+                        }
+                    }
                 }
             } else {
                 // P1-4 + P1-3: Better error messages with path information

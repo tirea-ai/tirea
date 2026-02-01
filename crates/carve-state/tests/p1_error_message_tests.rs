@@ -345,6 +345,117 @@ fn test_option_nested_missing_vs_null() {
 }
 
 // ============================================================================
+// Problem 4: default attribute error handling
+// ============================================================================
+
+#[test]
+fn test_default_field_missing_uses_default() {
+    // Field with default should use default when missing
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "42")]
+        pub timeout: i32,
+    }
+
+    let value = json!({
+        "name": "test"
+        // timeout is missing
+    });
+
+    let result = Config::from_value(&value);
+    assert!(result.is_ok());
+    let config = result.unwrap();
+    assert_eq!(config.name, "test");
+    assert_eq!(config.timeout, 42); // Should use default
+}
+
+#[test]
+fn test_default_field_present_uses_value() {
+    // Field with default should use actual value when present
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "42")]
+        pub timeout: i32,
+    }
+
+    let value = json!({
+        "name": "test",
+        "timeout": 100
+    });
+
+    let result = Config::from_value(&value);
+    assert!(result.is_ok());
+    let config = result.unwrap();
+    assert_eq!(config.name, "test");
+    assert_eq!(config.timeout, 100); // Should use actual value
+}
+
+#[test]
+fn test_default_field_type_mismatch_errors() {
+    // Problem 4 fix: field with default should ERROR on type mismatch
+    // not silently use default (which would hide data quality issues)
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "42")]
+        pub timeout: i32,
+    }
+
+    let value = json!({
+        "name": "test",
+        "timeout": "not_a_number" // Wrong type
+    });
+
+    let result = Config::from_value(&value);
+    assert!(result.is_err(), "Should error on type mismatch, not use default");
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.timeout");
+            assert!(expected.contains("i32"), "Expected should be field type");
+            assert_eq!(found, "string");
+        }
+        other => panic!("Expected TypeMismatch, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_default_field_null_is_type_error() {
+    // For non-Option types, null is a type mismatch, not "missing"
+    // If you want null → default, use Option<T> or #[serde(default)]
+    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
+    pub struct Config {
+        pub name: String,
+
+        #[carve(default = "42")]
+        pub timeout: i32,
+    }
+
+    let value = json!({
+        "name": "test",
+        "timeout": null
+    });
+
+    // null for non-Option type should be a type error
+    let result = Config::from_value(&value);
+    assert!(result.is_err(), "null should be type error for non-Option field");
+
+    match result.unwrap_err() {
+        CarveError::TypeMismatch { path, expected, found } => {
+            assert_eq!(path.to_string(), "$.timeout");
+            assert!(expected.contains("i32"));
+            assert_eq!(found, "null");
+        }
+        other => panic!("Expected TypeMismatch for null, got: {:?}", other),
+    }
+}
+
+// ============================================================================
 // Error message clarity verification
 // ============================================================================
 
