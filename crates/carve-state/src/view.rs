@@ -3,7 +3,7 @@
 //! This trait is typically implemented via the derive macro `#[derive(CarveViewModel)]`.
 //! It provides the interface for creating strongly-typed readers and writers.
 
-use crate::{CarveResult, Patch, Path};
+use crate::{CarveResult, Patch, Path, WriterOps};
 use serde_json::Value;
 
 /// A typed view model for a portion of a JSON document.
@@ -45,7 +45,7 @@ pub trait CarveViewModel: Sized {
         Self: 'a;
 
     /// Strongly-typed writer for this view model.
-    type Writer;
+    type Writer: WriterOps;
 
     /// Create a reader at the specified base path.
     ///

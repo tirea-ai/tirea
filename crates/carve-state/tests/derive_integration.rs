@@ -1,6 +1,6 @@
 //! Integration tests for CarveViewModel derive macro.
 
-use carve_state::{apply_patch, path, CarveResult, CarveViewModel, Path};
+use carve_state::{apply_patch, path, CarveResult, CarveViewModel, Path, WriterOps};
 use carve_state_derive::CarveViewModel;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -509,6 +509,14 @@ fn generic_write_at_path<T: CarveViewModel>(base: Path) -> T::Writer {
     T::writer(base)
 }
 
+/// Generic function that creates a writer, writes data, and builds a patch.
+/// This demonstrates using CarveViewModel::Writer through trait bounds.
+fn generic_build_patch<T: CarveViewModel>(base: Path, setup: impl FnOnce(&mut T::Writer)) -> carve_state::Patch {
+    let mut writer = T::writer(base);
+    setup(&mut writer);
+    writer.into_patch()  // Uses WriterOps trait method
+}
+
 #[test]
 fn test_generic_trait_usage() {
     let doc = json!({
@@ -522,6 +530,50 @@ fn test_generic_trait_usage() {
 
     let writer = generic_write_at_path::<SimpleStruct>(path!("user"));
     assert!(writer.is_empty());
+}
+
+#[test]
+fn test_generic_writer_build_patch() {
+    // Test using Writer through trait generics
+    let patch = generic_build_patch::<SimpleStruct>(path!("user"), |w| {
+        w.name("GenericUser");
+        w.age(42);
+        w.active(true);
+    });
+
+    // Verify the patch was built correctly
+    assert_eq!(patch.len(), 3);
+
+    // Apply the patch and verify result
+    let doc = json!({});
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    assert_eq!(result["user"]["name"], "GenericUser");
+    assert_eq!(result["user"]["age"], 42);
+    assert_eq!(result["user"]["active"], true);
+}
+
+#[test]
+fn test_writer_ops_trait_methods() {
+    // Test WriterOps trait methods directly
+    let mut writer = SimpleStruct::write();
+    writer.name("Test");
+    writer.age(25);
+
+    // Test ops() - get operations
+    assert_eq!(writer.ops().len(), 2);
+
+    // Test take_ops() - take and clear
+    let ops = writer.take_ops();
+    assert_eq!(ops.len(), 2);
+    assert!(writer.ops().is_empty());
+
+    // Add more operations
+    writer.active(true);
+
+    // Test into_patch() - consume and build
+    let patch = writer.into_patch();
+    assert_eq!(patch.len(), 1);
 }
 
 #[test]
