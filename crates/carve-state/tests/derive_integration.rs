@@ -1,6 +1,6 @@
 //! Integration tests for State derive macro.
 
-use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State};
+use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State, StateExt};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -632,4 +632,159 @@ fn test_increment_f64() {
 
     let result = apply_patch(&doc, &patch).unwrap();
     assert_eq!(result["score"], 2.0);
+}
+
+// ============================================================================
+// State::to_patch() tests
+// ============================================================================
+
+#[test]
+fn test_state_to_patch_basic() {
+    let state = SimpleStruct {
+        name: "Alice".to_string(),
+        age: 30,
+        active: true,
+    };
+
+    let patch = state.to_patch();
+
+    // Apply patch to empty document
+    let doc = json!({});
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    assert_eq!(result["name"], "Alice");
+    assert_eq!(result["age"], 30);
+    assert_eq!(result["active"], true);
+}
+
+#[test]
+fn test_state_to_patch_overwrites_existing() {
+    let state = SimpleStruct {
+        name: "Bob".to_string(),
+        age: 25,
+        active: false,
+    };
+
+    let patch = state.to_patch();
+
+    // Apply patch to document with existing data
+    let doc = json!({
+        "name": "Alice",
+        "age": 30,
+        "active": true,
+        "extra": "field"
+    });
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    // State values should overwrite at root
+    assert_eq!(result["name"], "Bob");
+    assert_eq!(result["age"], 25);
+    assert_eq!(result["active"], false);
+}
+
+#[test]
+fn test_state_to_patch_with_nested() {
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+    struct Inner {
+        value: i32,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State)]
+    struct Outer {
+        name: String,
+        #[carve(nested)]
+        inner: Inner,
+    }
+
+    let state = Outer {
+        name: "outer".to_string(),
+        inner: Inner { value: 42 },
+    };
+
+    let patch = state.to_patch();
+    let doc = json!({});
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    assert_eq!(result["name"], "outer");
+    assert_eq!(result["inner"]["value"], 42);
+}
+
+// ============================================================================
+// StateExt::at_root() tests
+// ============================================================================
+
+#[test]
+fn test_state_ext_at_root_read() {
+    let doc = json!({
+        "name": "Alice",
+        "age": 30,
+        "active": true
+    });
+
+    let ops = Mutex::new(Vec::new());
+    let sink = PatchSink::new(&ops);
+
+    // Use StateExt::at_root() instead of State::state_ref()
+    let state = SimpleStruct::at_root(&doc, sink);
+
+    assert_eq!(state.name().unwrap(), "Alice");
+    assert_eq!(state.age().unwrap(), 30);
+    assert_eq!(state.active().unwrap(), true);
+}
+
+#[test]
+fn test_state_ext_at_root_write() {
+    let doc = json!({
+        "name": "Alice",
+        "age": 30,
+        "active": true
+    });
+
+    let ops = Mutex::new(Vec::new());
+    let sink = PatchSink::new(&ops);
+
+    let state = SimpleStruct::at_root(&doc, sink);
+    state.set_name("Bob");
+    state.set_age(25);
+
+    let patch = carve_state::Patch::with_ops(ops.into_inner().unwrap());
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    assert_eq!(result["name"], "Bob");
+    assert_eq!(result["age"], 25);
+    assert_eq!(result["active"], true); // unchanged
+}
+
+#[test]
+fn test_state_ext_at_root_equivalent_to_state_ref_root() {
+    let doc = json!({
+        "name": "Test",
+        "age": 100,
+        "active": false
+    });
+
+    // Using StateExt::at_root
+    let ops1 = Mutex::new(Vec::new());
+    let sink1 = PatchSink::new(&ops1);
+    let state1 = SimpleStruct::at_root(&doc, sink1);
+    let name1 = state1.name().unwrap();
+    state1.set_age(200);
+
+    // Using State::state_ref with Path::root()
+    let ops2 = Mutex::new(Vec::new());
+    let sink2 = PatchSink::new(&ops2);
+    let state2 = SimpleStruct::state_ref(&doc, Path::root(), sink2);
+    let name2 = state2.name().unwrap();
+    state2.set_age(200);
+
+    // Results should be identical
+    assert_eq!(name1, name2);
+
+    let patch1 = carve_state::Patch::with_ops(ops1.into_inner().unwrap());
+    let patch2 = carve_state::Patch::with_ops(ops2.into_inner().unwrap());
+
+    let result1 = apply_patch(&doc, &patch1).unwrap();
+    let result2 = apply_patch(&doc, &patch2).unwrap();
+
+    assert_eq!(result1, result2);
 }
