@@ -5,7 +5,7 @@
 //! - State replay to any point in history
 //! - Batch application with conflict detection
 
-use crate::{apply_patch, CarveError, TrackedPatch};
+use crate::{apply_patch, CarveError, Patch, TrackedPatch};
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
@@ -34,9 +34,15 @@ pub struct ApplyResult {
 ///
 /// # Design
 ///
-/// - State is immutable - all changes go through patches
+/// - State is immutable - all changes go through commits
 /// - Full history is maintained for replay
-/// - Supports batch application
+/// - Supports batch commits and preview operations
+///
+/// # API Philosophy
+///
+/// - `commit`/`commit_batch`: Mutating operations that modify state and record history
+/// - `preview_patch`: Pure operation that computes result without modifying state
+/// - `replay_to`: Pure operation that reconstructs historical state
 ///
 /// # Example
 ///
@@ -52,8 +58,8 @@ pub struct ApplyResult {
 ///
 /// // ... modify state through ctx ...
 ///
-/// // Apply patch
-/// manager.apply(ctx.take_patch()).await?;
+/// // Commit patch (modifies state and records history)
+/// manager.commit(ctx.take_patch()).await?;
 ///
 /// // Replay to a specific point
 /// let old_state = manager.replay_to(5).await?;
@@ -79,8 +85,13 @@ impl StateManager {
         self.state.read().await.clone()
     }
 
-    /// Apply a single patch.
-    pub async fn apply(&self, patch: TrackedPatch) -> Result<ApplyResult, StateError> {
+    /// Commit a single patch, modifying state and recording to history.
+    ///
+    /// This is a mutating operation that:
+    /// 1. Applies the patch to current state
+    /// 2. Updates the internal state
+    /// 3. Records the patch in history for replay
+    pub async fn commit(&self, patch: TrackedPatch) -> Result<ApplyResult, StateError> {
         let ops_count = patch.patch().len();
 
         let mut state = self.state.write().await;
@@ -96,11 +107,11 @@ impl StateManager {
         })
     }
 
-    /// Apply multiple patches in batch.
+    /// Commit multiple patches in batch.
     ///
     /// Patches are applied in order. If any patch fails, the operation
     /// stops and returns an error (partial application may have occurred).
-    pub async fn apply_batch(&self, patches: Vec<TrackedPatch>) -> Result<ApplyResult, StateError> {
+    pub async fn commit_batch(&self, patches: Vec<TrackedPatch>) -> Result<ApplyResult, StateError> {
         if patches.is_empty() {
             return Ok(ApplyResult {
                 patches_applied: 0,
@@ -125,6 +136,30 @@ impl StateManager {
             patches_applied: patches_count,
             ops_applied: total_ops,
         })
+    }
+
+    /// Preview applying a patch without modifying state (pure operation).
+    ///
+    /// This computes what the state would look like after applying the patch,
+    /// but does not modify the actual state or record to history.
+    ///
+    /// Useful for validation, dry-runs, or showing users what changes would occur.
+    pub async fn preview_patch(&self, patch: &Patch) -> Result<Value, StateError> {
+        let state = self.state.read().await;
+        let preview = apply_patch(&state, patch)?;
+        Ok(preview)
+    }
+
+    /// Deprecated: Use `commit` instead.
+    #[deprecated(since = "0.2.0", note = "Use `commit` instead")]
+    pub async fn apply(&self, patch: TrackedPatch) -> Result<ApplyResult, StateError> {
+        self.commit(patch).await
+    }
+
+    /// Deprecated: Use `commit_batch` instead.
+    #[deprecated(since = "0.2.0", note = "Use `commit_batch` instead")]
+    pub async fn apply_batch(&self, patches: Vec<TrackedPatch>) -> Result<ApplyResult, StateError> {
+        self.commit_batch(patches).await
     }
 
     /// Replay state from the beginning up to (and including) the specified index.
@@ -236,12 +271,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_single() {
+    async fn test_commit_single() {
         let manager = StateManager::new(json!({}));
 
         let patch = make_patch(vec![Op::set(path!("count"), json!(10))], "test");
 
-        let result = manager.apply(patch).await.unwrap();
+        let result = manager.commit(patch).await.unwrap();
         assert_eq!(result.patches_applied, 1);
         assert_eq!(result.ops_applied, 1);
 
@@ -250,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_batch() {
+    async fn test_commit_batch() {
         let manager = StateManager::new(json!({}));
 
         let patches = vec![
@@ -258,7 +293,7 @@ mod tests {
             make_patch(vec![Op::set(path!("b"), json!(2))], "test2"),
         ];
 
-        let result = manager.apply_batch(patches).await.unwrap();
+        let result = manager.commit_batch(patches).await.unwrap();
         assert_eq!(result.patches_applied, 2);
         assert_eq!(result.ops_applied, 2);
 
@@ -272,12 +307,12 @@ mod tests {
         let manager = StateManager::new(json!({}));
 
         manager
-            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
             .await
             .unwrap();
 
         manager
-            .apply(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
+            .commit(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
             .await
             .unwrap();
 
@@ -292,17 +327,17 @@ mod tests {
         let manager = StateManager::new(json!({}));
 
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(1))], "s1"))
             .await
             .unwrap();
 
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(2))], "s2"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(2))], "s2"))
             .await
             .unwrap();
 
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(3))], "s3"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(3))], "s3"))
             .await
             .unwrap();
 
@@ -331,7 +366,7 @@ mod tests {
         let manager = StateManager::new(json!({}));
 
         manager
-            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
             .await
             .unwrap();
 
@@ -352,7 +387,7 @@ mod tests {
         let manager2 = manager1.clone();
 
         manager1
-            .apply(make_patch(vec![Op::set(path!("x"), json!(42))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("x"), json!(42))], "s1"))
             .await
             .unwrap();
 
@@ -371,12 +406,12 @@ mod tests {
 
         // Apply patches that modify existing and add new fields
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(1))], "s1"))
             .await
             .unwrap();
 
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(2))], "s2"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(2))], "s2"))
             .await
             .unwrap();
 
@@ -401,7 +436,7 @@ mod tests {
 
         // Patch overwrites the initial count
         manager
-            .apply(make_patch(vec![Op::set(path!("count"), json!(10))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("count"), json!(10))], "s1"))
             .await
             .unwrap();
 
@@ -417,7 +452,7 @@ mod tests {
         // Add 5 patches
         for i in 1..=5 {
             manager
-                .apply(make_patch(vec![Op::set(path!("count"), json!(i))], &format!("s{}", i)))
+                .commit(make_patch(vec![Op::set(path!("count"), json!(i))], &format!("s{}", i)))
                 .await
                 .unwrap();
         }
@@ -441,15 +476,15 @@ mod tests {
 
         // Add 3 patches
         manager
-            .apply(make_patch(vec![Op::set(path!("a"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("a"), json!(1))], "s1"))
             .await
             .unwrap();
         manager
-            .apply(make_patch(vec![Op::set(path!("b"), json!(2))], "s2"))
+            .commit(make_patch(vec![Op::set(path!("b"), json!(2))], "s2"))
             .await
             .unwrap();
         manager
-            .apply(make_patch(vec![Op::set(path!("c"), json!(3))], "s3"))
+            .commit(make_patch(vec![Op::set(path!("c"), json!(3))], "s3"))
             .await
             .unwrap();
 
@@ -475,7 +510,7 @@ mod tests {
         let manager = StateManager::new(json!({}));
 
         manager
-            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
             .await
             .unwrap();
 
@@ -490,11 +525,11 @@ mod tests {
         let manager = StateManager::new(json!({"base": 0}));
 
         manager
-            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
             .await
             .unwrap();
         manager
-            .apply(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
+            .commit(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
             .await
             .unwrap();
 

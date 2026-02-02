@@ -40,7 +40,7 @@ async fn test_manager_new_and_snapshot() {
 }
 
 #[tokio::test]
-async fn test_manager_apply_single() {
+async fn test_manager_commit_single() {
     let manager = StateManager::new(json!({"version": 1, "status": "init"}));
 
     let patch = make_patch(
@@ -51,7 +51,7 @@ async fn test_manager_apply_single() {
         "test:update",
     );
 
-    let result = manager.apply(patch).await.unwrap();
+    let result = manager.commit(patch).await.unwrap();
     assert_eq!(result.patches_applied, 1);
     assert_eq!(result.ops_applied, 2);
 
@@ -61,13 +61,13 @@ async fn test_manager_apply_single() {
 }
 
 #[tokio::test]
-async fn test_manager_apply_multiple() {
+async fn test_manager_commit_multiple() {
     let manager = StateManager::new(json!({"value": 0}));
 
     // Apply multiple patches sequentially
     for i in 1..=5 {
         let patch = make_patch(vec![Op::set(path!("value"), json!(i))], &format!("step_{}", i));
-        manager.apply(patch).await.unwrap();
+        manager.commit(patch).await.unwrap();
     }
 
     let snapshot = manager.snapshot().await;
@@ -78,7 +78,7 @@ async fn test_manager_apply_multiple() {
 }
 
 #[tokio::test]
-async fn test_manager_apply_batch() {
+async fn test_manager_commit_batch() {
     let manager = StateManager::new(json!({}));
 
     let patches = vec![
@@ -87,7 +87,7 @@ async fn test_manager_apply_batch() {
         make_patch(vec![Op::set(path!("c"), json!(3))], "s3"),
     ];
 
-    let result = manager.apply_batch(patches).await.unwrap();
+    let result = manager.commit_batch(patches).await.unwrap();
     assert_eq!(result.patches_applied, 3);
     assert_eq!(result.ops_applied, 3);
 
@@ -98,10 +98,10 @@ async fn test_manager_apply_batch() {
 }
 
 #[tokio::test]
-async fn test_manager_apply_batch_empty() {
+async fn test_manager_commit_batch_empty() {
     let manager = StateManager::new(json!({"x": 1}));
 
-    let result = manager.apply_batch(vec![]).await.unwrap();
+    let result = manager.commit_batch(vec![]).await.unwrap();
     assert_eq!(result.patches_applied, 0);
     assert_eq!(result.ops_applied, 0);
 
@@ -118,17 +118,17 @@ async fn test_manager_history() {
     let manager = StateManager::new(json!({}));
 
     manager
-        .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "step1"))
+        .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "step1"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("y"), json!(2))], "step2"))
+        .commit(make_patch(vec![Op::set(path!("y"), json!(2))], "step2"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("z"), json!(3))], "step3"))
+        .commit(make_patch(vec![Op::set(path!("z"), json!(3))], "step3"))
         .await
         .unwrap();
 
@@ -146,14 +146,14 @@ async fn test_manager_history_len() {
     assert_eq!(manager.history_len().await, 0);
 
     manager
-        .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+        .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
         .await
         .unwrap();
 
     assert_eq!(manager.history_len().await, 1);
 
     manager
-        .apply(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
+        .commit(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
         .await
         .unwrap();
 
@@ -166,17 +166,17 @@ async fn test_manager_replay_to() {
 
     // Apply several patches that modify the same field
     manager
-        .apply(make_patch(vec![Op::set(path!("count"), json!(10))], "s1"))
+        .commit(make_patch(vec![Op::set(path!("count"), json!(10))], "s1"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("count"), json!(20))], "s2"))
+        .commit(make_patch(vec![Op::set(path!("count"), json!(20))], "s2"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("count"), json!(30))], "s3"))
+        .commit(make_patch(vec![Op::set(path!("count"), json!(30))], "s3"))
         .await
         .unwrap();
 
@@ -206,7 +206,7 @@ async fn test_manager_replay_invalid_index() {
     assert!(result.is_err());
 
     manager
-        .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+        .commit(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
         .await
         .unwrap();
 
@@ -225,7 +225,7 @@ async fn test_manager_replay_complex_state() {
 
     // Build up complex state over time
     manager
-        .apply(make_patch(
+        .commit(make_patch(
             vec![
                 Op::set(path!("user", "name"), json!("Alice")),
                 Op::set(path!("user", "age"), json!(25)),
@@ -236,7 +236,7 @@ async fn test_manager_replay_complex_state() {
         .unwrap();
 
     manager
-        .apply(make_patch(
+        .commit(make_patch(
             vec![Op::set(path!("user", "email"), json!("alice@example.com"))],
             "add_email",
         ))
@@ -244,7 +244,7 @@ async fn test_manager_replay_complex_state() {
         .unwrap();
 
     manager
-        .apply(make_patch(
+        .commit(make_patch(
             vec![Op::Increment {
                 path: path!("user", "age"),
                 amount: carve_state::Number::Int(1),
@@ -277,12 +277,12 @@ async fn test_manager_clear_history() {
     let manager = StateManager::new(json!({}));
 
     manager
-        .apply(make_patch(vec![Op::set(path!("x"), json!(100))], "s1"))
+        .commit(make_patch(vec![Op::set(path!("x"), json!(100))], "s1"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("y"), json!(200))], "s2"))
+        .commit(make_patch(vec![Op::set(path!("y"), json!(200))], "s2"))
         .await
         .unwrap();
 
@@ -313,7 +313,7 @@ async fn test_manager_clone_shares_state() {
 
     // Changes through manager1 visible in manager2
     manager1
-        .apply(make_patch(vec![Op::set(path!("value"), json!(42))], "s1"))
+        .commit(make_patch(vec![Op::set(path!("value"), json!(42))], "s1"))
         .await
         .unwrap();
 
@@ -322,7 +322,7 @@ async fn test_manager_clone_shares_state() {
 
     // Changes through manager2 visible in manager1
     manager2
-        .apply(make_patch(vec![Op::set(path!("value"), json!(100))], "s2"))
+        .commit(make_patch(vec![Op::set(path!("value"), json!(100))], "s2"))
         .await
         .unwrap();
 
@@ -357,7 +357,7 @@ async fn test_manager_with_context_workflow() {
         counter.set_label(format!("After step {}", i));
 
         let tracked_patch = ctx.take_patch();
-        manager.apply(tracked_patch).await.unwrap();
+        manager.commit(tracked_patch).await.unwrap();
     }
 
     // Verify final state
@@ -393,7 +393,7 @@ async fn test_manager_deterministic_replay() {
 
     for (i, op) in operations.into_iter().enumerate() {
         let patch = make_patch(vec![op], &format!("op_{}", i));
-        manager.apply(patch).await.unwrap();
+        manager.commit(patch).await.unwrap();
     }
 
     // Replay should always produce same results
@@ -417,7 +417,7 @@ async fn test_manager_deterministic_replay() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_manager_apply_invalid_op() {
+async fn test_manager_commit_invalid_op() {
     let manager = StateManager::new(json!({"value": "not a number"}));
 
     // Try to increment a string (should fail)
@@ -429,7 +429,7 @@ async fn test_manager_apply_invalid_op() {
         "bad_op",
     );
 
-    let result = manager.apply(patch).await;
+    let result = manager.commit(patch).await;
     assert!(result.is_err());
 }
 
@@ -465,17 +465,17 @@ async fn test_manager_tracks_patch_source() {
     let manager = StateManager::new(json!({}));
 
     manager
-        .apply(make_patch(vec![Op::set(path!("a"), json!(1))], "tool:create"))
+        .commit(make_patch(vec![Op::set(path!("a"), json!(1))], "tool:create"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("b"), json!(2))], "tool:update"))
+        .commit(make_patch(vec![Op::set(path!("b"), json!(2))], "tool:update"))
         .await
         .unwrap();
 
     manager
-        .apply(make_patch(vec![Op::set(path!("c"), json!(3))], "system:auto"))
+        .commit(make_patch(vec![Op::set(path!("c"), json!(3))], "system:auto"))
         .await
         .unwrap();
 
@@ -483,4 +483,99 @@ async fn test_manager_tracks_patch_source() {
     assert_eq!(history[0].source.as_deref(), Some("tool:create"));
     assert_eq!(history[1].source.as_deref(), Some("tool:update"));
     assert_eq!(history[2].source.as_deref(), Some("system:auto"));
+}
+
+// ============================================================================
+// Preview patch tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_manager_preview_patch() {
+    let manager = StateManager::new(json!({"count": 10}));
+
+    let patch = Patch::new().with_op(Op::set(path!("count"), json!(100)));
+
+    // Preview should show what would happen
+    let preview = manager.preview_patch(&patch).await.unwrap();
+    assert_eq!(preview["count"], 100);
+
+    // But state should be unchanged
+    let snapshot = manager.snapshot().await;
+    assert_eq!(snapshot["count"], 10);
+
+    // History should be empty
+    assert_eq!(manager.history_len().await, 0);
+}
+
+#[tokio::test]
+async fn test_manager_preview_patch_complex() {
+    let manager = StateManager::new(json!({
+        "user": {"name": "Alice", "age": 25}
+    }));
+
+    let patch = Patch::new()
+        .with_op(Op::set(path!("user", "age"), json!(26)))
+        .with_op(Op::set(path!("user", "email"), json!("alice@test.com")));
+
+    let preview = manager.preview_patch(&patch).await.unwrap();
+    assert_eq!(preview["user"]["age"], 26);
+    assert_eq!(preview["user"]["email"], "alice@test.com");
+    assert_eq!(preview["user"]["name"], "Alice"); // Unchanged fields preserved
+
+    // Original state unchanged
+    let snapshot = manager.snapshot().await;
+    assert_eq!(snapshot["user"]["age"], 25);
+    assert!(snapshot["user"].get("email").is_none());
+}
+
+// ============================================================================
+// apply_patches pure function tests
+// ============================================================================
+
+#[test]
+fn test_apply_patches_basic() {
+    use carve_state::apply_patches;
+
+    let doc = json!({"count": 0});
+    let patches = vec![
+        Patch::new().with_op(Op::set(path!("count"), json!(1))),
+        Patch::new().with_op(Op::set(path!("count"), json!(2))),
+        Patch::new().with_op(Op::set(path!("count"), json!(3))),
+    ];
+
+    let result = apply_patches(&doc, patches.iter()).unwrap();
+    assert_eq!(result["count"], 3);
+
+    // Original unchanged
+    assert_eq!(doc["count"], 0);
+}
+
+#[test]
+fn test_apply_patches_empty() {
+    use carve_state::apply_patches;
+
+    let doc = json!({"value": 42});
+    let patches: Vec<Patch> = vec![];
+
+    let result = apply_patches(&doc, patches.iter()).unwrap();
+    assert_eq!(result, doc);
+}
+
+#[test]
+fn test_apply_patches_error_stops_early() {
+    use carve_state::apply_patches;
+
+    let doc = json!({"count": "not a number"});
+    let patches = vec![
+        Patch::new().with_op(Op::set(path!("valid"), json!(1))), // This will work
+        Patch::new().with_op(Op::Increment {
+            // This will fail
+            path: path!("count"),
+            amount: carve_state::Number::Int(1),
+        }),
+        Patch::new().with_op(Op::set(path!("never_reached"), json!(true))),
+    ];
+
+    let result = apply_patches(&doc, patches.iter());
+    assert!(result.is_err());
 }

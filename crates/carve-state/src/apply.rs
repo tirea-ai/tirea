@@ -51,6 +51,44 @@ pub fn apply_patch(doc: &Value, patch: &Patch) -> CarveResult<Value> {
     Ok(result)
 }
 
+/// Apply multiple patches to a JSON document in sequence (pure function).
+///
+/// This is a convenience function that applies patches one by one.
+/// If any patch fails, the error is returned and no further patches are applied.
+///
+/// # Arguments
+///
+/// * `doc` - The original document (not modified)
+/// * `patches` - Iterator of patches to apply in order
+///
+/// # Returns
+///
+/// A new document with all patches applied, or an error if any patch fails.
+///
+/// # Examples
+///
+/// ```
+/// use carve_state::{apply_patches, Patch, Op, path};
+/// use serde_json::json;
+///
+/// let doc = json!({"count": 0});
+/// let patches = vec![
+///     Patch::new().with_op(Op::set(path!("count"), json!(1))),
+///     Patch::new().with_op(Op::set(path!("count"), json!(2))),
+/// ];
+///
+/// let new_doc = apply_patches(&doc, patches.iter()).unwrap();
+/// assert_eq!(new_doc["count"], 2);
+/// ```
+pub fn apply_patches<'a>(
+    doc: &Value,
+    patches: impl IntoIterator<Item = &'a Patch>,
+) -> CarveResult<Value> {
+    patches
+        .into_iter()
+        .try_fold(doc.clone(), |acc, patch| apply_patch(&acc, patch))
+}
+
 /// Apply a single operation to a document (mutating).
 fn apply_op(doc: &mut Value, op: &Op) -> CarveResult<()> {
     match op {

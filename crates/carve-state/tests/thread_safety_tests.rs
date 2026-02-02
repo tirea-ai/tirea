@@ -190,7 +190,7 @@ async fn test_manager_sequential_writes() {
     // Sequential writes should be deterministic
     for i in 1..=100 {
         let patch = make_patch(vec![Op::set(path!("count"), json!(i))], &format!("write_{}", i));
-        manager.apply(patch).await.unwrap();
+        manager.commit(patch).await.unwrap();
     }
 
     let snapshot = manager.snapshot().await;
@@ -209,7 +209,7 @@ async fn test_manager_concurrent_writes_serialized() {
             let m = manager.clone();
             tokio::spawn(async move {
                 let patch = make_patch(vec![Op::set(path!("count"), json!(i))], &format!("w{}", i));
-                m.apply(patch).await.unwrap();
+                m.commit(patch).await.unwrap();
             })
         })
         .collect();
@@ -231,7 +231,7 @@ async fn test_manager_read_write_concurrency() {
     let writer = tokio::spawn(async move {
         for i in 1..=50 {
             let patch = make_patch(vec![Op::set(path!("value"), json!(i))], &format!("w{}", i));
-            writer_manager.apply(patch).await.unwrap();
+            writer_manager.commit(patch).await.unwrap();
             tokio::task::yield_now().await;
         }
     });
@@ -280,7 +280,7 @@ async fn test_manager_clone_concurrent_access() {
                         vec![Op::set(path!("shared"), json!(i * 10 + j))],
                         &format!("clone{}_{}", i, j),
                     );
-                    m.apply(patch).await.unwrap();
+                    m.commit(patch).await.unwrap();
                 }
             })
         })
@@ -319,7 +319,7 @@ async fn test_stress_manager_many_patches() {
     // Apply many small patches
     for i in 0..1000 {
         let patch = make_patch(vec![Op::set(path!("count"), json!(i))], &format!("p{}", i));
-        manager.apply(patch).await.unwrap();
+        manager.commit(patch).await.unwrap();
     }
 
     assert_eq!(manager.history_len().await, 1000);
@@ -338,7 +338,7 @@ async fn test_stress_batch_apply() {
         .map(|i| make_patch(vec![Op::set(path!(format!("key_{}", i)), json!(i))], &format!("p{}", i)))
         .collect();
 
-    let result = manager.apply_batch(patches).await.unwrap();
+    let result = manager.commit_batch(patches).await.unwrap();
     assert_eq!(result.patches_applied, 100);
 
     let snapshot = manager.snapshot().await;
@@ -368,7 +368,7 @@ async fn test_deterministic_replay() {
 
     for (i, op) in operations.into_iter().enumerate() {
         manager
-            .apply(make_patch(vec![op], &format!("op{}", i)))
+            .commit(make_patch(vec![op], &format!("op{}", i)))
             .await
             .unwrap();
     }
@@ -417,7 +417,7 @@ async fn test_no_data_race_on_snapshot() {
                     }],
                     &format!("append{}", i),
                 );
-                m.apply(patch).await.unwrap();
+                m.commit(patch).await.unwrap();
             })
         })
         .collect();

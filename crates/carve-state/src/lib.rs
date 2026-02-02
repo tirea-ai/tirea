@@ -104,7 +104,7 @@ mod state;
 mod writer;
 
 // Core types
-pub use apply::{apply_patch, get_at_path};
+pub use apply::{apply_patch, apply_patches, get_at_path};
 pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use error::{value_type_name, CarveError, CarveResult};
 pub use op::{Number, Op};
