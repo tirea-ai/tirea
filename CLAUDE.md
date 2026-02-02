@@ -50,15 +50,14 @@
 
 ## Key Patterns
 
-- Error handling: TypeScript `@speak2app/errors` with `AppError`; Rust `anyhow::Result` with `.context()`
-- Testing: `TEST_LEVEL` env var; Rust `#[cfg(test)]` with feature flags
-- Observability: Rust `#[tracing::instrument]`; TypeScript `@speak2app/observability`
-- E2E: runs in K3d with Rust services; `E2E_SKIP_BUILD=true` to skip image rebuild
+- Error handling: Rust `thiserror` with `CarveError` enum; use `.context()` for error chaining
+- Testing: `#[cfg(test)]` modules; integration tests in `crates/carve-state/tests/`
+- Benchmarks: `cargo bench --package carve-state` using criterion
 
 ## Key Entry Paths
 
-- `rust-services/` for Rust crates and tests
-- `docs/` for architecture, specifications, and test guides
+- `crates/carve-state/` - core library (patch, apply, conflict detection)
+- `crates/carve-state-derive/` - proc-macro for `#[derive(CarveViewModel)]`
 
 ## Documentation Rules
 
