@@ -14,8 +14,18 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let parsed = ViewModelInput::from_derive_input(input)
         .map_err(|e| syn::Error::new_spanned(input, e.to_string()))?;
 
-    // Validate flatten fields
+    // Validate field attributes
     for field in parsed.fields() {
+        // Check for flatten + rename conflict
+        if field.flatten && field.rename.is_some() {
+            return Err(syn::Error::new_spanned(
+                field.ident(),
+                "#[carve(flatten)] and #[carve(rename)] cannot be used together. \
+                 Flattened fields are merged at the parent level, so rename has no effect.",
+            ));
+        }
+
+        // Validate flatten fields
         if field.flatten {
             let kind = FieldKind::from_type(&field.ty, /* is_nested_attr = */ true);
             match kind {
@@ -26,7 +36,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                     return Err(syn::Error::new_spanned(
                         &field.ty,
                         "#[carve(flatten)] currently only supports struct fields (non-Option/Vec/Map). \
-                         The field must be a type that implements State."
+                         The field must be a type that implements State.",
                     ));
                 }
             }

@@ -59,6 +59,7 @@ pub struct ApplyResult {
 /// let old_state = manager.replay_to(5).await?;
 /// ```
 pub struct StateManager {
+    initial: Arc<RwLock<Value>>,
     state: Arc<RwLock<Value>>,
     history: Arc<RwLock<Vec<TrackedPatch>>>,
 }
@@ -67,6 +68,7 @@ impl StateManager {
     /// Create a new StateManager with initial state.
     pub fn new(initial: Value) -> Self {
         Self {
+            initial: Arc::new(RwLock::new(initial.clone())),
             state: Arc::new(RwLock::new(initial)),
             history: Arc::new(RwLock::new(Vec::new())),
         }
@@ -127,7 +129,7 @@ impl StateManager {
 
     /// Replay state from the beginning up to (and including) the specified index.
     ///
-    /// Returns the state as it was after applying patches [0..=index].
+    /// Returns the state as it was after applying patches [0..=index] to the initial state.
     pub async fn replay_to(&self, index: usize) -> Result<Value, StateError> {
         let history = self.history.read().await;
 
@@ -138,7 +140,7 @@ impl StateManager {
             });
         }
 
-        let mut state = serde_json::json!({});
+        let mut state = self.initial.read().await.clone();
         for patch in history.iter().take(index + 1) {
             state = apply_patch(&state, patch.patch())?;
         }
@@ -162,11 +164,53 @@ impl StateManager {
     pub async fn clear_history(&self) {
         self.history.write().await.clear();
     }
+
+    /// Prune history, keeping only the last `keep_last` patches.
+    ///
+    /// This is useful for long-running systems to prevent unbounded memory growth.
+    /// The initial state is updated to the state before the remaining patches,
+    /// so `replay_to` will continue to work correctly with the remaining patches.
+    ///
+    /// # Arguments
+    ///
+    /// - `keep_last`: Number of recent patches to keep. If 0, all patches are removed.
+    ///
+    /// # Returns
+    ///
+    /// The number of patches that were removed.
+    pub async fn prune_history(&self, keep_last: usize) -> Result<usize, StateError> {
+        let mut history = self.history.write().await;
+        let len = history.len();
+
+        if len <= keep_last {
+            return Ok(0);
+        }
+
+        let to_remove = len - keep_last;
+
+        // Compute the new initial state by applying the patches to be removed
+        let mut new_initial = self.initial.read().await.clone();
+        for patch in history.iter().take(to_remove) {
+            new_initial = apply_patch(&new_initial, patch.patch())?;
+        }
+
+        // Update initial state and remove old patches
+        *self.initial.write().await = new_initial;
+        history.drain(0..to_remove);
+
+        Ok(to_remove)
+    }
+
+    /// Get a snapshot of the initial state.
+    pub async fn initial(&self) -> Value {
+        self.initial.read().await.clone()
+    }
 }
 
 impl Clone for StateManager {
     fn clone(&self) -> Self {
         Self {
+            initial: Arc::clone(&self.initial),
             state: Arc::clone(&self.state),
             history: Arc::clone(&self.history),
         }
@@ -314,5 +358,155 @@ mod tests {
 
         let state = manager2.snapshot().await;
         assert_eq!(state["x"], 42);
+    }
+
+    #[tokio::test]
+    async fn test_replay_to_preserves_initial_state() {
+        // Create manager with non-empty initial state
+        let initial = json!({"base_value": 100, "name": "test"});
+        let manager = StateManager::new(initial.clone());
+
+        // Verify initial() returns the initial state
+        assert_eq!(manager.initial().await, initial);
+
+        // Apply patches that modify existing and add new fields
+        manager
+            .apply(make_patch(vec![Op::set(path!("count"), json!(1))], "s1"))
+            .await
+            .unwrap();
+
+        manager
+            .apply(make_patch(vec![Op::set(path!("count"), json!(2))], "s2"))
+            .await
+            .unwrap();
+
+        // Replay to index 0 should have initial state + first patch
+        let state0 = manager.replay_to(0).await.unwrap();
+        assert_eq!(state0["base_value"], 100); // Initial value preserved
+        assert_eq!(state0["name"], "test"); // Initial value preserved
+        assert_eq!(state0["count"], 1); // First patch applied
+
+        // Replay to index 1 should have initial state + both patches
+        let state1 = manager.replay_to(1).await.unwrap();
+        assert_eq!(state1["base_value"], 100); // Initial value preserved
+        assert_eq!(state1["name"], "test"); // Initial value preserved
+        assert_eq!(state1["count"], 2); // Second patch applied
+    }
+
+    #[tokio::test]
+    async fn test_replay_to_with_overwrite() {
+        // Initial state with a value that will be overwritten
+        let initial = json!({"count": 0});
+        let manager = StateManager::new(initial);
+
+        // Patch overwrites the initial count
+        manager
+            .apply(make_patch(vec![Op::set(path!("count"), json!(10))], "s1"))
+            .await
+            .unwrap();
+
+        // Replay should show initial count overwritten
+        let state = manager.replay_to(0).await.unwrap();
+        assert_eq!(state["count"], 10);
+    }
+
+    #[tokio::test]
+    async fn test_prune_history_basic() {
+        let manager = StateManager::new(json!({"base": 0}));
+
+        // Add 5 patches
+        for i in 1..=5 {
+            manager
+                .apply(make_patch(vec![Op::set(path!("count"), json!(i))], &format!("s{}", i)))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(manager.history_len().await, 5);
+
+        // Keep last 2 patches
+        let removed = manager.prune_history(2).await.unwrap();
+        assert_eq!(removed, 3);
+        assert_eq!(manager.history_len().await, 2);
+
+        // Current state unchanged
+        let current = manager.snapshot().await;
+        assert_eq!(current["count"], 5);
+        assert_eq!(current["base"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_prune_history_updates_initial() {
+        let manager = StateManager::new(json!({"base": 0}));
+
+        // Add 3 patches
+        manager
+            .apply(make_patch(vec![Op::set(path!("a"), json!(1))], "s1"))
+            .await
+            .unwrap();
+        manager
+            .apply(make_patch(vec![Op::set(path!("b"), json!(2))], "s2"))
+            .await
+            .unwrap();
+        manager
+            .apply(make_patch(vec![Op::set(path!("c"), json!(3))], "s3"))
+            .await
+            .unwrap();
+
+        // Keep last 1 patch (remove first 2)
+        manager.prune_history(1).await.unwrap();
+
+        // Initial state should now include patches s1 and s2
+        let initial = manager.initial().await;
+        assert_eq!(initial["base"], 0);
+        assert_eq!(initial["a"], 1);
+        assert_eq!(initial["b"], 2);
+        assert!(initial.get("c").is_none()); // Not in initial, only in remaining patch
+
+        // Replay index 0 should give us state after s3
+        let state = manager.replay_to(0).await.unwrap();
+        assert_eq!(state["a"], 1);
+        assert_eq!(state["b"], 2);
+        assert_eq!(state["c"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_prune_history_keep_all() {
+        let manager = StateManager::new(json!({}));
+
+        manager
+            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .await
+            .unwrap();
+
+        // Keep more than we have
+        let removed = manager.prune_history(10).await.unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(manager.history_len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_prune_history_keep_zero() {
+        let manager = StateManager::new(json!({"base": 0}));
+
+        manager
+            .apply(make_patch(vec![Op::set(path!("x"), json!(1))], "s1"))
+            .await
+            .unwrap();
+        manager
+            .apply(make_patch(vec![Op::set(path!("y"), json!(2))], "s2"))
+            .await
+            .unwrap();
+
+        // Keep 0 - remove all history
+        let removed = manager.prune_history(0).await.unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(manager.history_len().await, 0);
+
+        // Initial should now be current state
+        let initial = manager.initial().await;
+        assert_eq!(initial["base"], 0);
+        assert_eq!(initial["x"], 1);
+        assert_eq!(initial["y"], 2);
     }
 }
