@@ -115,29 +115,38 @@ fn generate_from_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
                 // P1-4 + P1-3: Better error messages with path information
                 // and recursive CarveViewModel::from_value for nested types
                 let field_ty = &f.ty;
-                let kind = FieldKind::from_type(field_ty, f.nested);
+                // flatten is implicitly nested
+                let kind = FieldKind::from_type(field_ty, f.flatten || f.nested);
 
                 match &kind {
                     FieldKind::Nested => {
-                        // Nested type: use CarveViewModel::from_value recursively
-                        Ok(quote! {
-                            #name: {
-                                let mut field_path = ::carve_state::Path::root();
-                                field_path.push_key(#json_key);
+                        if f.flatten {
+                            // Flatten: deserialize from the entire value, not from value.get(key)
+                            // Error paths don't need prefix since the fields are at root level
+                            Ok(quote! {
+                                #name: <#field_ty as ::carve_state::CarveViewModel>::from_value(value)?
+                            })
+                        } else {
+                            // Normal nested: use CarveViewModel::from_value recursively
+                            Ok(quote! {
+                                #name: {
+                                    let mut field_path = ::carve_state::Path::root();
+                                    field_path.push_key(#json_key);
 
-                                match value.get(#json_key) {
-                                    None => {
-                                        return Err(::carve_state::CarveError::PathNotFound {
-                                            path: field_path,
-                                        });
-                                    }
-                                    Some(field_value) => {
-                                        <#field_ty as ::carve_state::CarveViewModel>::from_value(field_value)
-                                            .map_err(|e| e.with_prefix(&field_path))?
+                                    match value.get(#json_key) {
+                                        None => {
+                                            return Err(::carve_state::CarveError::PathNotFound {
+                                                path: field_path,
+                                            });
+                                        }
+                                        Some(field_value) => {
+                                            <#field_ty as ::carve_state::CarveViewModel>::from_value(field_value)
+                                                .map_err(|e| e.with_prefix(&field_path))?
+                                        }
                                     }
                                 }
-                            }
-                        })
+                            })
+                        }
                     }
                     FieldKind::Option(inner) if inner.is_nested() => {
                         // Option<Nested>: handle null/missing, then recurse
@@ -311,7 +320,29 @@ fn extract_second_generic_arg(ty: &syn::Type) -> syn::Type {
 
 /// Generate the to_value implementation.
 fn generate_to_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
-    let field_serializations: Vec<_> = fields
+    // Separate flatten and normal fields
+    let flatten_fields: Vec<_> = fields.iter().filter(|f| f.flatten).copied().collect();
+    let normal_fields: Vec<_> = fields.iter().filter(|f| !f.flatten).copied().collect();
+
+    // Generate flatten field serializations (merge object entries)
+    let flatten_serializations: Vec<_> = flatten_fields
+        .iter()
+        .map(|f| {
+            let name = f.ident();
+            quote! {
+                // Flatten: merge the nested struct's fields into the parent object
+                let flattened_value = ::carve_state::CarveViewModel::to_value(&self.#name);
+                if let ::serde_json::Value::Object(obj) = flattened_value {
+                    for (k, v) in obj {
+                        map.insert(k, v);
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Generate normal field serializations
+    let normal_serializations: Vec<_> = normal_fields
         .iter()
         .map(|f| {
             let name = f.ident();
@@ -326,9 +357,12 @@ fn generate_to_value(fields: &[&FieldInput]) -> syn::Result<TokenStream> {
         })
         .collect();
 
+    // Insert flatten fields first, then normal fields
+    // This ensures normal fields override flatten fields in case of key conflicts
     Ok(quote! {
         let mut map = ::serde_json::Map::new();
-        #(#field_serializations)*
+        #(#flatten_serializations)*
+        #(#normal_serializations)*
         ::serde_json::Value::Object(map)
     })
 }
