@@ -1,10 +1,7 @@
-//! Code generation for CarveViewModel derive macro.
+//! Code generation for State derive macro.
 
-mod accessor;
-mod reader;
+mod state_ref;
 mod utils;
-mod view_model;
-mod writer;
 
 use crate::field_kind::FieldKind;
 use crate::parse::ViewModelInput;
@@ -20,8 +17,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     // Validate flatten fields
     for field in parsed.fields() {
         if field.flatten {
-            // flatten is treated as implicitly nested
-            // Validate that flatten is only used on struct fields (not Option/Vec/Map)
             let kind = FieldKind::from_type(&field.ty, /* is_nested_attr = */ true);
             match kind {
                 FieldKind::Nested => {
@@ -31,22 +26,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                     return Err(syn::Error::new_spanned(
                         &field.ty,
                         "#[carve(flatten)] currently only supports struct fields (non-Option/Vec/Map). \
-                         The field must be a type that implements CarveViewModel."
+                         The field must be a type that implements State."
                     ));
                 }
             }
         }
     }
 
-    let reader_tokens = reader::generate(&parsed)?;
-    let writer_tokens = writer::generate(&parsed)?;
-    let accessor_tokens = accessor::generate(&parsed)?;
-    let view_model_tokens = view_model::generate(&parsed)?;
-
-    Ok(quote::quote! {
-        #reader_tokens
-        #writer_tokens
-        #accessor_tokens
-        #view_model_tokens
-    })
+    // Generate only the StateRef struct and State trait impl
+    state_ref::generate(&parsed)
 }

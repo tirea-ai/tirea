@@ -1,30 +1,43 @@
-//! Tests for #[carve(flatten)] functionality.
+//! Tests for #[carve(flatten)] attribute.
 //!
-//! Flatten allows nested struct fields to be serialized/deserialized at the parent level
-//! rather than under a separate key.
+//! Flatten allows nested struct fields to be read/written at the parent level
+//! rather than under a separate key in JSON.
 
-use carve_state::{apply_patch, AccessorOps, CarveViewModel};
-use carve_state_derive::CarveViewModel as DeriveCarveViewModel;
+use carve_state::{apply_patch, PatchSink, Path, State};
+use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Mutex;
+
+/// Helper to create a state ref and collect patches for testing.
+fn with_state_ref<T: State, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
+where
+    F: FnOnce(T::Ref<'_>),
+{
+    let ops = Mutex::new(Vec::new());
+    let sink = PatchSink::new(&ops);
+    let state_ref = T::state_ref(doc, path, sink);
+    f(state_ref);
+    carve_state::Patch::with_ops(ops.into_inner().unwrap())
+}
 
 // ============================================================================
 // Basic flatten structures
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Inner {
+#[derive(Debug, Clone, Serialize, Deserialize, State, PartialEq)]
+pub struct InnerState {
     pub value: i32,
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
-pub struct Outer {
+#[derive(Debug, Clone, Serialize, Deserialize, State)]
+pub struct OuterState {
     pub name: String,
 
-    // flatten is implicitly nested, no need to mark both
+    // flatten: inner fields are at the root level in JSON
     #[carve(flatten)]
-    pub inner: Inner,
+    pub inner: InnerState,
 }
 
 // ============================================================================
@@ -32,38 +45,45 @@ pub struct Outer {
 // ============================================================================
 
 #[test]
-fn test_flatten_reader() {
+fn test_flatten_read_basic() {
     // Flatten: inner fields are at the root level, not under "inner" key
     let doc = json!({
-        "name": "x",
-        "value": 1,
-        "label": "y"
+        "name": "outer_name",
+        "value": 42,
+        "label": "inner_label"
     });
 
-    let reader = Outer::read(&doc);
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        // Access outer field
+        assert_eq!(state.name().unwrap(), "outer_name");
 
-    // Access outer field
-    assert_eq!(reader.name().unwrap(), "x");
+        // Access flattened inner fields through inner()
+        // Even though they're at root level in JSON, we still access via inner()
+        let inner = state.inner();
+        assert_eq!(inner.value().unwrap(), 42);
+        assert_eq!(inner.label().unwrap(), "inner_label");
+    });
 
-    // Access flattened inner fields through inner()
-    // Even though they're at root level in JSON, we still access via inner()
-    assert_eq!(reader.inner().value().unwrap(), 1);
-    assert_eq!(reader.inner().label().unwrap(), "y");
+    assert!(patch.is_empty());
 }
 
 #[test]
-fn test_flatten_reader_missing_inner_fields() {
+fn test_flatten_read_missing_inner_fields() {
     let doc = json!({
-        "name": "x"
-        // inner fields missing
+        "name": "outer_name"
+        // inner fields (value, label) are missing
     });
 
-    let reader = Outer::read(&doc);
-    assert_eq!(reader.name().unwrap(), "x");
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        assert_eq!(state.name().unwrap(), "outer_name");
 
-    // Accessing missing flattened fields should error
-    assert!(reader.inner().value().is_err());
-    assert!(reader.inner().label().is_err());
+        // Accessing missing flattened fields should error
+        let inner = state.inner();
+        assert!(inner.value().is_err());
+        assert!(inner.label().is_err());
+    });
+
+    assert!(patch.is_empty());
 }
 
 // ============================================================================
@@ -71,425 +91,317 @@ fn test_flatten_reader_missing_inner_fields() {
 // ============================================================================
 
 #[test]
-fn test_flatten_writer() {
-    let mut writer = Outer::write();
+fn test_flatten_write_basic() {
+    let doc = json!({});
 
-    writer.name("x");
-    {
-        let mut inner_writer = writer.inner();
-        inner_writer.value(10);
-        inner_writer.label("L");
-    }
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        state.set_name("parent");
+        state.inner().set_value(100);
+        state.inner().set_label("child");
+    });
 
-    let patch = writer.build();
-    let result = apply_patch(&json!({}), &patch).unwrap();
+    let result = apply_patch(&doc, &patch).unwrap();
 
     // Flattened fields should be at root level, not under "inner"
-    assert_eq!(result["name"], "x");
-    assert_eq!(result["value"], 10);
-    assert_eq!(result["label"], "L");
+    assert_eq!(result["name"], "parent");
+    assert_eq!(result["value"], 100);
+    assert_eq!(result["label"], "child");
     assert!(result.get("inner").is_none(), "Should not have 'inner' key");
 }
 
 #[test]
-fn test_flatten_writer_patch_paths() {
-    let mut writer = Outer::write();
-
-    writer.inner().value(42);
-
-    let patch = writer.build();
-
-    // Verify patch path is at root level
-    assert_eq!(patch.len(), 1);
-    let ops = patch.ops();
-    match &ops[0] {
-        carve_state::Op::Set { path, value } => {
-            assert_eq!(path.to_string(), "$.value", "Flatten path should be $.value, not $.inner.value");
-            assert_eq!(value, &json!(42));
-        }
-        other => panic!("Expected Set op, got: {:?}", other),
-    }
-}
-
-// ============================================================================
-// Accessor tests
-// ============================================================================
-
-#[test]
-fn test_flatten_accessor() {
+fn test_flatten_write_partial() {
     let doc = json!({
-        "name": "test",
-        "value": 5,
-        "label": "original"
+        "name": "existing",
+        "value": 1,
+        "label": "old"
     });
 
-    let accessor = Outer::access(&doc);
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        // Only update some fields
+        state.inner().set_value(999);
+    });
 
-    // Read flattened fields
-    {
-        let inner = accessor.inner();
-        assert_eq!(inner.value().get().unwrap(), 5);
-        assert_eq!(inner.label().get().unwrap(), "original");
-    }
-
-    // Modify flattened fields
-    {
-        let inner = accessor.inner();
-        inner.set_value(99);
-        inner.set_label("updated".to_string());
-    }
-
-    let patch = accessor.build();
     let result = apply_patch(&doc, &patch).unwrap();
 
-    assert_eq!(result["name"], "test");
-    assert_eq!(result["value"], 99);
-    assert_eq!(result["label"], "updated");
+    // Only value should change
+    assert_eq!(result["name"], "existing");
+    assert_eq!(result["value"], 999);
+    assert_eq!(result["label"], "old");
+}
+
+#[test]
+fn test_flatten_write_patch_paths() {
+    let doc = json!({});
+
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        state.inner().set_value(42);
+    });
+
+    // The patch should have path $.value, not $.inner.value
+    assert_eq!(patch.len(), 1);
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["value"], 42);
+    assert!(result.get("inner").is_none());
 }
 
 // ============================================================================
-// from_value tests
+// Delete tests
 // ============================================================================
 
 #[test]
-fn test_flatten_from_value() {
-    let value = json!({
-        "name": "outer_name",
+fn test_flatten_delete() {
+    let doc = json!({
+        "name": "outer",
         "value": 100,
-        "label": "inner_label"
+        "label": "to_delete"
     });
 
-    let outer = Outer::from_value(&value).unwrap();
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        state.inner().delete_label();
+    });
 
-    assert_eq!(outer.name, "outer_name");
-    assert_eq!(outer.inner.value, 100);
+    let result = apply_patch(&doc, &patch).unwrap();
+
+    assert_eq!(result["name"], "outer");
+    assert_eq!(result["value"], 100);
+    assert!(result.get("label").is_none());
+}
+
+// ============================================================================
+// Increment tests
+// ============================================================================
+
+#[test]
+fn test_flatten_increment() {
+    let doc = json!({
+        "name": "counter",
+        "value": 10,
+        "label": "test"
+    });
+
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        state.inner().increment_value(5);
+    });
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["value"], 15);
+}
+
+// ============================================================================
+// Nested path with flatten tests
+// ============================================================================
+
+#[test]
+fn test_flatten_at_nested_path() {
+    let doc = json!({
+        "data": {
+            "name": "nested",
+            "value": 50,
+            "label": "nested_label"
+        }
+    });
+
+    let patch = with_state_ref::<OuterState, _>(&doc, carve_state::path!("data"), |state| {
+        assert_eq!(state.name().unwrap(), "nested");
+        assert_eq!(state.inner().value().unwrap(), 50);
+
+        state.inner().set_value(100);
+    });
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["data"]["value"], 100);
+    assert!(result["data"].get("inner").is_none());
+}
+
+// ============================================================================
+// Double nested with flatten tests
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, State, PartialEq)]
+pub struct DeepInner {
+    pub deep_value: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, State, PartialEq)]
+pub struct MiddleState {
+    pub middle_name: String,
+    #[carve(flatten)]
+    pub deep: DeepInner,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, State)]
+pub struct TopState {
+    pub top_name: String,
+    #[carve(nested)]
+    pub middle: MiddleState,
+}
+
+#[test]
+fn test_nested_with_inner_flatten() {
+    // TopState has nested MiddleState, which has flattened DeepInner
+    let doc = json!({
+        "top_name": "top",
+        "middle": {
+            "middle_name": "mid",
+            "deep_value": 42
+        }
+    });
+
+    let patch = with_state_ref::<TopState, _>(&doc, Path::root(), |state| {
+        assert_eq!(state.top_name().unwrap(), "top");
+
+        let middle = state.middle();
+        assert_eq!(middle.middle_name().unwrap(), "mid");
+
+        // deep_value is flattened into middle
+        assert_eq!(middle.deep().deep_value().unwrap(), 42);
+
+        // Write to flattened field
+        middle.deep().set_deep_value(100);
+    });
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["middle"]["deep_value"], 100);
+    // No nested "deep" key
+    assert!(result["middle"].get("deep").is_none());
+}
+
+// ============================================================================
+// Flatten with other attributes tests
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, State, PartialEq)]
+pub struct RenamedInner {
+    #[carve(rename = "renamed_value")]
+    pub value: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, State)]
+pub struct OuterWithRenamedFlat {
+    pub name: String,
+    #[carve(flatten)]
+    pub inner: RenamedInner,
+}
+
+#[test]
+fn test_flatten_with_rename() {
+    let doc = json!({
+        "name": "test",
+        "renamed_value": 42
+    });
+
+    let patch = with_state_ref::<OuterWithRenamedFlat, _>(&doc, Path::root(), |state| {
+        assert_eq!(state.inner().value().unwrap(), 42);
+
+        state.inner().set_value(100);
+    });
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["renamed_value"], 100);
+    assert!(result.get("value").is_none());
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, State, PartialEq)]
+pub struct InnerWithDefault {
+    #[carve(default = "0")]
+    pub count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, State)]
+pub struct OuterWithDefaultFlat {
+    pub name: String,
+    #[carve(flatten)]
+    pub inner: InnerWithDefault,
+}
+
+#[test]
+fn test_flatten_with_default() {
+    let doc = json!({
+        "name": "test"
+        // count is missing, should use default
+    });
+
+    let patch = with_state_ref::<OuterWithDefaultFlat, _>(&doc, Path::root(), |state| {
+        assert_eq!(state.name().unwrap(), "test");
+        // Should return default value
+        assert_eq!(state.inner().count().unwrap(), 0);
+    });
+
+    assert!(patch.is_empty());
+}
+
+// ============================================================================
+// Multiple reads and writes
+// ============================================================================
+
+#[test]
+fn test_flatten_multiple_operations() {
+    let doc = json!({
+        "name": "start",
+        "value": 0,
+        "label": "initial"
+    });
+
+    let patch = with_state_ref::<OuterState, _>(&doc, Path::root(), |state| {
+        // Multiple operations on both outer and flattened fields
+        state.set_name("updated");
+        state.inner().set_value(10);
+        state.inner().increment_value(5);
+        state.inner().set_label("final");
+    });
+
+    // Should have 4 operations
+    assert_eq!(patch.len(), 4);
+
+    let result = apply_patch(&doc, &patch).unwrap();
+    assert_eq!(result["name"], "updated");
+    assert_eq!(result["value"], 15);
+    assert_eq!(result["label"], "final");
+}
+
+// ============================================================================
+// from_value / to_value with flatten
+// ============================================================================
+
+// Note: #[carve(flatten)] only affects StateRef read/write operations.
+// For serde from_value/to_value, you would also need #[serde(flatten)]
+// on the struct field. Here we test that from_value/to_value work with
+// the nested structure (as serde expects).
+
+#[test]
+fn test_flatten_from_value_with_nested_json() {
+    // from_value uses serde, which expects nested structure without #[serde(flatten)]
+    let value = json!({
+        "name": "outer",
+        "inner": {
+            "value": 42,
+            "label": "inner_label"
+        }
+    });
+
+    let outer: OuterState = OuterState::from_value(&value).unwrap();
+    assert_eq!(outer.name, "outer");
+    assert_eq!(outer.inner.value, 42);
     assert_eq!(outer.inner.label, "inner_label");
 }
 
 #[test]
-fn test_flatten_from_value_missing_inner_fields() {
-    let value = json!({
-        "name": "outer_name"
-        // inner fields missing
-    });
-
-    let result = Outer::from_value(&value);
-    assert!(result.is_err(), "Should error when flattened fields are missing");
-}
-
-// ============================================================================
-// to_value tests
-// ============================================================================
-
-#[test]
 fn test_flatten_to_value() {
-    let outer = Outer {
-        name: "test".to_string(),
-        inner: Inner {
-            value: 42,
-            label: "label42".to_string(),
+    let outer = OuterState {
+        name: "outer".to_string(),
+        inner: InnerState {
+            value: 100,
+            label: "inner".to_string(),
         },
     };
 
     let value = outer.to_value();
 
-    // Flattened fields should be at root level
-    assert_eq!(value["name"], "test");
-    assert_eq!(value["value"], 42);
-    assert_eq!(value["label"], "label42");
-    assert!(value.get("inner").is_none(), "Should not have 'inner' key");
-}
-
-// ============================================================================
-// Round-trip tests
-// ============================================================================
-
-#[test]
-fn test_flatten_round_trip() {
-    let original = Outer {
-        name: "round_trip".to_string(),
-        inner: Inner {
-            value: 123,
-            label: "test_label".to_string(),
-        },
-    };
-
-    // to_value
-    let value = original.to_value();
-
-    // from_value
-    let deserialized = Outer::from_value(&value).unwrap();
-
-    assert_eq!(deserialized.name, original.name);
-    assert_eq!(deserialized.inner.value, original.inner.value);
-    assert_eq!(deserialized.inner.label, original.inner.label);
-}
-
-// ============================================================================
-// Multiple flattened fields (potential key conflicts)
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Part1 {
-    pub a: i32,
-    pub b: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Part2 {
-    pub c: i32,
-    pub d: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
-pub struct Composite {
-    pub name: String,
-
-    #[carve(flatten)]
-    pub part1: Part1,
-
-    #[carve(flatten)]
-    pub part2: Part2,
-}
-
-#[test]
-fn test_multiple_flatten_fields() {
-    let value = json!({
-        "name": "composite",
-        "a": 1,
-        "b": "bee",
-        "c": 3,
-        "d": "dee"
-    });
-
-    let composite = Composite::from_value(&value).unwrap();
-
-    assert_eq!(composite.name, "composite");
-    assert_eq!(composite.part1.a, 1);
-    assert_eq!(composite.part1.b, "bee");
-    assert_eq!(composite.part2.c, 3);
-    assert_eq!(composite.part2.d, "dee");
-
-    // Round trip
-    let serialized = composite.to_value();
-    assert_eq!(serialized["name"], "composite");
-    assert_eq!(serialized["a"], 1);
-    assert_eq!(serialized["b"], "bee");
-    assert_eq!(serialized["c"], 3);
-    assert_eq!(serialized["d"], "dee");
-}
-
-// ============================================================================
-// Flatten + normal nested fields combined
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Config {
-    pub timeout: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
-pub struct Service {
-    pub name: String,
-
-    #[carve(flatten)]
-    pub metadata: Inner,
-
-    #[carve(nested)]
-    pub config: Config,
-}
-
-#[test]
-fn test_flatten_with_normal_nested() {
-    let value = json!({
-        "name": "my_service",
-        "value": 100,          // from flattened metadata
-        "label": "prod",       // from flattened metadata
-        "config": {            // normal nested
-            "timeout": 30
-        }
-    });
-
-    let service = Service::from_value(&value).unwrap();
-
-    assert_eq!(service.name, "my_service");
-    assert_eq!(service.metadata.value, 100);
-    assert_eq!(service.metadata.label, "prod");
-    assert_eq!(service.config.timeout, 30);
-
-    // to_value
-    let serialized = service.to_value();
-    assert_eq!(serialized["name"], "my_service");
-    assert_eq!(serialized["value"], 100);
-    assert_eq!(serialized["label"], "prod");
-    assert_eq!(serialized["config"]["timeout"], 30);
-}
-
-// ============================================================================
-// Flatten key conflicts (follows serde semantics)
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Settings1 {
-    pub theme: String,
-    pub language: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-pub struct Settings2 {
-    pub language: String, // CONFLICT: same key as Settings1
-    pub region: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
-pub struct AppConfig {
-    pub app_name: String,
-
-    #[carve(flatten)]
-    pub settings1: Settings1,
-
-    #[carve(flatten)]
-    pub settings2: Settings2, // This will override "language" from settings1
-}
-
-#[test]
-fn test_flatten_key_conflict_last_wins() {
-    // When multiple flattened structs have the same field name,
-    // serde's behavior is: last one wins (in struct definition order)
-    let value = json!({
-        "app_name": "MyApp",
-        "theme": "dark",
-        "language": "zh", // This will go to settings2.language (last defined)
-        "region": "CN"
-    });
-
-    let config = AppConfig::from_value(&value).unwrap();
-
-    assert_eq!(config.app_name, "MyApp");
-    assert_eq!(config.settings1.theme, "dark");
-    // settings1.language gets the value because it's read during settings1 deserialization
-    // But in serde's flatten, the LAST field definition wins during serialization
-    assert_eq!(config.settings2.language, "zh");
-    assert_eq!(config.settings2.region, "CN");
-}
-
-#[test]
-fn test_flatten_key_conflict_serialization() {
-    // Test that serialization follows serde's behavior
-    let config = AppConfig {
-        app_name: "MyApp".to_string(),
-        settings1: Settings1 {
-            theme: "dark".to_string(),
-            language: "en".to_string(), // This will be OVERRIDDEN in JSON
-        },
-        settings2: Settings2 {
-            language: "zh".to_string(), // This wins (last defined)
-            region: "CN".to_string(),
-        },
-    };
-
-    let serialized = config.to_value();
-
-    assert_eq!(serialized["app_name"], "MyApp");
-    assert_eq!(serialized["theme"], "dark");
-    assert_eq!(serialized["language"], "zh"); // settings2's value wins
-    assert_eq!(serialized["region"], "CN");
-
-    // There should be no duplicate "language" key
-    let obj = serialized.as_object().unwrap();
-    let language_count = obj.keys().filter(|k| *k == "language").count();
-    assert_eq!(language_count, 1, "Should only have one 'language' key");
-}
-
-#[test]
-fn test_flatten_key_conflict_round_trip() {
-    // Round-trip test with conflicting keys
-    let original_json = json!({
-        "app_name": "MyApp",
-        "theme": "light",
-        "language": "fr",
-        "region": "FR"
-    });
-
-    let config = AppConfig::from_value(&original_json).unwrap();
-    let serialized = config.to_value();
-
-    // The round-trip should preserve the JSON structure
-    assert_eq!(serialized["app_name"], "MyApp");
-    assert_eq!(serialized["theme"], "light");
-    assert_eq!(serialized["language"], "fr");
-    assert_eq!(serialized["region"], "FR");
-}
-
-#[test]
-fn test_flatten_key_conflict_writer() {
-    let mut writer = AppConfig::write();
-
-    writer.app_name("TestApp");
-
-    {
-        let mut s1 = writer.settings1();
-        s1.theme("dark");
-        s1.language("en");
-    }
-
-    {
-        let mut s2 = writer.settings2();
-        s2.language("zh"); // Conflicts with settings1.language
-        s2.region("CN");
-    }
-
-    let patch = writer.build();
-    let result = apply_patch(&json!({}), &patch).unwrap();
-
-    // Both language sets should be in the patch
-    // Last one wins in the final JSON
-    assert_eq!(result["app_name"], "TestApp");
-    assert_eq!(result["theme"], "dark");
-    assert_eq!(result["language"], "zh"); // settings2 wins (written last)
-    assert_eq!(result["region"], "CN");
-}
-
-#[test]
-fn test_flatten_partial_conflict() {
-    // Only some fields conflict, others are unique
-    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-    pub struct PartA {
-        pub a_unique: i32,
-        pub shared: String,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel, PartialEq)]
-    pub struct PartB {
-        pub b_unique: i32,
-        pub shared: String, // Conflicts with PartA
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize, DeriveCarveViewModel)]
-    pub struct Combined {
-        #[carve(flatten)]
-        pub part_a: PartA,
-
-        #[carve(flatten)]
-        pub part_b: PartB,
-    }
-
-    let value = json!({
-        "a_unique": 1,
-        "b_unique": 2,
-        "shared": "value"
-    });
-
-    let combined = Combined::from_value(&value).unwrap();
-
-    assert_eq!(combined.part_a.a_unique, 1);
-    assert_eq!(combined.part_b.b_unique, 2);
-    // "shared" goes to both, last wins in serialization
-    assert_eq!(combined.part_b.shared, "value");
-
-    // Serialize back
-    let serialized = combined.to_value();
-    assert_eq!(serialized["a_unique"], 1);
-    assert_eq!(serialized["b_unique"], 2);
-    assert_eq!(serialized["shared"], "value");
+    // Without #[serde(flatten)], to_value produces nested structure
+    assert!(value.is_object());
+    assert_eq!(value["name"], "outer");
+    assert_eq!(value["inner"]["value"], 100);
+    assert_eq!(value["inner"]["label"], "inner");
 }

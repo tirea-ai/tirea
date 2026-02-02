@@ -1,7 +1,7 @@
 //! Generic JSON writer for building patches.
 //!
 //! `JsonWriter` provides a low-level API for building patches dynamically.
-//! For type-safe access, use derived `CarveViewModel` types instead.
+//! For type-safe access, use derived `State` types instead.
 
 use crate::{Number, Op, Patch, Path};
 use serde_json::Value;
@@ -29,7 +29,7 @@ pub trait WriterOps {
 ///
 /// `JsonWriter` is an escape hatch for cases where you need to work with
 /// dynamic or unknown JSON structures. For typed access, prefer using
-/// derived `CarveViewModel` types.
+/// derived `State` types.
 ///
 /// # Examples
 ///

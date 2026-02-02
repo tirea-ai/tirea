@@ -1,16 +1,16 @@
-//! Typed view + JSON patch library for deterministic immutable state management.
+//! Typed state + JSON patch library for deterministic immutable state management.
 //!
-//! `carve-state` provides a way to work with JSON documents using strongly-typed
-//! Rust structs while maintaining deterministic state transitions through patches.
+//! `carve-state` provides typed access to JSON state with automatic patch collection,
+//! enabling deterministic state transitions and full replay capability.
 //!
 //! # Core Concepts
 //!
-//! - **State**: The entire application state is stored as a JSON `Value`
-//! - **View**: A typed struct that represents a portion of the state
-//! - **Reader**: Provides read-only access to state through typed field accessors
-//! - **Writer**: Accumulates changes as operations, producing a `Patch`
+//! - **State**: Trait for types that can create typed state references
+//! - **StateRef**: Generated typed accessor for reading and writing state
+//! - **PatchSink**: Automatic operation collector (transparent to developers)
+//! - **Context**: Provides typed state access with automatic patch collection
+//! - **StateManager**: Manages immutable state with patch history and replay
 //! - **Patch**: A serializable record of operations to apply to state
-//! - **apply_patch**: Pure function that applies a patch to produce new state
 //!
 //! # Deterministic State Transitions
 //!
@@ -20,7 +20,7 @@
 //!
 //! - Same `(State, Patch)` always produces the same `State'`
 //! - `apply_patch` is a pure function that never mutates its input
-//! - Both State and Patch are JSON-serializable
+//! - Full history enables replay to any point in time
 //!
 //! # Quick Start
 //!
@@ -44,9 +44,41 @@
 //! assert_eq!(state["count"], 0); // Original unchanged
 //! ```
 //!
+//! # Using Typed State (with derive macro)
+//!
+//! For type-safe access with automatic patch collection:
+//!
+//! ```ignore
+//! use carve_state::{Context, State};
+//! use carve_state_derive::State;
+//! use serde::{Serialize, Deserialize};
+//! use serde_json::json;
+//!
+//! #[derive(Debug, Clone, Serialize, Deserialize, State)]
+//! struct Counter {
+//!     value: i64,
+//!     label: String,
+//! }
+//!
+//! // In a tool implementation:
+//! async fn execute(&self, ctx: &Context<'_>) -> Result<()> {
+//!     let counter = ctx.state::<Counter>("counters.main");
+//!
+//!     // Read
+//!     let current = counter.value()?;
+//!
+//!     // Write (automatically collected)
+//!     counter.set_value(current + 1);
+//!     counter.set_label("Updated");
+//!
+//!     Ok(())
+//! }
+//! // Framework calls ctx.take_patch() after execution
+//! ```
+//!
 //! # Using JsonWriter
 //!
-//! For dynamic JSON manipulation, use `JsonWriter`:
+//! For dynamic JSON manipulation without typed structs:
 //!
 //! ```
 //! use carve_state::{JsonWriter, path};
@@ -59,70 +91,35 @@
 //!
 //! let patch = w.build();
 //! ```
-//!
-//! # Typed Views (with derive macro)
-//!
-//! For type-safe access, use the derive macro (requires `derive` feature):
-//!
-//! ```
-//! use carve_state::{CarveViewModel, CarveViewModelExt, apply_patch};
-//! use carve_state_derive::CarveViewModel;
-//! use serde::{Serialize, Deserialize};
-//! use serde_json::json;
-//!
-//! #[derive(Debug, Clone, Serialize, Deserialize, CarveViewModel)]
-//! struct User {
-//!     name: String,
-//!     age: u32,
-//!     roles: Vec<String>,
-//! }
-//!
-//! // Read with typed accessors
-//! let doc = json!({"name": "Alice", "age": 30, "roles": ["admin"]});
-//! let reader = User::read(&doc);
-//! assert_eq!(reader.name().unwrap(), "Alice");
-//! assert_eq!(reader.age().unwrap(), 30);
-//!
-//! // Write with typed setters
-//! let mut writer = User::write();
-//! writer.name("Bob");
-//! writer.age(25);
-//! writer.roles_push("moderator");
-//! let patch = writer.build();
-//!
-//! // Apply patch to get new state
-//! let new_doc = apply_patch(&doc, &patch).unwrap();
-//! assert_eq!(new_doc["name"], "Bob");
-//! ```
 
-mod accessor;
 mod apply;
 mod conflict;
-mod container;
+mod context;
 mod error;
-mod fields;
+mod manager;
 mod op;
 mod patch;
 mod path;
-mod view;
+mod state;
 mod writer;
 
-// Re-export main types
-pub use accessor::AccessorOps;
+// Core types
 pub use apply::{apply_patch, get_at_path};
 pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
-pub use container::State;
 pub use error::{value_type_name, CarveError, CarveResult};
-pub use fields::{MapField, OptionField, ScalarField, SetField, VecField};
 pub use op::{Number, Op};
 pub use patch::{Patch, TrackedPatch};
 pub use path::{Path, Seg};
-pub use view::{CarveViewModel, CarveViewModelExt};
-pub use writer::{JsonWriter, WriterOps};
+pub use writer::JsonWriter;
+
+// State types
+pub use context::{parse_path, Context};
+pub use manager::{ApplyResult, StateError, StateManager};
+pub use state::{PatchSink, State, StateExt};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
-pub use carve_state_derive::CarveViewModel;
+pub use carve_state_derive::State;
 
 // Re-export serde_json::Value for convenience
 pub use serde_json::Value;

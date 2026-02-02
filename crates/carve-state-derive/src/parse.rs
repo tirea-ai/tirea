@@ -1,4 +1,4 @@
-//! Parsing logic for CarveViewModel derive macro.
+//! Parsing logic for State derive macro.
 
 use darling::{ast, FromDeriveInput, FromField};
 use syn::{Generics, Ident, Type, Visibility};
@@ -14,6 +14,7 @@ pub struct ViewModelInput {
     pub vis: Visibility,
 
     /// Generic parameters.
+    #[allow(dead_code)]
     pub generics: Generics,
 
     /// Struct data (fields).
@@ -57,13 +58,12 @@ pub struct FieldInput {
     #[darling(default)]
     pub skip: bool,
 
-    /// Treat as nested CarveViewModel.
+    /// Treat as nested State type.
     #[darling(default)]
     pub nested: bool,
 
-    /// Flatten nested struct fields (not yet implemented).
+    /// Flatten nested struct fields into parent.
     #[darling(default)]
-    #[allow(dead_code)]
     pub flatten: bool,
 }
 

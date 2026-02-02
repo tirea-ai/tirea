@@ -10,6 +10,7 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 carve-state-derive = { workspace = true, optional = true }
 
@@ -22,6 +23,7 @@ carve-state-derive.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 criterion.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
 
 [[bench]]
 name = "performance"

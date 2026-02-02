@@ -1,7 +1,5 @@
 //! Shared utility functions for code generation.
 
-use quote::format_ident;
-
 /// Extract the type name from a Type.
 pub fn get_type_name(ty: &syn::Type) -> String {
     match ty {
@@ -53,24 +51,3 @@ pub fn extract_map_types(ty: &syn::Type) -> (syn::Type, syn::Type) {
     )
 }
 
-/// Convert snake_case or camelCase to PascalCase.
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => {
-                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
-                }
-            }
-        })
-        .collect()
-}
-
-/// Generate a guard name for a field (PascalCase + suffix).
-pub fn guard_name(field_name: &syn::Ident, suffix: &str) -> syn::Ident {
-    let pascal = to_pascal_case(&field_name.to_string());
-    format_ident!("{}{}", pascal, suffix)
-}

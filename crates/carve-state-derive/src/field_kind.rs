@@ -20,7 +20,7 @@ pub enum FieldKind {
         value: Box<FieldKind>,
     },
 
-    /// A nested CarveViewModel type
+    /// A nested State type
     Nested,
 }
 

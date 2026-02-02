@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/carve-state",
     "crates/carve-state-derive",
+    "crates/carve-agent",
 ]
 
 [workspace.package]
@@ -28,6 +29,9 @@ syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 darling = "0.20"
+
+# Async runtime
+tokio = { version = "1", default-features = false }
 
 # Testing
 trybuild = "1"
