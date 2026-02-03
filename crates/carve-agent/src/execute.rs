@@ -400,4 +400,225 @@ mod tests {
         let patches = collect_patches(&executions);
         assert_eq!(patches.len(), 2);
     }
+
+    // ============================================================================
+    // Plugin Execution Tests
+    // ============================================================================
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_plugins_tool_not_found() {
+        let call = ToolCall::new("call_1", "nonexistent", json!({}));
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let exec = execute_single_tool_with_plugins(None, &call, &state, &plugins).await;
+
+        assert!(exec.result.is_error());
+        assert!(exec.result.message.as_ref().unwrap().contains("not found"));
+        assert!(exec.patch.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_plugins_success() {
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "hello"}));
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        assert!(exec.result.is_success());
+        assert_eq!(exec.result.data["msg"], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_blocking_plugin() {
+        use crate::plugin::AgentPlugin;
+        use async_trait::async_trait;
+
+        struct BlockingPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for BlockingPlugin {
+            fn id(&self) -> &str { "blocker" }
+
+            async fn before_tool_execute(&self, ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
+                ctx.set_blocked("Blocked by plugin");
+            }
+        }
+
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "hello"}));
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPlugin)];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        // Tool should be blocked
+        assert!(exec.result.is_error());
+        assert!(exec.result.message.as_ref().unwrap().contains("Blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_pending_plugin() {
+        use crate::plugin::AgentPlugin;
+        use async_trait::async_trait;
+
+        struct PendingPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for PendingPlugin {
+            fn id(&self) -> &str { "pending" }
+
+            async fn before_tool_execute(&self, ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
+                ctx.set_pending(json!({"confirm": true}));
+            }
+        }
+
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "hello"}));
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPlugin)];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        // Tool should be pending
+        assert!(exec.result.is_pending());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tools_parallel_with_plugins() {
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+        let calls = vec![
+            ToolCall::new("call_1", "echo", json!({"n": 1})),
+            ToolCall::new("call_2", "echo", json!({"n": 2})),
+        ];
+
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let executions = execute_tools_parallel_with_plugins(&tools, &calls, &state, &plugins).await;
+
+        assert_eq!(executions.len(), 2);
+        assert!(executions[0].result.is_success());
+        assert!(executions[1].result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tools_sequential_with_plugins() {
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+        let calls = vec![
+            ToolCall::new("call_1", "echo", json!({"n": 1})),
+            ToolCall::new("call_2", "echo", json!({"n": 2})),
+        ];
+
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let (final_state, executions) = execute_tools_sequential_with_plugins(&tools, &calls, &state, &plugins).await;
+
+        assert_eq!(executions.len(), 2);
+        assert!(executions[0].result.is_success());
+        assert!(executions[1].result.is_success());
+        // Final state should still be empty since EchoTool doesn't modify state
+        assert!(final_state.is_object());
+    }
+
+    #[tokio::test]
+    async fn test_execute_tools_sequential() {
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+        let calls = vec![
+            ToolCall::new("call_1", "echo", json!({"n": 1})),
+            ToolCall::new("call_2", "echo", json!({"n": 2})),
+        ];
+
+        let state = json!({});
+
+        let (final_state, executions) = crate::execute::execute_tools_sequential(&tools, &calls, &state).await;
+
+        assert_eq!(executions.len(), 2);
+        assert!(executions[0].result.is_success());
+        assert!(executions[1].result.is_success());
+        assert!(final_state.is_object());
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_after_hook() {
+        use crate::plugin::AgentPlugin;
+        use async_trait::async_trait;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct AfterHookPlugin {
+            after_called: AtomicBool,
+        }
+
+        impl AfterHookPlugin {
+            fn new() -> Self {
+                Self { after_called: AtomicBool::new(false) }
+            }
+        }
+
+        #[async_trait]
+        impl AgentPlugin for AfterHookPlugin {
+            fn id(&self) -> &str { "after_hook" }
+
+            async fn after_tool_execute(&self, _ctx: &Context<'_>, _tool_id: &str, _result: &ToolResult) {
+                self.after_called.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "hello"}));
+        let state = json!({});
+        let plugin = Arc::new(AfterHookPlugin::new());
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin.clone()];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        assert!(exec.result.is_success());
+        assert!(plugin.after_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_execute_tools_sequential_with_state_changes() {
+        use carve_state::{path, Op, Patch};
+
+        struct StatefulTool;
+
+        #[async_trait]
+        impl Tool for StatefulTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("stateful", "Stateful", "Modifies state")
+            }
+
+            async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+                // Create a patch via direct ops
+                let ops = vec![Op::set(path!("counter"), json!(42))];
+                for op in ops {
+                    ctx.state::<crate::plugins::ContextDataState>("context").data_insert("modified".to_string(), json!(true));
+                }
+                Ok(ToolResult::success("stateful", json!({"done": true})))
+            }
+        }
+
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("stateful".to_string(), Arc::new(StatefulTool));
+
+        let calls = vec![ToolCall::new("call_1", "stateful", json!({}))];
+        let state = json!({"context": {"data": {}}});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let (final_state, executions) = execute_tools_sequential_with_plugins(&tools, &calls, &state, &plugins).await;
+
+        assert_eq!(executions.len(), 1);
+        assert!(executions[0].result.is_success());
+        // State should have the modification
+        assert!(final_state["context"]["data"]["modified"] == json!(true));
+    }
 }
