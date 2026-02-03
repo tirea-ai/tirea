@@ -83,7 +83,11 @@
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
+pub mod plugin;
+pub mod plugins;
+pub mod prelude;
 pub mod session;
+pub mod state_types;
 pub mod storage;
 pub mod stream;
 pub mod traits;
@@ -125,4 +129,24 @@ pub use convert::{
 pub use r#loop::{
     execute_tools as loop_execute_tools, run_loop, run_loop_stream, run_step, run_turn,
     tool_map, tool_map_from_arc, AgentConfig, AgentLoopError, StepResult,
+};
+
+// Plugin exports
+pub use plugin::AgentPlugin;
+
+// State types exports
+pub use state_types::{
+    Interaction, InteractionChoice, InteractionResponse, InteractionType, InteractionValue,
+    ToolPermissionBehavior,
+};
+
+// Plugins and extension traits
+pub use plugins::{
+    // Extension traits
+    ContextDataExt, ExecutionContextExt, MessageContextExt, PermissionContextExt,
+    ReminderContextExt,
+    // State types
+    ContextDataState, ExecutionState, MessageState, PermissionState, ReminderState,
+    // Built-in plugins
+    PermissionPlugin, ReminderPlugin,
 };
