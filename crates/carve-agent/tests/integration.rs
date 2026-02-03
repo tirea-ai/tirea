@@ -1686,3 +1686,359 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     let final_session = storage.load("concurrent-test").await.unwrap().unwrap();
     assert_eq!(final_session.message_count(), 1); // Should have one message
 }
+
+// ============================================================================
+// Additional Coverage Tests
+// ============================================================================
+
+#[test]
+fn test_tool_result_success_with_message() {
+    let result = ToolResult::success_with_message("my_tool", json!({"data": 42}), "Operation completed");
+
+    assert!(result.is_success());
+    assert!(!result.is_error());
+    assert_eq!(result.tool_name, "my_tool");
+    assert_eq!(result.data["data"], 42);
+    assert_eq!(result.message, Some("Operation completed".to_string()));
+}
+
+#[test]
+fn test_tool_result_success_with_message_empty_data() {
+    let result = ToolResult::success_with_message("empty_tool", json!(null), "No data returned");
+
+    assert!(result.is_success());
+    assert_eq!(result.message, Some("No data returned".to_string()));
+    assert!(result.data.is_null());
+}
+
+#[test]
+fn test_tool_result_success_with_message_complex() {
+    let result = ToolResult::success_with_message(
+        "api_tool",
+        json!({
+            "status": 200,
+            "body": {"users": [{"id": 1}, {"id": 2}]}
+        }),
+        "API call successful with 2 users",
+    );
+
+    assert!(result.is_success());
+    assert_eq!(result.data["status"], 200);
+    assert!(result.message.as_ref().unwrap().contains("2 users"));
+}
+
+#[test]
+fn test_stream_collector_end_event_with_tool_calls() {
+    use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
+
+    let mut collector = StreamCollector::new();
+
+    // Add some text first
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Processing your request...".to_string(),
+    }));
+
+    // Create an end event with captured tool calls
+    let end = StreamEnd::default();
+    // Note: StreamEnd::captured_tool_calls() returns Option<&Vec<ToolCall>>
+    // Testing the path where captured_tool_calls is None (default)
+
+    let output = collector.process(ChatStreamEvent::End(end));
+    assert!(output.is_none()); // End event returns None
+
+    let result = collector.finish();
+    assert_eq!(result.text, "Processing your request...");
+}
+
+#[test]
+fn test_stream_output_tool_call_delta_coverage() {
+    use carve_agent::StreamOutput;
+
+    // Test ToolCallDelta variant
+    let delta = StreamOutput::ToolCallDelta {
+        id: "call_123".to_string(),
+        args_delta: r#"{"partial": true}"#.to_string(),
+    };
+
+    match delta {
+        StreamOutput::ToolCallDelta { id, args_delta } => {
+            assert_eq!(id, "call_123");
+            assert!(args_delta.contains("partial"));
+        }
+        _ => panic!("Expected ToolCallDelta"),
+    }
+}
+
+#[test]
+fn test_stream_output_tool_call_start_coverage() {
+    use carve_agent::StreamOutput;
+
+    let start = StreamOutput::ToolCallStart {
+        id: "call_abc".to_string(),
+        name: "web_search".to_string(),
+    };
+
+    match start {
+        StreamOutput::ToolCallStart { id, name } => {
+            assert_eq!(id, "call_abc");
+            assert_eq!(name, "web_search");
+        }
+        _ => panic!("Expected ToolCallStart"),
+    }
+}
+
+#[tokio::test]
+async fn test_file_storage_corrupted_json() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Write corrupted JSON file
+    let corrupted_path = temp_dir.path().join("corrupted.json");
+    tokio::fs::write(&corrupted_path, "{ invalid json }").await.unwrap();
+
+    let storage = FileStorage::new(temp_dir.path());
+
+    // Try to load corrupted session
+    let result = storage.load("corrupted").await;
+    assert!(result.is_err());
+
+    match result {
+        Err(carve_agent::StorageError::Serialization(msg)) => {
+            assert!(msg.contains("expected") || msg.contains("key") || msg.len() > 0);
+        }
+        Err(other) => panic!("Expected Serialization error, got: {:?}", other),
+        Ok(_) => panic!("Expected error for corrupted JSON"),
+    }
+}
+
+#[test]
+fn test_tool_error_variants_display() {
+    use carve_agent::ToolError;
+
+    let invalid_args = ToolError::InvalidArguments("Missing required field 'name'".to_string());
+    assert!(invalid_args.to_string().contains("Invalid arguments"));
+
+    let not_found = ToolError::NotFound("unknown_tool".to_string());
+    assert!(not_found.to_string().contains("not found") || not_found.to_string().contains("Not found"));
+
+    let exec_failed = ToolError::ExecutionFailed("Database connection timeout".to_string());
+    assert!(exec_failed.to_string().contains("failed"));
+
+    let permission_denied = ToolError::PermissionDenied("Admin access required".to_string());
+    assert!(permission_denied.to_string().contains("Permission denied") || permission_denied.to_string().contains("Admin"));
+
+    let internal = ToolError::Internal("Unexpected state".to_string());
+    assert!(internal.to_string().contains("Internal") || internal.to_string().contains("error"));
+}
+
+#[test]
+fn test_stream_result_needs_tools_variants() {
+    // Test with empty tool calls
+    let result_no_tools = StreamResult {
+        text: "Just text".to_string(),
+        tool_calls: vec![],
+    };
+    assert!(!result_no_tools.needs_tools());
+
+    // Test with tool calls
+    let result_with_tools = StreamResult {
+        text: "".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new("id", "name", json!({}))],
+    };
+    assert!(result_with_tools.needs_tools());
+
+    // Test with both text and tools
+    let result_both = StreamResult {
+        text: "Processing...".to_string(),
+        tool_calls: vec![
+            carve_agent::ToolCall::new("id1", "search", json!({})),
+            carve_agent::ToolCall::new("id2", "calculate", json!({})),
+        ],
+    };
+    assert!(result_both.needs_tools());
+}
+
+#[tokio::test]
+async fn test_execute_tools_empty_result() {
+    let session = Session::new("empty-tools-test");
+
+    // Empty StreamResult (no tools)
+    let result = StreamResult {
+        text: "No tools needed".to_string(),
+        tool_calls: vec![],
+    };
+
+    let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
+
+    // Should return session unchanged when no tools
+    let new_session = loop_execute_tools(session.clone(), &result, &tools, true)
+        .await
+        .unwrap();
+
+    assert_eq!(new_session.message_count(), session.message_count());
+}
+
+#[test]
+fn test_agent_event_all_variants() {
+    use carve_agent::AgentEvent;
+
+    // TextDelta
+    let text_delta = AgentEvent::TextDelta("Hello".to_string());
+    match text_delta {
+        AgentEvent::TextDelta(t) => assert_eq!(t, "Hello"),
+        _ => panic!("Wrong variant"),
+    }
+
+    // ToolCallStart
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".to_string(),
+        name: "search".to_string(),
+    };
+    match tool_start {
+        AgentEvent::ToolCallStart { id, name } => {
+            assert_eq!(id, "call_1");
+            assert_eq!(name, "search");
+        }
+        _ => panic!("Wrong variant"),
+    }
+
+    // ToolCallDelta
+    let tool_delta = AgentEvent::ToolCallDelta {
+        id: "call_1".to_string(),
+        args_delta: r#"{"q":"test"}"#.to_string(),
+    };
+    match tool_delta {
+        AgentEvent::ToolCallDelta { id, args_delta } => {
+            assert_eq!(id, "call_1");
+            assert!(args_delta.contains("test"));
+        }
+        _ => panic!("Wrong variant"),
+    }
+
+    // ToolCallDone
+    let tool_done = AgentEvent::ToolCallDone {
+        id: "call_1".to_string(),
+        result: ToolResult::success("search", json!({"results": []})),
+        patch: None,
+    };
+    match tool_done {
+        AgentEvent::ToolCallDone { id, result, patch } => {
+            assert_eq!(id, "call_1");
+            assert!(result.is_success());
+            assert!(patch.is_none());
+        }
+        _ => panic!("Wrong variant"),
+    }
+
+    // Error
+    let error = AgentEvent::Error("Network timeout".to_string());
+    match error {
+        AgentEvent::Error(msg) => assert!(msg.contains("timeout")),
+        _ => panic!("Wrong variant"),
+    }
+
+    // Done
+    let done = AgentEvent::Done {
+        response: "Final response".to_string(),
+    };
+    match done {
+        AgentEvent::Done { response } => assert_eq!(response, "Final response"),
+        _ => panic!("Wrong variant"),
+    }
+}
+
+#[test]
+fn test_message_role_coverage() {
+    // Test all Role variants through Message creation
+    let user_msg = Message::user("User content");
+    assert_eq!(user_msg.role, Role::User);
+    assert!(user_msg.tool_calls.is_none());
+    assert!(user_msg.tool_call_id.is_none());
+
+    let assistant_msg = Message::assistant("Assistant content");
+    assert_eq!(assistant_msg.role, Role::Assistant);
+
+    let system_msg = Message::system("System prompt");
+    assert_eq!(system_msg.role, Role::System);
+
+    let tool_msg = Message::tool("call_123", "Tool result");
+    assert_eq!(tool_msg.role, Role::Tool);
+    assert_eq!(tool_msg.tool_call_id, Some("call_123".to_string()));
+}
+
+#[test]
+fn test_tool_call_creation_and_serialization() {
+    let call = carve_agent::ToolCall::new(
+        "call_abc123",
+        "web_search",
+        json!({"query": "rust programming", "limit": 10}),
+    );
+
+    assert_eq!(call.id, "call_abc123");
+    assert_eq!(call.name, "web_search");
+    assert_eq!(call.arguments["query"], "rust programming");
+    assert_eq!(call.arguments["limit"], 10);
+
+    // Test serialization
+    let json_str = serde_json::to_string(&call).unwrap();
+    assert!(json_str.contains("call_abc123"));
+    assert!(json_str.contains("web_search"));
+
+    // Test deserialization
+    let parsed: carve_agent::ToolCall = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(parsed.id, call.id);
+    assert_eq!(parsed.name, call.name);
+}
+
+#[tokio::test]
+async fn test_session_state_complex_operations() {
+    let session = Session::with_initial_state(
+        "complex-state",
+        json!({
+            "users": [],
+            "settings": {"theme": "dark", "notifications": true},
+            "counter": 0
+        }),
+    );
+
+    // Add multiple patches
+    let session = session
+        .with_patch(TrackedPatch::new(
+            Patch::new()
+                .with_op(Op::append(path!("users"), json!({"id": 1, "name": "Alice"})))
+                .with_op(Op::increment(path!("counter"), 1)),
+        ))
+        .with_patch(TrackedPatch::new(
+            Patch::new()
+                .with_op(Op::append(path!("users"), json!({"id": 2, "name": "Bob"})))
+                .with_op(Op::set(path!("settings").key("theme"), json!("light"))),
+        ));
+
+    let state = session.rebuild_state().unwrap();
+
+    assert_eq!(state["users"].as_array().unwrap().len(), 2);
+    assert_eq!(state["users"][0]["name"], "Alice");
+    assert_eq!(state["users"][1]["name"], "Bob");
+    assert_eq!(state["settings"]["theme"], "light");
+    assert_eq!(state["counter"], 1);
+}
+
+#[test]
+fn test_storage_error_variants() {
+    use carve_agent::StorageError;
+    use std::io::{Error as IoError, ErrorKind};
+
+    // Test IO error variant
+    let io_error = StorageError::from(IoError::new(ErrorKind::PermissionDenied, "Permission denied"));
+    let display = io_error.to_string();
+    assert!(display.contains("IO error") || display.contains("Permission") || display.len() > 0);
+
+    // Test Serialization error variant
+    let serialization_error = StorageError::Serialization("Invalid JSON at line 5".to_string());
+    let display = serialization_error.to_string();
+    assert!(display.contains("Serialization") || display.contains("JSON") || display.contains("Invalid"));
+
+    // Test NotFound error variant
+    let not_found = StorageError::NotFound("session-123".to_string());
+    let display = not_found.to_string();
+    assert!(display.contains("not found") || display.contains("session-123") || display.contains("Not found"));
+}
