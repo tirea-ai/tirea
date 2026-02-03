@@ -266,7 +266,7 @@ pub async fn execute_tools_sequential(
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let exec = execute_single_tool(tool.as_deref(), &call, &state).await;
+        let exec = execute_single_tool(tool.as_deref(), call, &state).await;
 
         // Apply patch to state for next tool
         if let Some(ref patch) = exec.patch {

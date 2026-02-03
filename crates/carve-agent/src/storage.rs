@@ -110,7 +110,7 @@ impl Storage for FileStorage {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "json") {
+            if path.extension().is_some_and(|ext| ext == "json") {
                 if let Some(stem) = path.file_stem() {
                     if let Some(id) = stem.to_str() {
                         ids.push(id.to_string());

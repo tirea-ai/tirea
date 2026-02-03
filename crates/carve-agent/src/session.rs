@@ -120,7 +120,6 @@ impl Session {
     /// Create a snapshot, collapsing patches into the base state.
     ///
     /// Returns a new Session with the current state as base and empty patches.
-    #[must_use]
     pub fn snapshot(self) -> CarveResult<Self> {
         let current_state = self.rebuild_state()?;
         Ok(Self {
