@@ -2042,3 +2042,1622 @@ fn test_storage_error_variants() {
     let display = not_found.to_string();
     assert!(display.contains("not found") || display.contains("session-123") || display.contains("Not found"));
 }
+
+// ============================================================================
+// Sequential Execution with Patch Error Tests
+// ============================================================================
+
+/// Tool that produces a patch with nested state changes
+struct NestedStateTool;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+struct NestedState {
+    value: i64,
+}
+
+#[async_trait]
+impl Tool for NestedStateTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("nested_state", "Nested State Tool", "Modifies nested state")
+    }
+
+    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+        // Modify deeply nested state
+        let nested = ctx.state::<NestedState>("deeply.nested");
+        let current = nested.value().unwrap_or(0);
+        nested.set_value(current + 10);
+
+        Ok(ToolResult::success("nested_state", json!({"new_value": current + 10})))
+    }
+}
+
+#[tokio::test]
+async fn test_sequential_execution_with_conflicting_patches() {
+    use carve_agent::execute_tools_sequential;
+
+    // Test sequential execution where patches might conflict
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("increment".to_string(), Arc::new(IncrementTool));
+
+    // Create tool calls that modify the same field sequentially
+    let calls = vec![
+        carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
+    ];
+
+    // Initial state with counter
+    let initial_state = json!({
+        "counter": {"value": 0, "label": "test"}
+    });
+
+    // Execute sequentially - each tool sees the updated state
+    let (final_state, executions) = execute_tools_sequential(&tools, &calls, &initial_state).await;
+
+    assert_eq!(executions.len(), 3);
+    assert!(executions.iter().all(|e| e.result.is_success()));
+
+    // In sequential mode, each tool sees the result of the previous
+    // So counter should be 3 (0 -> 1 -> 2 -> 3)
+    assert_eq!(final_state["counter"]["value"], 3);
+}
+
+#[tokio::test]
+async fn test_sequential_execution_with_nested_state() {
+    use carve_agent::execute_tools_sequential;
+
+    // Test sequential execution with nested state modifications
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("nested_state".to_string(), Arc::new(NestedStateTool));
+
+    let calls = vec![
+        carve_agent::ToolCall::new("call_1", "nested_state", json!({})),
+        carve_agent::ToolCall::new("call_2", "nested_state", json!({})),
+    ];
+
+    // Start with state that has nested structure
+    let initial_state = json!({
+        "deeply": {
+            "nested": {"value": 0}
+        }
+    });
+
+    // Execute sequentially - each tool sees the updated state
+    let (final_state, executions) = execute_tools_sequential(&tools, &calls, &initial_state).await;
+
+    // Both tools should execute
+    assert_eq!(executions.len(), 2);
+    assert!(executions.iter().all(|e| e.result.is_success()));
+
+    // Sequential: 0 -> 10 -> 20
+    assert_eq!(final_state["deeply"]["nested"]["value"], 20);
+}
+
+/// Test parallel execution state isolation - each tool sees the same initial state
+#[tokio::test]
+async fn test_parallel_execution_state_isolation() {
+    use carve_agent::execute_tools_parallel;
+
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("increment".to_string(), Arc::new(IncrementTool));
+
+    // Three parallel increment calls
+    let calls = vec![
+        carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
+    ];
+
+    let initial_state = json!({
+        "counter": {"value": 10, "label": "test"}
+    });
+
+    let results = execute_tools_parallel(&tools, &calls, &initial_state).await;
+
+    // All three tools should see initial state (counter=10) and increment to 11
+    assert_eq!(results.len(), 3);
+    for (i, exec) in results.iter().enumerate() {
+        assert!(exec.result.is_success(), "Tool {} should succeed", i);
+        // Each tool saw initial value 10, incremented to 11
+        assert_eq!(exec.result.data["new_value"], 11, "Tool {} should see initial state", i);
+    }
+
+    // All three patches should set counter.value to 11 (not 11, 12, 13)
+    let patches: Vec<_> = results.iter().filter_map(|e| e.patch.as_ref()).collect();
+    assert_eq!(patches.len(), 3, "All tools should produce patches");
+}
+
+/// Test parallel execution with patch conflict - multiple tools modify same field
+#[tokio::test]
+async fn test_parallel_execution_patch_conflict() {
+    let session = Session::with_initial_state(
+        "parallel-conflict",
+        json!({"counter": {"value": 0, "label": ""}}),
+    );
+
+    // Three parallel increments
+    let llm_response = StreamResult {
+        text: "Running three increments in parallel".to_string(),
+        tool_calls: vec![
+            carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+            carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+            carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
+        ],
+    };
+
+    let tools = tool_map([IncrementTool]);
+
+    // Execute in parallel mode
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    // All three patches collected
+    assert_eq!(session.patch_count(), 3);
+
+    // Rebuild state - last patch wins (all set to 1, so final is 1)
+    let state = session.rebuild_state().unwrap();
+    // In parallel mode, all tools see 0, all set to 1, so final is 1
+    assert_eq!(state["counter"]["value"], 1);
+}
+
+/// Test parallel execution with different fields - no conflict
+#[tokio::test]
+async fn test_parallel_execution_different_fields() {
+    let session = Session::with_initial_state(
+        "parallel-no-conflict",
+        json!({
+            "counter_a": {"value": 0, "label": ""},
+            "counter_b": {"value": 0, "label": ""},
+            "counter_c": {"value": 0, "label": ""}
+        }),
+    );
+
+    // Three parallel increments to different fields
+    let llm_response = StreamResult {
+        text: "Running three increments to different counters".to_string(),
+        tool_calls: vec![
+            carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter_a"})),
+            carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter_b"})),
+            carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter_c"})),
+        ],
+    };
+
+    let tools = tool_map([IncrementTool]);
+
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    let state = session.rebuild_state().unwrap();
+
+    // All three counters should be 1 (no conflict)
+    assert_eq!(state["counter_a"]["value"], 1);
+    assert_eq!(state["counter_b"]["value"], 1);
+    assert_eq!(state["counter_c"]["value"], 1);
+}
+
+/// Test parallel vs sequential with same operations - different results
+#[tokio::test]
+async fn test_sequential_vs_parallel_execution_difference() {
+    use carve_agent::{execute_tools_parallel, execute_tools_sequential};
+
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("increment".to_string(), Arc::new(IncrementTool));
+
+    let calls = vec![
+        carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+    ];
+
+    let initial_state = json!({
+        "counter": {"value": 0, "label": "test"}
+    });
+
+    // Parallel execution - both tools see initial state (counter=0)
+    let parallel_results = execute_tools_parallel(&tools, &calls, &initial_state).await;
+
+    // Both tools incremented from 0, so both patches set counter.value to 1
+    assert_eq!(parallel_results.len(), 2);
+
+    // Sequential execution - second tool sees first tool's result
+    let (seq_final_state, seq_results) =
+        execute_tools_sequential(&tools, &calls, &initial_state).await;
+
+    assert_eq!(seq_results.len(), 2);
+    // Sequential: 0 -> 1 -> 2
+    assert_eq!(seq_final_state["counter"]["value"], 2);
+}
+
+// ============================================================================
+// Stream End Event with Captured Tool Calls Tests
+// ============================================================================
+
+#[test]
+fn test_stream_collector_with_tool_call_via_chunk_then_end() {
+    use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd, ToolChunk};
+
+    // Test the flow: text chunks -> tool call chunks -> end event
+    let mut collector = StreamCollector::new();
+
+    // Text chunk
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Let me search for that.".to_string(),
+    }));
+
+    // Tool call chunk with complete info
+    let tool_call = genai::chat::ToolCall {
+        call_id: "call_search".to_string(),
+        fn_name: "web_search".to_string(),
+        fn_arguments: json!({"query": "rust async"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call }));
+
+    // End event
+    let end = StreamEnd::default();
+    let output = collector.process(ChatStreamEvent::End(end));
+
+    // End event returns None
+    assert!(output.is_none());
+
+    // Finish and verify results
+    let result = collector.finish();
+    assert_eq!(result.text, "Let me search for that.");
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].name, "web_search");
+}
+
+#[test]
+fn test_stream_collector_multiple_tool_calls_and_end() {
+    use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd, ToolChunk};
+
+    let mut collector = StreamCollector::new();
+
+    // Text
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Running multiple tools.".to_string(),
+    }));
+
+    // First tool call
+    let tc1 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "search".to_string(),
+        fn_arguments: json!({"q": "test"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+    // Second tool call
+    let tc2 = genai::chat::ToolCall {
+        call_id: "call_2".to_string(),
+        fn_name: "calculate".to_string(),
+        fn_arguments: json!({"expr": "1+1"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+
+    // End event (tool calls already captured via ToolCallChunk)
+    collector.process(ChatStreamEvent::End(StreamEnd::default()));
+
+    let result = collector.finish();
+    assert_eq!(result.tool_calls.len(), 2);
+}
+
+#[test]
+fn test_stream_collector_text_only_then_end() {
+    use genai::chat::{ChatStreamEvent, StreamChunk, StreamEnd};
+
+    let mut collector = StreamCollector::new();
+
+    // Only text, no tool calls
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Here is your answer: 42".to_string(),
+    }));
+
+    // End event with no captured tool calls
+    collector.process(ChatStreamEvent::End(StreamEnd::default()));
+
+    let result = collector.finish();
+    assert_eq!(result.text, "Here is your answer: 42");
+    assert!(result.tool_calls.is_empty());
+    assert!(!result.needs_tools());
+}
+
+#[test]
+fn test_stream_collector_unknown_event_handling() {
+    use genai::chat::ChatStreamEvent;
+
+    let mut collector = StreamCollector::new();
+
+    // Start event (should be ignored)
+    let output = collector.process(ChatStreamEvent::Start);
+    assert!(output.is_none());
+
+    // ReasoningDelta event (if exists, should be ignored)
+    // The _ match arm handles unknown events
+
+    let result = collector.finish();
+    assert!(result.text.is_empty());
+    assert!(result.tool_calls.is_empty());
+}
+
+// ============================================================================
+// Tool Execution with Empty Patch Tests
+// ============================================================================
+
+/// Tool that reads state but doesn't modify it
+struct ReadOnlyTool;
+
+#[async_trait]
+impl Tool for ReadOnlyTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("read_only", "Read Only", "Reads state without modification")
+    }
+
+    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+        // Only read, don't modify
+        let counter = ctx.state::<CounterState>("counter");
+        let value = counter.value().unwrap_or(-1);
+
+        // No modifications, so patch should be empty
+        Ok(ToolResult::success("read_only", json!({"current_value": value})))
+    }
+}
+
+#[tokio::test]
+async fn test_tool_execution_with_empty_patch() {
+    use carve_agent::execute_single_tool;
+
+    let tool = ReadOnlyTool;
+    let call = carve_agent::ToolCall::new("call_1", "read_only", json!({}));
+    let state = json!({"counter": {"value": 42, "label": "test"}});
+
+    let result = execute_single_tool(Some(&tool), &call, &state).await;
+
+    assert!(result.result.is_success());
+    assert_eq!(result.result.data["current_value"], 42);
+    // Patch should be None (empty patches are converted to None)
+    assert!(result.patch.is_none());
+}
+
+#[tokio::test]
+async fn test_sequential_execution_with_mixed_patch_results() {
+    use carve_agent::execute_tools_sequential;
+
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("read_only".to_string(), Arc::new(ReadOnlyTool));
+    tools.insert("increment".to_string(), Arc::new(IncrementTool));
+
+    let calls = vec![
+        carve_agent::ToolCall::new("call_1", "read_only", json!({})),
+        carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+        carve_agent::ToolCall::new("call_3", "read_only", json!({})),
+    ];
+
+    let initial_state = json!({
+        "counter": {"value": 10, "label": "test"}
+    });
+
+    let (final_state, executions) = execute_tools_sequential(&tools, &calls, &initial_state).await;
+
+    // First read_only sees 10, increment changes to 11, second read_only sees 11
+    assert_eq!(executions[0].result.data["current_value"], 10);
+    assert_eq!(executions[1].result.data["new_value"], 11);
+    assert_eq!(executions[2].result.data["current_value"], 11);
+
+    // Final state should be 11
+    assert_eq!(final_state["counter"]["value"], 11);
+
+    // Check patches
+    assert!(executions[0].patch.is_none()); // read_only - no patch
+    assert!(executions[1].patch.is_some()); // increment - has patch
+    assert!(executions[2].patch.is_none()); // read_only - no patch
+}
+
+// ============================================================================
+// Agent Loop Error Tests
+// ============================================================================
+
+#[test]
+fn test_agent_loop_error_all_variants() {
+    use carve_agent::AgentLoopError;
+
+    // LlmError
+    let llm_err = AgentLoopError::LlmError("API rate limit exceeded".to_string());
+    let display = llm_err.to_string();
+    assert!(display.contains("LLM") || display.contains("rate limit"));
+
+    // StateError
+    let state_err = AgentLoopError::StateError("Failed to rebuild state".to_string());
+    let display = state_err.to_string();
+    assert!(display.contains("State") || display.contains("rebuild"));
+
+    // MaxRoundsExceeded
+    let max_rounds_err = AgentLoopError::MaxRoundsExceeded(15);
+    let display = max_rounds_err.to_string();
+    assert!(display.contains("15") || display.contains("Max") || display.contains("exceeded"));
+}
+
+// ============================================================================
+// Context Category Tests
+// ============================================================================
+
+#[test]
+fn test_context_category_variants() {
+    // Test all ContextCategory variants
+    let tool_exec = ContextCategory::ToolExecution;
+    let session = ContextCategory::Session;
+    let user_input = ContextCategory::UserInput;
+
+    // Verify they are different (PartialEq)
+    assert_eq!(tool_exec, ContextCategory::ToolExecution);
+    assert_eq!(session, ContextCategory::Session);
+    assert_eq!(user_input, ContextCategory::UserInput);
+    assert_ne!(tool_exec, session);
+    assert_ne!(session, user_input);
+    assert_ne!(user_input, tool_exec);
+}
+
+// ============================================================================
+// Mock-based End-to-End Tests (No Real LLM Required)
+// ============================================================================
+
+// These tests simulate the full agent loop without requiring a real LLM.
+// They test the same scenarios as live_deepseek.rs but using mock responses.
+
+/// Simulate a complete agent turn with tool calls
+#[tokio::test]
+async fn test_e2e_tool_execution_flow() {
+    // Simulates: User asks -> LLM calls tool -> Tool executes -> Response
+
+    // 1. Create session with initial state
+    let session = Session::with_initial_state("e2e-test", json!({"counter": 0}))
+        .with_message(Message::user("Increment the counter by 5"));
+
+    // 2. Simulate LLM response with tool call
+    let llm_response = StreamResult {
+        text: "I'll increment the counter for you.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_1",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+
+    // 3. Add assistant message with tool calls
+    let session = session.with_message(carve_agent::assistant_tool_calls(
+        &llm_response.text,
+        llm_response.tool_calls.clone(),
+    ));
+
+    // 4. Execute tools
+    let tools = tool_map([IncrementTool]);
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    // 5. Verify state changed
+    let state = session.rebuild_state().unwrap();
+    assert_eq!(state["counter"]["value"], 1);
+
+    // 6. Simulate final LLM response
+    let session = session.with_message(Message::assistant("Done! The counter is now 1."));
+
+    assert_eq!(session.message_count(), 4); // user + assistant(tool) + tool_response + assistant
+    assert_eq!(session.patch_count(), 1);
+}
+
+/// Simulate parallel tool calls
+#[tokio::test]
+async fn test_e2e_parallel_tool_calls() {
+    let session = Session::with_initial_state(
+        "e2e-parallel",
+        json!({
+            "counter": {"value": 0, "label": "test"},
+            "todos": {"items": [], "count": 0}
+        }),
+    )
+    .with_message(Message::user("Increment counter and add a todo"));
+
+    // LLM calls two tools in parallel
+    let llm_response = StreamResult {
+        text: "I'll do both.".to_string(),
+        tool_calls: vec![
+            carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+            carve_agent::ToolCall::new("call_2", "add_todo", json!({"item": "New task"})),
+        ],
+    };
+
+    let session = session.with_message(carve_agent::assistant_tool_calls(
+        &llm_response.text,
+        llm_response.tool_calls.clone(),
+    ));
+
+    // Execute tools (parallel mode)
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("increment".to_string(), Arc::new(IncrementTool));
+    tools.insert("add_todo".to_string(), Arc::new(AddTodoTool));
+
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    // Both tools executed
+    let state = session.rebuild_state().unwrap();
+    assert_eq!(state["counter"]["value"], 1);
+    assert_eq!(state["todos"]["count"], 1);
+    assert_eq!(session.patch_count(), 2); // Two parallel patches
+}
+
+/// Simulate multi-turn conversation with state accumulation
+#[tokio::test]
+async fn test_e2e_multi_turn_with_state() {
+    let tools = tool_map([IncrementTool]);
+
+    // Turn 1
+    let mut session = Session::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
+        .with_message(Message::user("Increment"));
+
+    let response1 = StreamResult {
+        text: "Incrementing.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_1",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    session = session.with_message(carve_agent::assistant_tool_calls(&response1.text, response1.tool_calls.clone()));
+    session = loop_execute_tools(session, &response1, &tools, true).await.unwrap();
+    session = session.with_message(Message::assistant("Counter is now 1."));
+
+    // Turn 2
+    session = session.with_message(Message::user("Increment again"));
+    let response2 = StreamResult {
+        text: "Incrementing again.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_2",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    session = session.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
+    session = loop_execute_tools(session, &response2, &tools, true).await.unwrap();
+    session = session.with_message(Message::assistant("Counter is now 2."));
+
+    // Turn 3
+    session = session.with_message(Message::user("One more time"));
+    let response3 = StreamResult {
+        text: "One more increment.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_3",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    session = session.with_message(carve_agent::assistant_tool_calls(&response3.text, response3.tool_calls.clone()));
+    session = loop_execute_tools(session, &response3, &tools, true).await.unwrap();
+
+    // Verify accumulated state
+    let state = session.rebuild_state().unwrap();
+    assert_eq!(state["counter"]["value"], 3);
+    assert_eq!(session.patch_count(), 3);
+}
+
+/// Simulate tool failure and error message
+#[tokio::test]
+async fn test_e2e_tool_failure_handling() {
+    let session = Session::new("e2e-failure")
+        .with_message(Message::user("Call a non-existent tool"));
+
+    // LLM calls a tool that doesn't exist
+    let llm_response = StreamResult {
+        text: "Calling tool.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_1",
+            "nonexistent_tool",
+            json!({}),
+        )],
+    };
+
+    let session = session.with_message(carve_agent::assistant_tool_calls(
+        &llm_response.text,
+        llm_response.tool_calls.clone(),
+    ));
+
+    // Execute with empty tool map
+    let tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    // Tool response should contain error
+    let last_msg = session.messages.last().unwrap();
+    assert_eq!(last_msg.role, Role::Tool);
+    assert!(last_msg.content.contains("error") || last_msg.content.contains("not found"));
+}
+
+/// Simulate session persistence and restore mid-conversation
+#[tokio::test]
+async fn test_e2e_session_persistence_restore() {
+    let storage = MemoryStorage::new();
+    let tools = tool_map([IncrementTool]);
+
+    // Phase 1: Start conversation
+    let mut session = Session::with_initial_state("e2e-persist", json!({"counter": {"value": 10, "label": ""}}))
+        .with_message(Message::user("Increment by 5"));
+
+    let response = StreamResult {
+        text: "Incrementing.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_1",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    session = session.with_message(carve_agent::assistant_tool_calls(&response.text, response.tool_calls.clone()));
+    session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+    session = session.with_message(Message::assistant("Done!"));
+
+    // Save
+    storage.save(&session).await.unwrap();
+    let state_before = session.rebuild_state().unwrap();
+
+    // Phase 2: "Restart" - load and continue
+    let mut loaded = storage.load("e2e-persist").await.unwrap().unwrap();
+
+    // Verify state preserved
+    let state_after_load = loaded.rebuild_state().unwrap();
+    assert_eq!(state_before, state_after_load);
+    assert_eq!(loaded.message_count(), 4);
+
+    // Continue conversation
+    loaded = loaded.with_message(Message::user("Increment again"));
+    let response2 = StreamResult {
+        text: "Incrementing again.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_2",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    loaded = loaded.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
+    loaded = loop_execute_tools(loaded, &response2, &tools, true).await.unwrap();
+
+    // Verify continued correctly
+    let final_state = loaded.rebuild_state().unwrap();
+    assert_eq!(final_state["counter"]["value"], 12); // 10 + 1 + 1
+}
+
+/// Simulate snapshot and continue
+#[tokio::test]
+async fn test_e2e_snapshot_and_continue() {
+    let tools = tool_map([IncrementTool]);
+
+    // Build up patches
+    let mut session = Session::with_initial_state("e2e-snapshot", json!({"counter": {"value": 0, "label": ""}}));
+
+    for i in 0..5 {
+        let response = StreamResult {
+            text: format!("Increment {}", i),
+            tool_calls: vec![carve_agent::ToolCall::new(
+                format!("call_{}", i),
+                "increment",
+                json!({"path": "counter"}),
+            )],
+        };
+        session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+    }
+
+    assert_eq!(session.patch_count(), 5);
+    let state_before = session.rebuild_state().unwrap();
+    assert_eq!(state_before["counter"]["value"], 5);
+
+    // Snapshot
+    let session = session.snapshot().unwrap();
+    assert_eq!(session.patch_count(), 0);
+    assert_eq!(session.state["counter"]["value"], 5);
+
+    // Continue after snapshot
+    let response = StreamResult {
+        text: "One more".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_5",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+    };
+    let session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+
+    let final_state = session.rebuild_state().unwrap();
+    assert_eq!(final_state["counter"]["value"], 6);
+    assert_eq!(session.patch_count(), 1); // Only new patch after snapshot
+}
+
+/// Simulate state replay (time-travel debugging)
+#[tokio::test]
+async fn test_e2e_state_replay() {
+    let tools = tool_map([IncrementTool]);
+
+    let mut session = Session::with_initial_state("e2e-replay", json!({"counter": {"value": 0, "label": ""}}));
+
+    // Create history: 0 -> 1 -> 2 -> 3 -> 4 -> 5
+    for i in 0..5 {
+        let response = StreamResult {
+            text: format!("Step {}", i),
+            tool_calls: vec![carve_agent::ToolCall::new(
+                format!("call_{}", i),
+                "increment",
+                json!({"path": "counter"}),
+            )],
+        };
+        session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+    }
+
+    // Replay to each historical point
+    assert_eq!(session.replay_to(0).unwrap()["counter"]["value"], 1);
+    assert_eq!(session.replay_to(1).unwrap()["counter"]["value"], 2);
+    assert_eq!(session.replay_to(2).unwrap()["counter"]["value"], 3);
+    assert_eq!(session.replay_to(3).unwrap()["counter"]["value"], 4);
+    assert_eq!(session.replay_to(4).unwrap()["counter"]["value"], 5);
+
+    // Final state
+    assert_eq!(session.rebuild_state().unwrap()["counter"]["value"], 5);
+}
+
+/// Simulate long conversation with many messages
+#[tokio::test]
+async fn test_e2e_long_conversation() {
+    let mut session = Session::new("e2e-long");
+
+    // Build 100 turns of conversation
+    for i in 0..100 {
+        session = session
+            .with_message(Message::user(format!("Message {}", i)))
+            .with_message(Message::assistant(format!("Response {}", i)));
+    }
+
+    assert_eq!(session.message_count(), 200);
+
+    // Storage should handle this efficiently
+    let storage = MemoryStorage::new();
+    storage.save(&session).await.unwrap();
+    let loaded = storage.load("e2e-long").await.unwrap().unwrap();
+    assert_eq!(loaded.message_count(), 200);
+}
+
+/// Simulate sequential tool execution (non-parallel mode)
+#[tokio::test]
+async fn test_e2e_sequential_tool_execution() {
+    let session = Session::with_initial_state(
+        "e2e-sequential",
+        json!({"counter": {"value": 0, "label": ""}}),
+    );
+
+    // Multiple tool calls
+    let llm_response = StreamResult {
+        text: "Running sequentially.".to_string(),
+        tool_calls: vec![
+            carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
+            carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
+            carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
+        ],
+    };
+
+    let tools = tool_map([IncrementTool]);
+
+    // Execute in sequential mode (parallel = false)
+    let session = loop_execute_tools(session, &llm_response, &tools, false)
+        .await
+        .unwrap();
+
+    // In sequential mode, each tool sees the previous tool's result
+    // So counter should be 3 (0 -> 1 -> 2 -> 3)
+    let state = session.rebuild_state().unwrap();
+    assert_eq!(state["counter"]["value"], 3);
+}
+
+// ============================================================================
+// Execute Single Tool Edge Cases
+// ============================================================================
+
+#[tokio::test]
+async fn test_execute_single_tool_not_found() {
+    use carve_agent::execute_single_tool;
+
+    let call = carve_agent::ToolCall::new("call_1", "nonexistent_tool", json!({}));
+    let state = json!({});
+
+    // Tool is None - not found
+    let result = execute_single_tool(None, &call, &state).await;
+
+    assert!(result.result.is_error());
+    assert!(result.result.message.as_ref().unwrap().contains("not found"));
+    assert!(result.patch.is_none());
+}
+
+#[tokio::test]
+async fn test_execute_single_tool_with_complex_state() {
+    use carve_agent::execute_single_tool;
+
+    let tool = IncrementTool;
+    let call = carve_agent::ToolCall::new("call_1", "increment", json!({"path": "data.counters.main"}));
+
+    // Complex nested state
+    let state = json!({
+        "data": {
+            "counters": {
+                "main": {"value": 100, "label": "main counter"},
+                "secondary": {"value": 50, "label": "secondary"}
+            },
+            "metadata": {"created": "2024-01-01"}
+        }
+    });
+
+    let result = execute_single_tool(Some(&tool), &call, &state).await;
+
+    assert!(result.result.is_success());
+    assert_eq!(result.result.data["new_value"], 101);
+}
+
+// ============================================================================
+// ContextProvider & SystemReminder Integration Tests
+// ============================================================================
+
+/// Test ContextProvider integration in a simulated agent flow
+#[tokio::test]
+async fn test_e2e_context_provider_integration() {
+    // Simulate: Provider injects context -> Tool sees updated state
+
+    let manager = StateManager::new(json!({
+        "counter": {"value": 15, "label": "initial"},
+        "user_context": {}
+    }));
+
+    let provider = CounterContextProvider;
+
+    // 1. Provider runs and may modify state
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "provider_call", "provider:counter");
+
+    let messages = provider.provide(&ctx).await;
+
+    // Provider should return message for high counter (>10)
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("high"));
+
+    // Provider also modifies state
+    manager.commit(ctx.take_patch()).await.unwrap();
+
+    // 2. Verify state was modified by provider
+    let new_snapshot = manager.snapshot().await;
+    assert_eq!(new_snapshot["counter"]["label"], "context_provided");
+
+    // 3. Now a tool runs and sees the provider's changes
+    let tool = IncrementTool;
+    let ctx = Context::new(&new_snapshot, "tool_call", "tool:increment");
+    let result = tool.execute(json!({"path": "counter"}), &ctx).await.unwrap();
+
+    assert!(result.is_success());
+    // Counter was 15, now 16
+    assert_eq!(result.data["new_value"], 16);
+}
+
+/// Test SystemReminder integration
+#[tokio::test]
+async fn test_e2e_system_reminder_integration() {
+    let manager = StateManager::new(json!({
+        "todos": {"items": ["Task 1", "Task 2", "Task 3"], "count": 3}
+    }));
+
+    let reminder = TodoReminder;
+
+    // Reminder checks state and returns message
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "reminder_call", "reminder:todo");
+
+    let message = reminder.remind(&ctx).await;
+
+    // Should return reminder about pending todos
+    assert!(message.is_some());
+    let msg = message.unwrap();
+    assert!(msg.contains("3")); // 3 pending todos
+}
+
+/// Test multiple ContextProviders with priority ordering
+#[tokio::test]
+async fn test_e2e_multiple_providers_priority() {
+    // Define providers with different priorities
+    struct HighPriorityProvider;
+    struct LowPriorityProvider;
+
+    #[async_trait]
+    impl ContextProvider for HighPriorityProvider {
+        fn id(&self) -> &str { "high_priority" }
+        fn category(&self) -> ContextCategory { ContextCategory::Session }
+        fn priority(&self) -> u32 { 100 } // Higher priority
+
+        async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
+            vec!["High priority context".to_string()]
+        }
+    }
+
+    #[async_trait]
+    impl ContextProvider for LowPriorityProvider {
+        fn id(&self) -> &str { "low_priority" }
+        fn category(&self) -> ContextCategory { ContextCategory::Session }
+        fn priority(&self) -> u32 { 10 } // Lower priority
+
+        async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
+            vec!["Low priority context".to_string()]
+        }
+    }
+
+    let high = HighPriorityProvider;
+    let low = LowPriorityProvider;
+
+    // Verify priorities
+    assert!(high.priority() > low.priority());
+
+    // Both providers can run and produce context
+    let manager = StateManager::new(json!({}));
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "test", "test");
+
+    let high_msgs = high.provide(&ctx).await;
+    let low_msgs = low.provide(&ctx).await;
+
+    assert_eq!(high_msgs.len(), 1);
+    assert_eq!(low_msgs.len(), 1);
+}
+
+/// Test ContextProvider that modifies state based on conditions
+#[tokio::test]
+async fn test_e2e_conditional_context_provider() {
+    struct ConditionalProvider;
+
+    #[async_trait]
+    impl ContextProvider for ConditionalProvider {
+        fn id(&self) -> &str { "conditional" }
+        fn category(&self) -> ContextCategory { ContextCategory::ToolExecution }
+        fn priority(&self) -> u32 { 50 }
+
+        async fn provide(&self, ctx: &Context<'_>) -> Vec<String> {
+            let counter = ctx.state::<CounterState>("counter");
+            let value = counter.value().unwrap_or(0);
+
+            if value < 0 {
+                // Auto-fix negative values
+                counter.set_value(0);
+                vec!["Warning: Counter was negative, reset to 0".to_string()]
+            } else if value > 100 {
+                vec![format!("Note: Counter is very high ({})", value)]
+            } else {
+                vec![]
+            }
+        }
+    }
+
+    let provider = ConditionalProvider;
+
+    // Test with negative value
+    let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "test", "provider:conditional");
+
+    let messages = provider.provide(&ctx).await;
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0].contains("negative"));
+
+    // Apply the fix
+    manager.commit(ctx.take_patch()).await.unwrap();
+    let fixed_state = manager.snapshot().await;
+    assert_eq!(fixed_state["counter"]["value"], 0);
+}
+
+// ============================================================================
+// ToolResult Pending/Warning Status Tests
+// ============================================================================
+
+/// Tool that returns pending status (needs user confirmation)
+struct ConfirmationTool;
+
+#[async_trait]
+impl Tool for ConfirmationTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("dangerous_action", "Dangerous Action", "Requires confirmation")
+            .with_confirmation(true)
+    }
+
+    async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+        let confirmed = args["confirmed"].as_bool().unwrap_or(false);
+
+        if confirmed {
+            Ok(ToolResult::success("dangerous_action", json!({"status": "executed"})))
+        } else {
+            Ok(ToolResult::pending(
+                "dangerous_action",
+                "This action requires confirmation. Please confirm to proceed.",
+            ))
+        }
+    }
+}
+
+/// Tool that returns warning status (partial success)
+struct PartialSuccessTool;
+
+#[async_trait]
+impl Tool for PartialSuccessTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("batch_process", "Batch Process", "Process multiple items")
+    }
+
+    async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+        let items = args["items"].as_array().map(|a| a.len()).unwrap_or(0);
+
+        // Simulate: some items succeed, some fail
+        let successful = items * 8 / 10; // 80% success rate
+        let failed = items - successful;
+
+        if failed > 0 {
+            Ok(ToolResult::warning(
+                "batch_process",
+                json!({
+                    "processed": successful,
+                    "failed": failed,
+                    "total": items
+                }),
+                format!("{} items processed, {} failed", successful, failed),
+            ))
+        } else {
+            Ok(ToolResult::success(
+                "batch_process",
+                json!({"processed": items, "failed": 0}),
+            ))
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_tool_pending_status() {
+    let tool = ConfirmationTool;
+    let manager = StateManager::new(json!({}));
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "call_1", "tool:dangerous");
+
+    // First call without confirmation
+    let result = tool.execute(json!({}), &ctx).await.unwrap();
+
+    assert!(result.is_pending());
+    assert!(!result.is_success());
+    assert!(!result.is_error());
+    assert!(result.message.as_ref().unwrap().contains("confirmation"));
+
+    // Second call with confirmation
+    let result = tool.execute(json!({"confirmed": true}), &ctx).await.unwrap();
+
+    assert!(result.is_success());
+    assert!(!result.is_pending());
+}
+
+#[tokio::test]
+async fn test_e2e_tool_warning_status() {
+    let tool = PartialSuccessTool;
+    let manager = StateManager::new(json!({}));
+    let snapshot = manager.snapshot().await;
+    let ctx = Context::new(&snapshot, "call_1", "tool:batch");
+
+    // Process 10 items (80% success = 8 success, 2 failed)
+    let result = tool.execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx).await.unwrap();
+
+    // Warning is still considered "success" but with a message
+    assert!(result.is_success());
+    assert!(result.message.is_some());
+    assert!(result.message.as_ref().unwrap().contains("failed"));
+    assert_eq!(result.data["processed"], 8);
+    assert_eq!(result.data["failed"], 2);
+}
+
+#[tokio::test]
+async fn test_e2e_pending_tool_in_session_flow() {
+    let session = Session::new("pending-test")
+        .with_message(Message::user("Delete all files"));
+
+    // Simulate LLM calling dangerous action without confirmation
+    let llm_response = StreamResult {
+        text: "I'll delete the files.".to_string(),
+        tool_calls: vec![carve_agent::ToolCall::new(
+            "call_1",
+            "dangerous_action",
+            json!({}),
+        )],
+    };
+
+    let session = session.with_message(carve_agent::assistant_tool_calls(
+        &llm_response.text,
+        llm_response.tool_calls.clone(),
+    ));
+
+    let mut tools: std::collections::HashMap<String, Arc<dyn Tool>> =
+        std::collections::HashMap::new();
+    tools.insert("dangerous_action".to_string(), Arc::new(ConfirmationTool));
+
+    let session = loop_execute_tools(session, &llm_response, &tools, true)
+        .await
+        .unwrap();
+
+    // Check tool response contains pending status
+    let tool_msg = session.messages.last().unwrap();
+    assert_eq!(tool_msg.role, Role::Tool);
+    assert!(tool_msg.content.contains("pending") || tool_msg.content.contains("confirmation"));
+}
+
+// ============================================================================
+// Streaming Edge Case Tests
+// ============================================================================
+
+#[test]
+fn test_stream_collector_empty_stream() {
+    let collector = StreamCollector::new();
+    let result = collector.finish();
+
+    assert!(result.text.is_empty());
+    assert!(result.tool_calls.is_empty());
+    assert!(!result.needs_tools());
+}
+
+#[test]
+fn test_stream_collector_only_whitespace() {
+    use genai::chat::{ChatStreamEvent, StreamChunk};
+
+    let mut collector = StreamCollector::new();
+
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "   ".to_string(),
+    }));
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "\n\n".to_string(),
+    }));
+
+    let result = collector.finish();
+    assert_eq!(result.text, "   \n\n");
+}
+
+#[test]
+fn test_stream_collector_interleaved_text_and_tools() {
+    use genai::chat::{ChatStreamEvent, StreamChunk, ToolChunk};
+
+    let mut collector = StreamCollector::new();
+
+    // Text
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Let me ".to_string(),
+    }));
+
+    // Tool call starts
+    let tc1 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "search".to_string(),
+        fn_arguments: json!({"q": "test"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+    // More text
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "help you.".to_string(),
+    }));
+
+    // Another tool call
+    let tc2 = genai::chat::ToolCall {
+        call_id: "call_2".to_string(),
+        fn_name: "calculate".to_string(),
+        fn_arguments: json!({"expr": "1+1"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+
+    let result = collector.finish();
+
+    assert_eq!(result.text, "Let me help you.");
+    assert_eq!(result.tool_calls.len(), 2);
+}
+
+#[test]
+fn test_stream_result_with_empty_tool_calls() {
+    let result = StreamResult {
+        text: "Hello".to_string(),
+        tool_calls: vec![],
+    };
+
+    assert!(!result.needs_tools());
+}
+
+// ============================================================================
+// Concurrent Session Operations Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_concurrent_session_modifications() {
+    // Test that concurrent modifications to different sessions work correctly
+    let storage = Arc::new(MemoryStorage::new());
+
+    let mut handles = vec![];
+
+    for i in 0..20 {
+        let storage = Arc::clone(&storage);
+        let handle = tokio::spawn(async move {
+            let session_id = format!("concurrent-session-{}", i);
+
+            // Create session
+            let mut session = Session::with_initial_state(&session_id, json!({"value": i}));
+
+            // Add messages
+            for j in 0..5 {
+                session = session.with_message(Message::user(format!("Msg {} from session {}", j, i)));
+            }
+
+            // Save
+            storage.save(&session).await.unwrap();
+
+            // Load and verify
+            let loaded = storage.load(&session_id).await.unwrap().unwrap();
+            assert_eq!(loaded.message_count(), 5);
+            assert_eq!(loaded.state["value"], i);
+
+            session_id
+        });
+        handles.push(handle);
+    }
+
+    let results: Vec<String> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(results.len(), 20);
+
+    // Verify all sessions exist
+    let ids = storage.list().await.unwrap();
+    assert_eq!(ids.len(), 20);
+}
+
+#[tokio::test]
+async fn test_concurrent_read_write_same_session() {
+    let storage = Arc::new(MemoryStorage::new());
+
+    // Create initial session
+    let session = Session::new("shared-session")
+        .with_message(Message::user("Initial message"));
+    storage.save(&session).await.unwrap();
+
+    let mut handles = vec![];
+
+    // Multiple readers and writers
+    for i in 0..10 {
+        let storage = Arc::clone(&storage);
+        let handle = tokio::spawn(async move {
+            if i % 2 == 0 {
+                // Reader
+                let loaded = storage.load("shared-session").await.unwrap();
+                loaded.is_some()
+            } else {
+                // Writer (updates the session)
+                let mut session = storage.load("shared-session").await.unwrap().unwrap();
+                session = session.with_message(Message::user(format!("Update {}", i)));
+                storage.save(&session).await.unwrap();
+                true
+            }
+        });
+        handles.push(handle);
+    }
+
+    let results: Vec<bool> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // All operations should succeed
+    assert!(results.iter().all(|&r| r));
+
+    // Final session should have messages
+    let final_session = storage.load("shared-session").await.unwrap().unwrap();
+    assert!(final_session.message_count() >= 1);
+}
+
+#[tokio::test]
+async fn test_concurrent_tool_executions_isolated() {
+    // Test that concurrent tool executions don't interfere with each other
+    let mut handles = vec![];
+
+    for i in 0..10 {
+        let handle = tokio::spawn(async move {
+            let session = Session::with_initial_state(
+                format!("isolated-{}", i),
+                json!({"counter": {"value": i * 10, "label": ""}}),
+            );
+
+            let response = StreamResult {
+                text: "Incrementing".to_string(),
+                tool_calls: vec![carve_agent::ToolCall::new(
+                    format!("call_{}", i),
+                    "increment",
+                    json!({"path": "counter"}),
+                )],
+            };
+
+            let tools = tool_map([IncrementTool]);
+            let session = loop_execute_tools(session, &response, &tools, true)
+                .await
+                .unwrap();
+
+            let state = session.rebuild_state().unwrap();
+            let expected = i * 10 + 1;
+            state["counter"]["value"].as_i64().unwrap() == expected as i64
+        });
+        handles.push(handle);
+    }
+
+    let results: Vec<bool> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // All should have correct isolated state
+    assert!(results.iter().all(|&r| r));
+}
+
+// ============================================================================
+// Storage Edge Case Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_storage_session_not_found() {
+    let storage = MemoryStorage::new();
+
+    let result = storage.load("nonexistent").await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_storage_delete_nonexistent() {
+    let storage = MemoryStorage::new();
+
+    // Should not error when deleting non-existent session
+    let result = storage.delete("nonexistent").await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_storage_overwrite_session() {
+    let storage = MemoryStorage::new();
+
+    // Create and save
+    let session1 = Session::new("overwrite-test")
+        .with_message(Message::user("First version"));
+    storage.save(&session1).await.unwrap();
+
+    // Overwrite
+    let session2 = Session::new("overwrite-test")
+        .with_message(Message::user("Second version"))
+        .with_message(Message::assistant("Response"));
+    storage.save(&session2).await.unwrap();
+
+    // Load and verify overwritten
+    let loaded = storage.load("overwrite-test").await.unwrap().unwrap();
+    assert_eq!(loaded.message_count(), 2);
+    assert!(loaded.messages[0].content.contains("Second"));
+}
+
+#[tokio::test]
+async fn test_file_storage_special_characters_in_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let storage = FileStorage::new(temp_dir.path());
+
+    // Session ID with special characters (but filesystem-safe)
+    let session = Session::new("session_with-special.chars_123")
+        .with_message(Message::user("Test"));
+
+    storage.save(&session).await.unwrap();
+    let loaded = storage.load("session_with-special.chars_123").await.unwrap();
+
+    assert!(loaded.is_some());
+    assert_eq!(loaded.unwrap().message_count(), 1);
+}
+
+#[tokio::test]
+async fn test_storage_empty_session() {
+    let storage = MemoryStorage::new();
+
+    // Session with no messages or patches
+    let session = Session::new("empty-session");
+    storage.save(&session).await.unwrap();
+
+    let loaded = storage.load("empty-session").await.unwrap().unwrap();
+    assert_eq!(loaded.message_count(), 0);
+    assert_eq!(loaded.patch_count(), 0);
+}
+
+#[tokio::test]
+async fn test_storage_large_state() {
+    let storage = MemoryStorage::new();
+
+    // Create session with large state
+    let mut large_data = serde_json::Map::new();
+    for i in 0..1000 {
+        large_data.insert(
+            format!("key_{}", i),
+            json!({
+                "index": i,
+                "data": "x".repeat(100),
+                "nested": {"a": 1, "b": 2, "c": 3}
+            }),
+        );
+    }
+
+    let session = Session::with_initial_state("large-state", Value::Object(large_data))
+        .with_message(Message::user("Test with large state"));
+
+    storage.save(&session).await.unwrap();
+
+    let loaded = storage.load("large-state").await.unwrap().unwrap();
+    let state = loaded.rebuild_state().unwrap();
+
+    assert!(state.as_object().unwrap().len() >= 1000);
+}
+
+// ============================================================================
+// Message Edge Case Tests
+// ============================================================================
+
+#[test]
+fn test_message_empty_content() {
+    let msg = Message::user("");
+    assert_eq!(msg.content, "");
+    assert_eq!(msg.role, Role::User);
+}
+
+#[test]
+fn test_message_special_characters() {
+    let special = "Hello! 你好! مرحبا! 🎉 <script>alert('xss')</script> \"quotes\" 'apostrophes'";
+    let msg = Message::user(special);
+    assert_eq!(msg.content, special);
+}
+
+#[test]
+fn test_message_very_long_content() {
+    let long_content = "a".repeat(100_000);
+    let msg = Message::user(&long_content);
+    assert_eq!(msg.content.len(), 100_000);
+}
+
+#[test]
+fn test_message_multiline_content() {
+    let multiline = "Line 1\nLine 2\r\nLine 3\n\n\nLine 6";
+    let msg = Message::user(multiline);
+    assert_eq!(msg.content, multiline);
+}
+
+#[test]
+fn test_message_json_in_content() {
+    let json_content = r#"{"key": "value", "array": [1, 2, 3]}"#;
+    let msg = Message::user(json_content);
+    assert_eq!(msg.content, json_content);
+
+    // Should be serializable
+    let serialized = serde_json::to_string(&msg).unwrap();
+    let deserialized: Message = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.content, json_content);
+}
+
+#[test]
+fn test_session_with_all_message_types() {
+    let session = Session::new("all-types")
+        .with_message(Message::system("You are helpful."))
+        .with_message(Message::user("Hello"))
+        .with_message(Message::assistant("Hi there!"))
+        .with_message(Message::assistant_with_tool_calls(
+            "Let me check.",
+            vec![carve_agent::ToolCall::new("call_1", "search", json!({}))],
+        ))
+        .with_message(Message::tool("call_1", r#"{"result": "found"}"#));
+
+    assert_eq!(session.message_count(), 5);
+
+    // Verify each type
+    assert_eq!(session.messages[0].role, Role::System);
+    assert_eq!(session.messages[1].role, Role::User);
+    assert_eq!(session.messages[2].role, Role::Assistant);
+    assert_eq!(session.messages[3].role, Role::Assistant);
+    assert!(session.messages[3].tool_calls.is_some());
+    assert_eq!(session.messages[4].role, Role::Tool);
+    assert_eq!(session.messages[4].tool_call_id, Some("call_1".to_string()));
+}
+
+#[tokio::test]
+async fn test_e2e_empty_user_message() {
+    let session = Session::new("empty-msg-test")
+        .with_message(Message::user(""));
+
+    // Simulate LLM response to empty message
+    let llm_response = StreamResult {
+        text: "I notice you sent an empty message. How can I help you?".to_string(),
+        tool_calls: vec![],
+    };
+
+    let session = session.with_message(Message::assistant(&llm_response.text));
+
+    assert_eq!(session.message_count(), 2);
+    assert!(session.messages[0].content.is_empty());
+    assert!(!session.messages[1].content.is_empty());
+}
+
+#[tokio::test]
+async fn test_e2e_system_prompt_in_session() {
+    // Test that system prompt is preserved throughout conversation
+    let session = Session::new("system-prompt-test")
+        .with_message(Message::system("You are a calculator. Only respond with numbers."))
+        .with_message(Message::user("What is 2+2?"))
+        .with_message(Message::assistant("4"))
+        .with_message(Message::user("And 3+3?"))
+        .with_message(Message::assistant("6"));
+
+    // Save and load
+    let storage = MemoryStorage::new();
+    storage.save(&session).await.unwrap();
+
+    let loaded = storage.load("system-prompt-test").await.unwrap().unwrap();
+
+    // System prompt should be first message
+    assert_eq!(loaded.messages[0].role, Role::System);
+    assert!(loaded.messages[0].content.contains("calculator"));
+}
+
+// ============================================================================
+// Tool Descriptor Edge Cases
+// ============================================================================
+
+#[test]
+fn test_tool_descriptor_all_options() {
+    let desc = ToolDescriptor::new("full_tool", "Full Tool", "A tool with all options")
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "required_field": {"type": "string"},
+                "optional_field": {"type": "number"}
+            },
+            "required": ["required_field"]
+        }))
+        .with_confirmation(true)
+        .with_category("testing")
+        .with_metadata("version", json!("1.0.0"))
+        .with_metadata("author", json!("test"));
+
+    assert_eq!(desc.id, "full_tool");
+    assert_eq!(desc.name, "Full Tool");
+    assert!(desc.requires_confirmation);
+    assert_eq!(desc.category, Some("testing".to_string()));
+    assert_eq!(desc.metadata.len(), 2);
+}
+
+#[test]
+fn test_tool_descriptor_minimal() {
+    let desc = ToolDescriptor::new("minimal", "Minimal", "");
+
+    assert_eq!(desc.id, "minimal");
+    assert_eq!(desc.description, "");
+    assert!(!desc.requires_confirmation);
+    assert!(desc.category.is_none());
+    assert!(desc.metadata.is_empty());
+}

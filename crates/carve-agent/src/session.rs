@@ -100,6 +100,23 @@ impl Session {
         apply_patches(&self.state, self.patches.iter().map(|p| p.patch()))
     }
 
+    /// Replay state to a specific patch index (0-based).
+    ///
+    /// - `patch_index = 0`: Returns state after applying the first patch only
+    /// - `patch_index = n`: Returns state after applying patches 0..=n
+    ///
+    /// This enables time-travel debugging by accessing any historical state point.
+    pub fn replay_to(&self, patch_index: usize) -> CarveResult<Value> {
+        if self.patches.is_empty() || patch_index >= self.patches.len() {
+            return self.rebuild_state();
+        }
+
+        apply_patches(
+            &self.state,
+            self.patches[..=patch_index].iter().map(|p| p.patch()),
+        )
+    }
+
     /// Create a snapshot, collapsing patches into the base state.
     ///
     /// Returns a new Session with the current state as base and empty patches.
@@ -237,5 +254,46 @@ mod tests {
 
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
+    }
+
+    #[test]
+    fn test_session_replay_to() {
+        let state = json!({"counter": 0});
+        let session = Session::with_initial_state("test-1", state)
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(10))),
+            ))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(20))),
+            ))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(30))),
+            ));
+
+        // Replay to patch 0 (after first patch)
+        let state_at_0 = session.replay_to(0).unwrap();
+        assert_eq!(state_at_0["counter"], 10);
+
+        // Replay to patch 1 (after second patch)
+        let state_at_1 = session.replay_to(1).unwrap();
+        assert_eq!(state_at_1["counter"], 20);
+
+        // Replay to patch 2 (after third patch)
+        let state_at_2 = session.replay_to(2).unwrap();
+        assert_eq!(state_at_2["counter"], 30);
+
+        // Replay beyond available patches returns full state
+        let state_beyond = session.replay_to(100).unwrap();
+        assert_eq!(state_beyond["counter"], 30);
+    }
+
+    #[test]
+    fn test_session_replay_to_empty() {
+        let state = json!({"counter": 0});
+        let session = Session::with_initial_state("test-1", state.clone());
+
+        // Replay on empty patches returns base state
+        let replayed = session.replay_to(0).unwrap();
+        assert_eq!(replayed, state);
     }
 }
