@@ -237,4 +237,19 @@ mod tests {
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         assert!(!plugin.clear_after_llm_request);
     }
+
+    #[tokio::test]
+    async fn test_reminder_plugin_before_llm_request() {
+        let plugin = ReminderPlugin::new();
+        let doc = json!({
+            "reminders": { "items": ["Test reminder"] }
+        });
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        // Call before_llm_request - should not panic
+        plugin.before_llm_request(&ctx).await;
+
+        // The method is a no-op but should be callable
+        assert!(!ctx.has_changes());
+    }
 }

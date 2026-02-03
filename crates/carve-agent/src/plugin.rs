@@ -185,4 +185,10 @@ mod tests {
             .await;
         plugin.on_session_end(&ctx).await;
     }
+
+    #[test]
+    fn test_noop_plugin_id() {
+        let plugin = NoOpPlugin;
+        assert_eq!(plugin.id(), "noop");
+    }
 }

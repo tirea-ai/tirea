@@ -343,4 +343,43 @@ mod tests {
         let pending = ctx.pending_interaction().unwrap();
         assert!(pending.message.contains("test_tool"));
     }
+
+    #[test]
+    fn test_get_default_permission() {
+        let doc = json!({
+            "permissions": {
+                "default_behavior": "allow",
+                "tools": {}
+            }
+        });
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        // Should read default_behavior from state
+        let default = ctx.get_default_permission();
+        assert_eq!(default, ToolPermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn test_get_default_permission_deny() {
+        let doc = json!({
+            "permissions": {
+                "default_behavior": "deny",
+                "tools": {}
+            }
+        });
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        let default = ctx.get_default_permission();
+        assert_eq!(default, ToolPermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn test_get_default_permission_fallback() {
+        // When state is missing, should return default (Ask)
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        let default = ctx.get_default_permission();
+        assert_eq!(default, ToolPermissionBehavior::Ask);
+    }
 }
