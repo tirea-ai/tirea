@@ -229,4 +229,89 @@ mod tests {
         assert_eq!(pending.id, "int_1");
         assert_eq!(pending.message, "Are you sure?");
     }
+
+    // =============================================================================
+    // Additional trait method coverage tests
+    // =============================================================================
+
+    #[test]
+    fn test_execution_ext_is_blocked_via_trait() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        // Explicitly use the trait method
+        let result: bool = ExecutionContextExt::is_blocked(&ctx);
+        assert!(!result);
+
+        ctx.block("test");
+        let result2: bool = ExecutionContextExt::is_blocked(&ctx);
+        assert!(result2);
+    }
+
+    #[test]
+    fn test_execution_ext_is_pending_via_trait() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        // Explicitly use the trait method
+        let result: bool = ExecutionContextExt::is_pending(&ctx);
+        assert!(!result);
+
+        ctx.pending(Interaction::confirm("int_1", "test"));
+        let result2: bool = ExecutionContextExt::is_pending(&ctx);
+        assert!(result2);
+    }
+
+    #[test]
+    fn test_execution_ext_block_reason_via_trait() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        // Explicitly use the trait method
+        let result: Option<String> = ExecutionContextExt::block_reason(&ctx);
+        assert!(result.is_none());
+
+        ctx.block("my reason");
+        let result2: Option<String> = ExecutionContextExt::block_reason(&ctx);
+        assert_eq!(result2, Some("my reason".to_string()));
+    }
+
+    #[test]
+    fn test_execution_ext_clear_blocked_via_trait() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        ctx.block("test");
+        assert!(ctx.is_blocked());
+
+        // Explicitly use the trait method
+        ExecutionContextExt::clear_blocked(&ctx);
+        assert!(!ctx.is_blocked());
+    }
+
+    #[test]
+    fn test_execution_ext_clear_pending_via_trait() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        ctx.pending(Interaction::confirm("int_1", "test"));
+        assert!(ctx.is_pending());
+
+        // Explicitly use the trait method
+        ExecutionContextExt::clear_pending(&ctx);
+        assert!(!ctx.is_pending());
+    }
+
+    #[test]
+    fn test_execution_state_with_pending_interaction() {
+        let interaction = Interaction::confirm("int_1", "Confirm?");
+        let state = ExecutionState {
+            blocked: None,
+            pending: Some(interaction.clone()),
+        };
+
+        assert!(state.blocked.is_none());
+        assert!(state.pending.is_some());
+        assert_eq!(state.pending.as_ref().unwrap().id, "int_1");
+    }
 }
