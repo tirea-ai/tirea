@@ -875,7 +875,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
 
 /// Test 11: Session snapshot - collapse patches and continue
 async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
