@@ -621,4 +621,100 @@ mod tests {
         // State should have the modification
         assert!(final_state["context"]["data"]["modified"] == json!(true));
     }
+
+    #[tokio::test]
+    async fn test_block_with_patch() {
+        // Test that blocking returns a patch if the plugin modified state before blocking
+        use crate::plugins::{ContextDataExt, ExecutionContextExt};
+
+        struct BlockWithPatchPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for BlockWithPatchPlugin {
+            fn id(&self) -> &str {
+                "block_with_patch"
+            }
+
+            async fn before_tool_execute(&self, ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
+                // First modify state
+                ctx.set("modified_before_block", json!(true));
+                // Then block
+                ctx.block("Blocked after state modification");
+            }
+        }
+
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "test"}));
+        let state = json!({"context": {"data": {}}});
+        let plugin = Arc::new(BlockWithPatchPlugin);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        assert!(exec.result.is_error());
+        // Should have a patch from the state modification
+        assert!(exec.patch.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_pending_with_patch() {
+        // Test that pending returns a patch if the plugin modified state
+        use crate::plugins::{ContextDataExt, ExecutionContextExt};
+        use crate::state_types::Interaction;
+
+        struct PendingWithPatchPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for PendingWithPatchPlugin {
+            fn id(&self) -> &str {
+                "pending_with_patch"
+            }
+
+            async fn before_tool_execute(&self, ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
+                // First modify state
+                ctx.set("modified_before_pending", json!(true));
+                // Then set pending
+                ctx.pending(Interaction::confirm("confirm_1", "Please confirm"));
+            }
+        }
+
+        let tool = EchoTool;
+        let call = ToolCall::new("call_1", "echo", json!({"msg": "test"}));
+        let state = json!({"context": {"data": {}}});
+        let plugin = Arc::new(PendingWithPatchPlugin);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        assert!(exec.result.is_pending());
+        // Should have a patch from the state modification
+        assert!(exec.patch.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_tool_execution_error() {
+        // Test that tool execution errors are handled correctly
+        struct FailingTool;
+
+        #[async_trait]
+        impl Tool for FailingTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("failing", "Failing", "Always fails")
+            }
+
+            async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+                Err(ToolError::ExecutionFailed("Intentional failure".to_string()))
+            }
+        }
+
+        let tool = FailingTool;
+        let call = ToolCall::new("call_1", "failing", json!({}));
+        let state = json!({});
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![];
+
+        let exec = execute_single_tool_with_plugins(Some(&tool), &call, &state, &plugins).await;
+
+        assert!(exec.result.is_error());
+        assert!(exec.result.message.as_ref().unwrap().contains("Intentional failure"));
+    }
 }
