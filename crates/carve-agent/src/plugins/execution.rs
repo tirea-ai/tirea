@@ -21,6 +21,7 @@ use crate::state_types::Interaction;
 use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// State path for execution state.
 pub const EXECUTION_STATE_PATH: &str = "execution";
@@ -68,43 +69,45 @@ pub trait ExecutionContextExt {
 
 impl ExecutionContextExt for Context<'_> {
     fn block(&self, reason: impl Into<String>) {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.set_blocked(Some(reason.into()));
+        // Use Context's built-in execution control
+        self.set_blocked(reason);
     }
 
     fn pending(&self, interaction: Interaction) {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.set_pending(Some(interaction));
+        // Store the interaction as JSON in Context's pending field
+        let value = serde_json::to_value(&interaction).unwrap_or(Value::Null);
+        self.set_pending(value);
     }
 
     fn is_blocked(&self) -> bool {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.blocked().ok().flatten().is_some()
+        // Use Context's built-in execution control
+        Context::is_blocked(self)
     }
 
     fn is_pending(&self) -> bool {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.pending().ok().flatten().is_some()
+        // Use Context's built-in execution control
+        Context::is_pending(self)
     }
 
     fn block_reason(&self) -> Option<String> {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.blocked().ok().flatten()
+        // Use Context's built-in execution control
+        Context::block_reason(self)
     }
 
     fn pending_interaction(&self) -> Option<Interaction> {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.pending().ok().flatten()
+        // Retrieve interaction from Context's pending field
+        self.pending_data()
+            .and_then(|v| serde_json::from_value(v).ok())
     }
 
     fn clear_blocked(&self) {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.set_blocked(None);
+        // Use Context's built-in execution control
+        Context::clear_blocked(self);
     }
 
     fn clear_pending(&self) {
-        let state = self.state::<ExecutionState>(EXECUTION_STATE_PATH);
-        state.set_pending(None);
+        // Use Context's built-in execution control
+        Context::clear_pending(self);
     }
 }
 
@@ -135,93 +138,95 @@ mod tests {
 
     #[test]
     fn test_block() {
-        let doc = json!({ "execution": { "blocked": null, "pending": null } });
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
         assert!(!ctx.is_blocked());
         ctx.block("Test block reason");
-        // Note: We can't verify is_blocked() returns true because
-        // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        // Block is immediately visible via Context's internal field
+        assert!(ctx.is_blocked());
+        assert_eq!(ctx.block_reason(), Some("Test block reason".to_string()));
     }
 
     #[test]
     fn test_pending() {
-        let doc = json!({ "execution": { "blocked": null, "pending": null } });
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
         assert!(!ctx.is_pending());
         ctx.pending(Interaction::confirm("int_1", "Are you sure?"));
-        // Note: We can't verify is_pending() returns true because
-        // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        // Pending is immediately visible via Context's internal field
+        assert!(ctx.is_pending());
+        let pending = ctx.pending_interaction().unwrap();
+        assert_eq!(pending.id, "int_1");
     }
 
     #[test]
     fn test_clear_blocked() {
-        let doc = json!({ "execution": { "blocked": "existing", "pending": null } });
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
+        // First block
+        ctx.block("existing");
         assert!(ctx.is_blocked());
+
+        // Then clear
         ctx.clear_blocked();
-        // Note: We can't verify is_blocked() returns false because
-        // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(!ctx.is_blocked());
     }
 
     #[test]
     fn test_clear_pending() {
-        let interaction = Interaction::confirm("int_1", "Test?");
-        let doc = json!({
-            "execution": {
-                "blocked": null,
-                "pending": serde_json::to_value(&interaction).unwrap()
-            }
-        });
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
+        // First set pending
+        ctx.pending(Interaction::confirm("int_1", "Test?"));
         assert!(ctx.is_pending());
+
+        // Then clear
         ctx.clear_pending();
-        // Note: We can't verify is_pending() returns false because
-        // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(!ctx.is_pending());
     }
 
     #[test]
     fn test_block_and_pending_independent() {
-        let doc = json!({ "execution": { "blocked": null, "pending": null } });
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
         ctx.block("blocked");
         ctx.pending(Interaction::confirm("int_1", "pending"));
 
-        // Note: We can't verify is_blocked()/is_pending() return true because
-        // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
-    }
-
-    #[test]
-    fn test_read_existing_blocked() {
-        let doc = json!({ "execution": { "blocked": "existing reason", "pending": null } });
-        let ctx = Context::new(&doc, "call_1", "test");
-
+        // Both should be set independently
         assert!(ctx.is_blocked());
-        assert_eq!(ctx.block_reason(), Some("existing reason".to_string()));
+        assert!(ctx.is_pending());
+        assert_eq!(ctx.block_reason(), Some("blocked".to_string()));
+
+        // Clear one doesn't affect the other
+        ctx.clear_blocked();
+        assert!(!ctx.is_blocked());
+        assert!(ctx.is_pending());
     }
 
     #[test]
-    fn test_read_existing_pending() {
-        let interaction = Interaction::confirm("int_1", "Are you sure?");
-        let doc = json!({
-            "execution": {
-                "blocked": null,
-                "pending": serde_json::to_value(&interaction).unwrap()
-            }
-        });
+    fn test_read_block_reason() {
+        let doc = json!({});
         let ctx = Context::new(&doc, "call_1", "test");
 
-        assert!(ctx.is_pending());
+        ctx.block("detailed reason");
+        assert_eq!(ctx.block_reason(), Some("detailed reason".to_string()));
+    }
+
+    #[test]
+    fn test_read_pending_interaction() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+
+        let interaction = Interaction::confirm("int_1", "Are you sure?");
+        ctx.pending(interaction);
+
         let pending = ctx.pending_interaction().unwrap();
         assert_eq!(pending.id, "int_1");
+        assert_eq!(pending.message, "Are you sure?");
     }
 }

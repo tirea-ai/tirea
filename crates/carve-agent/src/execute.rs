@@ -1,5 +1,6 @@
 //! Tool execution utilities.
 
+use crate::plugin::AgentPlugin;
 use crate::traits::tool::{Tool, ToolResult};
 use crate::types::ToolCall;
 use carve_state::{Context, TrackedPatch};
@@ -65,6 +66,147 @@ pub async fn execute_single_tool(
         result,
         patch,
     }
+}
+
+/// Execute a single tool call with plugin hooks.
+///
+/// This function runs plugin hooks before and after tool execution:
+/// 1. Create Context from state
+/// 2. Run `before_tool_execute` hooks on all plugins
+/// 3. Check if blocked/pending - if so, skip tool execution
+/// 4. Execute the tool
+/// 5. Run `after_tool_execute` hooks on all plugins
+/// 6. Combine patches from hooks and tool
+pub async fn execute_single_tool_with_plugins(
+    tool: Option<&dyn Tool>,
+    call: &ToolCall,
+    state: &Value,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> ToolExecution {
+    let Some(tool) = tool else {
+        return ToolExecution {
+            call: call.clone(),
+            result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
+            patch: None,
+        };
+    };
+
+    // Create context for this tool call
+    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name));
+
+    // Run before_tool_execute hooks
+    for plugin in plugins {
+        plugin
+            .before_tool_execute(&ctx, &call.name, &call.arguments)
+            .await;
+    }
+
+    // Check if blocked by plugins
+    if ctx.is_blocked() {
+        let reason = ctx.block_reason().unwrap_or_else(|| "Blocked by plugin".to_string());
+        let patch = ctx.take_patch();
+        return ToolExecution {
+            call: call.clone(),
+            result: ToolResult::error(&call.name, reason),
+            patch: if patch.patch().is_empty() {
+                None
+            } else {
+                Some(patch)
+            },
+        };
+    }
+
+    // Check if pending user interaction
+    if ctx.is_pending() {
+        let patch = ctx.take_patch();
+        return ToolExecution {
+            call: call.clone(),
+            result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+            patch: if patch.patch().is_empty() {
+                None
+            } else {
+                Some(patch)
+            },
+        };
+    }
+
+    // Execute the tool
+    let result = match tool.execute(call.arguments.clone(), &ctx).await {
+        Ok(r) => r,
+        Err(e) => ToolResult::error(&call.name, e.to_string()),
+    };
+
+    // Run after_tool_execute hooks
+    for plugin in plugins {
+        plugin.after_tool_execute(&ctx, &call.name, &result).await;
+    }
+
+    // Extract any state changes (includes both plugin and tool patches)
+    let patch = ctx.take_patch();
+    let patch = if patch.patch().is_empty() {
+        None
+    } else {
+        Some(patch)
+    };
+
+    ToolExecution {
+        call: call.clone(),
+        result,
+        patch,
+    }
+}
+
+/// Execute multiple tool calls in parallel with plugin hooks.
+pub async fn execute_tools_parallel_with_plugins(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[ToolCall],
+    state: &Value,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Vec<ToolExecution> {
+    use futures::future::join_all;
+
+    let futures = calls.iter().map(|call| {
+        let tool = tools.get(&call.name).cloned();
+        let state = state.clone();
+        let call = call.clone();
+        let plugins = plugins.to_vec();
+
+        async move {
+            execute_single_tool_with_plugins(tool.as_deref(), &call, &state, &plugins).await
+        }
+    });
+
+    join_all(futures).await
+}
+
+/// Execute tool calls sequentially with plugin hooks.
+pub async fn execute_tools_sequential_with_plugins(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[ToolCall],
+    initial_state: &Value,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> (Value, Vec<ToolExecution>) {
+    use carve_state::apply_patch;
+
+    let mut state = initial_state.clone();
+    let mut executions = Vec::with_capacity(calls.len());
+
+    for call in calls {
+        let tool = tools.get(&call.name).cloned();
+        let exec =
+            execute_single_tool_with_plugins(tool.as_deref(), call, &state, plugins).await;
+
+        // Apply patch to state for next tool
+        if let Some(ref patch) = exec.patch {
+            if let Ok(new_state) = apply_patch(&state, patch.patch()) {
+                state = new_state;
+            }
+        }
+
+        executions.push(exec);
+    }
+
+    (state, executions)
 }
 
 /// Execute multiple tool calls in parallel.

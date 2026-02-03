@@ -313,16 +313,16 @@ mod tests {
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
-            },
-            "execution": { "blocked": null, "pending": null }
+            }
         });
         let ctx = Context::new(&doc, "call_1", "test");
         let plugin = PermissionPlugin;
 
         plugin.before_tool_execute(&ctx, "any_tool", &json!({})).await;
 
-        // Should block - verify via has_changes
-        assert!(ctx.has_changes());
+        // Should block
+        assert!(ctx.is_blocked());
+        assert!(ctx.block_reason().unwrap().contains("denied"));
     }
 
     #[tokio::test]
@@ -331,15 +331,16 @@ mod tests {
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
-            },
-            "execution": { "blocked": null, "pending": null }
+            }
         });
         let ctx = Context::new(&doc, "call_1", "test");
         let plugin = PermissionPlugin;
 
         plugin.before_tool_execute(&ctx, "test_tool", &json!({})).await;
 
-        // Should create pending interaction - verify via has_changes
-        assert!(ctx.has_changes());
+        // Should create pending interaction
+        assert!(ctx.is_pending());
+        let pending = ctx.pending_interaction().unwrap();
+        assert!(pending.message.contains("test_tool"));
     }
 }

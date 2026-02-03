@@ -115,8 +115,9 @@ pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
 
 // Execute exports
 pub use execute::{
-    collect_patches, execute_single_tool, execute_tools_parallel, execute_tools_sequential,
-    ToolExecution,
+    collect_patches, execute_single_tool, execute_single_tool_with_plugins,
+    execute_tools_parallel, execute_tools_parallel_with_plugins, execute_tools_sequential,
+    execute_tools_sequential_with_plugins, ToolExecution,
 };
 
 // Convert exports (pure functions)
@@ -127,8 +128,8 @@ pub use convert::{
 
 // Loop exports
 pub use r#loop::{
-    execute_tools as loop_execute_tools, run_loop, run_loop_stream, run_step, run_turn,
-    tool_map, tool_map_from_arc, AgentConfig, AgentLoopError, StepResult,
+    execute_tools as loop_execute_tools, execute_tools_with_plugins, run_loop, run_loop_stream,
+    run_step, run_turn, tool_map, tool_map_from_arc, AgentConfig, AgentLoopError, StepResult,
 };
 
 // Plugin exports

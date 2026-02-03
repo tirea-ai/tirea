@@ -7,7 +7,11 @@
 //! ```
 
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
-use crate::execute::{collect_patches, execute_tools_parallel};
+use crate::execute::{
+    collect_patches, execute_tools_parallel, execute_tools_parallel_with_plugins,
+    execute_tools_sequential_with_plugins,
+};
+use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::Tool;
@@ -21,7 +25,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 /// Configuration for the agent loop.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentConfig {
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
     pub model: String,
@@ -31,6 +35,8 @@ pub struct AgentConfig {
     pub parallel_tools: bool,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
+    /// Plugins to run during the agent loop.
+    pub plugins: Vec<Arc<dyn AgentPlugin>>,
 }
 
 impl Default for AgentConfig {
@@ -40,7 +46,20 @@ impl Default for AgentConfig {
             max_rounds: 10,
             parallel_tools: true,
             chat_options: None,
+            plugins: Vec::new(),
         }
+    }
+}
+
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("model", &self.model)
+            .field("max_rounds", &self.max_rounds)
+            .field("parallel_tools", &self.parallel_tools)
+            .field("chat_options", &self.chat_options)
+            .field("plugins", &format!("[{} plugins]", self.plugins.len()))
+            .finish()
     }
 }
 
@@ -72,6 +91,25 @@ impl AgentConfig {
     pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
         self.chat_options = Some(options);
         self
+    }
+
+    /// Set plugins.
+    #[must_use]
+    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
+    /// Add a single plugin.
+    #[must_use]
+    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
+        self.plugins.push(plugin);
+        self
+    }
+
+    /// Check if any plugins are configured.
+    pub fn has_plugins(&self) -> bool {
+        !self.plugins.is_empty()
     }
 }
 
@@ -131,6 +169,17 @@ pub async fn execute_tools(
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
 ) -> Result<Session, AgentLoopError> {
+    execute_tools_with_plugins(session, result, tools, parallel, &[]).await
+}
+
+/// Execute tool calls with plugin hooks and update session.
+pub async fn execute_tools_with_plugins(
+    session: Session,
+    result: &StreamResult,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    parallel: bool,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Result<Session, AgentLoopError> {
     if result.tool_calls.is_empty() {
         return Ok(session);
     }
@@ -140,12 +189,20 @@ pub async fn execute_tools(
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
-    // Execute tools
-    let executions = if parallel {
-        execute_tools_parallel(tools, &result.tool_calls, &state).await
+    // Execute tools with or without plugins
+    let executions = if plugins.is_empty() {
+        if parallel {
+            execute_tools_parallel(tools, &result.tool_calls, &state).await
+        } else {
+            let (_, execs) =
+                crate::execute::execute_tools_sequential(tools, &result.tool_calls, &state).await;
+            execs
+        }
+    } else if parallel {
+        execute_tools_parallel_with_plugins(tools, &result.tool_calls, &state, plugins).await
     } else {
         let (_, execs) =
-            crate::execute::execute_tools_sequential(tools, &result.tool_calls, &state).await;
+            execute_tools_sequential_with_plugins(tools, &result.tool_calls, &state, plugins).await;
         execs
     };
 
@@ -186,8 +243,15 @@ pub async fn run_loop(
             break;
         }
 
-        // Execute tools
-        session = execute_tools(session, &result, tools, config.parallel_tools).await?;
+        // Execute tools with plugins
+        session = execute_tools_with_plugins(
+            session,
+            &result,
+            tools,
+            config.parallel_tools,
+            &config.plugins,
+        )
+        .await?;
 
         rounds += 1;
         if rounds >= config.max_rounds {
@@ -278,7 +342,7 @@ pub fn run_loop_stream(
                 return;
             }
 
-            // Execute tools
+            // Execute tools with plugins
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
@@ -287,10 +351,17 @@ pub fn run_loop_stream(
                 }
             };
 
-            let executions = if config.parallel_tools {
-                execute_tools_parallel(&tools, &result.tool_calls, &state).await
+            let executions = if config.plugins.is_empty() {
+                if config.parallel_tools {
+                    execute_tools_parallel(&tools, &result.tool_calls, &state).await
+                } else {
+                    let (_, execs) = crate::execute::execute_tools_sequential(&tools, &result.tool_calls, &state).await;
+                    execs
+                }
+            } else if config.parallel_tools {
+                execute_tools_parallel_with_plugins(&tools, &result.tool_calls, &state, &config.plugins).await
             } else {
-                let (_, execs) = crate::execute::execute_tools_sequential(&tools, &result.tool_calls, &state).await;
+                let (_, execs) = execute_tools_sequential_with_plugins(&tools, &result.tool_calls, &state, &config.plugins).await;
                 execs
             };
 
@@ -355,8 +426,15 @@ pub async fn run_step(
         });
     }
 
-    // Execute tools
-    let session = execute_tools(session, &result, tools, config.parallel_tools).await?;
+    // Execute tools with plugins
+    let session = execute_tools_with_plugins(
+        session,
+        &result,
+        tools,
+        config.parallel_tools,
+        &config.plugins,
+    )
+    .await?;
 
     Ok(StepResult::ToolsExecuted {
         session,
@@ -1448,5 +1526,346 @@ mod tests {
             }
             _ => panic!("Expected ToolsExecuted"),
         }
+    }
+
+    // ============================================================================
+    // Plugin Integration Tests
+    // ============================================================================
+
+    #[test]
+    fn test_agent_config_with_plugins() {
+        use crate::plugin::AgentPlugin;
+
+        struct TestPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for TestPlugin {
+            fn id(&self) -> &str {
+                "test_plugin"
+            }
+        }
+
+        let plugin: Arc<dyn AgentPlugin> = Arc::new(TestPlugin);
+        let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+
+        assert!(config.has_plugins());
+        assert_eq!(config.plugins.len(), 1);
+    }
+
+    #[test]
+    fn test_agent_config_with_multiple_plugins() {
+        use crate::plugin::AgentPlugin;
+
+        struct Plugin1;
+        struct Plugin2;
+
+        #[async_trait]
+        impl AgentPlugin for Plugin1 {
+            fn id(&self) -> &str {
+                "plugin1"
+            }
+        }
+
+        #[async_trait]
+        impl AgentPlugin for Plugin2 {
+            fn id(&self) -> &str {
+                "plugin2"
+            }
+        }
+
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(Plugin1), Arc::new(Plugin2)];
+        let config = AgentConfig::new("gpt-4").with_plugins(plugins);
+
+        assert!(config.has_plugins());
+        assert_eq!(config.plugins.len(), 2);
+    }
+
+    #[test]
+    fn test_agent_config_no_plugins() {
+        let config = AgentConfig::default();
+        assert!(!config.has_plugins());
+        assert!(config.plugins.is_empty());
+    }
+
+    #[test]
+    fn test_agent_config_debug() {
+        let config = AgentConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("AgentConfig"));
+        assert!(debug_str.contains("[0 plugins]"));
+    }
+
+    #[test]
+    fn test_execute_tools_with_plugins_empty_plugins() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Hello".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &[]).await.unwrap();
+            assert_eq!(session.message_count(), 1);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_plugins_sequential() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::with_initial_state("test", json!({"counter": 0}));
+            let result = StreamResult {
+                text: "Sequential".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 1})),
+                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 2})),
+                ],
+            };
+            let tools = tool_map([CounterTool]);
+
+            // Sequential with no plugins
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, false, &[]).await.unwrap();
+            assert_eq!(session.message_count(), 2);
+            assert_eq!(session.patch_count(), 2);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_blocking_plugin() {
+        use crate::plugin::AgentPlugin;
+        use crate::plugins::ExecutionContextExt;
+
+        struct BlockingPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for BlockingPlugin {
+            fn id(&self) -> &str {
+                "blocker"
+            }
+
+            async fn before_tool_execute(
+                &self,
+                ctx: &Context<'_>,
+                tool_id: &str,
+                _args: &Value,
+            ) {
+                if tool_id == "echo" {
+                    ctx.block(format!("Tool {} is blocked", tool_id));
+                }
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Blocked".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPlugin)];
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+
+            // Tool was blocked, so result should contain error status or blocked message
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            // The message is JSON serialized, so it may contain "Error" status or "blocked" message
+            assert!(
+                msg.content.contains("blocked")
+                || msg.content.contains("Error")
+                || msg.content.contains("error"),
+                "Expected blocked/error in message, got: {}", msg.content
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_logging_plugin() {
+        use crate::plugin::AgentPlugin;
+        use crate::plugins::ReminderContextExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct LoggingPlugin {
+            before_count: AtomicUsize,
+            after_count: AtomicUsize,
+        }
+
+        impl LoggingPlugin {
+            fn new() -> Self {
+                Self {
+                    before_count: AtomicUsize::new(0),
+                    after_count: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl AgentPlugin for LoggingPlugin {
+            fn id(&self) -> &str {
+                "logger"
+            }
+
+            async fn before_tool_execute(
+                &self,
+                ctx: &Context<'_>,
+                tool_id: &str,
+                _args: &Value,
+            ) {
+                self.before_count.fetch_add(1, Ordering::SeqCst);
+                ctx.add_reminder(format!("Before: {}", tool_id));
+            }
+
+            async fn after_tool_execute(
+                &self,
+                ctx: &Context<'_>,
+                tool_id: &str,
+                _result: &crate::traits::tool::ToolResult,
+            ) {
+                self.after_count.fetch_add(1, Ordering::SeqCst);
+                ctx.add_reminder(format!("After: {}", tool_id));
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Logging".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "a"})),
+                    crate::types::ToolCall::new("call_2", "echo", json!({"message": "b"})),
+                ],
+            };
+            let tools = tool_map([EchoTool]);
+            let plugin = Arc::new(LoggingPlugin::new());
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin.clone()];
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+
+            // Both tools should have been executed
+            assert_eq!(session.message_count(), 2);
+            // Plugin hooks should have been called
+            assert_eq!(plugin.before_count.load(Ordering::SeqCst), 2);
+            assert_eq!(plugin.after_count.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_plugins_parallel_vs_sequential() {
+        use crate::plugin::AgentPlugin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CounterPlugin {
+            call_count: AtomicUsize,
+        }
+
+        impl CounterPlugin {
+            fn new() -> Self {
+                Self {
+                    call_count: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl AgentPlugin for CounterPlugin {
+            fn id(&self) -> &str {
+                "counter_plugin"
+            }
+
+            async fn before_tool_execute(&self, _ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
+                self.call_count.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Test parallel
+            let session = Session::new("test_parallel");
+            let result = StreamResult {
+                text: "Parallel".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "a"})),
+                    crate::types::ToolCall::new("call_2", "echo", json!({"message": "b"})),
+                    crate::types::ToolCall::new("call_3", "echo", json!({"message": "c"})),
+                ],
+            };
+            let tools = tool_map([EchoTool]);
+            let plugin = Arc::new(CounterPlugin::new());
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin.clone()];
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+            assert_eq!(session.message_count(), 3);
+            assert_eq!(plugin.call_count.load(Ordering::SeqCst), 3);
+
+            // Test sequential
+            let session2 = Session::new("test_sequential");
+            let plugin2 = Arc::new(CounterPlugin::new());
+            let plugins2: Vec<Arc<dyn AgentPlugin>> = vec![plugin2.clone()];
+
+            let session2 =
+                execute_tools_with_plugins(session2, &result, &tools, false, &plugins2)
+                    .await
+                    .unwrap();
+            assert_eq!(session2.message_count(), 3);
+            assert_eq!(plugin2.call_count.load(Ordering::SeqCst), 3);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_plugins_state_changes() {
+        use crate::plugin::AgentPlugin;
+
+        struct StatePlugin;
+
+        #[async_trait]
+        impl AgentPlugin for StatePlugin {
+            fn id(&self) -> &str {
+                "state_plugin"
+            }
+
+            fn initial_state(&self) -> Option<(&'static str, Value)> {
+                Some(("plugin_data", json!({"initialized": true})))
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::with_initial_state("test", json!({"counter": 0}));
+            let result = StreamResult {
+                text: "State".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "counter",
+                    json!({"amount": 5}),
+                )],
+            };
+            let tools = tool_map([CounterTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(StatePlugin)];
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+
+            // Tool should have produced a patch
+            assert_eq!(session.patch_count(), 1);
+            let state = session.rebuild_state().unwrap();
+            assert_eq!(state["counter"], 5);
+        });
     }
 }
