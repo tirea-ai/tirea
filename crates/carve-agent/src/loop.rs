@@ -428,22 +428,22 @@ pub async fn execute_tools_with_plugins(
         tools.values().map(|t| t.descriptor().clone()).collect();
 
     // Execute tools
-    let executions = if parallel {
+    let results = if parallel {
         execute_tools_parallel_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
     } else {
         execute_tools_sequential_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
     };
 
     // Collect patches and tool response messages
-    let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
-    let tool_messages: Vec<Message> = executions
+    let patches = collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
+    let tool_messages: Vec<Message> = results
         .iter()
-        .flat_map(|(e, reminders)| {
-            let mut msgs = vec![tool_response(&e.call.id, &e.result)];
-            for r in reminders {
+        .flat_map(|r| {
+            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+            for reminder in &r.reminders {
                 msgs.push(Message::system(format!(
                     "<system-reminder>{}</system-reminder>",
-                    r
+                    reminder
                 )));
             }
             msgs
@@ -463,7 +463,7 @@ async fn execute_tools_parallel_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Vec<(ToolExecution, Vec<String>)> {
+) -> Vec<ToolExecutionResult> {
     use futures::future::join_all;
 
     let futures = calls.iter().map(|call| {
@@ -488,28 +488,38 @@ async fn execute_tools_sequential_with_phases(
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Vec<(ToolExecution, Vec<String>)> {
+) -> Vec<ToolExecutionResult> {
     use carve_state::apply_patch;
 
     let mut state = initial_state.clone();
-    let mut executions = Vec::with_capacity(calls.len());
+    let mut results = Vec::with_capacity(calls.len());
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let (exec, reminders) =
+        let result =
             execute_single_tool_with_phases(tool.as_deref(), call, &state, tool_descriptors, plugins).await;
 
         // Apply patch to state for next tool
-        if let Some(ref patch) = exec.patch {
+        if let Some(ref patch) = result.execution.patch {
             if let Ok(new_state) = apply_patch(&state, patch.patch()) {
                 state = new_state;
             }
         }
 
-        executions.push((exec, reminders));
+        results.push(result);
     }
 
-    executions
+    results
+}
+
+/// Result of tool execution with phase hooks.
+pub struct ToolExecutionResult {
+    /// The tool execution result.
+    pub execution: ToolExecution,
+    /// System reminders collected during execution.
+    pub reminders: Vec<String>,
+    /// Pending interaction if tool is waiting for user action.
+    pub pending_interaction: Option<crate::state_types::Interaction>,
 }
 
 /// Execute a single tool with phase hooks.
@@ -519,7 +529,7 @@ async fn execute_single_tool_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> (ToolExecution, Vec<String>) {
+) -> ToolExecutionResult {
     // Create a minimal session for TurnContext
     let temp_session = Session::with_initial_state("temp", state.clone());
 
@@ -530,33 +540,46 @@ async fn execute_single_tool_with_phases(
     // Phase: BeforeToolExecute
     emit_phase(Phase::BeforeToolExecute, &mut turn, plugins).await;
 
-    // Check if blocked
-    let execution = if turn.tool_blocked() {
+    // Check if blocked or pending
+    let (execution, pending_interaction) = if turn.tool_blocked() {
         let reason = turn
             .tool
             .as_ref()
             .and_then(|t| t.block_reason.clone())
             .unwrap_or_else(|| "Blocked by plugin".to_string());
-        ToolExecution {
-            call: call.clone(),
-            result: ToolResult::error(&call.name, reason),
-            patch: None,
-        }
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, reason),
+                patch: None,
+            },
+            None,
+        )
     } else if turn.tool_pending() {
-        ToolExecution {
-            call: call.clone(),
-            result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
-            patch: None,
-        }
+        let interaction = turn
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.clone());
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+                patch: None,
+            },
+            interaction,
+        )
     } else if tool.is_none() {
-        ToolExecution {
-            call: call.clone(),
-            result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
-            patch: None,
-        }
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
+                patch: None,
+            },
+            None,
+        )
     } else {
         // Execute the tool
-        execute_single_tool(tool, call, state).await
+        (execute_single_tool(tool, call, state).await, None)
     };
 
     // Set tool result in context
@@ -565,7 +588,11 @@ async fn execute_single_tool_with_phases(
     // Phase: AfterToolExecute
     emit_phase(Phase::AfterToolExecute, &mut turn, plugins).await;
 
-    (execution, turn.system_reminders.clone())
+    ToolExecutionResult {
+        execution,
+        reminders: turn.system_reminders.clone(),
+        pending_interaction,
+    }
 }
 
 /// Run the full agent loop until completion or max rounds.
@@ -762,24 +789,53 @@ pub fn run_loop_stream(
                 }
             };
 
-            let executions = if config.parallel_tools {
+            let results = if config.parallel_tools {
                 execute_tools_parallel_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
             } else {
                 execute_tools_sequential_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
             };
 
+            // Check if any tool has pending interaction
+            let mut has_pending = false;
+            for exec_result in &results {
+                if let Some(ref interaction) = exec_result.pending_interaction {
+                    // Emit pending interaction event
+                    yield AgentEvent::Pending {
+                        interaction: interaction.clone(),
+                    };
+                    has_pending = true;
+                }
+            }
+
+            // If there are pending interactions, pause the loop
+            // Client must respond and start a new run to continue
+            if has_pending {
+                // Still emit non-pending tool results
+                for exec_result in &results {
+                    if exec_result.pending_interaction.is_none() {
+                        yield AgentEvent::ToolCallDone {
+                            id: exec_result.execution.call.id.clone(),
+                            result: exec_result.execution.result.clone(),
+                            patch: exec_result.execution.patch.clone(),
+                        };
+                    }
+                }
+                // End with Pending state (not Done, not Error)
+                return;
+            }
+
             // Emit tool results and collect patches/messages
-            let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
+            let patches = collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
             let mut tool_messages = Vec::new();
 
-            for (exec, reminders) in &executions {
+            for exec_result in &results {
                 yield AgentEvent::ToolCallDone {
-                    id: exec.call.id.clone(),
-                    result: exec.result.clone(),
-                    patch: exec.patch.clone(),
+                    id: exec_result.execution.call.id.clone(),
+                    result: exec_result.execution.result.clone(),
+                    patch: exec_result.execution.patch.clone(),
                 };
-                tool_messages.push(tool_response(&exec.call.id, &exec.result));
-                for r in reminders {
+                tool_messages.push(tool_response(&exec_result.execution.call.id, &exec_result.execution.result));
+                for r in &exec_result.reminders {
                     tool_messages.push(Message::system(format!(
                         "<system-reminder>{}</system-reminder>",
                         r
