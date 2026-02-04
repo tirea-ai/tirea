@@ -124,7 +124,7 @@ pub use ui_stream::{
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
     run_agent_stream, run_agent_stream_sse, AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef,
-    AgUiAdapter, RequestError, RunAgentRequest,
+    AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

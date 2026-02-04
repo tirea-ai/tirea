@@ -894,6 +894,17 @@ impl AGUIMessage {
     }
 }
 
+/// Tool execution location.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExecutionLocation {
+    /// Tool executes on the backend (server-side).
+    #[default]
+    Backend,
+    /// Tool executes on the frontend (client-side).
+    Frontend,
+}
+
 /// AG-UI tool definition.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AGUIToolDef {
@@ -904,6 +915,47 @@ pub struct AGUIToolDef {
     /// JSON Schema for tool parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
+    /// Where the tool executes (frontend or backend).
+    /// Frontend tools are executed by the client and results sent back.
+    #[serde(default, skip_serializing_if = "is_default_backend")]
+    pub execute: ToolExecutionLocation,
+}
+
+fn is_default_backend(loc: &ToolExecutionLocation) -> bool {
+    *loc == ToolExecutionLocation::Backend
+}
+
+impl AGUIToolDef {
+    /// Create a new backend tool definition.
+    pub fn backend(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters: None,
+            execute: ToolExecutionLocation::Backend,
+        }
+    }
+
+    /// Create a new frontend tool definition.
+    pub fn frontend(name: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters: None,
+            execute: ToolExecutionLocation::Frontend,
+        }
+    }
+
+    /// Set the JSON Schema parameters.
+    pub fn with_parameters(mut self, parameters: Value) -> Self {
+        self.parameters = Some(parameters);
+        self
+    }
+
+    /// Check if this is a frontend tool.
+    pub fn is_frontend(&self) -> bool {
+        self.execute == ToolExecutionLocation::Frontend
+    }
 }
 
 /// Request to run an AG-UI agent.
@@ -1001,6 +1053,31 @@ impl RunAgentRequest {
             .rev()
             .find(|m| m.role == MessageRole::User)
             .map(|m| m.content.as_str())
+    }
+
+    /// Get frontend tools from the request.
+    pub fn frontend_tools(&self) -> Vec<&AGUIToolDef> {
+        self.tools.iter().filter(|t| t.is_frontend()).collect()
+    }
+
+    /// Get backend tools from the request.
+    pub fn backend_tools(&self) -> Vec<&AGUIToolDef> {
+        self.tools.iter().filter(|t| !t.is_frontend()).collect()
+    }
+
+    /// Check if a tool is a frontend tool by name.
+    pub fn is_frontend_tool(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.is_frontend())
+            .unwrap_or(false)
+    }
+
+    /// Add a tool definition.
+    pub fn with_tool(mut self, tool: AGUIToolDef) -> Self {
+        self.tools.push(tool);
+        self
     }
 }
 
@@ -2020,16 +2097,13 @@ mod tests {
 
     #[test]
     fn test_ag_ui_tool_def_serialization() {
-        let tool = AGUIToolDef {
-            name: "search".to_string(),
-            description: "Search the web".to_string(),
-            parameters: Some(json!({
+        let tool = AGUIToolDef::backend("search", "Search the web")
+            .with_parameters(json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"}
                 }
-            })),
-        };
+            }));
 
         let json = serde_json::to_string(&tool).unwrap();
         assert!(json.contains(r#""name":"search""#));
@@ -2752,5 +2826,192 @@ mod tests {
             let result: Result<AGUIEvent, _> = serde_json::from_str(json);
             assert!(result.is_ok(), "Failed to deserialize: {}", json);
         }
+    }
+
+    // ========================================================================
+    // Frontend Tool Tests
+    // ========================================================================
+
+    #[test]
+    fn test_tool_execution_location_serialization() {
+        assert_eq!(
+            serde_json::to_string(&ToolExecutionLocation::Backend).unwrap(),
+            r#""backend""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolExecutionLocation::Frontend).unwrap(),
+            r#""frontend""#
+        );
+    }
+
+    #[test]
+    fn test_tool_execution_location_deserialization() {
+        let backend: ToolExecutionLocation = serde_json::from_str(r#""backend""#).unwrap();
+        let frontend: ToolExecutionLocation = serde_json::from_str(r#""frontend""#).unwrap();
+        assert_eq!(backend, ToolExecutionLocation::Backend);
+        assert_eq!(frontend, ToolExecutionLocation::Frontend);
+    }
+
+    #[test]
+    fn test_tool_execution_location_default() {
+        assert_eq!(ToolExecutionLocation::default(), ToolExecutionLocation::Backend);
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_backend_factory() {
+        let tool = AGUIToolDef::backend("search", "Search the web");
+        assert_eq!(tool.name, "search");
+        assert_eq!(tool.description, "Search the web");
+        assert_eq!(tool.execute, ToolExecutionLocation::Backend);
+        assert!(tool.parameters.is_none());
+        assert!(!tool.is_frontend());
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_frontend_factory() {
+        let tool = AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard");
+        assert_eq!(tool.name, "copyToClipboard");
+        assert_eq!(tool.description, "Copy text to clipboard");
+        assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+        assert!(tool.parameters.is_none());
+        assert!(tool.is_frontend());
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_with_parameters() {
+        let tool = AGUIToolDef::frontend("showDialog", "Show a dialog")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "message": {"type": "string"}
+                },
+                "required": ["title"]
+            }));
+
+        assert!(tool.is_frontend());
+        let params = tool.parameters.unwrap();
+        assert_eq!(params["type"], "object");
+        assert!(params["properties"]["title"].is_object());
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_serialization_frontend() {
+        let tool = AGUIToolDef::frontend("copyToClipboard", "Copy text");
+        let json = serde_json::to_string(&tool).unwrap();
+
+        // Frontend tools should include execute field
+        assert!(json.contains(r#""execute":"frontend""#));
+        assert!(json.contains(r#""name":"copyToClipboard""#));
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_serialization_backend_omits_execute() {
+        let tool = AGUIToolDef::backend("search", "Search");
+        let json = serde_json::to_string(&tool).unwrap();
+
+        // Backend tools should omit execute field (it's the default)
+        assert!(!json.contains("execute"));
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_deserialization_with_execute() {
+        let json = r#"{"name":"test","description":"Test","execute":"frontend"}"#;
+        let tool: AGUIToolDef = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+        assert!(tool.is_frontend());
+    }
+
+    #[test]
+    fn test_ag_ui_tool_def_deserialization_without_execute() {
+        let json = r#"{"name":"test","description":"Test"}"#;
+        let tool: AGUIToolDef = serde_json::from_str(json).unwrap();
+        // Should default to backend
+        assert_eq!(tool.execute, ToolExecutionLocation::Backend);
+        assert!(!tool.is_frontend());
+    }
+
+    #[test]
+    fn test_run_agent_request_frontend_tools() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+            .with_tool(AGUIToolDef::backend("read_file", "Read file"))
+            .with_tool(AGUIToolDef::frontend("showNotification", "Show notification"));
+
+        let frontend = request.frontend_tools();
+        let backend = request.backend_tools();
+
+        assert_eq!(frontend.len(), 2);
+        assert_eq!(backend.len(), 2);
+
+        assert_eq!(frontend[0].name, "copyToClipboard");
+        assert_eq!(frontend[1].name, "showNotification");
+        assert_eq!(backend[0].name, "search");
+        assert_eq!(backend[1].name, "read_file");
+    }
+
+    #[test]
+    fn test_run_agent_request_is_frontend_tool() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
+
+        assert!(!request.is_frontend_tool("search"));
+        assert!(request.is_frontend_tool("copyToClipboard"));
+        assert!(!request.is_frontend_tool("nonexistent"));
+    }
+
+    #[test]
+    fn test_run_agent_request_deserialization_with_frontend_tools() {
+        let json = r#"{
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [],
+            "tools": [
+                {"name": "search", "description": "Search the web"},
+                {"name": "copyToClipboard", "description": "Copy text", "execute": "frontend"},
+                {"name": "showDialog", "description": "Show dialog", "execute": "frontend", "parameters": {"type": "object"}}
+            ]
+        }"#;
+
+        let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+
+        assert_eq!(request.tools.len(), 3);
+        assert!(!request.is_frontend_tool("search"));
+        assert!(request.is_frontend_tool("copyToClipboard"));
+        assert!(request.is_frontend_tool("showDialog"));
+
+        let frontend = request.frontend_tools();
+        assert_eq!(frontend.len(), 2);
+    }
+
+    #[test]
+    fn test_run_agent_request_empty_tools() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+
+        assert!(request.frontend_tools().is_empty());
+        assert!(request.backend_tools().is_empty());
+        assert!(!request.is_frontend_tool("anything"));
+    }
+
+    #[test]
+    fn test_run_agent_request_all_frontend_tools() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::frontend("copy", "Copy"))
+            .with_tool(AGUIToolDef::frontend("paste", "Paste"));
+
+        assert!(request.backend_tools().is_empty());
+        assert_eq!(request.frontend_tools().len(), 2);
+    }
+
+    #[test]
+    fn test_run_agent_request_all_backend_tools() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::backend("read", "Read"));
+
+        assert!(request.frontend_tools().is_empty());
+        assert_eq!(request.backend_tools().len(), 2);
     }
 }
