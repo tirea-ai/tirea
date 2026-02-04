@@ -154,10 +154,7 @@ pub use plugin::AgentPlugin;
 pub use phase::{Phase, ToolContext, TurnContext, TurnResult};
 
 // State types exports
-pub use state_types::{
-    Interaction, InteractionChoice, InteractionResponse, InteractionType, InteractionValue,
-    ToolPermissionBehavior,
-};
+pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
 
 // Plugins and extension traits
 pub use plugins::{

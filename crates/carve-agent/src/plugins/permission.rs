@@ -185,11 +185,12 @@ impl AgentPlugin for PermissionPlugin {
             ToolPermissionBehavior::Ask => {
                 // Create a pending interaction for confirmation
                 if !turn.tool_pending() {
-                    let interaction = Interaction::confirm(
+                    let interaction = Interaction::new(
                         format!("permission_{}", tool_id),
-                        format!("Allow tool '{}' to execute?", tool_id),
+                        "confirm",
                     )
-                    .with_metadata("tool_id", json!(tool_id));
+                    .with_message(format!("Allow tool '{}' to execute?", tool_id))
+                    .with_parameters(json!({ "tool_id": tool_id }));
 
                     turn.pending(interaction);
                 }

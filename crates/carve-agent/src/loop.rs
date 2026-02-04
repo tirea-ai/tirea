@@ -1409,14 +1409,11 @@ mod tests {
         async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
             if phase == Phase::BeforeToolExecute {
                 if turn.tool_id() == Some("echo") {
-                    use crate::state_types::{Interaction, InteractionType};
-                    turn.pending(Interaction {
-                        id: "confirm_1".to_string(),
-                        interaction_type: InteractionType::Confirm,
-                        message: "Execute echo?".to_string(),
-                        choices: vec![],
-                        metadata: Default::default(),
-                    });
+                    use crate::state_types::Interaction;
+                    turn.pending(
+                        Interaction::new("confirm_1", "confirm")
+                            .with_message("Execute echo?"),
+                    );
                 }
             }
         }

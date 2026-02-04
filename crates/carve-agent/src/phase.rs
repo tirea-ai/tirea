@@ -52,7 +52,7 @@ impl std::fmt::Display for Phase {
 }
 
 /// Result of a turn execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TurnResult {
     /// Continue to next turn.
     Continue,
@@ -591,7 +591,8 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::confirm("confirm_1", "Allow write?");
+        let interaction = Interaction::new("confirm_1", "confirm")
+            .with_message("Allow write?");
         ctx.pending(interaction);
 
         assert!(ctx.tool_pending());
@@ -606,7 +607,8 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::confirm("confirm_1", "Allow write?");
+        let interaction = Interaction::new("confirm_1", "confirm")
+            .with_message("Allow write?");
         ctx.pending(interaction);
         ctx.confirm();
 
@@ -717,7 +719,8 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::confirm("confirm_1", "Allow?");
+        let interaction = Interaction::new("confirm_1", "confirm")
+            .with_message("Allow?");
         ctx.pending(interaction.clone());
 
         match ctx.result() {
@@ -916,7 +919,8 @@ mod tests {
         let session = mock_session();
         let mut ctx = TurnContext::new(&session, vec![]);
 
-        let interaction = Interaction::confirm("id", "test");
+        let interaction = Interaction::new("id", "confirm")
+            .with_message("test");
         ctx.pending(interaction);
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
@@ -1026,7 +1030,8 @@ mod tests {
 
         assert!(tool_ctx.pending_interaction.is_none());
 
-        let interaction = Interaction::confirm("confirm_1", "Test?");
+        let interaction = Interaction::new("confirm_1", "confirm")
+            .with_message("Test?");
         tool_ctx.pending_interaction = Some(interaction.clone());
 
         assert_eq!(tool_ctx.pending_interaction.as_ref().unwrap().id, "confirm_1");

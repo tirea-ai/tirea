@@ -253,7 +253,10 @@ mod tests {
 
             if let Some(tool_id) = turn.tool_id() {
                 if self.confirm_tools.contains(&tool_id.to_string()) && !turn.tool_pending() {
-                    turn.pending(Interaction::confirm("confirm", "Execute this tool?"));
+                    turn.pending(
+                        Interaction::new("confirm", "confirm")
+                            .with_message("Execute this tool?"),
+                    );
                 }
             }
         }
