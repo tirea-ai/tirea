@@ -682,7 +682,7 @@ pub fn run_loop_stream(
             let chat_stream_response = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    yield AgentEvent::Error(e.to_string());
+                    yield AgentEvent::Error { message: e.to_string() };
                     return;
                 }
             };
@@ -697,7 +697,7 @@ pub fn run_loop_stream(
                         if let Some(output) = collector.process(event) {
                             match output {
                                 crate::stream::StreamOutput::TextDelta(delta) => {
-                                    yield AgentEvent::TextDelta(delta);
+                                    yield AgentEvent::TextDelta { delta };
                                 }
                                 crate::stream::StreamOutput::ToolCallStart { id, name } => {
                                     yield AgentEvent::ToolCallStart { id, name };
@@ -709,7 +709,7 @@ pub fn run_loop_stream(
                         }
                     }
                     Err(e) => {
-                        yield AgentEvent::Error(e.to_string());
+                        yield AgentEvent::Error { message: e.to_string() };
                         return;
                     }
                 }
@@ -757,7 +757,7 @@ pub fn run_loop_stream(
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
-                    yield AgentEvent::Error(e.to_string());
+                    yield AgentEvent::Error { message: e.to_string() };
                     return;
                 }
             };
@@ -791,7 +791,7 @@ pub fn run_loop_stream(
 
             rounds += 1;
             if rounds >= config.max_rounds {
-                yield AgentEvent::Error(format!("Max rounds ({}) exceeded", config.max_rounds));
+                yield AgentEvent::Error { message: format!("Max rounds ({}) exceeded", config.max_rounds) };
                 return;
             }
         }
@@ -1353,5 +1353,269 @@ mod tests {
         let config: Option<serde_json::Map<String, Value>> = turn.get("plugin_config");
         assert!(config.is_some());
         assert_eq!(config.unwrap()["enabled"], true);
+    }
+
+    // ============================================================================
+    // Additional Coverage Tests
+    // ============================================================================
+
+    #[test]
+    fn test_agent_config_debug() {
+        let config = AgentConfig::new("gpt-4")
+            .with_system_prompt("You are helpful.");
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("AgentConfig"));
+        assert!(debug_str.contains("gpt-4"));
+        // Check that system_prompt is shown as length indicator
+        assert!(debug_str.contains("chars]"));
+    }
+
+    #[test]
+    fn test_agent_config_with_chat_options() {
+        let chat_options = ChatOptions::default();
+        let config = AgentConfig::new("gpt-4").with_chat_options(chat_options);
+        assert!(config.chat_options.is_some());
+    }
+
+    #[test]
+    fn test_agent_config_with_plugins() {
+        struct DummyPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for DummyPlugin {
+            fn id(&self) -> &str {
+                "dummy"
+            }
+            async fn on_phase(&self, _phase: Phase, _turn: &mut TurnContext<'_>) {}
+        }
+
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
+            Arc::new(DummyPlugin),
+            Arc::new(DummyPlugin),
+        ];
+        let config = AgentConfig::new("gpt-4").with_plugins(plugins);
+        assert_eq!(config.plugins.len(), 2);
+    }
+
+    struct PendingPhasePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingPhasePlugin {
+        fn id(&self) -> &str {
+            "pending"
+        }
+
+        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+            if phase == Phase::BeforeToolExecute {
+                if turn.tool_id() == Some("echo") {
+                    use crate::state_types::{Interaction, InteractionType};
+                    turn.pending(Interaction {
+                        id: "confirm_1".to_string(),
+                        interaction_type: InteractionType::Confirm,
+                        message: "Execute echo?".to_string(),
+                        choices: vec![],
+                        metadata: Default::default(),
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_execute_tools_with_pending_phase_plugin() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Pending".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
+
+            let session =
+                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            // Pending tool should return pending status
+            assert!(
+                msg.content.contains("pending") || msg.content.contains("Pending") || msg.content.contains("Waiting"),
+                "Expected pending in message, got: {}", msg.content
+            );
+        });
+    }
+
+    #[test]
+    fn test_agent_loop_error_state_error() {
+        let err = AgentLoopError::StateError("invalid state".to_string());
+        assert!(err.to_string().contains("State error"));
+        assert!(err.to_string().contains("invalid state"));
+    }
+
+    #[test]
+    fn test_execute_tools_missing_tool() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Calling unknown tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "unknown_tool",
+                    json!({}),
+                )],
+            };
+            let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
+
+            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            assert!(
+                msg.content.contains("not found") || msg.content.contains("Error"),
+                "Expected 'not found' error in message, got: {}", msg.content
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_empty_calls() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "No tools".to_string(),
+                tool_calls: vec![],
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4");
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            // No messages should be added when there are no tool calls
+            assert_eq!(session.message_count(), 0);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_basic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Calling tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4");
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_with_blocking_plugin() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Blocked".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4")
+                .with_plugin(Arc::new(BlockingPhasePlugin) as Arc<dyn AgentPlugin>);
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            assert!(
+                msg.content.contains("blocked") || msg.content.contains("Error"),
+                "Expected blocked error in message, got: {}",
+                msg.content
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_with_pending_plugin() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Pending".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4")
+                .with_plugin(Arc::new(PendingPhasePlugin) as Arc<dyn AgentPlugin>);
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            assert!(
+                msg.content.contains("pending") || msg.content.contains("Pending") || msg.content.contains("Waiting"),
+                "Expected pending in message, got: {}",
+                msg.content
+            );
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_with_reminder_plugin() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "With reminder".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4")
+                .with_plugin(Arc::new(ReminderPhasePlugin) as Arc<dyn AgentPlugin>);
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            // Should have tool response + reminder message
+            assert_eq!(session.message_count(), 2);
+            assert!(session.messages[1].content.contains("system-reminder"));
+        });
     }
 }

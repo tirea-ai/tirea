@@ -141,6 +141,14 @@ impl ToolResult {
     pub fn is_error(&self) -> bool {
         matches!(self.status, ToolStatus::Error)
     }
+
+    /// Convert to JSON value for serialization.
+    ///
+    /// This is useful for AI SDK integration where tool outputs need to be
+    /// serialized as JSON in stream events.
+    pub fn to_json(&self) -> Value {
+        serde_json::to_value(self).unwrap_or(Value::Null)
+    }
 }
 
 /// Tool descriptor containing metadata.

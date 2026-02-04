@@ -423,15 +423,15 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
 
     while let Some(event) = stream.next().await {
         match event {
-            AgentEvent::TextDelta(delta) => {
+            AgentEvent::TextDelta { delta } => {
                 print!("{}", delta);
                 std::io::Write::flush(&mut std::io::stdout())?;
             }
             AgentEvent::Done { response } => {
                 println!("\n[Stream completed: {} chars]", response.len());
             }
-            AgentEvent::Error(e) => {
-                println!("\n[Error: {}]", e);
+            AgentEvent::Error { message } => {
+                println!("\n[Error: {}]", message);
             }
             _ => {}
         }

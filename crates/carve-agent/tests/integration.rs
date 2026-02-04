@@ -1882,9 +1882,9 @@ fn test_agent_event_all_variants() {
     use carve_agent::AgentEvent;
 
     // TextDelta
-    let text_delta = AgentEvent::TextDelta("Hello".to_string());
+    let text_delta = AgentEvent::TextDelta { delta: "Hello".to_string() };
     match text_delta {
-        AgentEvent::TextDelta(t) => assert_eq!(t, "Hello"),
+        AgentEvent::TextDelta { delta } => assert_eq!(delta, "Hello"),
         _ => panic!("Wrong variant"),
     }
 
@@ -1930,9 +1930,9 @@ fn test_agent_event_all_variants() {
     }
 
     // Error
-    let error = AgentEvent::Error("Network timeout".to_string());
+    let error = AgentEvent::Error { message: "Network timeout".to_string() };
     match error {
-        AgentEvent::Error(msg) => assert!(msg.contains("timeout")),
+        AgentEvent::Error { message } => assert!(message.contains("timeout")),
         _ => panic!("Wrong variant"),
     }
 
@@ -3660,4 +3660,185 @@ fn test_tool_descriptor_minimal() {
     assert!(!desc.requires_confirmation);
     assert!(desc.category.is_none());
     assert!(desc.metadata.is_empty());
+}
+
+// ============================================================================
+// Stream End with Captured Tool Calls Tests (for coverage lines 92-102)
+// ============================================================================
+
+#[test]
+fn test_stream_collector_end_event_with_captured_tool_calls() {
+    use genai::chat::{ChatStreamEvent, MessageContent, StreamEnd};
+
+    let mut collector = StreamCollector::new();
+
+    // Create StreamEnd with captured_content containing tool calls
+    let tool_call = genai::chat::ToolCall {
+        call_id: "captured_call_1".to_string(),
+        fn_name: "captured_search".to_string(),
+        fn_arguments: json!({"query": "captured test"}),
+        thought_signatures: None,
+    };
+
+    let end = StreamEnd {
+        captured_usage: None,
+        captured_content: Some(MessageContent::from_tool_calls(vec![tool_call])),
+        captured_reasoning_content: None,
+    };
+
+    // Process the end event - this should capture the tool calls
+    let output = collector.process(ChatStreamEvent::End(end));
+    assert!(output.is_none()); // End event always returns None
+
+    // Verify the captured tool calls are in the result
+    let result = collector.finish();
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].name, "captured_search");
+    assert_eq!(result.tool_calls[0].id, "captured_call_1");
+}
+
+#[test]
+fn test_stream_collector_end_event_with_multiple_captured_tool_calls() {
+    use genai::chat::{ChatStreamEvent, MessageContent, StreamEnd};
+
+    let mut collector = StreamCollector::new();
+
+    // Create multiple tool calls in captured_content
+    let tc1 = genai::chat::ToolCall {
+        call_id: "cap_call_1".to_string(),
+        fn_name: "tool_a".to_string(),
+        fn_arguments: json!({"arg": "a"}),
+        thought_signatures: None,
+    };
+    let tc2 = genai::chat::ToolCall {
+        call_id: "cap_call_2".to_string(),
+        fn_name: "tool_b".to_string(),
+        fn_arguments: json!({"arg": "b"}),
+        thought_signatures: None,
+    };
+
+    let end = StreamEnd {
+        captured_usage: None,
+        captured_content: Some(MessageContent::from_tool_calls(vec![tc1, tc2])),
+        captured_reasoning_content: None,
+    };
+
+    collector.process(ChatStreamEvent::End(end));
+    let result = collector.finish();
+
+    assert_eq!(result.tool_calls.len(), 2);
+    let names: Vec<&str> = result.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+    assert!(names.contains(&"tool_a"));
+    assert!(names.contains(&"tool_b"));
+}
+
+#[test]
+fn test_stream_collector_end_merges_chunk_and_captured_tool_calls() {
+    use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk};
+
+    let mut collector = StreamCollector::new();
+
+    // Add text chunk
+    collector.process(ChatStreamEvent::Chunk(StreamChunk {
+        content: "Processing...".to_string(),
+    }));
+
+    // Add a tool call via ToolCallChunk
+    let chunk_tc = genai::chat::ToolCall {
+        call_id: "chunk_call".to_string(),
+        fn_name: "chunk_tool".to_string(),
+        fn_arguments: json!({"from": "chunk"}),
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+        tool_call: chunk_tc,
+    }));
+
+    // End event with additional captured tool call
+    let captured_tc = genai::chat::ToolCall {
+        call_id: "end_call".to_string(),
+        fn_name: "end_tool".to_string(),
+        fn_arguments: json!({"from": "end"}),
+        thought_signatures: None,
+    };
+    let end = StreamEnd {
+        captured_usage: None,
+        captured_content: Some(MessageContent::from_tool_calls(vec![captured_tc])),
+        captured_reasoning_content: None,
+    };
+
+    collector.process(ChatStreamEvent::End(end));
+    let result = collector.finish();
+
+    assert_eq!(result.text, "Processing...");
+    assert_eq!(result.tool_calls.len(), 2);
+}
+
+#[test]
+fn test_stream_collector_tool_chunk_with_null_arguments() {
+    use carve_agent::StreamOutput;
+    use genai::chat::{ChatStreamEvent, ToolChunk};
+
+    let mut collector = StreamCollector::new();
+
+    // Tool call chunk with name first (triggers ToolCallStart)
+    let tc1 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "my_tool".to_string(),
+        fn_arguments: serde_json::Value::Null, // null arguments
+        thought_signatures: None,
+    };
+    let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+    // Should emit ToolCallStart
+    assert!(matches!(output, Some(StreamOutput::ToolCallStart { .. })));
+
+    // Tool call chunk with null arguments again (tests the "null" check at line 80)
+    let tc2 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "".to_string(), // empty name (already set)
+        fn_arguments: serde_json::Value::Null,
+        thought_signatures: None,
+    };
+    let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+    // Should return None because args_str == "null"
+    assert!(output.is_none());
+
+    let result = collector.finish();
+    assert_eq!(result.tool_calls.len(), 1);
+    assert_eq!(result.tool_calls[0].name, "my_tool");
+}
+
+#[test]
+fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
+    use carve_agent::StreamOutput;
+    use genai::chat::{ChatStreamEvent, ToolChunk};
+
+    let mut collector = StreamCollector::new();
+
+    // First set the tool name
+    let tc1 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "test_tool".to_string(),
+        fn_arguments: json!(""), // empty string serializes to ""
+        thought_signatures: None,
+    };
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+    // Now try with empty string value - tests the !args_str.is_empty() check
+    let tc2 = genai::chat::ToolCall {
+        call_id: "call_1".to_string(),
+        fn_name: "".to_string(),
+        fn_arguments: json!(""), // empty string
+        thought_signatures: None,
+    };
+    let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+    // Should emit ToolCallDelta because "" serializes to `"\"\""`
+    // Actually let's check what it serializes to
+    let serialized = json!("").to_string();
+    if serialized.is_empty() || serialized == "null" {
+        assert!(output.is_none());
+    } else {
+        // It should be `""` which is not empty
+        assert!(matches!(output, Some(StreamOutput::ToolCallDelta { .. })));
+    }
 }
