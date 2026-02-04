@@ -22,7 +22,6 @@
 //! ```
 
 use crate::plugin::AgentPlugin;
-use crate::plugins::execution::ExecutionContextExt;
 use crate::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
 use carve_state::Context;
@@ -123,7 +122,7 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    fn initial_state(&self) -> Option<(&'static str, Value)> {
+    fn initial_data(&self) -> Option<(&'static str, Value)> {
         Some((
             PERMISSION_STATE_PATH,
             json!({
@@ -133,25 +132,67 @@ impl AgentPlugin for PermissionPlugin {
         ))
     }
 
-    async fn before_tool_execute(&self, ctx: &Context<'_>, tool_id: &str, _args: &Value) {
-        let permission = ctx.get_permission(tool_id);
+    async fn on_phase(&self, phase: crate::phase::Phase, turn: &mut crate::phase::TurnContext<'_>) {
+        use crate::phase::Phase;
+
+        if phase != Phase::BeforeToolExecute {
+            return;
+        }
+
+        let Some(tool_id) = turn.tool_id() else {
+            return;
+        };
+
+        // Get permission from stored data (simplified - in real implementation,
+        // this would read from session state)
+        let permission = turn
+            .get::<Value>(PERMISSION_STATE_PATH)
+            .and_then(|state| {
+                state
+                    .get("tools")
+                    .and_then(|tools| tools.get(tool_id))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| match s {
+                        "allow" => Some(ToolPermissionBehavior::Allow),
+                        "deny" => Some(ToolPermissionBehavior::Deny),
+                        "ask" => Some(ToolPermissionBehavior::Ask),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_else(|| {
+                turn.get::<Value>(PERMISSION_STATE_PATH)
+                    .and_then(|state| {
+                        state
+                            .get("default_behavior")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| match s {
+                                "allow" => Some(ToolPermissionBehavior::Allow),
+                                "deny" => Some(ToolPermissionBehavior::Deny),
+                                "ask" => Some(ToolPermissionBehavior::Ask),
+                                _ => None,
+                            })
+                    })
+                    .unwrap_or(ToolPermissionBehavior::Ask)
+            });
 
         match permission {
             ToolPermissionBehavior::Allow => {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                ctx.block(format!("Tool '{}' is denied", tool_id));
+                turn.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 // Create a pending interaction for confirmation
-                let interaction = Interaction::confirm(
-                    format!("permission_{}", tool_id),
-                    format!("Allow tool '{}' to execute?", tool_id),
-                )
-                .with_metadata("tool_id", json!(tool_id));
+                if !turn.tool_pending() {
+                    let interaction = Interaction::confirm(
+                        format!("permission_{}", tool_id),
+                        format!("Allow tool '{}' to execute?", tool_id),
+                    )
+                    .with_metadata("tool_id", json!(tool_id));
 
-                ctx.pending(interaction);
+                    turn.pending(interaction);
+                }
             }
         }
     }
@@ -279,69 +320,93 @@ mod tests {
     }
 
     #[test]
-    fn test_permission_plugin_initial_state() {
+    fn test_permission_plugin_initial_data() {
         let plugin = PermissionPlugin;
-        let state = plugin.initial_state();
+        let data = plugin.initial_data();
 
-        assert!(state.is_some());
-        let (path, value) = state.unwrap();
+        assert!(data.is_some());
+        let (path, value) = data.unwrap();
         assert_eq!(path, "permissions");
         assert_eq!(value["default_behavior"], "ask");
     }
 
     #[tokio::test]
     async fn test_permission_plugin_allow() {
-        let doc = json!({
-            "permissions": {
-                "default_behavior": "allow",
-                "tools": {}
-            },
-            "execution": { "blocked": null, "pending": null }
-        });
-        let ctx = Context::new(&doc, "call_1", "test");
+        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        // Set up allow permission in turn data
+        turn.set(
+            PERMISSION_STATE_PATH,
+            json!({ "default_behavior": "allow", "tools": {} }),
+        );
+
+        // Set up tool context
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
         let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
 
-        plugin.before_tool_execute(&ctx, "any_tool", &json!({})).await;
-
-        // Should not block or pending - no changes made
-        assert!(!ctx.has_changes());
+        // Should not block
+        assert!(!turn.tool_blocked());
+        assert!(!turn.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_deny() {
-        let doc = json!({
-            "permissions": {
-                "default_behavior": "deny",
-                "tools": {}
-            }
-        });
-        let ctx = Context::new(&doc, "call_1", "test");
-        let plugin = PermissionPlugin;
+        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
 
-        plugin.before_tool_execute(&ctx, "any_tool", &json!({})).await;
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        // Set up deny permission in turn data
+        turn.set(
+            PERMISSION_STATE_PATH,
+            json!({ "default_behavior": "deny", "tools": {} }),
+        );
+
+        // Set up tool context
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
 
         // Should block
-        assert!(ctx.is_blocked());
-        assert!(ctx.block_reason().unwrap().contains("denied"));
+        assert!(turn.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        let doc = json!({
-            "permissions": {
-                "default_behavior": "ask",
-                "tools": {}
-            }
-        });
-        let ctx = Context::new(&doc, "call_1", "test");
+        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        // Set up ask permission in turn data
+        turn.set(
+            PERMISSION_STATE_PATH,
+            json!({ "default_behavior": "ask", "tools": {} }),
+        );
+
+        // Set up tool context
+        let call = ToolCall::new("call_1", "test_tool", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
         let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
 
-        plugin.before_tool_execute(&ctx, "test_tool", &json!({})).await;
-
-        // Should create pending interaction
-        assert!(ctx.is_pending());
-        let pending = ctx.pending_interaction().unwrap();
-        assert!(pending.message.contains("test_tool"));
+        // Should set pending
+        assert!(turn.tool_pending());
     }
 
     #[test]

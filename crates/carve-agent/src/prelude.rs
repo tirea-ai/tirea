@@ -21,7 +21,6 @@
 //!         // Extension traits are auto-imported
 //!         ctx.allow_tool("follow_up");           // PermissionContextExt
 //!         ctx.add_reminder("Remember to check"); // ReminderContextExt
-//!         ctx.set("key", json!("value"));        // ContextDataExt
 //!
 //!         Ok(ToolResult::success("my_tool", json!({"status": "done"})))
 //!     }
@@ -46,6 +45,9 @@ pub use crate::types::{Message, Role, ToolCall};
 // Plugin trait
 pub use crate::plugin::AgentPlugin;
 
+// Phase types for plugins
+pub use crate::phase::{Phase, ToolContext, TurnContext, TurnResult};
+
 // State types (for plugin developers)
 pub use crate::state_types::{
     Interaction, InteractionChoice, InteractionResponse, InteractionType, InteractionValue,
@@ -53,14 +55,10 @@ pub use crate::state_types::{
 };
 
 // Extension traits - these add methods to Context
-pub use crate::plugins::{
-    ContextDataExt, ExecutionContextExt, MessageContextExt, PermissionContextExt, ReminderContextExt,
-};
+pub use crate::plugins::{PermissionContextExt, ReminderContextExt};
 
 // State types (for advanced usage)
-pub use crate::plugins::{
-    ContextDataState, ExecutionState, MessageState, PermissionState, ReminderState,
-};
+pub use crate::plugins::{PermissionState, ReminderState};
 
 // Built-in plugins
 pub use crate::plugins::{PermissionPlugin, ReminderPlugin};

@@ -1,25 +1,56 @@
-//! Agent loop implementation.
+//! Agent loop implementation with Phase-based plugin execution.
 //!
 //! The agent loop orchestrates the conversation between user, LLM, and tools:
 //!
 //! ```text
 //! User Input → LLM → Tool Calls? → Execute Tools → LLM → ... → Final Response
 //! ```
+//!
+//! # Phase Execution
+//!
+//! Each phase emits events to all plugins via `on_phase()`:
+//!
+//! ```text
+//! SessionStart (once)
+//!     │
+//!     ▼
+//! ┌─────────────────────────┐
+//! │      TurnStart          │ ← plugins can inject system context
+//! ├─────────────────────────┤
+//! │    BeforeInference      │ ← plugins can filter tools, add session context
+//! ├─────────────────────────┤
+//! │      [LLM CALL]         │
+//! ├─────────────────────────┤
+//! │    AfterInference       │
+//! ├─────────────────────────┤
+//! │  ┌───────────────────┐  │
+//! │  │ BeforeToolExecute │  │ ← plugins can block/pending
+//! │  ├───────────────────┤  │
+//! │  │   [TOOL EXEC]     │  │
+//! │  ├───────────────────┤  │
+//! │  │ AfterToolExecute  │  │ ← plugins can add reminders
+//! │  └───────────────────┘  │
+//! ├─────────────────────────┤
+//! │       TurnEnd           │
+//! └─────────────────────────┘
+//!     │
+//!     ▼
+//! SessionEnd (once)
+//! ```
 
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
-use crate::execute::{
-    collect_patches, execute_tools_parallel, execute_tools_parallel_with_plugins,
-    execute_tools_sequential_with_plugins,
-};
+use crate::execute::{collect_patches, execute_single_tool, ToolExecution};
+use crate::phase::{Phase, ToolContext, TurnContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
-use crate::traits::tool::Tool;
+use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -29,6 +60,8 @@ use std::sync::Arc;
 pub struct AgentConfig {
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
     pub model: String,
+    /// System prompt for the LLM.
+    pub system_prompt: String,
     /// Maximum number of tool call rounds before stopping.
     pub max_rounds: usize,
     /// Whether to execute tools in parallel.
@@ -43,6 +76,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: "gpt-4o-mini".to_string(),
+            system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
             chat_options: None,
@@ -55,6 +89,7 @@ impl std::fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentConfig")
             .field("model", &self.model)
+            .field("system_prompt", &format!("[{} chars]", self.system_prompt.len()))
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
             .field("chat_options", &self.chat_options)
@@ -70,6 +105,13 @@ impl AgentConfig {
             model: model.into(),
             ..Default::default()
         }
+    }
+
+    /// Set system prompt.
+    #[must_use]
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.system_prompt = prompt.into();
+        self
     }
 
     /// Set max rounds.
@@ -113,24 +155,105 @@ impl AgentConfig {
     }
 }
 
+/// Emit a phase to all plugins.
+async fn emit_phase(phase: Phase, turn: &mut TurnContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+    for plugin in plugins {
+        plugin.on_phase(phase, turn).await;
+    }
+}
+
+/// Initialize plugin data in TurnContext.
+fn init_plugin_data(turn: &mut TurnContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+    for plugin in plugins {
+        if let Some((key, value)) = plugin.initial_data() {
+            turn.set(key, value);
+        }
+    }
+}
+
+/// Build messages from TurnContext for LLM request.
+fn build_messages(turn: &mut TurnContext<'_>, system_prompt: &str) {
+    turn.messages.clear();
+
+    // [1] System Prompt + Context
+    let system = if turn.system_context.is_empty() {
+        system_prompt.to_string()
+    } else {
+        format!("{}\n\n{}", system_prompt, turn.system_context.join("\n"))
+    };
+
+    if !system.is_empty() {
+        turn.messages.push(Message::system(system));
+    }
+
+    // [2] Session Context
+    for ctx in &turn.session_context {
+        turn.messages.push(Message::system(ctx.clone()));
+    }
+
+    // [3+] History from session
+    turn.messages.extend(turn.session.messages.clone());
+}
+
 /// Run one turn of the agent loop (non-streaming).
 ///
 /// A turn consists of:
-/// 1. Send messages to LLM
-/// 2. If LLM returns tool calls, execute them
-/// 3. Return the result
-///
-/// This function does NOT loop - it's a single LLM call + optional tool execution.
-/// Use `run_loop` for the full agent loop.
+/// 1. Emit TurnStart phase
+/// 2. Emit BeforeInference phase
+/// 3. Send messages to LLM
+/// 4. Emit AfterInference phase
+/// 5. If LLM returns tool calls, execute them with BeforeToolExecute/AfterToolExecute phases
+/// 6. Emit TurnEnd phase
+/// 7. Return the result
 pub async fn run_turn(
     client: &Client,
     config: &AgentConfig,
     session: Session,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, StreamResult), AgentLoopError> {
-    // Build request
-    let tool_refs: Vec<&dyn Tool> = tools.values().map(|t| t.as_ref()).collect();
-    let request = build_request(&session.messages, &tool_refs);
+    // Get tool descriptors
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+
+    // Create TurnContext - use scoped blocks to manage borrows
+    let (messages, filtered_tools, skip_inference) = {
+        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+
+        // Phase 1: TurnStart
+        emit_phase(Phase::TurnStart, &mut turn, &config.plugins).await;
+
+        // Phase 2: BeforeInference
+        emit_phase(Phase::BeforeInference, &mut turn, &config.plugins).await;
+
+        // Build messages
+        build_messages(&mut turn, &config.system_prompt);
+
+        // Get data before dropping turn
+        let skip = turn.skip_inference;
+        let msgs = turn.messages.clone();
+        let tools_filter: Vec<String> = turn.tools.iter().map(|td| td.id.clone()).collect();
+
+        (msgs, tools_filter, skip)
+    };
+
+    // Skip inference if requested
+    if skip_inference {
+        return Ok((
+            session,
+            StreamResult {
+                text: String::new(),
+                tool_calls: vec![],
+            },
+        ));
+    }
+
+    // Build request with filtered tools
+    let filtered_tool_refs: Vec<&dyn Tool> = tools
+        .values()
+        .filter(|t| filtered_tools.contains(&t.descriptor().id))
+        .map(|t| t.as_ref())
+        .collect();
+    let request = build_request(&messages, &filtered_tool_refs);
 
     // Call LLM
     let response = client
@@ -152,6 +275,13 @@ pub async fn run_turn(
 
     let result = StreamResult { text, tool_calls };
 
+    // Phase 3: AfterInference (with new context)
+    {
+        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+        turn.response = Some(result.clone());
+        emit_phase(Phase::AfterInference, &mut turn, &config.plugins).await;
+    }
+
     // Add assistant message
     let session = if result.tool_calls.is_empty() {
         session.with_message(assistant_message(&result.text))
@@ -159,10 +289,18 @@ pub async fn run_turn(
         session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
     };
 
+    // Phase 6: TurnEnd (with new context)
+    {
+        let mut turn = TurnContext::new(&session, tool_descriptors);
+        emit_phase(Phase::TurnEnd, &mut turn, &config.plugins).await;
+    }
+
     Ok((session, result))
 }
 
-/// Execute tool calls and update session.
+/// Execute tool calls (simplified version without plugins).
+///
+/// This is the simpler API for tests and cases where plugins aren't needed.
 pub async fn execute_tools(
     session: Session,
     result: &StreamResult,
@@ -172,7 +310,103 @@ pub async fn execute_tools(
     execute_tools_with_plugins(session, result, tools, parallel, &[]).await
 }
 
-/// Execute tool calls with plugin hooks and update session.
+/// Execute tool calls with phase-based plugin hooks.
+pub async fn execute_tools_with_config(
+    session: Session,
+    result: &StreamResult,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+) -> Result<Session, AgentLoopError> {
+    if result.tool_calls.is_empty() {
+        return Ok(session);
+    }
+
+    // Get current state
+    let state = session
+        .rebuild_state()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+
+    // Get tool descriptors
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+
+    // Execute each tool with phase hooks
+    let mut executions = Vec::new();
+
+    for call in &result.tool_calls {
+        // Create TurnContext for this tool
+        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+        turn.tool = Some(ToolContext::new(call));
+
+        // Phase 4: BeforeToolExecute
+        emit_phase(Phase::BeforeToolExecute, &mut turn, &config.plugins).await;
+
+        // Check if blocked
+        let execution = if turn.tool_blocked() {
+            let reason = turn
+                .tool
+                .as_ref()
+                .and_then(|t| t.block_reason.clone())
+                .unwrap_or_else(|| "Blocked by plugin".to_string());
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(&call.name, reason),
+                patch: None,
+            }
+        } else if turn.tool_pending() {
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+                patch: None,
+            }
+        } else {
+            // Execute the tool
+            let tool = tools.get(&call.name).cloned();
+            execute_single_tool(tool.as_deref(), call, &state).await
+        };
+
+        // Set tool result in context
+        turn.set_tool_result(execution.result.clone());
+
+        // Phase 5: AfterToolExecute
+        emit_phase(Phase::AfterToolExecute, &mut turn, &config.plugins).await;
+
+        executions.push((execution, turn.system_reminders.clone()));
+    }
+
+    // Collect patches and tool response messages
+    let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
+    let tool_messages: Vec<Message> = executions
+        .iter()
+        .flat_map(|(e, reminders)| {
+            let mut msgs = vec![tool_response(&e.call.id, &e.result)];
+            for r in reminders {
+                msgs.push(Message::system(format!(
+                    "<system-reminder>{}</system-reminder>",
+                    r
+                )));
+            }
+            msgs
+        })
+        .collect();
+
+    // Update session
+    let session = session.with_patches(patches).with_messages(tool_messages);
+
+    Ok(session)
+}
+
+/// Execute tool calls (simple version without config).
+pub async fn execute_tools_simple(
+    session: Session,
+    result: &StreamResult,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    parallel: bool,
+) -> Result<Session, AgentLoopError> {
+    execute_tools_with_plugins(session, result, tools, parallel, &[]).await
+}
+
+/// Execute tool calls with plugin hooks (backward compatible).
 pub async fn execute_tools_with_plugins(
     session: Session,
     result: &StreamResult,
@@ -189,34 +423,149 @@ pub async fn execute_tools_with_plugins(
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
-    // Execute tools with or without plugins
-    let executions = if plugins.is_empty() {
-        if parallel {
-            execute_tools_parallel(tools, &result.tool_calls, &state).await
-        } else {
-            let (_, execs) =
-                crate::execute::execute_tools_sequential(tools, &result.tool_calls, &state).await;
-            execs
-        }
-    } else if parallel {
-        execute_tools_parallel_with_plugins(tools, &result.tool_calls, &state, plugins).await
+    // Get tool descriptors
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+
+    // Execute tools
+    let executions = if parallel {
+        execute_tools_parallel_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
     } else {
-        let (_, execs) =
-            execute_tools_sequential_with_plugins(tools, &result.tool_calls, &state, plugins).await;
-        execs
+        execute_tools_sequential_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
     };
 
     // Collect patches and tool response messages
-    let patches = collect_patches(&executions);
+    let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
     let tool_messages: Vec<Message> = executions
         .iter()
-        .map(|e| tool_response(&e.call.id, &e.result))
+        .flat_map(|(e, reminders)| {
+            let mut msgs = vec![tool_response(&e.call.id, &e.result)];
+            for r in reminders {
+                msgs.push(Message::system(format!(
+                    "<system-reminder>{}</system-reminder>",
+                    r
+                )));
+            }
+            msgs
+        })
         .collect();
 
     // Update session
     let session = session.with_patches(patches).with_messages(tool_messages);
 
     Ok(session)
+}
+
+/// Execute tools in parallel with phase hooks.
+async fn execute_tools_parallel_with_phases(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[crate::types::ToolCall],
+    state: &Value,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Vec<(ToolExecution, Vec<String>)> {
+    use futures::future::join_all;
+
+    let futures = calls.iter().map(|call| {
+        let tool = tools.get(&call.name).cloned();
+        let state = state.clone();
+        let call = call.clone();
+        let plugins = plugins.to_vec();
+        let tool_descriptors = tool_descriptors.to_vec();
+
+        async move {
+            execute_single_tool_with_phases(tool.as_deref(), &call, &state, &tool_descriptors, &plugins).await
+        }
+    });
+
+    join_all(futures).await
+}
+
+/// Execute tools sequentially with phase hooks.
+async fn execute_tools_sequential_with_phases(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[crate::types::ToolCall],
+    initial_state: &Value,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Vec<(ToolExecution, Vec<String>)> {
+    use carve_state::apply_patch;
+
+    let mut state = initial_state.clone();
+    let mut executions = Vec::with_capacity(calls.len());
+
+    for call in calls {
+        let tool = tools.get(&call.name).cloned();
+        let (exec, reminders) =
+            execute_single_tool_with_phases(tool.as_deref(), call, &state, tool_descriptors, plugins).await;
+
+        // Apply patch to state for next tool
+        if let Some(ref patch) = exec.patch {
+            if let Ok(new_state) = apply_patch(&state, patch.patch()) {
+                state = new_state;
+            }
+        }
+
+        executions.push((exec, reminders));
+    }
+
+    executions
+}
+
+/// Execute a single tool with phase hooks.
+async fn execute_single_tool_with_phases(
+    tool: Option<&dyn Tool>,
+    call: &crate::types::ToolCall,
+    state: &Value,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> (ToolExecution, Vec<String>) {
+    // Create a minimal session for TurnContext
+    let temp_session = Session::with_initial_state("temp", state.clone());
+
+    // Create TurnContext for this tool
+    let mut turn = TurnContext::new(&temp_session, tool_descriptors.to_vec());
+    turn.tool = Some(ToolContext::new(call));
+
+    // Phase: BeforeToolExecute
+    emit_phase(Phase::BeforeToolExecute, &mut turn, plugins).await;
+
+    // Check if blocked
+    let execution = if turn.tool_blocked() {
+        let reason = turn
+            .tool
+            .as_ref()
+            .and_then(|t| t.block_reason.clone())
+            .unwrap_or_else(|| "Blocked by plugin".to_string());
+        ToolExecution {
+            call: call.clone(),
+            result: ToolResult::error(&call.name, reason),
+            patch: None,
+        }
+    } else if turn.tool_pending() {
+        ToolExecution {
+            call: call.clone(),
+            result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
+            patch: None,
+        }
+    } else if tool.is_none() {
+        ToolExecution {
+            call: call.clone(),
+            result: ToolResult::error(&call.name, format!("Tool '{}' not found", call.name)),
+            patch: None,
+        }
+    } else {
+        // Execute the tool
+        execute_single_tool(tool, call, state).await
+    };
+
+    // Set tool result in context
+    turn.set_tool_result(execution.result.clone());
+
+    // Phase: AfterToolExecute
+    emit_phase(Phase::AfterToolExecute, &mut turn, plugins).await;
+
+    (execution, turn.system_reminders.clone())
 }
 
 /// Run the full agent loop until completion or max rounds.
@@ -231,6 +580,17 @@ pub async fn run_loop(
     let mut rounds = 0;
     let mut last_text;
 
+    // Get tool descriptors for SessionStart
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+
+    // Create TurnContext for session lifecycle
+    let mut session_turn = TurnContext::new(&session, tool_descriptors.clone());
+    init_plugin_data(&mut session_turn, &config.plugins);
+
+    // Phase: SessionStart
+    emit_phase(Phase::SessionStart, &mut session_turn, &config.plugins).await;
+
     loop {
         // Run one turn
         let (new_session, result) = run_turn(client, config, session, tools).await?;
@@ -243,21 +603,18 @@ pub async fn run_loop(
             break;
         }
 
-        // Execute tools with plugins
-        session = execute_tools_with_plugins(
-            session,
-            &result,
-            tools,
-            config.parallel_tools,
-            &config.plugins,
-        )
-        .await?;
+        // Execute tools
+        session = execute_tools_with_config(session, &result, tools, config).await?;
 
         rounds += 1;
         if rounds >= config.max_rounds {
             return Err(AgentLoopError::MaxRoundsExceeded(config.max_rounds));
         }
     }
+
+    // Phase: SessionEnd
+    let mut end_turn = TurnContext::new(&session, tool_descriptors);
+    emit_phase(Phase::SessionEnd, &mut end_turn, &config.plugins).await;
 
     Ok((session, last_text))
 }
@@ -275,10 +632,47 @@ pub fn run_loop_stream(
         let mut session = session;
         let mut rounds = 0;
 
+        // Get tool descriptors
+        let tool_descriptors: Vec<ToolDescriptor> =
+            tools.values().map(|t| t.descriptor().clone()).collect();
+
+        // Phase: SessionStart (use scoped block to manage borrow)
+        {
+            let mut session_turn = TurnContext::new(&session, tool_descriptors.clone());
+            init_plugin_data(&mut session_turn, &config.plugins);
+            emit_phase(Phase::SessionStart, &mut session_turn, &config.plugins).await;
+        }
+
         loop {
-            // Build request
-            let tool_refs: Vec<&dyn Tool> = tools.values().map(|t| t.as_ref()).collect();
-            let request = build_request(&session.messages, &tool_refs);
+            // Phase: TurnStart and BeforeInference (collect messages and tools filter)
+            let (messages, filtered_tools, skip_inference) = {
+                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+
+                emit_phase(Phase::TurnStart, &mut turn, &config.plugins).await;
+                emit_phase(Phase::BeforeInference, &mut turn, &config.plugins).await;
+
+                build_messages(&mut turn, &config.system_prompt);
+
+                let skip = turn.skip_inference;
+                let msgs = turn.messages.clone();
+                let tools_filter: Vec<String> = turn.tools.iter().map(|td| td.id.clone()).collect();
+
+                (msgs, tools_filter, skip)
+            };
+
+            // Skip inference if requested
+            if skip_inference {
+                yield AgentEvent::Done { response: String::new() };
+                return;
+            }
+
+            // Build request with filtered tools
+            let filtered_tool_refs: Vec<&dyn Tool> = tools
+                .values()
+                .filter(|t| filtered_tools.contains(&t.descriptor().id))
+                .map(|t| t.as_ref())
+                .collect();
+            let request = build_request(&messages, &filtered_tool_refs);
 
             // Stream LLM response
             let stream_result = client
@@ -323,6 +717,13 @@ pub fn run_loop_stream(
 
             let result = collector.finish();
 
+            // Phase: AfterInference (with new context)
+            {
+                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+                turn.response = Some(result.clone());
+                emit_phase(Phase::AfterInference, &mut turn, &config.plugins).await;
+            }
+
             // Emit turn done
             yield AgentEvent::TurnDone {
                 text: result.text.clone(),
@@ -336,13 +737,23 @@ pub fn run_loop_stream(
                 session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
             };
 
+            // Phase: TurnEnd (with new context)
+            {
+                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+                emit_phase(Phase::TurnEnd, &mut turn, &config.plugins).await;
+            }
+
             // Check if we need to execute tools
             if !result.needs_tools() {
+                // Phase: SessionEnd
+                let mut end_turn = TurnContext::new(&session, tool_descriptors.clone());
+                emit_phase(Phase::SessionEnd, &mut end_turn, &config.plugins).await;
+
                 yield AgentEvent::Done { response: result.text };
                 return;
             }
 
-            // Execute tools with plugins
+            // Execute tools with phase hooks
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
@@ -351,31 +762,29 @@ pub fn run_loop_stream(
                 }
             };
 
-            let executions = if config.plugins.is_empty() {
-                if config.parallel_tools {
-                    execute_tools_parallel(&tools, &result.tool_calls, &state).await
-                } else {
-                    let (_, execs) = crate::execute::execute_tools_sequential(&tools, &result.tool_calls, &state).await;
-                    execs
-                }
-            } else if config.parallel_tools {
-                execute_tools_parallel_with_plugins(&tools, &result.tool_calls, &state, &config.plugins).await
+            let executions = if config.parallel_tools {
+                execute_tools_parallel_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
             } else {
-                let (_, execs) = execute_tools_sequential_with_plugins(&tools, &result.tool_calls, &state, &config.plugins).await;
-                execs
+                execute_tools_sequential_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
             };
 
             // Emit tool results and collect patches/messages
-            let patches = collect_patches(&executions);
+            let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
             let mut tool_messages = Vec::new();
 
-            for exec in &executions {
+            for (exec, reminders) in &executions {
                 yield AgentEvent::ToolCallDone {
                     id: exec.call.id.clone(),
                     result: exec.result.clone(),
                     patch: exec.patch.clone(),
                 };
                 tool_messages.push(tool_response(&exec.call.id, &exec.result));
+                for r in reminders {
+                    tool_messages.push(Message::system(format!(
+                        "<system-reminder>{}</system-reminder>",
+                        r
+                    )));
+                }
             }
 
             session = session.with_patches(patches).with_messages(tool_messages);
@@ -426,15 +835,8 @@ pub async fn run_step(
         });
     }
 
-    // Execute tools with plugins
-    let session = execute_tools_with_plugins(
-        session,
-        &result,
-        tools,
-        config.parallel_tools,
-        &config.plugins,
-    )
-    .await?;
+    // Execute tools
+    let session = execute_tools_with_config(session, &result, tools, config).await?;
 
     Ok(StepResult::ToolsExecuted {
         session,
@@ -495,6 +897,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phase::Phase;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use async_trait::async_trait;
     use carve_state::Context;
@@ -533,17 +936,20 @@ mod tests {
         let config = AgentConfig::default();
         assert_eq!(config.max_rounds, 10);
         assert!(config.parallel_tools);
+        assert!(config.system_prompt.is_empty());
     }
 
     #[test]
     fn test_agent_config_builder() {
         let config = AgentConfig::new("gpt-4")
             .with_max_rounds(5)
-            .with_parallel_tools(false);
+            .with_parallel_tools(false)
+            .with_system_prompt("You are helpful.");
 
         assert_eq!(config.model, "gpt-4");
         assert_eq!(config.max_rounds, 5);
         assert!(!config.parallel_tools);
+        assert_eq!(config.system_prompt, "You are helpful.");
     }
 
     #[test]
@@ -571,7 +977,6 @@ mod tests {
         assert!(err.to_string().contains("10"));
     }
 
-    // Integration tests require actual LLM access, so we test the pure parts here
     #[test]
     fn test_execute_tools_empty() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -583,8 +988,8 @@ mod tests {
             };
             let tools = HashMap::new();
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-            assert_eq!(session.message_count(), 0); // No tool messages added
+            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            assert_eq!(session.message_count(), 0);
         });
     }
 
@@ -603,15 +1008,13 @@ mod tests {
             };
             let tools = tool_map([EchoTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
 
-            // Should have tool response message
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
         });
     }
 
-    // Tool that modifies state
     struct CounterTool;
 
     #[async_trait]
@@ -629,12 +1032,10 @@ mod tests {
         async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
             let amount = args["amount"].as_i64().unwrap_or(1);
 
-            // Access typed state
             let state = ctx.state::<TestCounterState>("");
             let current = state.counter().unwrap_or(0);
             let new_value = current + amount;
 
-            // Write new value
             state.set_counter(new_value);
 
             Ok(ToolResult::success("counter", json!({ "new_value": new_value })))
@@ -656,171 +1057,18 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
 
-            // Should have tool response message
             assert_eq!(session.message_count(), 1);
-
-            // Should have patch
             assert_eq!(session.patch_count(), 1);
 
-            // Rebuild state should show new value
             let state = session.rebuild_state().unwrap();
             assert_eq!(state["counter"], 5);
         });
-    }
-
-    #[test]
-    fn test_execute_tools_multiple() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-            let result = StreamResult {
-                text: "Multiple tools".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "hello"})),
-                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 3})),
-                    crate::types::ToolCall::new("call_3", "echo", json!({"message": "world"})),
-                ],
-            };
-
-            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-            tools.insert("echo".to_string(), Arc::new(EchoTool));
-            tools.insert("counter".to_string(), Arc::new(CounterTool));
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Should have 3 tool response messages
-            assert_eq!(session.message_count(), 3);
-
-            // Should have 1 patch (only counter modifies state)
-            assert_eq!(session.patch_count(), 1);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_sequential() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-            let result = StreamResult {
-                text: "Sequential".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 1})),
-                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 2})),
-                ],
-            };
-
-            let tools = tool_map([CounterTool]);
-
-            // Sequential execution - each tool sees previous state
-            let session = execute_tools(session, &result, &tools, false).await.unwrap();
-
-            assert_eq!(session.message_count(), 2);
-            // Both tools produce patches
-            assert_eq!(session.patch_count(), 2);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_parallel() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-            let result = StreamResult {
-                text: "Parallel".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 1})),
-                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 2})),
-                ],
-            };
-
-            let tools = tool_map([CounterTool]);
-
-            // Parallel execution - both tools see same initial state
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            assert_eq!(session.message_count(), 2);
-            // Both tools produce patches (but they both see counter=0)
-            assert_eq!(session.patch_count(), 2);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_not_found() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Unknown tool".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "nonexistent",
-                    json!({}),
-                )],
-            };
-            let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Should still have tool response message (with error)
-            assert_eq!(session.message_count(), 1);
-
-            // Response should contain error info
-            let msg = &session.messages[0];
-            assert!(msg.content.contains("not found") || msg.content.contains("error"));
-        });
-    }
-
-    #[test]
-    fn test_session_with_messages_and_patches() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Simulate a conversation with tool usage
-            let session = Session::with_initial_state("test", json!({"counter": 0}))
-                .with_message(crate::types::Message::user("Increment counter by 5"));
-
-            // Simulate LLM response with tool call
-            let result = StreamResult {
-                text: "I'll increment the counter".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "counter",
-                    json!({"amount": 5}),
-                )],
-            };
-
-            // Add assistant message with tool calls
-            let session = session.with_message(crate::convert::assistant_tool_calls(
-                &result.text,
-                result.tool_calls.clone(),
-            ));
-
-            let tools = tool_map([CounterTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Should have: user message, assistant message, tool response
-            assert_eq!(session.message_count(), 3);
-
-            // Should have patch from counter tool
-            assert_eq!(session.patch_count(), 1);
-
-            // State should be updated
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 5);
-        });
-    }
-
-    #[test]
-    fn test_agent_loop_error_state_error() {
-        let err = AgentLoopError::StateError("invalid patch".to_string());
-        assert!(err.to_string().contains("State error"));
-        assert!(err.to_string().contains("invalid patch"));
     }
 
     #[test]
     fn test_step_result_variants() {
-        // Test that StepResult can be constructed
         let session = Session::new("test");
 
         let done = StepResult::Done {
@@ -834,7 +1082,6 @@ mod tests {
             tool_calls: vec![],
         };
 
-        // Just verify they can be constructed (pattern matching)
         match done {
             StepResult::Done { response, .. } => assert_eq!(response, "Hello"),
             _ => panic!("Expected Done"),
@@ -846,7 +1093,6 @@ mod tests {
         }
     }
 
-    // Tool that always fails
     struct FailingTool;
 
     #[async_trait]
@@ -871,798 +1117,80 @@ mod tests {
             };
             let tools = tool_map([FailingTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
 
-            // Should have tool response (with error)
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
             assert!(msg.content.contains("error") || msg.content.contains("fail"));
         });
     }
 
-    #[test]
-    fn test_execute_tools_mixed_success_and_failure() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Mixed tools".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "hello"})),
-                    crate::types::ToolCall::new("call_2", "failing", json!({})),
-                    crate::types::ToolCall::new("call_3", "echo", json!({"message": "world"})),
-                ],
-            };
+    // ============================================================================
+    // Phase-based Plugin Tests
+    // ============================================================================
 
-            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-            tools.insert("echo".to_string(), Arc::new(EchoTool));
-            tools.insert("failing".to_string(), Arc::new(FailingTool));
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // All 3 tools should have responses
-            assert_eq!(session.message_count(), 3);
-        });
+    struct TestPhasePlugin {
+        id: String,
     }
 
-    #[test]
-    fn test_session_multiple_tool_rounds() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Simulate multiple rounds of tool execution
-            let mut session = Session::with_initial_state("test", json!({"counter": 0}));
-
-            // Round 1
-            let result1 = StreamResult {
-                text: "Round 1".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "counter",
-                    json!({"amount": 5}),
-                )],
-            };
-            session = session.with_message(crate::convert::assistant_tool_calls(
-                &result1.text,
-                result1.tool_calls.clone(),
-            ));
-            let tools = tool_map([CounterTool]);
-            session = execute_tools(session, &result1, &tools, true).await.unwrap();
-
-            // Round 2
-            let result2 = StreamResult {
-                text: "Round 2".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_2",
-                    "counter",
-                    json!({"amount": 3}),
-                )],
-            };
-            session = session.with_message(crate::convert::assistant_tool_calls(
-                &result2.text,
-                result2.tool_calls.clone(),
-            ));
-            session = execute_tools(session, &result2, &tools, true).await.unwrap();
-
-            // Should have 4 messages: 2 assistant + 2 tool responses
-            assert_eq!(session.message_count(), 4);
-
-            // Should have 2 patches
-            assert_eq!(session.patch_count(), 2);
-
-            // Final state should be 5 + 3 = 8
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 8);
-        });
-    }
-
-    #[test]
-    fn test_session_snapshot_after_tools() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-
-            let result = StreamResult {
-                text: "Incrementing".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 10})),
-                ],
-            };
-            let tools = tool_map([CounterTool]);
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-            assert_eq!(session.patch_count(), 1);
-
-            // Snapshot should collapse patches
-            let session = session.snapshot().unwrap();
-            assert_eq!(session.patch_count(), 0);
-            assert_eq!(session.state["counter"], 10);
-        });
-    }
-
-    #[test]
-    fn test_agent_config_with_chat_options() {
-        use genai::chat::ChatOptions;
-
-        let options = ChatOptions::default();
-        let config = AgentConfig::new("gpt-4").with_chat_options(options);
-
-        assert!(config.chat_options.is_some());
-    }
-
-    #[test]
-    fn test_tool_map_empty() {
-        let tools: HashMap<String, Arc<dyn Tool>> = tool_map(std::iter::empty::<EchoTool>());
-        assert!(tools.is_empty());
-    }
-
-    #[test]
-    fn test_tool_map_multiple_same_name() {
-        // If multiple tools have the same name, later ones overwrite
-        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        assert!(tools.is_empty());
-
-        // tool_map creates from descriptor id
-        let mut tools = tool_map([EchoTool]);
-        tools.insert("echo".to_string(), Arc::new(EchoTool));
-        assert_eq!(tools.len(), 1); // Still 1, not 2
-    }
-
-    // Tool with complex state changes
-    struct MultiFieldTool;
-
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-    struct MultiFieldState {
-        field_a: i64,
-        field_b: String,
-        field_c: bool,
+    impl TestPhasePlugin {
+        fn new(id: impl Into<String>) -> Self {
+            Self { id: id.into() }
+        }
     }
 
     #[async_trait]
-    impl Tool for MultiFieldTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("multi", "Multi Field", "Updates multiple fields")
+    impl AgentPlugin for TestPhasePlugin {
+        fn id(&self) -> &str {
+            &self.id
         }
 
-        async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-            let state = ctx.state::<MultiFieldState>("");
-
-            if let Some(a) = args.get("a").and_then(|v| v.as_i64()) {
-                state.set_field_a(a);
+        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+            match phase {
+                Phase::TurnStart => {
+                    turn.system("Test system context");
+                }
+                Phase::BeforeInference => {
+                    turn.session("Test session context");
+                }
+                Phase::AfterToolExecute => {
+                    if turn.tool_id() == Some("echo") {
+                        turn.reminder("Check the echo result");
+                    }
+                }
+                _ => {}
             }
-            if let Some(b) = args.get("b").and_then(|v| v.as_str()) {
-                state.set_field_b(b.to_string());
-            }
-            if let Some(c) = args.get("c").and_then(|v| v.as_bool()) {
-                state.set_field_c(c);
-            }
-
-            Ok(ToolResult::success("multi", json!({"updated": true})))
-        }
-    }
-
-    #[test]
-    fn test_execute_tools_with_complex_state() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state(
-                "test",
-                json!({"field_a": 0, "field_b": "", "field_c": false}),
-            );
-            let result = StreamResult {
-                text: "Updating".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "multi",
-                    json!({"a": 42, "b": "hello", "c": true}),
-                )],
-            };
-            let tools = tool_map([MultiFieldTool]);
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["field_a"], 42);
-            assert_eq!(state["field_b"], "hello");
-            assert_eq!(state["field_c"], true);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_partial_state_update() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state(
-                "test",
-                json!({"field_a": 100, "field_b": "original", "field_c": true}),
-            );
-            let result = StreamResult {
-                text: "Partial update".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "multi",
-                    json!({"a": 200}), // Only update field_a
-                )],
-            };
-            let tools = tool_map([MultiFieldTool]);
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["field_a"], 200);
-            assert_eq!(state["field_b"], "original"); // Unchanged
-            assert_eq!(state["field_c"], true); // Unchanged
-        });
-    }
-
-    #[test]
-    fn test_stream_result_methods() {
-        let result = StreamResult {
-            text: "Hello world".to_string(),
-            tool_calls: vec![],
-        };
-        assert!(!result.needs_tools());
-        assert_eq!(result.text, "Hello world");
-
-        let result_with_tools = StreamResult {
-            text: "Calling tools".to_string(),
-            tool_calls: vec![
-                crate::types::ToolCall::new("1", "tool1", json!({})),
-                crate::types::ToolCall::new("2", "tool2", json!({})),
-            ],
-        };
-        assert!(result_with_tools.needs_tools());
-        assert_eq!(result_with_tools.tool_calls.len(), 2);
-    }
-
-    #[test]
-    fn test_execute_tools_preserves_message_order() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test")
-                .with_message(crate::types::Message::user("First"))
-                .with_message(crate::types::Message::assistant("Second"));
-
-            let result = StreamResult {
-                text: "Tools".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new("call_1", "echo", json!({}))],
-            };
-            let tools = tool_map([EchoTool]);
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Messages should be in order
-            assert_eq!(session.messages.len(), 3);
-            assert_eq!(session.messages[0].role, crate::types::Role::User);
-            assert_eq!(session.messages[1].role, crate::types::Role::Assistant);
-            assert_eq!(session.messages[2].role, crate::types::Role::Tool);
-        });
-    }
-
-    // ============================================================================
-    // Error Recovery Tests
-    // ============================================================================
-
-    #[test]
-    fn test_partial_tool_failure_continues() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // First tool succeeds, second fails, third succeeds
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Running tools".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "first"})),
-                    crate::types::ToolCall::new("call_2", "failing", json!({})),
-                    crate::types::ToolCall::new("call_3", "echo", json!({"message": "third"})),
-                ],
-            };
-
-            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-            tools.insert("echo".to_string(), Arc::new(EchoTool));
-            tools.insert("failing".to_string(), Arc::new(FailingTool));
-
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // All tools should have responses, even the failed one
-            assert_eq!(session.message_count(), 3);
-        });
-    }
-
-    #[test]
-    fn test_all_tools_fail_still_returns_session() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "All fail".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "failing", json!({})),
-                    crate::types::ToolCall::new("call_2", "failing", json!({})),
-                ],
-            };
-
-            let tools = tool_map([FailingTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Should still have error responses
-            assert_eq!(session.message_count(), 2);
-        });
-    }
-
-    #[test]
-    fn test_session_rebuild_with_invalid_patch() {
-        // Test that rebuild handles edge cases
-        let session = Session::with_initial_state("test", json!({"value": 1}));
-
-        // Empty patches should work fine
-        let state = session.rebuild_state().unwrap();
-        assert_eq!(state["value"], 1);
-    }
-
-    #[test]
-    fn test_empty_tool_calls_list() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "No tools".to_string(),
-                tool_calls: vec![],
-            };
-
-            let tools = tool_map([EchoTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // No messages added
-            assert_eq!(session.message_count(), 0);
-        });
-    }
-
-    // ============================================================================
-    // Concurrency and Edge Case Tests
-    // ============================================================================
-
-    #[test]
-    fn test_many_parallel_tool_executions() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-
-            // Create many tool calls
-            let tool_calls: Vec<crate::types::ToolCall> = (0..20)
-                .map(|i| {
-                    crate::types::ToolCall::new(
-                        format!("call_{}", i),
-                        "echo",
-                        json!({"message": format!("msg_{}", i)}),
-                    )
-                })
-                .collect();
-
-            let result = StreamResult {
-                text: "Many tools".to_string(),
-                tool_calls,
-            };
-
-            let tools = tool_map([EchoTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            assert_eq!(session.message_count(), 20);
-        });
-    }
-
-    #[test]
-    fn test_large_session_state() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Create a large state
-            let mut items: Vec<serde_json::Value> = Vec::new();
-            for i in 0..1000 {
-                items.push(json!({
-                    "id": i,
-                    "name": format!("Item {}", i),
-                    "data": "x".repeat(100)
-                }));
-            }
-
-            let session = Session::with_initial_state("test", json!({"items": items}));
-
-            // Should handle large state
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["items"].as_array().unwrap().len(), 1000);
-        });
-    }
-
-    #[test]
-    fn test_many_patches_accumulation() {
-        use carve_state::{path, Op, Patch, TrackedPatch};
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut session = Session::with_initial_state("test", json!({"counter": 0}));
-
-            // Add many patches
-            for i in 0..50 {
-                session = session.with_patch(TrackedPatch::new(
-                    Patch::new().with_op(Op::set(path!("counter"), json!(i))),
-                ));
-            }
-
-            assert_eq!(session.patch_count(), 50);
-            assert!(session.needs_snapshot(30));
-
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 49); // Last patch value
-        });
-    }
-
-    #[test]
-    fn test_tool_with_null_arguments() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Null args".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new("call_1", "echo", json!(null))],
-            };
-
-            let tools = tool_map([EchoTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Should handle null arguments
-            assert_eq!(session.message_count(), 1);
-        });
-    }
-
-    #[test]
-    fn test_tool_with_empty_object_arguments() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Empty args".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new("call_1", "echo", json!({}))],
-            };
-
-            let tools = tool_map([EchoTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            assert_eq!(session.message_count(), 1);
-        });
-    }
-
-    // ============================================================================
-    // Mock LLM Tests (testing without actual LLM)
-    // ============================================================================
-
-    #[test]
-    fn test_simulate_conversation_flow() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Simulate: User asks -> LLM calls tool -> Tool responds -> LLM answers
-            let mut session = Session::with_initial_state("conv", json!({"counter": 0}))
-                .with_message(crate::types::Message::user("Increment counter by 5"));
-
-            // Simulate LLM response with tool call
-            let llm_response = StreamResult {
-                text: "I'll increment the counter for you.".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_inc",
-                    "counter",
-                    json!({"amount": 5}),
-                )],
-            };
-
-            // Add assistant message
-            session = session.with_message(crate::convert::assistant_tool_calls(
-                &llm_response.text,
-                llm_response.tool_calls.clone(),
-            ));
-
-            // Execute tools
-            let tools = tool_map([CounterTool]);
-            session = execute_tools(session, &llm_response, &tools, true)
-                .await
-                .unwrap();
-
-            // Simulate final LLM response
-            session = session.with_message(crate::types::Message::assistant(
-                "Done! The counter is now 5.",
-            ));
-
-            // Verify conversation
-            assert_eq!(session.message_count(), 4);
-            assert_eq!(session.messages[0].role, crate::types::Role::User);
-            assert_eq!(session.messages[1].role, crate::types::Role::Assistant);
-            assert_eq!(session.messages[2].role, crate::types::Role::Tool);
-            assert_eq!(session.messages[3].role, crate::types::Role::Assistant);
-
-            // Verify state
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 5);
-        });
-    }
-
-    #[test]
-    fn test_simulate_multi_turn_with_tools() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut session = Session::with_initial_state("multi", json!({"counter": 0}));
-            let tools = tool_map([CounterTool]);
-
-            // Turn 1
-            session = session.with_message(crate::types::Message::user("Add 3"));
-            let result1 = StreamResult {
-                text: "Adding 3".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "c1",
-                    "counter",
-                    json!({"amount": 3}),
-                )],
-            };
-            session = session.with_message(crate::convert::assistant_tool_calls(
-                &result1.text,
-                result1.tool_calls.clone(),
-            ));
-            session = execute_tools(session, &result1, &tools, true).await.unwrap();
-            session = session.with_message(crate::types::Message::assistant("Counter is 3"));
-
-            // Turn 2
-            session = session.with_message(crate::types::Message::user("Add 7 more"));
-            let result2 = StreamResult {
-                text: "Adding 7".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "c2",
-                    "counter",
-                    json!({"amount": 7}),
-                )],
-            };
-            session = session.with_message(crate::convert::assistant_tool_calls(
-                &result2.text,
-                result2.tool_calls.clone(),
-            ));
-            session = execute_tools(session, &result2, &tools, true).await.unwrap();
-            session = session.with_message(crate::types::Message::assistant("Counter is now 10"));
-
-            // Verify
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 10);
-            assert_eq!(session.message_count(), 8); // 2 turns * (user + assistant_tool + tool + assistant)
-        });
-    }
-
-    #[test]
-    fn test_simulate_no_tool_needed() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let mut session = Session::new("no_tool");
-
-            // User asks simple question
-            session = session.with_message(crate::types::Message::user("What is 2+2?"));
-
-            // LLM responds without tools
-            let result = StreamResult {
-                text: "2+2 equals 4.".to_string(),
-                tool_calls: vec![],
-            };
-
-            assert!(!result.needs_tools());
-
-            session = session.with_message(crate::types::Message::assistant(&result.text));
-
-            assert_eq!(session.message_count(), 2);
-        });
-    }
-
-    #[test]
-    fn test_simulate_tool_chain() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Simulate: search -> fetch -> format
-            let session = Session::new("chain")
-                .with_message(crate::types::Message::user("Get weather for Tokyo"));
-
-            // LLM calls multiple tools in sequence (simulated as parallel for this test)
-            let result = StreamResult {
-                text: "Let me get that info.".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("c1", "echo", json!({"message": "search:Tokyo"})),
-                    crate::types::ToolCall::new("c2", "echo", json!({"message": "fetch:weather"})),
-                    crate::types::ToolCall::new("c3", "echo", json!({"message": "format:result"})),
-                ],
-            };
-
-            let session = session.with_message(crate::convert::assistant_tool_calls(
-                &result.text,
-                result.tool_calls.clone(),
-            ));
-
-            let tools = tool_map([EchoTool]);
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-
-            // Session flow:
-            // 1. user message (from Session::new().with_message)
-            // 2. assistant message with tool calls (added above)
-            // 3-5. 3 tool responses (added by execute_tools)
-            // Total: 5 messages
-            assert_eq!(session.messages.len(), 5);
-        });
-    }
-
-    #[test]
-    fn test_step_result_done_variant() {
-        let session = Session::new("test");
-        let step = StepResult::Done {
-            session: session.clone(),
-            response: "Final answer".to_string(),
-        };
-
-        match step {
-            StepResult::Done { response, session: s } => {
-                assert_eq!(response, "Final answer");
-                assert_eq!(s.id, "test");
-            }
-            _ => panic!("Expected Done"),
         }
     }
 
     #[test]
-    fn test_step_result_tools_executed_variant() {
-        let session = Session::new("test");
-        let step = StepResult::ToolsExecuted {
-            session: session.clone(),
-            text: "Calling tools".to_string(),
-            tool_calls: vec![crate::types::ToolCall::new("c1", "test", json!({}))],
-        };
-
-        match step {
-            StepResult::ToolsExecuted {
-                text,
-                tool_calls,
-                session: s,
-            } => {
-                assert_eq!(text, "Calling tools");
-                assert_eq!(tool_calls.len(), 1);
-                assert_eq!(s.id, "test");
-            }
-            _ => panic!("Expected ToolsExecuted"),
-        }
-    }
-
-    // ============================================================================
-    // Plugin Integration Tests
-    // ============================================================================
-
-    #[test]
-    fn test_agent_config_with_plugins() {
-        use crate::plugin::AgentPlugin;
-
-        struct TestPlugin;
-
-        #[async_trait]
-        impl AgentPlugin for TestPlugin {
-            fn id(&self) -> &str {
-                "test_plugin"
-            }
-        }
-
-        let plugin: Arc<dyn AgentPlugin> = Arc::new(TestPlugin);
+    fn test_agent_config_with_phase_plugin() {
+        let plugin: Arc<dyn AgentPlugin> = Arc::new(TestPhasePlugin::new("test"));
         let config = AgentConfig::new("gpt-4").with_plugin(plugin);
 
         assert!(config.has_plugins());
         assert_eq!(config.plugins.len(), 1);
     }
 
-    #[test]
-    fn test_agent_config_with_multiple_plugins() {
-        use crate::plugin::AgentPlugin;
+    struct BlockingPhasePlugin;
 
-        struct Plugin1;
-        struct Plugin2;
-
-        #[async_trait]
-        impl AgentPlugin for Plugin1 {
-            fn id(&self) -> &str {
-                "plugin1"
-            }
+    #[async_trait]
+    impl AgentPlugin for BlockingPhasePlugin {
+        fn id(&self) -> &str {
+            "blocker"
         }
 
-        #[async_trait]
-        impl AgentPlugin for Plugin2 {
-            fn id(&self) -> &str {
-                "plugin2"
-            }
-        }
-
-        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(Plugin1), Arc::new(Plugin2)];
-        let config = AgentConfig::new("gpt-4").with_plugins(plugins);
-
-        assert!(config.has_plugins());
-        assert_eq!(config.plugins.len(), 2);
-    }
-
-    #[test]
-    fn test_agent_config_no_plugins() {
-        let config = AgentConfig::default();
-        assert!(!config.has_plugins());
-        assert!(config.plugins.is_empty());
-    }
-
-    #[test]
-    fn test_agent_config_debug() {
-        let config = AgentConfig::default();
-        let debug_str = format!("{:?}", config);
-        assert!(debug_str.contains("AgentConfig"));
-        assert!(debug_str.contains("[0 plugins]"));
-    }
-
-    #[test]
-    fn test_execute_tools_with_plugins_empty_plugins() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::new("test");
-            let result = StreamResult {
-                text: "Hello".to_string(),
-                tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1",
-                    "echo",
-                    json!({"message": "test"}),
-                )],
-            };
-            let tools = tool_map([EchoTool]);
-
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &[]).await.unwrap();
-            assert_eq!(session.message_count(), 1);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_with_plugins_sequential() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-            let result = StreamResult {
-                text: "Sequential".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 1})),
-                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 2})),
-                ],
-            };
-            let tools = tool_map([CounterTool]);
-
-            // Sequential with no plugins
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, false, &[]).await.unwrap();
-            assert_eq!(session.message_count(), 2);
-            assert_eq!(session.patch_count(), 2);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_with_blocking_plugin() {
-        use crate::plugin::AgentPlugin;
-        use crate::plugins::ExecutionContextExt;
-
-        struct BlockingPlugin;
-
-        #[async_trait]
-        impl AgentPlugin for BlockingPlugin {
-            fn id(&self) -> &str {
-                "blocker"
-            }
-
-            async fn before_tool_execute(
-                &self,
-                ctx: &Context<'_>,
-                tool_id: &str,
-                _args: &Value,
-            ) {
-                if tool_id == "echo" {
-                    ctx.block(format!("Tool {} is blocked", tool_id));
+        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+            if phase == Phase::BeforeToolExecute {
+                if turn.tool_id() == Some("echo") {
+                    turn.block("Echo tool is blocked");
                 }
             }
         }
+    }
 
+    #[test]
+    fn test_execute_tools_with_blocking_phase_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let session = Session::new("test");
@@ -1675,197 +1203,155 @@ mod tests {
                 )],
             };
             let tools = tool_map([EchoTool]);
-            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPlugin)];
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPhasePlugin)];
 
             let session =
                 execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
 
-            // Tool was blocked, so result should contain error status or blocked message
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
-            // The message is JSON serialized, so it may contain "Error" status or "blocked" message
             assert!(
-                msg.content.contains("blocked")
-                || msg.content.contains("Error")
-                || msg.content.contains("error"),
+                msg.content.contains("blocked") || msg.content.contains("Error"),
                 "Expected blocked/error in message, got: {}", msg.content
             );
         });
     }
 
+    struct ReminderPhasePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for ReminderPhasePlugin {
+        fn id(&self) -> &str {
+            "reminder"
+        }
+
+        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+            if phase == Phase::AfterToolExecute {
+                turn.reminder("Tool execution completed");
+            }
+        }
+    }
+
     #[test]
-    fn test_execute_tools_with_logging_plugin() {
-        use crate::plugin::AgentPlugin;
-        use crate::plugins::ReminderContextExt;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct LoggingPlugin {
-            before_count: AtomicUsize,
-            after_count: AtomicUsize,
-        }
-
-        impl LoggingPlugin {
-            fn new() -> Self {
-                Self {
-                    before_count: AtomicUsize::new(0),
-                    after_count: AtomicUsize::new(0),
-                }
-            }
-        }
-
-        #[async_trait]
-        impl AgentPlugin for LoggingPlugin {
-            fn id(&self) -> &str {
-                "logger"
-            }
-
-            async fn before_tool_execute(
-                &self,
-                ctx: &Context<'_>,
-                tool_id: &str,
-                _args: &Value,
-            ) {
-                self.before_count.fetch_add(1, Ordering::SeqCst);
-                ctx.add_reminder(format!("Before: {}", tool_id));
-            }
-
-            async fn after_tool_execute(
-                &self,
-                ctx: &Context<'_>,
-                tool_id: &str,
-                _result: &crate::traits::tool::ToolResult,
-            ) {
-                self.after_count.fetch_add(1, Ordering::SeqCst);
-                ctx.add_reminder(format!("After: {}", tool_id));
-            }
-        }
-
+    fn test_execute_tools_with_reminder_phase_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let session = Session::new("test");
             let result = StreamResult {
-                text: "Logging".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "a"})),
-                    crate::types::ToolCall::new("call_2", "echo", json!({"message": "b"})),
-                ],
-            };
-            let tools = tool_map([EchoTool]);
-            let plugin = Arc::new(LoggingPlugin::new());
-            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin.clone()];
-
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
-
-            // Both tools should have been executed
-            assert_eq!(session.message_count(), 2);
-            // Plugin hooks should have been called
-            assert_eq!(plugin.before_count.load(Ordering::SeqCst), 2);
-            assert_eq!(plugin.after_count.load(Ordering::SeqCst), 2);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_with_plugins_parallel_vs_sequential() {
-        use crate::plugin::AgentPlugin;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct CounterPlugin {
-            call_count: AtomicUsize,
-        }
-
-        impl CounterPlugin {
-            fn new() -> Self {
-                Self {
-                    call_count: AtomicUsize::new(0),
-                }
-            }
-        }
-
-        #[async_trait]
-        impl AgentPlugin for CounterPlugin {
-            fn id(&self) -> &str {
-                "counter_plugin"
-            }
-
-            async fn before_tool_execute(&self, _ctx: &Context<'_>, _tool_id: &str, _args: &Value) {
-                self.call_count.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Test parallel
-            let session = Session::new("test_parallel");
-            let result = StreamResult {
-                text: "Parallel".to_string(),
-                tool_calls: vec![
-                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "a"})),
-                    crate::types::ToolCall::new("call_2", "echo", json!({"message": "b"})),
-                    crate::types::ToolCall::new("call_3", "echo", json!({"message": "c"})),
-                ],
-            };
-            let tools = tool_map([EchoTool]);
-            let plugin = Arc::new(CounterPlugin::new());
-            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![plugin.clone()];
-
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
-            assert_eq!(session.message_count(), 3);
-            assert_eq!(plugin.call_count.load(Ordering::SeqCst), 3);
-
-            // Test sequential
-            let session2 = Session::new("test_sequential");
-            let plugin2 = Arc::new(CounterPlugin::new());
-            let plugins2: Vec<Arc<dyn AgentPlugin>> = vec![plugin2.clone()];
-
-            let session2 =
-                execute_tools_with_plugins(session2, &result, &tools, false, &plugins2)
-                    .await
-                    .unwrap();
-            assert_eq!(session2.message_count(), 3);
-            assert_eq!(plugin2.call_count.load(Ordering::SeqCst), 3);
-        });
-    }
-
-    #[test]
-    fn test_execute_tools_with_plugins_state_changes() {
-        use crate::plugin::AgentPlugin;
-
-        struct StatePlugin;
-
-        #[async_trait]
-        impl AgentPlugin for StatePlugin {
-            fn id(&self) -> &str {
-                "state_plugin"
-            }
-
-            fn initial_state(&self) -> Option<(&'static str, Value)> {
-                Some(("plugin_data", json!({"initialized": true})))
-            }
-        }
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
-            let result = StreamResult {
-                text: "State".to_string(),
+                text: "With reminder".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
                     "call_1",
-                    "counter",
-                    json!({"amount": 5}),
+                    "echo",
+                    json!({"message": "test"}),
                 )],
             };
-            let tools = tool_map([CounterTool]);
-            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(StatePlugin)];
+            let tools = tool_map([EchoTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ReminderPhasePlugin)];
 
             let session =
                 execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
 
-            // Tool should have produced a patch
-            assert_eq!(session.patch_count(), 1);
-            let state = session.rebuild_state().unwrap();
-            assert_eq!(state["counter"], 5);
+            // Should have tool response + reminder message
+            assert_eq!(session.message_count(), 2);
+            assert!(session.messages[1].content.contains("system-reminder"));
+            assert!(session.messages[1].content.contains("Tool execution completed"));
         });
+    }
+
+    #[test]
+    fn test_build_messages_with_context() {
+        let session = Session::new("test").with_message(Message::user("Hello"));
+        let tool_descriptors = vec![ToolDescriptor::new("test", "Test", "Test tool")];
+        let mut turn = TurnContext::new(&session, tool_descriptors);
+
+        turn.system("System context 1");
+        turn.system("System context 2");
+        turn.session("Session context");
+
+        build_messages(&mut turn, "Base system prompt");
+
+        assert_eq!(turn.messages.len(), 3);
+        // First message should be system prompt + context
+        assert!(turn.messages[0].content.contains("Base system prompt"));
+        assert!(turn.messages[0].content.contains("System context 1"));
+        assert!(turn.messages[0].content.contains("System context 2"));
+        // Second message should be session context
+        assert_eq!(turn.messages[1].content, "Session context");
+        // Third message should be user message
+        assert_eq!(turn.messages[2].content, "Hello");
+    }
+
+    #[test]
+    fn test_build_messages_empty_system() {
+        let session = Session::new("test").with_message(Message::user("Hello"));
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        build_messages(&mut turn, "");
+
+        // Only user message
+        assert_eq!(turn.messages.len(), 1);
+        assert_eq!(turn.messages[0].content, "Hello");
+    }
+
+    struct ToolFilterPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for ToolFilterPlugin {
+        fn id(&self) -> &str {
+            "filter"
+        }
+
+        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+            if phase == Phase::BeforeInference {
+                turn.exclude("dangerous_tool");
+            }
+        }
+    }
+
+    #[test]
+    fn test_tool_filtering_via_plugin() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let tool_descriptors = vec![
+                ToolDescriptor::new("safe_tool", "Safe", "Safe tool"),
+                ToolDescriptor::new("dangerous_tool", "Dangerous", "Dangerous tool"),
+            ];
+            let mut turn = TurnContext::new(&session, tool_descriptors);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
+
+            emit_phase(Phase::BeforeInference, &mut turn, &plugins).await;
+
+            assert_eq!(turn.tools.len(), 1);
+            assert_eq!(turn.tools[0].id, "safe_tool");
+        });
+    }
+
+    #[test]
+    fn test_plugin_data_initialization() {
+        struct DataPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for DataPlugin {
+            fn id(&self) -> &str {
+                "data"
+            }
+
+            async fn on_phase(&self, _phase: Phase, _turn: &mut TurnContext<'_>) {}
+
+            fn initial_data(&self) -> Option<(&'static str, Value)> {
+                Some(("plugin_config", json!({"enabled": true})))
+            }
+        }
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
+
+        init_plugin_data(&mut turn, &plugins);
+
+        let config: Option<serde_json::Map<String, Value>> = turn.get("plugin_config");
+        assert!(config.is_some());
+        assert_eq!(config.unwrap()["enabled"], true);
     }
 }

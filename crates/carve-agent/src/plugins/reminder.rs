@@ -124,14 +124,33 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    fn initial_state(&self) -> Option<(&'static str, Value)> {
+    fn initial_data(&self) -> Option<(&'static str, Value)> {
         Some((REMINDER_STATE_PATH, json!({ "items": [] })))
     }
 
-    async fn before_llm_request(&self, _ctx: &Context<'_>) {
-        // Reminders are read by the agent loop for injection.
-        // We can optionally clear them after the request is made.
-        // The actual clearing happens in a post-request hook if needed.
+    async fn on_phase(&self, phase: crate::phase::Phase, turn: &mut crate::phase::TurnContext<'_>) {
+        use crate::phase::Phase;
+
+        match phase {
+            Phase::BeforeInference => {
+                // Inject any stored reminders as session context
+                if let Some(state) = turn.get::<Value>(REMINDER_STATE_PATH) {
+                    if let Some(items) = state.get("items").and_then(|v| v.as_array()) {
+                        for item in items {
+                            if let Some(text) = item.as_str() {
+                                turn.session(format!("Reminder: {}", text));
+                            }
+                        }
+                    }
+                }
+
+                // Clear reminders after injection if configured
+                if self.clear_after_llm_request {
+                    turn.set(REMINDER_STATE_PATH, json!({ "items": [] }));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -222,12 +241,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reminder_plugin_initial_state() {
+    fn test_reminder_plugin_initial_data() {
         let plugin = ReminderPlugin::new();
-        let state = plugin.initial_state();
+        let data = plugin.initial_data();
 
-        assert!(state.is_some());
-        let (path, value) = state.unwrap();
+        assert!(data.is_some());
+        let (path, value) = data.unwrap();
         assert_eq!(path, "reminders");
         assert_eq!(value["items"], json!([]));
     }
@@ -239,17 +258,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reminder_plugin_before_llm_request() {
+    async fn test_reminder_plugin_before_inference() {
+        use crate::phase::{Phase, TurnContext};
+        use crate::session::Session;
+
         let plugin = ReminderPlugin::new();
-        let doc = json!({
-            "reminders": { "items": ["Test reminder"] }
-        });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
 
-        // Call before_llm_request - should not panic
-        plugin.before_llm_request(&ctx).await;
+        // Set up reminder data
+        turn.set(REMINDER_STATE_PATH, json!({ "items": ["Test reminder"] }));
 
-        // The method is a no-op but should be callable
-        assert!(!ctx.has_changes());
+        // Call on_phase with BeforeInference
+        plugin.on_phase(Phase::BeforeInference, &mut turn).await;
+
+        // Should have injected reminder as session context
+        assert!(!turn.session_context.is_empty());
+        assert!(turn.session_context[0].contains("Test reminder"));
     }
 }

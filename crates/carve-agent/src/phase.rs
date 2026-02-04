@@ -1,0 +1,1047 @@
+//! Phase-based plugin execution system.
+//!
+//! This module provides the core types for the plugin phase system:
+//! - `Phase`: Execution phases in the agent loop
+//! - `TurnContext`: Mutable context passed through all phases
+//! - `ToolContext`: Context for the currently executing tool
+
+use crate::session::Session;
+use crate::state_types::Interaction;
+use crate::traits::tool::{ToolDescriptor, ToolResult};
+use crate::types::{Message, ToolCall};
+use crate::stream::StreamResult;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::HashMap;
+
+/// Execution phase in the agent loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Phase {
+    /// Session started (called once).
+    SessionStart,
+    /// Turn started - prepare context.
+    TurnStart,
+    /// Before LLM inference - build messages, filter tools.
+    BeforeInference,
+    /// After LLM inference - process response.
+    AfterInference,
+    /// Before tool execution.
+    BeforeToolExecute,
+    /// After tool execution.
+    AfterToolExecute,
+    /// Turn ended.
+    TurnEnd,
+    /// Session ended (called once).
+    SessionEnd,
+}
+
+impl std::fmt::Display for Phase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Phase::SessionStart => write!(f, "SessionStart"),
+            Phase::TurnStart => write!(f, "TurnStart"),
+            Phase::BeforeInference => write!(f, "BeforeInference"),
+            Phase::AfterInference => write!(f, "AfterInference"),
+            Phase::BeforeToolExecute => write!(f, "BeforeToolExecute"),
+            Phase::AfterToolExecute => write!(f, "AfterToolExecute"),
+            Phase::TurnEnd => write!(f, "TurnEnd"),
+            Phase::SessionEnd => write!(f, "SessionEnd"),
+        }
+    }
+}
+
+/// Result of a turn execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnResult {
+    /// Continue to next turn.
+    Continue,
+    /// Session complete.
+    Complete,
+    /// Pending user interaction.
+    Pending(Interaction),
+}
+
+/// Context for the currently executing tool.
+#[derive(Debug, Clone)]
+pub struct ToolContext {
+    /// Tool call ID.
+    pub id: String,
+    /// Tool name.
+    pub name: String,
+    /// Tool arguments.
+    pub args: Value,
+    /// Tool execution result (set after execution).
+    pub result: Option<ToolResult>,
+    /// Whether execution is blocked.
+    pub blocked: bool,
+    /// Block reason.
+    pub block_reason: Option<String>,
+    /// Whether execution is pending user confirmation.
+    pub pending: bool,
+    /// Pending interaction.
+    pub pending_interaction: Option<Interaction>,
+}
+
+impl ToolContext {
+    /// Create a new tool context from a tool call.
+    pub fn new(call: &ToolCall) -> Self {
+        Self {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            args: call.arguments.clone(),
+            result: None,
+            blocked: false,
+            block_reason: None,
+            pending: false,
+            pending_interaction: None,
+        }
+    }
+
+    /// Check if the tool execution is blocked.
+    pub fn is_blocked(&self) -> bool {
+        self.blocked
+    }
+
+    /// Check if the tool execution is pending.
+    pub fn is_pending(&self) -> bool {
+        self.pending
+    }
+}
+
+/// Turn context - mutable state passed through all phases.
+///
+/// This is the primary interface for plugins to interact with the agent loop.
+/// It provides access to session state, message building, tool filtering,
+/// and flow control.
+pub struct TurnContext<'a> {
+    // === Session State (read-only) ===
+    /// Current session.
+    pub session: &'a Session,
+
+    // === Message Building ===
+    /// System context to append to system prompt [Position 1].
+    pub system_context: Vec<String>,
+    /// Session context messages (before user messages) [Position 2].
+    pub session_context: Vec<String>,
+    /// Messages to send to LLM.
+    pub messages: Vec<Message>,
+    /// System reminders (after tool results) [Position 7].
+    pub system_reminders: Vec<String>,
+
+    // === Tool Control ===
+    /// Available tool descriptors (can be filtered).
+    pub tools: Vec<ToolDescriptor>,
+    /// Current tool context (only valid during tool phases).
+    pub tool: Option<ToolContext>,
+
+    // === LLM Response ===
+    /// LLM response (set after inference).
+    pub response: Option<StreamResult>,
+
+    // === Flow Control ===
+    /// Skip LLM inference.
+    pub skip_inference: bool,
+
+    // === Plugin Data ===
+    /// Plugin data storage.
+    data: HashMap<String, Value>,
+}
+
+impl<'a> TurnContext<'a> {
+    /// Create a new turn context.
+    pub fn new(session: &'a Session, tools: Vec<ToolDescriptor>) -> Self {
+        Self {
+            session,
+            system_context: Vec::new(),
+            session_context: Vec::new(),
+            messages: Vec::new(),
+            system_reminders: Vec::new(),
+            tools,
+            tool: None,
+            response: None,
+            skip_inference: false,
+            data: HashMap::new(),
+        }
+    }
+
+    /// Reset turn-specific state for a new turn.
+    pub fn reset(&mut self) {
+        self.system_context.clear();
+        self.session_context.clear();
+        self.messages.clear();
+        self.system_reminders.clear();
+        self.tool = None;
+        self.response = None;
+        self.skip_inference = false;
+    }
+
+    // =========================================================================
+    // Context Injection [Position 1, 2, 7]
+    // =========================================================================
+
+    /// Add system context (appended to system prompt) [Position 1].
+    pub fn system(&mut self, content: impl Into<String>) {
+        self.system_context.push(content.into());
+    }
+
+    /// Set system context (replaces existing) [Position 1].
+    pub fn set_system(&mut self, content: impl Into<String>) {
+        self.system_context = vec![content.into()];
+    }
+
+    /// Clear system context [Position 1].
+    pub fn clear_system(&mut self) {
+        self.system_context.clear();
+    }
+
+    /// Add session context message (before user messages) [Position 2].
+    pub fn session(&mut self, content: impl Into<String>) {
+        self.session_context.push(content.into());
+    }
+
+    /// Set session context (replaces existing) [Position 2].
+    pub fn set_session(&mut self, content: impl Into<String>) {
+        self.session_context = vec![content.into()];
+    }
+
+    /// Clear session context [Position 2].
+    pub fn clear_session(&mut self) {
+        self.session_context.clear();
+    }
+
+    /// Add system reminder (after tool result) [Position 7].
+    pub fn reminder(&mut self, content: impl Into<String>) {
+        self.system_reminders.push(content.into());
+    }
+
+    /// Clear system reminders [Position 7].
+    pub fn clear_reminders(&mut self) {
+        self.system_reminders.clear();
+    }
+
+    // =========================================================================
+    // Tool Filtering
+    // =========================================================================
+
+    /// Exclude a tool by ID.
+    pub fn exclude(&mut self, tool_id: &str) {
+        self.tools.retain(|t| t.id != tool_id);
+    }
+
+    /// Include only specified tools.
+    pub fn include_only(&mut self, tool_ids: &[&str]) {
+        self.tools.retain(|t| tool_ids.contains(&t.id.as_str()));
+    }
+
+    // =========================================================================
+    // Tool Control (only valid during tool phases)
+    // =========================================================================
+
+    /// Get current tool ID.
+    pub fn tool_id(&self) -> Option<&str> {
+        self.tool.as_ref().map(|t| t.name.as_str())
+    }
+
+    /// Get current tool arguments.
+    pub fn tool_args(&self) -> Option<&Value> {
+        self.tool.as_ref().map(|t| &t.args)
+    }
+
+    /// Get current tool result.
+    pub fn tool_result(&self) -> Option<&ToolResult> {
+        self.tool.as_ref().and_then(|t| t.result.as_ref())
+    }
+
+    /// Check if current tool is blocked.
+    pub fn tool_blocked(&self) -> bool {
+        self.tool.as_ref().map(|t| t.blocked).unwrap_or(false)
+    }
+
+    /// Check if current tool is pending.
+    pub fn tool_pending(&self) -> bool {
+        self.tool.as_ref().map(|t| t.pending).unwrap_or(false)
+    }
+
+    /// Block current tool execution.
+    pub fn block(&mut self, reason: impl Into<String>) {
+        if let Some(ref mut tool) = self.tool {
+            tool.blocked = true;
+            tool.block_reason = Some(reason.into());
+        }
+    }
+
+    /// Set current tool to pending (requires user confirmation).
+    pub fn pending(&mut self, interaction: Interaction) {
+        if let Some(ref mut tool) = self.tool {
+            tool.pending = true;
+            tool.pending_interaction = Some(interaction);
+        }
+    }
+
+    /// Confirm pending tool execution.
+    pub fn confirm(&mut self) {
+        if let Some(ref mut tool) = self.tool {
+            tool.pending = false;
+            tool.pending_interaction = None;
+        }
+    }
+
+    /// Set tool result.
+    pub fn set_tool_result(&mut self, result: ToolResult) {
+        if let Some(ref mut tool) = self.tool {
+            tool.result = Some(result);
+        }
+    }
+
+    // =========================================================================
+    // Plugin Data
+    // =========================================================================
+
+    /// Set plugin data.
+    pub fn set<T: Serialize>(&mut self, key: &str, value: T) {
+        if let Ok(v) = serde_json::to_value(value) {
+            self.data.insert(key.to_string(), v);
+        }
+    }
+
+    /// Get plugin data.
+    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.data
+            .get(key)
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    /// Check if plugin data exists.
+    pub fn has(&self, key: &str) -> bool {
+        self.data.contains_key(key)
+    }
+
+    /// Remove plugin data.
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.data.remove(key)
+    }
+
+    // =========================================================================
+    // Turn Result
+    // =========================================================================
+
+    /// Get the turn result based on current state.
+    pub fn result(&self) -> TurnResult {
+        // Check if any tool is pending
+        if let Some(ref tool) = self.tool {
+            if tool.pending {
+                if let Some(ref interaction) = tool.pending_interaction {
+                    return TurnResult::Pending(interaction.clone());
+                }
+            }
+        }
+
+        // Check if LLM response has more tool calls or is complete
+        if let Some(ref response) = self.response {
+            if response.tool_calls.is_empty() && !response.text.is_empty() {
+                return TurnResult::Complete;
+            }
+        }
+
+        TurnResult::Continue
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    fn mock_session() -> Session {
+        Session::new("test-session")
+    }
+
+    fn mock_tools() -> Vec<ToolDescriptor> {
+        vec![
+            ToolDescriptor::new("read_file", "Read File", "Read a file"),
+            ToolDescriptor::new("write_file", "Write File", "Write a file"),
+            ToolDescriptor::new("delete_file", "Delete File", "Delete a file"),
+        ]
+    }
+
+    // =========================================================================
+    // Phase tests
+    // =========================================================================
+
+    #[test]
+    fn test_phase_display() {
+        assert_eq!(Phase::SessionStart.to_string(), "SessionStart");
+        assert_eq!(Phase::TurnStart.to_string(), "TurnStart");
+        assert_eq!(Phase::BeforeInference.to_string(), "BeforeInference");
+        assert_eq!(Phase::AfterInference.to_string(), "AfterInference");
+        assert_eq!(Phase::BeforeToolExecute.to_string(), "BeforeToolExecute");
+        assert_eq!(Phase::AfterToolExecute.to_string(), "AfterToolExecute");
+        assert_eq!(Phase::TurnEnd.to_string(), "TurnEnd");
+        assert_eq!(Phase::SessionEnd.to_string(), "SessionEnd");
+    }
+
+    #[test]
+    fn test_phase_equality() {
+        assert_eq!(Phase::SessionStart, Phase::SessionStart);
+        assert_ne!(Phase::SessionStart, Phase::SessionEnd);
+    }
+
+    #[test]
+    fn test_phase_clone() {
+        let phase = Phase::BeforeInference;
+        let cloned = phase;
+        assert_eq!(phase, cloned);
+    }
+
+    // =========================================================================
+    // TurnContext tests
+    // =========================================================================
+
+    #[test]
+    fn test_turn_context_new() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let ctx = TurnContext::new(&session, tools.clone());
+
+        assert!(ctx.system_context.is_empty());
+        assert!(ctx.session_context.is_empty());
+        assert!(ctx.messages.is_empty());
+        assert!(ctx.system_reminders.is_empty());
+        assert_eq!(ctx.tools.len(), 3);
+        assert!(ctx.tool.is_none());
+        assert!(ctx.response.is_none());
+        assert!(!ctx.skip_inference);
+    }
+
+    #[test]
+    fn test_turn_context_reset() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.system("test");
+        ctx.session("test");
+        ctx.reminder("test");
+        ctx.skip_inference = true;
+
+        ctx.reset();
+
+        assert!(ctx.system_context.is_empty());
+        assert!(ctx.session_context.is_empty());
+        assert!(ctx.system_reminders.is_empty());
+        assert!(!ctx.skip_inference);
+    }
+
+    // =========================================================================
+    // Context injection tests
+    // =========================================================================
+
+    #[test]
+    fn test_system_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.system("Context 1");
+        ctx.system("Context 2");
+
+        assert_eq!(ctx.system_context.len(), 2);
+        assert_eq!(ctx.system_context[0], "Context 1");
+        assert_eq!(ctx.system_context[1], "Context 2");
+    }
+
+    #[test]
+    fn test_set_system_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.system("Context 1");
+        ctx.system("Context 2");
+        ctx.set_system("Replaced");
+
+        assert_eq!(ctx.system_context.len(), 1);
+        assert_eq!(ctx.system_context[0], "Replaced");
+    }
+
+    #[test]
+    fn test_clear_system_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.system("Context 1");
+        ctx.clear_system();
+
+        assert!(ctx.system_context.is_empty());
+    }
+
+    #[test]
+    fn test_session_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.session("Session 1");
+        ctx.session("Session 2");
+
+        assert_eq!(ctx.session_context.len(), 2);
+    }
+
+    #[test]
+    fn test_set_session_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.session("Session 1");
+        ctx.set_session("Replaced");
+
+        assert_eq!(ctx.session_context.len(), 1);
+        assert_eq!(ctx.session_context[0], "Replaced");
+    }
+
+    #[test]
+    fn test_reminder() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.reminder("Reminder 1");
+        ctx.reminder("Reminder 2");
+
+        assert_eq!(ctx.system_reminders.len(), 2);
+    }
+
+    #[test]
+    fn test_clear_reminders() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.reminder("Reminder 1");
+        ctx.clear_reminders();
+
+        assert!(ctx.system_reminders.is_empty());
+    }
+
+    // =========================================================================
+    // Tool filtering tests
+    // =========================================================================
+
+    #[test]
+    fn test_exclude_tool() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.exclude("delete_file");
+
+        assert_eq!(ctx.tools.len(), 2);
+        assert!(ctx.tools.iter().all(|t| t.id != "delete_file"));
+    }
+
+    #[test]
+    fn test_include_only_tools() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.include_only(&["read_file"]);
+
+        assert_eq!(ctx.tools.len(), 1);
+        assert_eq!(ctx.tools[0].id, "read_file");
+    }
+
+    // =========================================================================
+    // Tool control tests
+    // =========================================================================
+
+    #[test]
+    fn test_tool_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        assert_eq!(ctx.tool_id(), Some("read_file"));
+        assert_eq!(ctx.tool_args().unwrap()["path"], "/test");
+        assert!(!ctx.tool_blocked());
+        assert!(!ctx.tool_pending());
+    }
+
+    #[test]
+    fn test_block_tool() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "delete_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        ctx.block("Permission denied");
+
+        assert!(ctx.tool_blocked());
+        assert_eq!(
+            ctx.tool.as_ref().unwrap().block_reason,
+            Some("Permission denied".to_string())
+        );
+    }
+
+    #[test]
+    fn test_pending_tool() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let interaction = Interaction::confirm("confirm_1", "Allow write?");
+        ctx.pending(interaction);
+
+        assert!(ctx.tool_pending());
+        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_some());
+    }
+
+    #[test]
+    fn test_confirm_tool() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let interaction = Interaction::confirm("confirm_1", "Allow write?");
+        ctx.pending(interaction);
+        ctx.confirm();
+
+        assert!(!ctx.tool_pending());
+        assert!(ctx.tool.as_ref().unwrap().pending_interaction.is_none());
+    }
+
+    #[test]
+    fn test_set_tool_result() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "read_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let result = ToolResult::success("read_file", json!({"content": "hello"}));
+        ctx.set_tool_result(result);
+
+        assert!(ctx.tool_result().is_some());
+        assert!(ctx.tool_result().unwrap().is_success());
+    }
+
+    // =========================================================================
+    // Plugin data tests
+    // =========================================================================
+
+    #[test]
+    fn test_set_get_data() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.set("counter", 42i32);
+        let value: Option<i32> = ctx.get("counter");
+
+        assert_eq!(value, Some(42));
+    }
+
+    #[test]
+    fn test_get_nonexistent_data() {
+        let session = mock_session();
+        let ctx = TurnContext::new(&session, vec![]);
+
+        let value: Option<i32> = ctx.get("nonexistent");
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn test_has_data() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        assert!(!ctx.has("key"));
+        ctx.set("key", "value");
+        assert!(ctx.has("key"));
+    }
+
+    #[test]
+    fn test_remove_data() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.set("key", "value");
+        let removed = ctx.remove("key");
+
+        assert!(removed.is_some());
+        assert!(!ctx.has("key"));
+    }
+
+    #[test]
+    fn test_complex_data_types() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        #[derive(Serialize, Deserialize, PartialEq, Debug)]
+        struct Config {
+            enabled: bool,
+            items: Vec<String>,
+        }
+
+        let config = Config {
+            enabled: true,
+            items: vec!["a".to_string(), "b".to_string()],
+        };
+
+        ctx.set("config", &config);
+        let retrieved: Option<Config> = ctx.get("config");
+
+        assert_eq!(retrieved, Some(config));
+    }
+
+    // =========================================================================
+    // TurnResult tests
+    // =========================================================================
+
+    #[test]
+    fn test_turn_result_continue() {
+        let session = mock_session();
+        let ctx = TurnContext::new(&session, vec![]);
+
+        assert_eq!(ctx.result(), TurnResult::Continue);
+    }
+
+    #[test]
+    fn test_turn_result_pending() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "write_file", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        let interaction = Interaction::confirm("confirm_1", "Allow?");
+        ctx.pending(interaction.clone());
+
+        match ctx.result() {
+            TurnResult::Pending(i) => assert_eq!(i.id, "confirm_1"),
+            _ => panic!("Expected Pending result"),
+        }
+    }
+
+    #[test]
+    fn test_turn_result_complete() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.response = Some(StreamResult {
+            text: "Done!".to_string(),
+            tool_calls: vec![],
+        });
+
+        assert_eq!(ctx.result(), TurnResult::Complete);
+    }
+
+    // =========================================================================
+    // ToolContext tests
+    // =========================================================================
+
+    #[test]
+    fn test_tool_context_new() {
+        let call = ToolCall::new("call_1", "test_tool", json!({"arg": "value"}));
+        let tool_ctx = ToolContext::new(&call);
+
+        assert_eq!(tool_ctx.id, "call_1");
+        assert_eq!(tool_ctx.name, "test_tool");
+        assert_eq!(tool_ctx.args["arg"], "value");
+        assert!(tool_ctx.result.is_none());
+        assert!(!tool_ctx.blocked);
+        assert!(!tool_ctx.pending);
+    }
+
+    #[test]
+    fn test_tool_context_is_blocked() {
+        let call = ToolCall::new("call_1", "test", json!({}));
+        let mut tool_ctx = ToolContext::new(&call);
+
+        assert!(!tool_ctx.is_blocked());
+        tool_ctx.blocked = true;
+        assert!(tool_ctx.is_blocked());
+    }
+
+    #[test]
+    fn test_tool_context_is_pending() {
+        let call = ToolCall::new("call_1", "test", json!({}));
+        let mut tool_ctx = ToolContext::new(&call);
+
+        assert!(!tool_ctx.is_pending());
+        tool_ctx.pending = true;
+        assert!(tool_ctx.is_pending());
+    }
+
+    // =========================================================================
+    // Additional edge case tests
+    // =========================================================================
+
+    #[test]
+    fn test_phase_all_8_values() {
+        let phases = vec![
+            Phase::SessionStart,
+            Phase::TurnStart,
+            Phase::BeforeInference,
+            Phase::AfterInference,
+            Phase::BeforeToolExecute,
+            Phase::AfterToolExecute,
+            Phase::TurnEnd,
+            Phase::SessionEnd,
+        ];
+
+        assert_eq!(phases.len(), 8);
+        // All should be unique
+        for (i, p1) in phases.iter().enumerate() {
+            for (j, p2) in phases.iter().enumerate() {
+                if i != j {
+                    assert_ne!(p1, p2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_turn_context_empty_session() {
+        let session = Session::new("empty");
+        let ctx = TurnContext::new(&session, vec![]);
+
+        assert!(ctx.tools.is_empty());
+        assert!(ctx.system_context.is_empty());
+        assert_eq!(ctx.result(), TurnResult::Continue);
+    }
+
+    #[test]
+    fn test_turn_context_multiple_system_contexts() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.system("Context 1");
+        ctx.system("Context 2");
+        ctx.system("Context 3");
+
+        assert_eq!(ctx.system_context.len(), 3);
+        assert_eq!(ctx.system_context[0], "Context 1");
+        assert_eq!(ctx.system_context[2], "Context 3");
+    }
+
+    #[test]
+    fn test_turn_context_multiple_session_contexts() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.session("Session 1");
+        ctx.session("Session 2");
+
+        assert_eq!(ctx.session_context.len(), 2);
+    }
+
+    #[test]
+    fn test_turn_context_multiple_reminders() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.reminder("Reminder 1");
+        ctx.reminder("Reminder 2");
+        ctx.reminder("Reminder 3");
+
+        assert_eq!(ctx.system_reminders.len(), 3);
+    }
+
+    #[test]
+    fn test_exclude_nonexistent_tool() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let original_len = tools.len();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.exclude("nonexistent_tool");
+
+        // Should not change anything
+        assert_eq!(ctx.tools.len(), original_len);
+    }
+
+    #[test]
+    fn test_exclude_multiple_tools() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.exclude("read_file");
+        ctx.exclude("delete_file");
+
+        assert_eq!(ctx.tools.len(), 1);
+        assert_eq!(ctx.tools[0].id, "write_file");
+    }
+
+    #[test]
+    fn test_include_only_empty_list() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.include_only(&[]);
+
+        assert!(ctx.tools.is_empty());
+    }
+
+    #[test]
+    fn test_include_only_with_nonexistent() {
+        let session = mock_session();
+        let tools = mock_tools();
+        let mut ctx = TurnContext::new(&session, tools);
+
+        ctx.include_only(&["read_file", "nonexistent"]);
+
+        assert_eq!(ctx.tools.len(), 1);
+        assert_eq!(ctx.tools[0].id, "read_file");
+    }
+
+    #[test]
+    fn test_block_without_tool_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        // No tool context, block should not panic
+        ctx.block("test");
+
+        assert!(!ctx.tool_blocked()); // tool_blocked returns false when no tool
+    }
+
+    #[test]
+    fn test_pending_without_tool_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let interaction = Interaction::confirm("id", "test");
+        ctx.pending(interaction);
+
+        assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
+    }
+
+    #[test]
+    fn test_confirm_without_pending() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "test", json!({}));
+        ctx.tool = Some(ToolContext::new(&call));
+
+        // Confirm without pending should not panic
+        ctx.confirm();
+
+        assert!(!ctx.tool_pending());
+    }
+
+    #[test]
+    fn test_tool_args_without_tool() {
+        let session = mock_session();
+        let ctx = TurnContext::new(&session, vec![]);
+
+        assert!(ctx.tool_args().is_none());
+    }
+
+    #[test]
+    fn test_tool_id_without_tool() {
+        let session = mock_session();
+        let ctx = TurnContext::new(&session, vec![]);
+
+        assert!(ctx.tool_id().is_none());
+    }
+
+    #[test]
+    fn test_tool_result_without_tool() {
+        let session = mock_session();
+        let ctx = TurnContext::new(&session, vec![]);
+
+        assert!(ctx.tool_result().is_none());
+    }
+
+    #[test]
+    fn test_turn_result_with_tool_calls() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.response = Some(StreamResult {
+            text: "Calling tools".to_string(),
+            tool_calls: vec![ToolCall::new("call_1", "test", json!({}))],
+        });
+
+        // With tool calls, should continue
+        assert_eq!(ctx.result(), TurnResult::Continue);
+    }
+
+    #[test]
+    fn test_turn_result_empty_text_no_tools() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.response = Some(StreamResult {
+            text: String::new(),
+            tool_calls: vec![],
+        });
+
+        // Empty text, no tool calls -> Continue (not Complete)
+        assert_eq!(ctx.result(), TurnResult::Continue);
+    }
+
+    #[test]
+    fn test_data_overwrite() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.set("key", 1i32);
+        assert_eq!(ctx.get::<i32>("key"), Some(1));
+
+        ctx.set("key", 2i32);
+        assert_eq!(ctx.get::<i32>("key"), Some(2));
+    }
+
+    #[test]
+    fn test_remove_nonexistent_key() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        let removed = ctx.remove("nonexistent");
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_tool_context_block_reason() {
+        let call = ToolCall::new("call_1", "test", json!({}));
+        let mut tool_ctx = ToolContext::new(&call);
+
+        assert!(tool_ctx.block_reason.is_none());
+        tool_ctx.block_reason = Some("Test reason".to_string());
+        assert_eq!(tool_ctx.block_reason, Some("Test reason".to_string()));
+    }
+
+    #[test]
+    fn test_tool_context_pending_interaction() {
+        let call = ToolCall::new("call_1", "test", json!({}));
+        let mut tool_ctx = ToolContext::new(&call);
+
+        assert!(tool_ctx.pending_interaction.is_none());
+
+        let interaction = Interaction::confirm("confirm_1", "Test?");
+        tool_ctx.pending_interaction = Some(interaction.clone());
+
+        assert_eq!(tool_ctx.pending_interaction.as_ref().unwrap().id, "confirm_1");
+    }
+
+    #[test]
+    fn test_set_clear_session_context() {
+        let session = mock_session();
+        let mut ctx = TurnContext::new(&session, vec![]);
+
+        ctx.session("Context 1");
+        ctx.session("Context 2");
+        ctx.set_session("Only this");
+
+        assert_eq!(ctx.session_context.len(), 1);
+        assert_eq!(ctx.session_context[0], "Only this");
+    }
+}

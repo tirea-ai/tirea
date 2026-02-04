@@ -20,7 +20,7 @@ pub enum ToolPermissionBehavior {
 }
 
 /// Interaction request for user confirmation or input.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interaction {
     /// Unique interaction ID.
     pub id: String,
@@ -50,7 +50,7 @@ pub enum InteractionType {
 }
 
 /// A choice for select-type interactions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InteractionChoice {
     /// Choice value (returned on selection).
     pub value: String,
