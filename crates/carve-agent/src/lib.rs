@@ -80,6 +80,7 @@
 //! storage.save(&session).await?;
 //! ```
 
+pub mod ag_ui;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -93,6 +94,7 @@ pub mod storage;
 pub mod stream;
 pub mod traits;
 pub mod types;
+pub mod ui_stream;
 
 // Re-export from carve-state for convenience
 pub use carve_state::{Context, StateManager, TrackedPatch};
@@ -113,6 +115,17 @@ pub use storage::{FileStorage, MemoryStorage, Storage, StorageError};
 
 // Stream exports
 pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
+
+// UI Stream exports (AI SDK v6 compatible)
+pub use ui_stream::{
+    AiSdkAdapter, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
+};
+
+// AG-UI exports (CopilotKit compatible)
+pub use ag_ui::{
+    run_agent_stream, run_agent_stream_sse, AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef,
+    AgUiAdapter, RequestError, RunAgentRequest,
+};
 
 // Execute exports
 pub use execute::{

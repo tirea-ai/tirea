@@ -1,9 +1,20 @@
 //! Streaming response handling for LLM responses.
+//!
+//! This module provides three event systems:
+//! - `AgentEvent`: The internal event type for the agent loop
+//! - `UIStreamEvent`: AI SDK v6 compatible events for frontend integration
+//! - `AGUIEvent`: AG-UI protocol compatible events for CopilotKit integration
+//!
+//! Use `AgentEvent::to_ui_events()` to convert to AI SDK format.
+//! Use `AgentEvent::to_ag_ui_events()` to convert to AG-UI format.
 
+use crate::ag_ui::{AGUIContext, AGUIEvent};
 use crate::traits::tool::ToolResult;
 use crate::types::ToolCall;
+use crate::ui_stream::UIStreamEvent;
 use carve_state::TrackedPatch;
 use genai::chat::ChatStreamEvent;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -128,7 +139,8 @@ impl StreamCollector {
 }
 
 /// Output event from stream processing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamOutput {
     /// Text content delta.
     TextDelta(String),
@@ -155,14 +167,50 @@ impl StreamResult {
 }
 
 /// Agent loop events for streaming execution.
-#[derive(Debug, Clone)]
+///
+/// These events represent the internal agent loop state.
+/// - For AI SDK v6 compatible events, use `to_ui_events()` to convert to `UIStreamEvent`.
+/// - For AG-UI compatible events, use `to_ag_ui_events()` to convert to `AGUIEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum AgentEvent {
+    // ========================================================================
+    // Lifecycle Events (AG-UI compatible)
+    // ========================================================================
+    /// Run started (emitted at the beginning of agent execution).
+    RunStart {
+        thread_id: String,
+        run_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<String>,
+    },
+    /// Run finished (emitted when agent execution completes).
+    RunFinish {
+        thread_id: String,
+        run_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
+    },
+
+    // ========================================================================
+    // Text Events
+    // ========================================================================
     /// LLM text delta.
-    TextDelta(String),
+    TextDelta { delta: String },
+
+    // ========================================================================
+    // Tool Events
+    // ========================================================================
     /// Tool call started.
     ToolCallStart { id: String, name: String },
     /// Tool call arguments delta.
     ToolCallDelta { id: String, args_delta: String },
+    /// Tool call input is complete (ready for execution).
+    ToolCallReady {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
     /// Tool call completed.
     ToolCallDone {
         id: String,
@@ -174,10 +222,195 @@ pub enum AgentEvent {
         text: String,
         tool_calls: Vec<ToolCall>,
     },
+
+    // ========================================================================
+    // Step Events
+    // ========================================================================
+    /// Step started (for multi-step agents).
+    StepStart,
+    /// Step completed.
+    StepEnd,
+
+    // ========================================================================
+    // State Events (AG-UI compatible)
+    // ========================================================================
+    /// State snapshot (complete state).
+    StateSnapshot { snapshot: Value },
+    /// State delta (RFC 6902 JSON Patch operations).
+    StateDelta { delta: Vec<Value> },
+    /// Messages snapshot (for reconnection).
+    MessagesSnapshot { messages: Vec<Value> },
+
+    // ========================================================================
+    // Completion Events
+    // ========================================================================
     /// Agent loop completed with final response.
     Done { response: String },
+    /// Stream aborted by user or system.
+    Aborted { reason: String },
     /// Error occurred.
-    Error(String),
+    Error { message: String },
+}
+
+impl AgentEvent {
+    /// Convert this event to AI SDK v6 compatible UI stream events.
+    ///
+    /// Some internal events map to multiple UI events. For example,
+    /// `ToolCallDone` produces `tool-output-available`.
+    pub fn to_ui_events(&self, text_id: &str) -> Vec<UIStreamEvent> {
+        match self {
+            // Lifecycle events - AI SDK doesn't have direct equivalents
+            AgentEvent::RunStart { .. } => vec![],
+            AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish()],
+
+            // Text events
+            AgentEvent::TextDelta { delta } => {
+                vec![UIStreamEvent::text_delta(text_id, delta)]
+            }
+
+            // Tool events
+            AgentEvent::ToolCallStart { id, name } => {
+                vec![UIStreamEvent::tool_input_start(id, name)]
+            }
+            AgentEvent::ToolCallDelta { id, args_delta } => {
+                vec![UIStreamEvent::tool_input_delta(id, args_delta)]
+            }
+            AgentEvent::ToolCallReady { id, name, arguments } => {
+                vec![UIStreamEvent::tool_input_available(id, name, arguments.clone())]
+            }
+            AgentEvent::ToolCallDone { id, result, .. } => {
+                vec![UIStreamEvent::tool_output_available(id, result.to_json())]
+            }
+            AgentEvent::TurnDone { .. } => {
+                // Turn done is internal - UI uses text-end and finish-step
+                vec![]
+            }
+
+            // Step events
+            AgentEvent::StepStart => {
+                vec![UIStreamEvent::start_step()]
+            }
+            AgentEvent::StepEnd => {
+                vec![UIStreamEvent::finish_step()]
+            }
+
+            // State events - use custom data events for AI SDK
+            AgentEvent::StateSnapshot { snapshot } => {
+                vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
+            }
+            AgentEvent::StateDelta { delta } => {
+                vec![UIStreamEvent::data("state-delta", Value::Array(delta.clone()))]
+            }
+            AgentEvent::MessagesSnapshot { messages } => {
+                vec![UIStreamEvent::data("messages-snapshot", Value::Array(messages.clone()))]
+            }
+
+            // Completion events
+            AgentEvent::Done { .. } => {
+                vec![UIStreamEvent::finish()]
+            }
+            AgentEvent::Aborted { reason } => {
+                vec![UIStreamEvent::abort(reason)]
+            }
+            AgentEvent::Error { message } => {
+                vec![UIStreamEvent::error(message)]
+            }
+        }
+    }
+
+    /// Convert this event to AG-UI protocol compatible events.
+    ///
+    /// AG-UI events follow the specification at <https://docs.ag-ui.com/concepts/events>
+    pub fn to_ag_ui_events(&self, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
+        match self {
+            // Lifecycle events
+            AgentEvent::RunStart { thread_id, run_id, parent_run_id } => {
+                vec![AGUIEvent::run_started(thread_id, run_id, parent_run_id.clone())]
+            }
+            AgentEvent::RunFinish { thread_id, run_id, result } => {
+                let mut events = vec![];
+                // End text stream if active
+                if ctx.end_text() {
+                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+                }
+                events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+                events
+            }
+
+            // Text events
+            AgentEvent::TextDelta { delta } => {
+                let mut events = vec![];
+                // Start text message if not started
+                if ctx.start_text() {
+                    events.push(AGUIEvent::text_message_start(&ctx.message_id));
+                }
+                events.push(AGUIEvent::text_message_content(&ctx.message_id, delta));
+                events
+            }
+
+            // Tool events
+            AgentEvent::ToolCallStart { id, name } => {
+                let mut events = vec![];
+                // End text stream before tool call
+                if ctx.end_text() {
+                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+                }
+                events.push(AGUIEvent::tool_call_start(id, name, Some(ctx.message_id.clone())));
+                events
+            }
+            AgentEvent::ToolCallDelta { id, args_delta } => {
+                vec![AGUIEvent::tool_call_args(id, args_delta)]
+            }
+            AgentEvent::ToolCallReady { id, .. } => {
+                vec![AGUIEvent::tool_call_end(id)]
+            }
+            AgentEvent::ToolCallDone { id, result, .. } => {
+                let result_msg_id = format!("result_{}", id);
+                let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
+                vec![AGUIEvent::tool_call_result(&result_msg_id, id, content)]
+            }
+            AgentEvent::TurnDone { .. } => {
+                // Internal event, no AG-UI equivalent
+                vec![]
+            }
+
+            // Step events
+            AgentEvent::StepStart => {
+                vec![AGUIEvent::step_started(ctx.next_step_name())]
+            }
+            AgentEvent::StepEnd => {
+                vec![AGUIEvent::step_finished(ctx.current_step_name())]
+            }
+
+            // State events
+            AgentEvent::StateSnapshot { snapshot } => {
+                vec![AGUIEvent::state_snapshot(snapshot.clone())]
+            }
+            AgentEvent::StateDelta { delta } => {
+                vec![AGUIEvent::state_delta(delta.clone())]
+            }
+            AgentEvent::MessagesSnapshot { messages } => {
+                vec![AGUIEvent::messages_snapshot(messages.clone())]
+            }
+
+            // Completion events
+            AgentEvent::Done { .. } => {
+                let mut events = vec![];
+                // End text stream if active
+                if ctx.end_text() {
+                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+                }
+                events.push(AGUIEvent::run_finished(&ctx.thread_id, &ctx.run_id, None));
+                events
+            }
+            AgentEvent::Aborted { reason } => {
+                vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
+            }
+            AgentEvent::Error { message } => {
+                vec![AGUIEvent::run_error(message, None)]
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -253,9 +486,9 @@ mod tests {
     #[test]
     fn test_agent_event_variants() {
         // Test TextDelta
-        let event = AgentEvent::TextDelta("Hello".to_string());
+        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
         match event {
-            AgentEvent::TextDelta(s) => assert_eq!(s, "Hello"),
+            AgentEvent::TextDelta { delta } => assert_eq!(delta, "Hello"),
             _ => panic!("Expected TextDelta"),
         }
 
@@ -315,9 +548,9 @@ mod tests {
         }
 
         // Test Error
-        let event = AgentEvent::Error("Something went wrong".to_string());
-        if let AgentEvent::Error(msg) = event {
-            assert!(msg.contains("wrong"));
+        let event = AgentEvent::Error { message: "Something went wrong".to_string() };
+        if let AgentEvent::Error { message } = event {
+            assert!(message.contains("wrong"));
         }
     }
 
@@ -409,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_agent_event_debug() {
-        let event = AgentEvent::Error("error message".to_string());
+        let event = AgentEvent::Error { message: "error message".to_string() };
         let debug_str = format!("{:?}", event);
         assert!(debug_str.contains("Error"));
         assert!(debug_str.contains("error message"));
@@ -703,5 +936,347 @@ mod tests {
 
         // After finish, the collector is consumed, so we can't use it again
         // This is by design (finish takes self)
+    }
+
+    // ========================================================================
+    // AI SDK v6 Conversion Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_to_ui_events_text_delta() {
+        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"text-delta""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_tool_call_start() {
+        let event = AgentEvent::ToolCallStart {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"tool-input-start""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_tool_call_ready() {
+        let event = AgentEvent::ToolCallReady {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: json!({"query": "rust"}),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"tool-input-available""#));
+        assert!(json.contains(r#""input""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_tool_call_done() {
+        let result = ToolResult::success("search", json!({"results": ["item1"]}));
+        let event = AgentEvent::ToolCallDone {
+            id: "call_1".to_string(),
+            result,
+            patch: None,
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"tool-output-available""#));
+        assert!(json.contains(r#""output""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_step_start() {
+        let event = AgentEvent::StepStart;
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"start-step""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_step_end() {
+        let event = AgentEvent::StepEnd;
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"finish-step""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_done() {
+        let event = AgentEvent::Done {
+            response: "Final answer".to_string(),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"finish""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_aborted() {
+        let event = AgentEvent::Aborted {
+            reason: "User cancelled".to_string(),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"abort""#));
+        assert!(json.contains("User cancelled"));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_error() {
+        let event = AgentEvent::Error { message: "Something went wrong".to_string() };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"error""#));
+        assert!(json.contains("Something went wrong"));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_turn_done_empty() {
+        let event = AgentEvent::TurnDone {
+            text: "Done".to_string(),
+            tool_calls: vec![],
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        // TurnDone is internal, produces no UI events
+        assert!(ui_events.is_empty());
+    }
+
+    // ========================================================================
+    // New Event Variant Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_tool_call_ready() {
+        let event = AgentEvent::ToolCallReady {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+            arguments: json!({"query": "rust programming"}),
+        };
+        if let AgentEvent::ToolCallReady { id, name, arguments } = event {
+            assert_eq!(id, "call_1");
+            assert_eq!(name, "search");
+            assert_eq!(arguments["query"], "rust programming");
+        } else {
+            panic!("Expected ToolCallReady");
+        }
+    }
+
+    #[test]
+    fn test_agent_event_step_start() {
+        let event = AgentEvent::StepStart;
+        assert!(matches!(event, AgentEvent::StepStart));
+    }
+
+    #[test]
+    fn test_agent_event_step_end() {
+        let event = AgentEvent::StepEnd;
+        assert!(matches!(event, AgentEvent::StepEnd));
+    }
+
+    #[test]
+    fn test_agent_event_aborted() {
+        let event = AgentEvent::Aborted {
+            reason: "Timeout".to_string(),
+        };
+        if let AgentEvent::Aborted { reason } = event {
+            assert_eq!(reason, "Timeout");
+        } else {
+            panic!("Expected Aborted");
+        }
+    }
+
+    #[test]
+    fn test_agent_event_serialization() {
+        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("text_delta"));
+        assert!(json.contains("Hello"));
+
+        let event = AgentEvent::StepStart;
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("step_start"));
+    }
+
+    #[test]
+    fn test_agent_event_deserialization() {
+        let json = r#"{"event_type":"step_start"}"#;
+        let event: AgentEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, AgentEvent::StepStart));
+
+        let json = r#"{"event_type":"text_delta","delta":"Hello"}"#;
+        let event: AgentEvent = serde_json::from_str(json).unwrap();
+        if let AgentEvent::TextDelta { delta } = event {
+            assert_eq!(delta, "Hello");
+        } else {
+            panic!("Expected TextDelta");
+        }
+    }
+
+    // ========================================================================
+    // Complete Flow Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_complete_streaming_flow_conversion() {
+        // Simulate a complete streaming flow and convert to UI events
+        let events = vec![
+            AgentEvent::StepStart,
+            AgentEvent::TextDelta { delta: "Let me ".to_string() },
+            AgentEvent::TextDelta { delta: "search.".to_string() },
+            AgentEvent::ToolCallStart {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "call_1".to_string(),
+                args_delta: r#"{"query":"#.to_string(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "call_1".to_string(),
+                args_delta: r#""rust"}"#.to_string(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "call_1".to_string(),
+                name: "search".to_string(),
+                arguments: json!({"query": "rust"}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "call_1".to_string(),
+                result: ToolResult::success("search", json!({"found": 3})),
+                patch: None,
+            },
+            AgentEvent::StepEnd,
+            AgentEvent::Done {
+                response: "Found 3 results.".to_string(),
+            },
+        ];
+
+        // Convert all events to UI events
+        let all_ui_events: Vec<UIStreamEvent> = events
+            .iter()
+            .flat_map(|e| e.to_ui_events("txt_0"))
+            .collect();
+
+        // Verify UI events contain expected types
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::StartStep)));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::TextDelta { .. })));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputStart { .. })));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputDelta { .. })));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputAvailable { .. })));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolOutputAvailable { .. })));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::FinishStep)));
+        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::Finish)));
+    }
+
+    // ========================================================================
+    // Additional Coverage Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_error_conversion() {
+        let event = AgentEvent::Error {
+            message: "Connection timeout".to_string(),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        assert!(matches!(&ui_events[0], UIStreamEvent::Error { error_text } if error_text == "Connection timeout"));
+    }
+
+    #[test]
+    fn test_agent_event_aborted_conversion() {
+        let event = AgentEvent::Aborted {
+            reason: "User cancelled".to_string(),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        assert!(matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason == "User cancelled"));
+    }
+
+    #[test]
+    fn test_agent_event_turn_done_conversion() {
+        let event = AgentEvent::TurnDone {
+            text: "Response text".to_string(),
+            tool_calls: vec![
+                ToolCall::new("call_1", "search", json!({"q": "test"})),
+            ],
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        // TurnDone converts to empty vec in current implementation
+        // The turn_done event is used internally and doesn't map directly to UI events
+        assert!(ui_events.is_empty() || matches!(&ui_events[0], UIStreamEvent::FinishStep));
+    }
+
+    #[test]
+    fn test_stream_output_variants_creation() {
+        // Test the StreamOutput enum variants can be created
+        let text_delta = StreamOutput::TextDelta("Hello".to_string());
+        assert!(matches!(text_delta, StreamOutput::TextDelta(_)));
+
+        let tool_start = StreamOutput::ToolCallStart {
+            id: "call_1".to_string(),
+            name: "search".to_string(),
+        };
+        assert!(matches!(tool_start, StreamOutput::ToolCallStart { .. }));
+
+        let tool_delta = StreamOutput::ToolCallDelta {
+            id: "call_1".to_string(),
+            args_delta: "delta".to_string(),
+        };
+        assert!(matches!(tool_delta, StreamOutput::ToolCallDelta { .. }));
+    }
+
+    #[test]
+    fn test_tool_call_done_with_patch_conversion() {
+        use carve_state::{Patch, TrackedPatch};
+
+        // Create an empty patch
+        let patch = TrackedPatch::new(Patch::new());
+
+        let event = AgentEvent::ToolCallDone {
+            id: "call_1".to_string(),
+            result: ToolResult::success("search", json!({"found": 5})),
+            patch: Some(patch),
+        };
+
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        assert!(matches!(ui_events[0], UIStreamEvent::ToolOutputAvailable { .. }));
+    }
+
+    #[test]
+    fn test_tool_call_done_error_conversion() {
+        let event = AgentEvent::ToolCallDone {
+            id: "call_1".to_string(),
+            result: ToolResult::error("search", "Tool execution failed"),
+            patch: None,
+        };
+
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        if let UIStreamEvent::ToolOutputAvailable { output, .. } = &ui_events[0] {
+            assert!(output["status"].as_str() == Some("error"));
+        } else {
+            panic!("Expected ToolOutputAvailable");
+        }
+    }
+
+    #[test]
+    fn test_stream_collector_text_and_has_tool_calls() {
+        let collector = StreamCollector::new();
+        assert!(!collector.has_tool_calls());
+        assert_eq!(collector.text(), "");
     }
 }
