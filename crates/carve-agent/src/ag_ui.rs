@@ -1490,6 +1490,11 @@ impl AgentPlugin for FrontendToolPlugin {
             return;
         }
 
+        // Don't create pending if tool is already blocked (e.g., by PermissionPlugin)
+        if turn.tool_blocked() {
+            return;
+        }
+
         // Create interaction for frontend execution
         // The tool call ID and arguments are passed to the client
         let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
@@ -4051,6 +4056,68 @@ mod tests {
             plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
             assert!(turn.tool_pending(), "Frontend tool 'showNotification' should be pending");
         }
+    }
+
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_skips_blocked() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let frontend_tools: HashSet<String> = ["copyToClipboard"].iter().map(|s| s.to_string()).collect();
+        let plugin = FrontendToolPlugin::new(frontend_tools);
+        let session = Session::new("test");
+
+        // Simulate a blocked frontend tool (e.g., blocked by PermissionPlugin)
+        let mut turn = TurnContext::new(&session, vec![]);
+        let call = ToolCall::new("c1", "copyToClipboard", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // Block the tool first
+        turn.block("Tool denied by permission");
+
+        // FrontendToolPlugin should not create pending for blocked tool
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_blocked(), "Tool should remain blocked");
+        assert!(!turn.tool_pending(), "Blocked tool should not be set to pending");
+    }
+
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_coordination_with_permission() {
+        use crate::phase::ToolContext;
+        use crate::plugins::PermissionPlugin;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+        use serde_json::json;
+
+        // Setup: frontend tool with PermissionPlugin set to Deny
+        let frontend_tools: HashSet<String> = ["frontend_action"].iter().map(|s| s.to_string()).collect();
+        let frontend_plugin = FrontendToolPlugin::new(frontend_tools);
+        let permission_plugin = PermissionPlugin;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+        let call = ToolCall::new("c1", "frontend_action", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // Set permission to Deny
+        turn.set(
+            "permissions",
+            json!({
+                "default_behavior": "allow",
+                "tools": { "frontend_action": "deny" }
+            }),
+        );
+
+        // Run PermissionPlugin first (simulating plugin order)
+        permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        assert!(turn.tool_blocked(), "PermissionPlugin should block denied tool");
+
+        // Run FrontendToolPlugin second
+        frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        assert!(turn.tool_blocked(), "Tool should still be blocked");
+        assert!(!turn.tool_pending(), "FrontendToolPlugin should not set pending for blocked tool");
     }
 
     // ========================================================================
