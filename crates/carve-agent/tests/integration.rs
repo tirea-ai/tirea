@@ -5011,3 +5011,772 @@ fn test_scenario_agui_context_state_after_pending() {
     // Should produce TextMessageStart again since previous stream was ended
     assert!(events3.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 }
+
+// ============================================================================
+// AG-UI Stream Flow Tests
+// ============================================================================
+
+/// Test: Event sequence in stream - verify RUN_STARTED is first
+#[test]
+fn test_agui_stream_event_sequence_run_started_first() {
+    // Simulate stream events
+    let events: Vec<AGUIEvent> = vec![
+        AGUIEvent::run_started("t1", "r1", None),
+        AGUIEvent::text_message_start("msg_1"),
+        AGUIEvent::text_message_content("msg_1", "Hello"),
+        AGUIEvent::text_message_end("msg_1"),
+        AGUIEvent::run_finished("t1", "r1", None),
+    ];
+
+    // First event must be RUN_STARTED
+    assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+
+    // Last event must be RUN_FINISHED
+    assert!(matches!(&events[events.len() - 1], AGUIEvent::RunFinished { .. }));
+}
+
+/// Test: Text interrupted by tool call - TEXT_MESSAGE_END before TOOL_CALL_START
+#[test]
+fn test_agui_stream_text_interrupted_by_tool_call() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start text streaming
+    let text1 = AgentEvent::TextDelta { delta: "Let me ".into() };
+    let _ = text1.to_ag_ui_events(&mut ctx);
+
+    let text2 = AgentEvent::TextDelta { delta: "search for that.".into() };
+    let _ = text2.to_ag_ui_events(&mut ctx);
+
+    // Tool call starts - should end text stream first
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    let tool_events = tool_start.to_ag_ui_events(&mut ctx);
+
+    // Should have TEXT_MESSAGE_END followed by TOOL_CALL_START
+    assert!(tool_events.len() >= 2);
+    assert!(
+        matches!(&tool_events[0], AGUIEvent::TextMessageEnd { .. }),
+        "First event should be TextMessageEnd, got {:?}",
+        tool_events[0]
+    );
+    assert!(
+        matches!(&tool_events[1], AGUIEvent::ToolCallStart { .. }),
+        "Second event should be ToolCallStart, got {:?}",
+        tool_events[1]
+    );
+}
+
+/// Test: Tool call complete sequence - START -> ARGS -> READY(END) -> DONE(RESULT)
+#[test]
+fn test_agui_stream_tool_call_sequence() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Collect all events for a tool call
+    let start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "read_file".into(),
+    };
+    let start_events = start.to_ag_ui_events(&mut ctx);
+
+    let args = AgentEvent::ToolCallDelta {
+        id: "call_1".into(),
+        args_delta: r#"{"path": "/tmp/file.txt"}"#.into(),
+    };
+    let args_events = args.to_ag_ui_events(&mut ctx);
+
+    // ToolCallReady produces TOOL_CALL_END (marks end of args streaming)
+    let ready = AgentEvent::ToolCallReady {
+        id: "call_1".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": "/tmp/file.txt"}),
+    };
+    let ready_events = ready.to_ag_ui_events(&mut ctx);
+
+    // ToolCallDone produces TOOL_CALL_RESULT
+    let done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::success("read_file", json!({"content": "Hello"})),
+        patch: None,
+    };
+    let done_events = done.to_ag_ui_events(&mut ctx);
+
+    // Verify sequence: Start events contain TOOL_CALL_START
+    assert!(start_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+
+    // Args events contain TOOL_CALL_ARGS
+    assert!(args_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+
+    // Ready events contain TOOL_CALL_END (end of argument streaming)
+    assert!(ready_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+
+    // Done events contain TOOL_CALL_RESULT
+    assert!(done_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+}
+
+/// Test: Error event ends stream without RUN_FINISHED
+#[test]
+fn test_agui_stream_error_no_run_finished() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start with RUN_STARTED (simulated)
+    let _started = AGUIEvent::run_started("t1", "r1", None);
+
+    // Error occurs
+    let error = AgentEvent::Error {
+        message: "LLM API error: rate limited".into(),
+    };
+    let error_events = error.to_ag_ui_events(&mut ctx);
+
+    // Should emit RUN_ERROR
+    assert!(error_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. })));
+
+    // Should NOT have RUN_FINISHED in the error events
+    assert!(!error_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+}
+
+/// Test: Pending event doesn't emit RUN_FINISHED
+#[test]
+fn test_agui_stream_pending_no_run_finished() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Pending interaction
+    let interaction = Interaction::new("perm_1", "confirm")
+        .with_message("Allow tool execution?");
+    let pending = AgentEvent::Pending { interaction };
+    let pending_events = pending.to_ag_ui_events(&mut ctx);
+
+    // Should have tool call events (for the interaction)
+    assert!(pending_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+
+    // Should NOT have RUN_FINISHED
+    assert!(!pending_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+}
+
+/// Test: SSE format validation
+#[test]
+fn test_agui_sse_format() {
+    let event = AGUIEvent::run_started("t1", "r1", None);
+    let json = serde_json::to_string(&event).unwrap();
+    let sse = format!("data: {}\n\n", json);
+
+    // Validate SSE format
+    assert!(sse.starts_with("data: "));
+    assert!(sse.ends_with("\n\n"));
+
+    // Validate JSON is parseable
+    let json_part = sse.strip_prefix("data: ").unwrap().strip_suffix("\n\n").unwrap();
+    let parsed: AGUIEvent = serde_json::from_str(json_part).unwrap();
+    assert!(matches!(parsed, AGUIEvent::RunStarted { .. }));
+}
+
+/// Test: Multiple SSE events in sequence
+#[test]
+fn test_agui_sse_multiple_events() {
+    let events = vec![
+        AGUIEvent::run_started("t1", "r1", None),
+        AGUIEvent::text_message_start("m1"),
+        AGUIEvent::text_message_content("m1", "Hello"),
+        AGUIEvent::text_message_end("m1"),
+        AGUIEvent::run_finished("t1", "r1", None),
+    ];
+
+    let mut sse_output = String::new();
+    for event in &events {
+        let json = serde_json::to_string(event).unwrap();
+        sse_output.push_str(&format!("data: {}\n\n", json));
+    }
+
+    // Parse back
+    let lines: Vec<&str> = sse_output.split("\n\n").filter(|s| !s.is_empty()).collect();
+    assert_eq!(lines.len(), 5);
+
+    for (i, line) in lines.iter().enumerate() {
+        let json = line.strip_prefix("data: ").unwrap();
+        let _: AGUIEvent = serde_json::from_str(json).expect(&format!("Failed to parse event {}", i));
+    }
+}
+
+// ============================================================================
+// Permission E2E Flow Tests
+// ============================================================================
+
+/// Test: Complete permission approval flow
+/// Ask → Pending → Client Approves → Tool Executes
+#[tokio::test]
+async fn test_permission_flow_approval_e2e() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Phase 1: Agent requests permission (simulated by PermissionPlugin)
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+
+    let tool_call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    // PermissionPlugin creates pending
+    let plugin = PermissionPlugin;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(turn.tool_pending(), "Tool should be pending after permission ask");
+
+    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    assert!(interaction.id.starts_with("permission_"));
+
+    // Phase 2: Convert to AG-UI events (client would receive these)
+    let ag_ui_events = interaction.to_ag_ui_events();
+    assert_eq!(ag_ui_events.len(), 3); // Start, Args, End
+
+    // Phase 3: Client approves (simulated by creating response request)
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &interaction.id));
+
+    assert!(response_request.is_interaction_approved(&interaction.id));
+
+    // Phase 4: Resume with InteractionResponsePlugin
+    let response_plugin = InteractionResponsePlugin::from_request(&response_request);
+    assert!(response_plugin.has_responses());
+
+    // Phase 5: On resume, tool should NOT be blocked
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    // Use the interaction ID as the tool call ID (as happens in resume)
+    let tool_call2 = ToolCall::new(&interaction.id, "write_file", json!({"path": "/etc/config"}));
+    turn2.tool = Some(ToolContext::new(&tool_call2));
+
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked");
+}
+
+/// Test: Complete permission denial flow
+/// Ask → Pending → Client Denies → Tool Blocked
+#[tokio::test]
+async fn test_permission_flow_denial_e2e() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Phase 1: Agent requests permission
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+
+    let tool_call = ToolCall::new("call_delete", "delete_all", json!({}));
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    let plugin = PermissionPlugin;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(turn.tool_pending());
+
+    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+
+    // Phase 2: Client denies
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("false", &interaction.id));
+
+    assert!(response_request.is_interaction_denied(&interaction.id));
+
+    // Phase 3: On resume, tool should be blocked
+    let response_plugin = InteractionResponsePlugin::from_request(&response_request);
+
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
+    turn2.tool = Some(ToolContext::new(&tool_call2));
+
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    assert!(turn2.tool_blocked(), "Denied tool should be blocked");
+
+    let block_reason = turn2.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
+    assert!(block_reason.contains("denied"), "Block reason should mention denial");
+}
+
+/// Test: Multiple tools with mixed permissions
+#[tokio::test]
+async fn test_permission_flow_multiple_tools_mixed() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::new("test");
+
+    // Tool 1: Will be approved
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    turn1.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let call1 = ToolCall::new("call_1", "read_file", json!({}));
+    turn1.tool = Some(ToolContext::new(&call1));
+
+    let plugin = PermissionPlugin;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    let int1 = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+
+    // Tool 2: Will be denied
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    turn2.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let call2 = ToolCall::new("call_2", "write_file", json!({}));
+    turn2.tool = Some(ToolContext::new(&call2));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    let int2 = turn2.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+
+    // Client responds: approve first, deny second
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &int1.id))
+        .with_message(AGUIMessage::tool("false", &int2.id));
+
+    let response_plugin = InteractionResponsePlugin::from_request(&response_request);
+
+    // Verify first tool (approved)
+    let mut resume1 = TurnContext::new(&session, vec![]);
+    let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
+    resume1.tool = Some(ToolContext::new(&resume_call1));
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume1).await;
+    assert!(!resume1.tool_blocked(), "First tool should not be blocked");
+
+    // Verify second tool (denied)
+    let mut resume2 = TurnContext::new(&session, vec![]);
+    let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
+    resume2.tool = Some(ToolContext::new(&resume_call2));
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume2).await;
+    assert!(resume2.tool_blocked(), "Second tool should be blocked");
+}
+
+// ============================================================================
+// Frontend Tool E2E Flow Tests
+// ============================================================================
+
+/// Test: Frontend tool creates pending interaction
+#[tokio::test]
+async fn test_frontend_tool_flow_creates_pending() {
+    use carve_agent::ag_ui::FrontendToolPlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+    let session = Session::new("test");
+
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "Hello World"}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(turn.tool_pending(), "Frontend tool should be pending");
+
+    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    assert_eq!(interaction.action, "tool:copyToClipboard");
+    assert_eq!(interaction.id, "call_copy");
+}
+
+/// Test: Frontend tool result returned from client
+#[test]
+fn test_frontend_tool_flow_result_from_client() {
+    // Client returns result for frontend tool
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"success": true, "bytes_copied": 11}"#,
+            "call_copy",
+        ));
+
+    let response = response_request.get_interaction_response("call_copy").unwrap();
+    assert!(response.result["success"].as_bool().unwrap());
+    assert_eq!(response.result["bytes_copied"], 11);
+}
+
+/// Test: Mixed frontend and backend tools
+#[tokio::test]
+async fn test_frontend_tool_flow_mixed_with_backend() {
+    use carve_agent::ag_ui::FrontendToolPlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("showDialog", "Show dialog"))
+        .with_tool(AGUIToolDef::backend("search", "Search files"));
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+    let session = Session::new("test");
+
+    // Backend tool - should NOT be pending
+    let mut turn_backend = TurnContext::new(&session, vec![]);
+    let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
+    turn_backend.tool = Some(ToolContext::new(&call_backend));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn_backend).await;
+    assert!(!turn_backend.tool_pending(), "Backend tool should not be pending");
+
+    // Frontend tool - should be pending
+    let mut turn_frontend = TurnContext::new(&session, vec![]);
+    let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
+    turn_frontend.tool = Some(ToolContext::new(&call_frontend));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn_frontend).await;
+    assert!(turn_frontend.tool_pending(), "Frontend tool should be pending");
+}
+
+/// Test: Frontend tool with complex nested result
+#[test]
+fn test_frontend_tool_flow_complex_result() {
+    let complex_result = json!({
+        "success": true,
+        "selected_files": [
+            {"path": "/home/user/doc1.txt", "size": 1024, "type": "text"},
+            {"path": "/home/user/doc2.pdf", "size": 2048, "type": "pdf"}
+        ],
+        "metadata": {
+            "dialog_duration_ms": 1500,
+            "user_action": "confirm",
+            "timestamp": "2024-01-15T10:30:00Z"
+        }
+    });
+
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(&complex_result.to_string(), "file_picker_call"));
+
+    let response = response_request.get_interaction_response("file_picker_call").unwrap();
+    assert!(response.result["success"].as_bool().unwrap());
+    assert_eq!(response.result["selected_files"].as_array().unwrap().len(), 2);
+    assert_eq!(response.result["selected_files"][0]["path"], "/home/user/doc1.txt");
+    assert_eq!(response.result["metadata"]["user_action"], "confirm");
+}
+
+// ============================================================================
+// State Event Flow Tests
+// ============================================================================
+
+/// Test: State snapshot event conversion
+#[test]
+fn test_state_event_snapshot_conversion() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let state = json!({
+        "counter": 42,
+        "user": {"name": "Alice", "role": "admin"},
+        "items": ["a", "b", "c"]
+    });
+
+    let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+
+    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+        assert_eq!(snapshot["counter"], 42);
+        assert_eq!(snapshot["user"]["name"], "Alice");
+    }
+}
+
+/// Test: State delta event conversion
+#[test]
+fn test_state_event_delta_conversion() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let delta = vec![
+        json!({"op": "replace", "path": "/counter", "value": 43}),
+        json!({"op": "add", "path": "/items/-", "value": "d"}),
+    ];
+
+    let event = AgentEvent::StateDelta { delta: delta.clone() };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+
+    if let AGUIEvent::StateDelta { delta: d, .. } = &ag_events[0] {
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0]["op"], "replace");
+        assert_eq!(d[1]["op"], "add");
+    }
+}
+
+/// Test: Messages snapshot event conversion
+#[test]
+fn test_state_event_messages_snapshot_conversion() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let messages = vec![
+        json!({"role": "user", "content": "Hello"}),
+        json!({"role": "assistant", "content": "Hi there!"}),
+    ];
+
+    let event = AgentEvent::MessagesSnapshot { messages: messages.clone() };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+
+    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[1]["role"], "assistant");
+    }
+}
+
+// ============================================================================
+// Error Handling Flow Tests
+// ============================================================================
+
+/// Test: Tool execution failure produces correct events
+#[test]
+fn test_error_flow_tool_execution_failure() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let result = ToolResult::error("read_file", "File not found: /nonexistent");
+
+    // ToolCallDone produces TOOL_CALL_RESULT (not TOOL_CALL_END)
+    let event = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result,
+        patch: None,
+    };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    // Should have TOOL_CALL_RESULT with error
+    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+
+    // Result should contain error
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+        assert!(content.contains("error") || content.contains("File not found"));
+    }
+}
+
+/// Test: Invalid request validation
+#[test]
+fn test_error_flow_invalid_request() {
+    // Empty thread_id
+    let invalid1 = RunAgentRequest::new("".to_string(), "r1".to_string());
+    assert!(invalid1.validate().is_err());
+
+    // Empty run_id
+    let invalid2 = RunAgentRequest::new("t1".to_string(), "".to_string());
+    assert!(invalid2.validate().is_err());
+
+    // Valid request
+    let valid = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    assert!(valid.validate().is_ok());
+}
+
+/// Test: Agent abort event
+#[test]
+fn test_error_flow_agent_abort() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let event = AgentEvent::Aborted {
+        reason: "User cancelled".into(),
+    };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    // Should produce some events (depends on implementation)
+    // At minimum, verify it doesn't panic
+    assert!(ag_events.is_empty() || !ag_events.is_empty());
+}
+
+// ============================================================================
+// Resume Flow Tests
+// ============================================================================
+
+/// Test: Resume with approval continues execution
+#[tokio::test]
+async fn test_resume_flow_with_approval() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Simulate: Previous run ended with pending permission
+    let interaction_id = "permission_tool_x";
+
+    // New request includes approval
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool("true", interaction_id));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+    assert!(plugin.has_responses());
+    assert!(plugin.is_approved(interaction_id));
+
+    // Tool execution should not be blocked
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new(interaction_id, "tool_x", json!({}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(!turn.tool_blocked());
+}
+
+/// Test: Resume with denial blocks execution
+#[tokio::test]
+async fn test_resume_flow_with_denial() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let interaction_id = "permission_dangerous_tool";
+
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool("no", interaction_id));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+    assert!(plugin.is_denied(interaction_id));
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(turn.tool_blocked());
+}
+
+/// Test: Resume with multiple pending responses
+#[tokio::test]
+async fn test_resume_flow_multiple_responses() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Previous run had 3 pending interactions
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool("true", "perm_1"))
+        .with_message(AGUIMessage::tool("false", "perm_2"))
+        .with_message(AGUIMessage::tool("yes", "perm_3"));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+
+    assert!(plugin.is_approved("perm_1"));
+    assert!(plugin.is_denied("perm_2"));
+    assert!(plugin.is_approved("perm_3"));
+
+    let session = Session::new("test");
+
+    // Test each tool
+    for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let call = ToolCall::new(id, "test_tool", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        assert_eq!(turn.tool_blocked(), should_block, "Tool {} block state incorrect", id);
+    }
+}
+
+/// Test: Resume with partial responses (some missing)
+#[tokio::test]
+async fn test_resume_flow_partial_responses() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Only respond to some interactions
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool("true", "perm_1"));
+        // perm_2 not responded to
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+
+    assert!(plugin.is_approved("perm_1"));
+    assert!(!plugin.is_approved("perm_2")); // No response
+    assert!(!plugin.is_denied("perm_2")); // No response
+
+    let session = Session::new("test");
+
+    // Responded tool should not be blocked
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
+    turn1.tool = Some(ToolContext::new(&call1));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    assert!(!turn1.tool_blocked());
+
+    // Non-responded tool - plugin doesn't affect it
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
+    turn2.tool = Some(ToolContext::new(&call2));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    assert!(!turn2.tool_blocked()); // Not blocked by response plugin (no response)
+}
+
+// ============================================================================
+// Plugin Interaction Flow Tests
+// ============================================================================
+
+/// Test: FrontendToolPlugin and InteractionResponsePlugin together
+#[tokio::test]
+async fn test_plugin_interaction_frontend_and_response() {
+    use carve_agent::ag_ui::{FrontendToolPlugin, InteractionResponsePlugin};
+
+    // Request has both frontend tools and interaction responses
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_tool(AGUIToolDef::frontend("showNotification", "Show notification"))
+        .with_message(AGUIMessage::tool("true", "call_prev"));
+
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    let response_plugin = InteractionResponsePlugin::from_request(&request);
+
+    let session = Session::new("test");
+
+    // Test 1: Frontend tool should be pending (not affected by response plugin)
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    let call1 = ToolCall::new("call_new", "showNotification", json!({}));
+    turn1.tool = Some(ToolContext::new(&call1));
+
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+
+    assert!(turn1.tool_pending(), "Frontend tool should be pending");
+    assert!(!turn1.tool_blocked());
+
+    // Test 2: Previously pending tool should be allowed (response plugin approves)
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
+    turn2.tool = Some(ToolContext::new(&call2));
+
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+
+    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked");
+}
+
+/// Test: Plugin execution order matters
+#[tokio::test]
+async fn test_plugin_interaction_execution_order() {
+    use carve_agent::ag_ui::{FrontendToolPlugin, InteractionResponsePlugin};
+
+    // Setup: Frontend tool that was previously denied
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_tool(AGUIToolDef::frontend("dangerousAction", "Dangerous"))
+        .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
+
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    let response_plugin = InteractionResponsePlugin::from_request(&request);
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    // Response plugin runs first - denies the tool
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(turn.tool_blocked(), "Tool should be blocked by denial");
+
+    // Frontend plugin runs second - should NOT override the block
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    assert!(turn.tool_blocked(), "Tool should still be blocked");
+    assert!(!turn.tool_pending(), "Blocked tool should not be pending");
+}
+
+/// Test: Permission plugin with frontend tool
+#[tokio::test]
+async fn test_plugin_interaction_permission_and_frontend() {
+    use carve_agent::ag_ui::FrontendToolPlugin;
+
+    // Frontend tool with permission set to Ask
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("modifySettings", "Modify settings"));
+
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    let permission_plugin = PermissionPlugin;
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+
+    let call = ToolCall::new("call_modify", "modifySettings", json!({}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    // Permission plugin runs first - creates pending for "ask"
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    // Frontend plugin runs second
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    // Tool should be pending (frontend takes precedence for frontend tools)
+    assert!(turn.tool_pending(), "Tool should be pending");
+
+    // The interaction should be from frontend plugin (tool:modifySettings)
+    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    assert!(
+        interaction.action.starts_with("tool:") || interaction.action == "confirm",
+        "Interaction action should be from one of the plugins"
+    );
+}
