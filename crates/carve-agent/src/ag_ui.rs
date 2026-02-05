@@ -1163,6 +1163,94 @@ impl From<String> for RequestError {
 }
 
 // ============================================================================
+// AG-UI Frontend Tool Plugin
+// ============================================================================
+
+use crate::phase::{Phase, TurnContext};
+use crate::plugin::AgentPlugin;
+use async_trait::async_trait;
+use std::collections::HashSet;
+
+/// Plugin that handles frontend tool execution for AG-UI protocol.
+///
+/// When a tool call targets a frontend tool (defined with `execute: "frontend"`),
+/// this plugin intercepts the execution in `BeforeToolExecute` and creates
+/// a pending interaction. This causes the agent loop to emit `AgentEvent::Pending`,
+/// which gets converted to AG-UI tool call events for client-side execution.
+///
+/// # Example
+///
+/// ```ignore
+/// let frontend_tools: HashSet<String> = request.frontend_tools()
+///     .iter()
+///     .map(|t| t.name.clone())
+///     .collect();
+///
+/// let plugin = FrontendToolPlugin::new(frontend_tools);
+/// let config = AgentConfig::new("gpt-4").with_plugin(Arc::new(plugin));
+/// ```
+pub struct FrontendToolPlugin {
+    /// Names of tools that should be executed on the frontend.
+    frontend_tools: HashSet<String>,
+}
+
+impl FrontendToolPlugin {
+    /// Create a new frontend tool plugin.
+    ///
+    /// # Arguments
+    ///
+    /// * `frontend_tools` - Set of tool names that should be executed on the frontend
+    pub fn new(frontend_tools: HashSet<String>) -> Self {
+        Self { frontend_tools }
+    }
+
+    /// Create from a RunAgentRequest.
+    pub fn from_request(request: &RunAgentRequest) -> Self {
+        let frontend_tools = request
+            .frontend_tools()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        Self { frontend_tools }
+    }
+
+    /// Check if a tool should be executed on the frontend.
+    pub fn is_frontend_tool(&self, name: &str) -> bool {
+        self.frontend_tools.contains(name)
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for FrontendToolPlugin {
+    fn id(&self) -> &str {
+        "ag_ui_frontend_tool"
+    }
+
+    async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        if phase != Phase::BeforeToolExecute {
+            return;
+        }
+
+        // Get tool info
+        let Some(tool) = turn.tool.as_ref() else {
+            return;
+        };
+
+        // Check if this is a frontend tool
+        if !self.is_frontend_tool(&tool.name) {
+            return;
+        }
+
+        // Create interaction for frontend execution
+        // The tool call ID and arguments are passed to the client
+        let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
+            .with_parameters(tool.args.clone());
+
+        turn.pending(interaction);
+    }
+}
+
+// ============================================================================
 // AG-UI Run Agent Stream
 // ============================================================================
 
@@ -1281,6 +1369,88 @@ pub fn run_agent_stream_sse(
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     Box::pin(stream! {
         let mut inner = run_agent_stream(client, config, session, tools, thread_id, run_id);
+        while let Some(event) = inner.next().await {
+            if let Ok(json) = serde_json::to_string(&event) {
+                yield format!("data: {}\n\n", json);
+            }
+        }
+    })
+}
+
+/// Run the agent loop with an AG-UI request, handling frontend tools automatically.
+///
+/// This function extracts frontend tool definitions from the request and configures
+/// the agent loop to delegate their execution to the client via AG-UI events.
+///
+/// Frontend tools (defined with `execute: "frontend"`) will NOT be executed on the
+/// backend. Instead, AG-UI `TOOL_CALL_*` events will be emitted for the client to
+/// execute. Results should be included in the next request's message history.
+///
+/// # Arguments
+///
+/// * `client` - GenAI client for LLM API calls
+/// * `config` - Agent configuration (model, system prompt, etc.)
+/// * `session` - Current session with conversation history
+/// * `tools` - Available backend tools (frontend tools are handled separately)
+/// * `request` - AG-UI request containing thread_id, run_id, and tool definitions
+///
+/// # Example
+///
+/// ```ignore
+/// let request = RunAgentRequest::new("thread_1", "run_1")
+///     .with_tool(AGUIToolDef::backend("search", "Search the web"))
+///     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+///
+/// let stream = run_agent_stream_with_request(
+///     client,
+///     config,
+///     session,
+///     tools,  // Only backend tools
+///     request,
+/// );
+/// ```
+pub fn run_agent_stream_with_request(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    request: RunAgentRequest,
+) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
+    // Create frontend tool plugin if there are frontend tools
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    let has_frontend_tools = !frontend_plugin.frontend_tools.is_empty();
+
+    // Add frontend tool plugin to config if needed
+    let config = if has_frontend_tools {
+        config.with_plugin(Arc::new(frontend_plugin))
+    } else {
+        config
+    };
+
+    // Use existing run_agent_stream with the enhanced config
+    run_agent_stream(
+        client,
+        config,
+        session,
+        tools,
+        request.thread_id,
+        request.run_id,
+    )
+}
+
+/// Run the agent loop with an AG-UI request, returning SSE-formatted strings.
+///
+/// This is a convenience function that wraps `run_agent_stream_with_request`
+/// and formats each event as Server-Sent Events (SSE).
+pub fn run_agent_stream_with_request_sse(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    request: RunAgentRequest,
+) -> Pin<Box<dyn Stream<Item = String> + Send>> {
+    Box::pin(stream! {
+        let mut inner = run_agent_stream_with_request(client, config, session, tools, request);
         while let Some(event) = inner.next().await {
             if let Ok(json) = serde_json::to_string(&event) {
                 yield format!("data: {}\n\n", json);
@@ -3148,5 +3318,53 @@ mod tests {
             }
             _ => panic!("Expected ToolCallArgs"),
         }
+    }
+
+    // ========================================================================
+    // FrontendToolPlugin Tests
+    // ========================================================================
+
+    #[test]
+    fn test_frontend_tool_plugin_new() {
+        let mut tools = HashSet::new();
+        tools.insert("copyToClipboard".to_string());
+        tools.insert("showNotification".to_string());
+
+        let plugin = FrontendToolPlugin::new(tools);
+
+        assert!(plugin.is_frontend_tool("copyToClipboard"));
+        assert!(plugin.is_frontend_tool("showNotification"));
+        assert!(!plugin.is_frontend_tool("search"));
+    }
+
+    #[test]
+    fn test_frontend_tool_plugin_from_request() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+            .with_tool(AGUIToolDef::frontend("showNotification", "Notify"));
+
+        let plugin = FrontendToolPlugin::from_request(&request);
+
+        assert!(!plugin.is_frontend_tool("search"));
+        assert!(plugin.is_frontend_tool("copyToClipboard"));
+        assert!(plugin.is_frontend_tool("showNotification"));
+    }
+
+    #[test]
+    fn test_frontend_tool_plugin_empty() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"));
+
+        let plugin = FrontendToolPlugin::from_request(&request);
+
+        assert!(!plugin.is_frontend_tool("search"));
+        assert!(plugin.frontend_tools.is_empty());
+    }
+
+    #[test]
+    fn test_frontend_tool_plugin_id() {
+        let plugin = FrontendToolPlugin::new(HashSet::new());
+        assert_eq!(plugin.id(), "ag_ui_frontend_tool");
     }
 }
