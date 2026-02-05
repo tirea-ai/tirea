@@ -4036,3 +4036,468 @@ fn test_scenario_various_interaction_types() {
         }
     }
 }
+
+// ============================================================================
+// FrontendToolPlugin Scenario Tests
+// ============================================================================
+
+use carve_agent::ag_ui::{AGUIToolDef, FrontendToolPlugin, RunAgentRequest};
+use carve_agent::phase::{Phase, ToolContext, TurnContext};
+use carve_agent::plugin::AgentPlugin;
+use carve_agent::types::ToolCall;
+
+/// Test scenario: Complete frontend tool flow from request to AG-UI events
+#[tokio::test]
+async fn test_scenario_frontend_tool_request_to_agui() {
+    // 1. Client sends request with mixed frontend/backend tools
+    let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search the web"))
+        .with_tool(AGUIToolDef::backend("read_file", "Read a file"))
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard"))
+        .with_tool(AGUIToolDef::frontend("showNotification", "Show a notification"));
+
+    // 2. FrontendToolPlugin is created from request
+    let plugin = FrontendToolPlugin::from_request(&request);
+
+    // 3. Simulate agent calling a frontend tool
+    let session = Session::new("session_1");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    let tool_call = ToolCall::new(
+        "call_001",
+        "copyToClipboard",
+        json!({
+            "text": "Hello, World!",
+            "format": "plain"
+        }),
+    );
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    // 4. Plugin intercepts in BeforeToolExecute phase
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    // 5. Tool should be pending
+    assert!(turn.tool_pending());
+
+    // 6. Get interaction and convert to AG-UI
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    let events = interaction.to_ag_ui_events();
+
+    // 7. Verify AG-UI events
+    assert_eq!(events.len(), 3);
+
+    match &events[0] {
+        AGUIEvent::ToolCallStart {
+            tool_call_id,
+            tool_call_name,
+            ..
+        } => {
+            assert_eq!(tool_call_id, "call_001");
+            assert_eq!(tool_call_name, "tool:copyToClipboard");
+        }
+        _ => panic!("Expected ToolCallStart"),
+    }
+
+    match &events[1] {
+        AGUIEvent::ToolCallArgs { delta, .. } => {
+            let args: Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(args["parameters"]["text"], "Hello, World!");
+            assert_eq!(args["parameters"]["format"], "plain");
+        }
+        _ => panic!("Expected ToolCallArgs"),
+    }
+}
+
+/// Test scenario: Multiple frontend tools called in sequence
+#[tokio::test]
+async fn test_scenario_multiple_frontend_tools_sequence() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+        .with_tool(AGUIToolDef::frontend("showNotification", "Notify"))
+        .with_tool(AGUIToolDef::frontend("openDialog", "Dialog"));
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+    let session = Session::new("test");
+
+    // Simulate three frontend tool calls in sequence
+    let tool_calls = vec![
+        ("call_1", "copyToClipboard", json!({"text": "data1"})),
+        ("call_2", "showNotification", json!({"message": "Done!"})),
+        ("call_3", "openDialog", json!({"title": "Confirm"})),
+    ];
+
+    for (call_id, tool_name, args) in tool_calls {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let tool_call = ToolCall::new(call_id, tool_name, args.clone());
+        turn.tool = Some(ToolContext::new(&tool_call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_pending(), "Tool {} should be pending", tool_name);
+
+        let interaction = turn
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
+        assert_eq!(interaction.id, call_id);
+        assert_eq!(interaction.action, format!("tool:{}", tool_name));
+        assert_eq!(interaction.parameters, args);
+    }
+}
+
+/// Test scenario: Frontend tool with complex nested arguments
+#[tokio::test]
+async fn test_scenario_frontend_tool_complex_args() {
+    let plugin = FrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    // Complex nested arguments
+    let complex_args = json!({
+        "options": {
+            "filters": [
+                {"name": "Images", "extensions": ["png", "jpg", "gif"]},
+                {"name": "Documents", "extensions": ["pdf", "doc", "txt"]}
+            ],
+            "defaultPath": "/home/user/documents",
+            "properties": {
+                "multiSelections": true,
+                "showHiddenFiles": false
+            }
+        },
+        "metadata": {
+            "requestId": "req_123",
+            "timestamp": 1704067200,
+            "context": {
+                "source": "editor",
+                "purpose": "import"
+            }
+        }
+    });
+
+    let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(turn.tool_pending());
+
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .as_ref()
+        .unwrap();
+
+    // Verify complex args are preserved
+    assert_eq!(interaction.parameters, complex_args);
+    assert_eq!(
+        interaction.parameters["options"]["filters"][0]["name"],
+        "Images"
+    );
+    assert_eq!(
+        interaction.parameters["metadata"]["context"]["source"],
+        "editor"
+    );
+}
+
+/// Test scenario: Frontend tool with empty/null arguments
+#[tokio::test]
+async fn test_scenario_frontend_tool_empty_args() {
+    let plugin = FrontendToolPlugin::new(["getClipboard".to_string()].into_iter().collect());
+
+    let session = Session::new("test");
+
+    // Test with empty object
+    {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
+        turn.tool = Some(ToolContext::new(&tool_call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_pending());
+        let interaction = turn
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
+        assert_eq!(interaction.parameters, json!({}));
+    }
+
+    // Test with null
+    {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
+        turn.tool = Some(ToolContext::new(&tool_call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_pending());
+        let interaction = turn
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
+        assert_eq!(interaction.parameters, Value::Null);
+    }
+}
+
+/// Test scenario: Frontend tool names with special characters
+#[tokio::test]
+async fn test_scenario_frontend_tool_special_names() {
+    // Various tool name formats that might appear
+    let tool_names = vec![
+        "copy_to_clipboard",      // snake_case
+        "copyToClipboard",        // camelCase
+        "CopyToClipboard",        // PascalCase
+        "copy-to-clipboard",      // kebab-case
+        "namespace.copyClipboard", // dotted namespace
+        "ui::clipboard::copy",    // rust-style path (unusual but valid)
+    ];
+
+    for tool_name in tool_names {
+        let plugin = FrontendToolPlugin::new([tool_name.to_string()].into_iter().collect());
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+        let tool_call = ToolCall::new("call_1", tool_name, json!({}));
+        turn.tool = Some(ToolContext::new(&tool_call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_pending(), "Tool '{}' should be pending", tool_name);
+
+        let interaction = turn
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            interaction.action,
+            format!("tool:{}", tool_name),
+            "Action should be 'tool:{}' for tool '{}'",
+            tool_name,
+            tool_name
+        );
+    }
+}
+
+/// Test scenario: Tool name case sensitivity
+#[tokio::test]
+async fn test_scenario_frontend_tool_case_sensitivity() {
+    // Only "CopyToClipboard" is registered as frontend
+    let plugin = FrontendToolPlugin::new(["CopyToClipboard".to_string()].into_iter().collect());
+
+    let session = Session::new("test");
+
+    // Different cases - only exact match should work
+    let test_cases = vec![
+        ("CopyToClipboard", true),  // exact match
+        ("copytoclipboard", false), // lowercase
+        ("COPYTOCLIPBOARD", false), // uppercase
+        ("copyToClipboard", false), // different case
+    ];
+
+    for (tool_name, should_be_pending) in test_cases {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let tool_call = ToolCall::new("call_1", tool_name, json!({}));
+        turn.tool = Some(ToolContext::new(&tool_call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert_eq!(
+            turn.tool_pending(),
+            should_be_pending,
+            "Tool '{}' pending state should be {}",
+            tool_name,
+            should_be_pending
+        );
+    }
+}
+
+/// Test scenario: Frontend tool interaction serializes correctly for wire format
+#[test]
+fn test_scenario_frontend_tool_wire_format() {
+    // Create interaction as FrontendToolPlugin would
+    let interaction = Interaction::new("call_abc123", "tool:showNotification")
+        .with_parameters(json!({
+            "title": "Success",
+            "message": "Operation completed",
+            "type": "info",
+            "duration": 5000
+        }));
+
+    // Convert to AG-UI events (what goes over the wire)
+    let events = interaction.to_ag_ui_events();
+
+    // Serialize each event as it would be sent
+    for event in &events {
+        let json_str = serde_json::to_string(event).expect("Event should serialize");
+
+        // Verify it can be deserialized back
+        let _: AGUIEvent = serde_json::from_str(&json_str).expect("Event should deserialize");
+
+        // Verify no null/undefined sneaking in for required fields
+        let json_val: Value = serde_json::from_str(&json_str).unwrap();
+        assert!(
+            json_val.get("type").is_some(),
+            "Event should have 'type' field"
+        );
+    }
+
+    // Check ToolCallArgs specifically - the main payload
+    match &events[1] {
+        AGUIEvent::ToolCallArgs { delta, .. } => {
+            let args: Value = serde_json::from_str(delta).unwrap();
+
+            // Verify structure matches what client expects
+            assert!(args.get("id").is_some(), "Should have id");
+            assert!(args.get("parameters").is_some(), "Should have parameters");
+
+            // Verify nested data
+            assert_eq!(args["parameters"]["title"], "Success");
+            assert_eq!(args["parameters"]["duration"], 5000);
+        }
+        _ => panic!("Expected ToolCallArgs at index 1"),
+    }
+}
+
+/// Test scenario: Frontend tool to AgentEvent::Pending to AG-UI events
+#[tokio::test]
+async fn test_scenario_frontend_tool_full_event_pipeline() {
+    let plugin = FrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    let tool_call = ToolCall::new(
+        "modal_call_1",
+        "showModal",
+        json!({
+            "content": "Are you sure?",
+            "buttons": ["Yes", "No"]
+        }),
+    );
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    // 1. Plugin creates pending state with interaction
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    // 2. Agent loop would create AgentEvent::Pending
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+    let agent_event = AgentEvent::Pending { interaction };
+
+    // 3. Convert to AG-UI events with context
+    let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
+    let ag_ui_events = agent_event.to_ag_ui_events(&mut ctx);
+
+    // 4. Verify complete event sequence
+    assert_eq!(ag_ui_events.len(), 3);
+
+    // ToolCallStart
+    assert!(matches!(ag_ui_events[0], AGUIEvent::ToolCallStart { .. }));
+    if let AGUIEvent::ToolCallStart {
+        tool_call_id,
+        tool_call_name,
+        ..
+    } = &ag_ui_events[0]
+    {
+        assert_eq!(tool_call_id, "modal_call_1");
+        assert_eq!(tool_call_name, "tool:showModal");
+    }
+
+    // ToolCallArgs
+    assert!(matches!(ag_ui_events[1], AGUIEvent::ToolCallArgs { .. }));
+    if let AGUIEvent::ToolCallArgs { delta, .. } = &ag_ui_events[1] {
+        let args: Value = serde_json::from_str(delta).unwrap();
+        assert_eq!(args["parameters"]["content"], "Are you sure?");
+        assert_eq!(args["parameters"]["buttons"][0], "Yes");
+    }
+
+    // ToolCallEnd
+    assert!(matches!(ag_ui_events[2], AGUIEvent::ToolCallEnd { .. }));
+}
+
+/// Test scenario: Backend tool should not be affected by FrontendToolPlugin
+#[tokio::test]
+async fn test_scenario_backend_tool_passthrough() {
+    let plugin = FrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    // Backend tool call
+    let tool_call = ToolCall::new(
+        "call_backend",
+        "search",
+        json!({
+            "query": "rust async",
+            "limit": 10
+        }),
+    );
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    // Plugin should not interfere
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(!turn.tool_pending(), "Backend tool should not be pending");
+    assert!(!turn.tool_blocked(), "Backend tool should not be blocked");
+    assert!(
+        turn.tool.as_ref().unwrap().pending_interaction.is_none(),
+        "No interaction should be created"
+    );
+}
+
+/// Test scenario: Request with no frontend tools creates empty plugin
+#[test]
+fn test_scenario_no_frontend_tools_in_request() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search"))
+        .with_tool(AGUIToolDef::backend("read", "Read file"))
+        .with_tool(AGUIToolDef::backend("write", "Write file"));
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+
+    // All tools are backend, none should be frontend
+    assert!(!plugin.is_frontend_tool("search"));
+    assert!(!plugin.is_frontend_tool("read"));
+    assert!(!plugin.is_frontend_tool("write"));
+    assert!(!plugin.is_frontend_tool("nonexistent"));
+}
+
+/// Test scenario: Empty request creates empty plugin
+#[test]
+fn test_scenario_empty_request() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+
+    // No tools in request, none should be frontend
+    assert!(!plugin.is_frontend_tool("any_tool"));
+    assert!(!plugin.is_frontend_tool(""));
+}
