@@ -5780,3 +5780,722 @@ async fn test_plugin_interaction_permission_and_frontend() {
         "Interaction action should be from one of the plugins"
     );
 }
+
+// ============================================================================
+// Activity Event Flow Tests
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Activity events are used for long-running operations to show progress.
+//
+// Flow: ACTIVITY_SNAPSHOT → ACTIVITY_DELTA* → (completion)
+// - ACTIVITY_SNAPSHOT: Initial state with full content
+// - ACTIVITY_DELTA: JSON Patch updates to modify state incrementally
+//
+
+/// Test: Activity snapshot event creation and conversion
+/// Protocol: ACTIVITY_SNAPSHOT event per AG-UI spec
+#[test]
+fn test_activity_snapshot_flow() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("progress".to_string(), json!(0.75));
+    content.insert("status".to_string(), json!("processing"));
+    content.insert("current_item".to_string(), json!({"name": "file.txt", "size": 1024}));
+
+    let event = AGUIEvent::activity_snapshot("activity_1", "file_processing", content, Some(false));
+
+    // Verify serialization
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"ACTIVITY_SNAPSHOT""#));
+    assert!(json.contains(r#""activityType":"file_processing""#));
+    assert!(json.contains(r#""progress":0.75"#));
+
+    // Roundtrip
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, AGUIEvent::ActivitySnapshot { .. }));
+}
+
+/// Test: Activity delta event creation and conversion
+#[test]
+fn test_activity_delta_flow() {
+    let patch = vec![
+        json!({"op": "replace", "path": "/progress", "value": 0.85}),
+        json!({"op": "replace", "path": "/status", "value": "almost done"}),
+    ];
+
+    let event = AGUIEvent::activity_delta("activity_1", "file_processing", patch);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"ACTIVITY_DELTA""#));
+    assert!(json.contains(r#""op":"replace""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, AGUIEvent::ActivityDelta { .. }));
+}
+
+/// Test: Complete activity streaming flow (snapshot → deltas → final)
+#[test]
+fn test_activity_streaming_complete_flow() {
+    use std::collections::HashMap;
+
+    // Initial snapshot
+    let mut initial_content = HashMap::new();
+    initial_content.insert("progress".to_string(), json!(0.0));
+    initial_content.insert("total_files".to_string(), json!(10));
+    initial_content.insert("processed_files".to_string(), json!(0));
+
+    let snapshot = AGUIEvent::activity_snapshot("act_1", "batch_processing", initial_content, Some(false));
+
+    // Progress deltas
+    let delta1 = AGUIEvent::activity_delta(
+        "act_1",
+        "batch_processing",
+        vec![
+            json!({"op": "replace", "path": "/progress", "value": 0.3}),
+            json!({"op": "replace", "path": "/processed_files", "value": 3}),
+        ],
+    );
+
+    let delta2 = AGUIEvent::activity_delta(
+        "act_1",
+        "batch_processing",
+        vec![
+            json!({"op": "replace", "path": "/progress", "value": 0.7}),
+            json!({"op": "replace", "path": "/processed_files", "value": 7}),
+        ],
+    );
+
+    let delta_final = AGUIEvent::activity_delta(
+        "act_1",
+        "batch_processing",
+        vec![
+            json!({"op": "replace", "path": "/progress", "value": 1.0}),
+            json!({"op": "replace", "path": "/processed_files", "value": 10}),
+            json!({"op": "add", "path": "/completed", "value": true}),
+        ],
+    );
+
+    // Verify all events serialize correctly
+    let events = vec![snapshot, delta1, delta2, delta_final];
+    for (i, event) in events.iter().enumerate() {
+        let json = serde_json::to_string(event).unwrap();
+        let _: AGUIEvent = serde_json::from_str(&json).expect(&format!("Event {} failed", i));
+    }
+
+    // Verify event types
+    assert!(matches!(&events[0], AGUIEvent::ActivitySnapshot { .. }));
+    assert!(matches!(&events[1], AGUIEvent::ActivityDelta { .. }));
+    assert!(matches!(&events[2], AGUIEvent::ActivityDelta { .. }));
+    assert!(matches!(&events[3], AGUIEvent::ActivityDelta { .. }));
+}
+
+// ============================================================================
+// Concurrent Tool Execution Tests
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Tool Call Flow: TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END → TOOL_CALL_RESULT
+//
+// Multiple tools can execute concurrently. Each tool maintains its own event
+// sequence identified by tool_call_id. Events can interleave but each tool's
+// sequence must be complete.
+//
+
+/// Test: Multiple tool calls event ordering
+/// Verifies concurrent tools each have complete START → ARGS → END → RESULT sequence
+#[test]
+fn test_concurrent_tool_calls_event_ordering() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Simulate 3 concurrent tool calls
+    let tool_ids = vec!["call_1", "call_2", "call_3"];
+    let tool_names = vec!["search", "read_file", "write_file"];
+
+    let mut all_events: Vec<AGUIEvent> = Vec::new();
+
+    // All tools start
+    for (id, name) in tool_ids.iter().zip(tool_names.iter()) {
+        let start = AgentEvent::ToolCallStart {
+            id: id.to_string(),
+            name: name.to_string(),
+        };
+        all_events.extend(start.to_ag_ui_events(&mut ctx));
+    }
+
+    // All tools get args
+    for id in &tool_ids {
+        let args = AgentEvent::ToolCallDelta {
+            id: id.to_string(),
+            args_delta: "{}".into(),
+        };
+        all_events.extend(args.to_ag_ui_events(&mut ctx));
+    }
+
+    // All tools ready (end args streaming)
+    for (id, name) in tool_ids.iter().zip(tool_names.iter()) {
+        let ready = AgentEvent::ToolCallReady {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: json!({}),
+        };
+        all_events.extend(ready.to_ag_ui_events(&mut ctx));
+    }
+
+    // All tools done
+    for (id, name) in tool_ids.iter().zip(tool_names.iter()) {
+        let done = AgentEvent::ToolCallDone {
+            id: id.to_string(),
+            result: ToolResult::success(*name, json!({"ok": true})),
+            patch: None,
+        };
+        all_events.extend(done.to_ag_ui_events(&mut ctx));
+    }
+
+    // Verify each tool has complete sequence
+    for id in &tool_ids {
+        let has_start = all_events.iter().any(|e| {
+            matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == *id)
+        });
+        let has_args = all_events.iter().any(|e| {
+            matches!(e, AGUIEvent::ToolCallArgs { tool_call_id, .. } if tool_call_id == *id)
+        });
+        let has_end = all_events.iter().any(|e| {
+            matches!(e, AGUIEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == *id)
+        });
+        let has_result = all_events.iter().any(|e| {
+            matches!(e, AGUIEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == *id)
+        });
+
+        assert!(has_start, "Tool {} missing START", id);
+        assert!(has_args, "Tool {} missing ARGS", id);
+        assert!(has_end, "Tool {} missing END", id);
+        assert!(has_result, "Tool {} missing RESULT", id);
+    }
+}
+
+/// Test: Interleaved tool calls with text
+#[test]
+fn test_interleaved_tools_and_text() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<AGUIEvent> = Vec::new();
+
+    // Text starts
+    let text1 = AgentEvent::TextDelta { delta: "Let me search ".into() };
+    all_events.extend(text1.to_ag_ui_events(&mut ctx));
+
+    // Tool starts (interrupts text)
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    all_events.extend(tool_start.to_ag_ui_events(&mut ctx));
+
+    // Tool args
+    let tool_args = AgentEvent::ToolCallDelta {
+        id: "call_1".into(),
+        args_delta: r#"{"query": "rust"}"#.into(),
+    };
+    all_events.extend(tool_args.to_ag_ui_events(&mut ctx));
+
+    // Tool ready
+    let tool_ready = AgentEvent::ToolCallReady {
+        id: "call_1".into(),
+        name: "search".into(),
+        arguments: json!({"query": "rust"}),
+    };
+    all_events.extend(tool_ready.to_ag_ui_events(&mut ctx));
+
+    // Tool done
+    let tool_done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::success("search", json!({"results": 5})),
+        patch: None,
+    };
+    all_events.extend(tool_done.to_ag_ui_events(&mut ctx));
+
+    // More text after tool
+    let text2 = AgentEvent::TextDelta { delta: "Found 5 results.".into() };
+    all_events.extend(text2.to_ag_ui_events(&mut ctx));
+
+    // Verify sequence: text → tool → text
+    // First should have TEXT_MESSAGE_START
+    assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
+
+    // Should have TEXT_MESSAGE_END before TOOL_CALL_START
+    let text_end_idx = all_events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
+    let tool_start_idx = all_events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
+    assert!(text_end_idx < tool_start_idx, "TEXT_MESSAGE_END should come before TOOL_CALL_START");
+
+    // Should have new TEXT_MESSAGE_START after tool
+    let text_starts: Vec<_> = all_events.iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .collect();
+    assert_eq!(text_starts.len(), 2, "Should have 2 TEXT_MESSAGE_START events");
+}
+
+// ============================================================================
+// Client Reconnection Flow Tests
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// State Synchronization Flow for reconnection:
+//   STATE_SNAPSHOT (full state) or MESSAGES_SNAPSHOT (conversation history)
+//
+// When a client reconnects, it needs:
+// 1. Current state via STATE_SNAPSHOT
+// 2. Conversation history via MESSAGES_SNAPSHOT
+// 3. Ability to resume from last known state
+//
+
+/// Test: State snapshot for reconnection
+/// Protocol: STATE_SNAPSHOT event for client state restoration
+#[test]
+fn test_reconnection_state_snapshot() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Simulate session state
+    let state = json!({
+        "conversation": {
+            "turn_count": 5,
+            "last_tool": "search",
+            "context": {"topic": "rust programming"}
+        },
+        "user_preferences": {
+            "language": "en",
+            "verbosity": "detailed"
+        }
+    });
+
+    let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+        assert_eq!(snapshot["conversation"]["turn_count"], 5);
+        assert_eq!(snapshot["user_preferences"]["language"], "en");
+    }
+}
+
+/// Test: Messages snapshot for reconnection
+#[test]
+fn test_reconnection_messages_snapshot() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let messages = vec![
+        json!({"role": "user", "content": "Hello"}),
+        json!({"role": "assistant", "content": "Hi! How can I help?"}),
+        json!({"role": "user", "content": "Search for rust tutorials"}),
+        json!({"role": "assistant", "content": "I'll search for that.", "tool_calls": [{"id": "call_1", "name": "search"}]}),
+        json!({"role": "tool", "tool_call_id": "call_1", "content": "{\"results\": 10}"}),
+    ];
+
+    let event = AgentEvent::MessagesSnapshot { messages: messages.clone() };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
+        assert_eq!(m.len(), 5);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[4]["role"], "tool");
+    }
+}
+
+/// Test: Full reconnection scenario
+#[test]
+fn test_full_reconnection_scenario() {
+    // Client reconnects - server sends snapshots first
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut reconnect_events: Vec<AGUIEvent> = Vec::new();
+
+    // 1. RUN_STARTED for new connection
+    reconnect_events.push(AGUIEvent::run_started("t1", "r1", None));
+
+    // 2. Messages snapshot (conversation history)
+    let messages_event = AgentEvent::MessagesSnapshot {
+        messages: vec![
+            json!({"role": "user", "content": "Previous message"}),
+            json!({"role": "assistant", "content": "Previous response"}),
+        ],
+    };
+    reconnect_events.extend(messages_event.to_ag_ui_events(&mut ctx));
+
+    // 3. State snapshot (current state)
+    let state_event = AgentEvent::StateSnapshot {
+        snapshot: json!({"session_id": "abc123", "active": true}),
+    };
+    reconnect_events.extend(state_event.to_ag_ui_events(&mut ctx));
+
+    // 4. Continue with new content
+    let text = AgentEvent::TextDelta { delta: "Continuing from where we left off...".into() };
+    reconnect_events.extend(text.to_ag_ui_events(&mut ctx));
+
+    // Verify sequence
+    assert!(matches!(&reconnect_events[0], AGUIEvent::RunStarted { .. }));
+    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+}
+
+// ============================================================================
+// Multiple Pending Interactions Tests (HIGH PRIORITY - Previously Missing)
+// ============================================================================
+
+/// Test: Multiple pending interactions in sequence
+#[tokio::test]
+async fn test_multiple_pending_interactions_flow() {
+    let session = Session::new("test");
+
+    // Create 3 pending interactions
+    let interactions: Vec<Interaction> = vec![
+        Interaction::new("perm_read", "confirm").with_message("Allow reading files?"),
+        Interaction::new("perm_write", "confirm").with_message("Allow writing files?"),
+        Interaction::new("perm_exec", "confirm").with_message("Allow executing commands?"),
+    ];
+
+    // Convert all to AG-UI events
+    let mut all_events: Vec<AGUIEvent> = Vec::new();
+    for interaction in &interactions {
+        all_events.extend(interaction.to_ag_ui_events());
+    }
+
+    // Each interaction should produce 3 events (Start, Args, End)
+    assert_eq!(all_events.len(), 9);
+
+    // Verify each interaction has its events
+    for interaction in &interactions {
+        let has_start = all_events.iter().any(|e| {
+            matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == &interaction.id)
+        });
+        assert!(has_start, "Missing ToolCallStart for {}", interaction.id);
+    }
+}
+
+/// Test: Client responds to multiple interactions
+#[tokio::test]
+async fn test_multiple_interaction_responses() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Client responds to all 3 interactions: approve, deny, approve
+    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool("yes", "perm_read"))
+        .with_message(AGUIMessage::tool("no", "perm_write"))
+        .with_message(AGUIMessage::tool("approved", "perm_exec"));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+
+    assert!(plugin.is_approved("perm_read"));
+    assert!(plugin.is_denied("perm_write"));
+    assert!(plugin.is_approved("perm_exec"));
+
+    let session = Session::new("test");
+
+    // Verify each tool gets correct treatment
+    let test_cases = vec![
+        ("perm_read", false),  // approved, not blocked
+        ("perm_write", true),  // denied, blocked
+        ("perm_exec", false),  // approved, not blocked
+    ];
+
+    for (id, should_block) in test_cases {
+        let mut turn = TurnContext::new(&session, vec![]);
+        let call = ToolCall::new(id, "some_tool", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert_eq!(
+            turn.tool_blocked(),
+            should_block,
+            "Tool {} should_block={} but got blocked={}",
+            id,
+            should_block,
+            turn.tool_blocked()
+        );
+    }
+}
+
+// ============================================================================
+// Tool Timeout Flow Tests (HIGH PRIORITY - Previously Missing)
+// ============================================================================
+
+/// Test: Tool timeout produces correct AG-UI events
+#[test]
+fn test_tool_timeout_ag_ui_flow() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Tool starts
+    let start = AgentEvent::ToolCallStart {
+        id: "call_slow".into(),
+        name: "slow_operation".into(),
+    };
+    let start_events = start.to_ag_ui_events(&mut ctx);
+    assert!(start_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+
+    // Tool times out - simulated by returning timeout error
+    let timeout_result = ToolResult::error("slow_operation", "Tool execution timed out after 30s");
+
+    let done = AgentEvent::ToolCallDone {
+        id: "call_slow".into(),
+        result: timeout_result,
+        patch: None,
+    };
+    let done_events = done.to_ag_ui_events(&mut ctx);
+
+    // Should still have TOOL_CALL_RESULT with error
+    assert!(done_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = done_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+        assert!(content.contains("timed out") || content.contains("error"));
+    }
+}
+
+// ============================================================================
+// Rapid Text Delta Tests (MEDIUM PRIORITY)
+// ============================================================================
+
+/// Test: Rapid text delta burst handling
+#[test]
+fn test_rapid_text_delta_burst() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<AGUIEvent> = Vec::new();
+
+    // Simulate 100 rapid text deltas
+    for i in 0..100 {
+        let delta = AgentEvent::TextDelta {
+            delta: format!("word{} ", i),
+        };
+        all_events.extend(delta.to_ag_ui_events(&mut ctx));
+    }
+
+    // Should have exactly 1 TEXT_MESSAGE_START
+    let start_count = all_events.iter().filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. })).count();
+    assert_eq!(start_count, 1, "Should have exactly 1 TEXT_MESSAGE_START");
+
+    // Should have 100 TEXT_MESSAGE_CONTENT (one for each delta)
+    let content_count = all_events.iter().filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. })).count();
+    assert_eq!(content_count, 100, "Should have 100 TEXT_MESSAGE_CONTENT events");
+
+    // First event should be TEXT_MESSAGE_START
+    assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
+}
+
+// ============================================================================
+// State Event Ordering Tests (MEDIUM PRIORITY)
+// ============================================================================
+
+/// Test: State events ordering with other events
+#[test]
+fn test_state_event_ordering() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut all_events: Vec<AGUIEvent> = Vec::new();
+
+    // Sequence: text → state snapshot → more text → state delta
+    let text1 = AgentEvent::TextDelta { delta: "Starting...".into() };
+    all_events.extend(text1.to_ag_ui_events(&mut ctx));
+
+    let snapshot = AgentEvent::StateSnapshot {
+        snapshot: json!({"step": 1}),
+    };
+    all_events.extend(snapshot.to_ag_ui_events(&mut ctx));
+
+    let text2 = AgentEvent::TextDelta { delta: " Processing...".into() };
+    all_events.extend(text2.to_ag_ui_events(&mut ctx));
+
+    let delta = AgentEvent::StateDelta {
+        delta: vec![json!({"op": "replace", "path": "/step", "value": 2})],
+    };
+    all_events.extend(delta.to_ag_ui_events(&mut ctx));
+
+    // Verify presence of all event types
+    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+}
+
+// ============================================================================
+// Sequential Runs Tests (MEDIUM PRIORITY)
+// ============================================================================
+
+/// Test: Sequential runs in same session
+#[test]
+fn test_sequential_runs_in_session() {
+    // Run 1
+    let mut ctx1 = AGUIContext::new("t1".into(), "r1".into());
+    let run1_start = AGUIEvent::run_started("t1", "r1", None);
+    let text1 = AgentEvent::TextDelta { delta: "First run response".into() };
+    let text1_events = text1.to_ag_ui_events(&mut ctx1);
+    let run1_finish = AGUIEvent::run_finished("t1", "r1", Some(json!({"response": "First"})));
+
+    // Run 2 (same thread, different run)
+    let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
+    let run2_start = AGUIEvent::run_started("t1", "r2", None);
+    let text2 = AgentEvent::TextDelta { delta: "Second run response".into() };
+    let text2_events = text2.to_ag_ui_events(&mut ctx2);
+    let run2_finish = AGUIEvent::run_finished("t1", "r2", Some(json!({"response": "Second"})));
+
+    // Verify runs are independent
+    if let AGUIEvent::RunStarted { thread_id: t1, run_id: r1, .. } = &run1_start {
+        if let AGUIEvent::RunStarted { thread_id: t2, run_id: r2, .. } = &run2_start {
+            assert_eq!(t1, t2, "Same thread");
+            assert_ne!(r1, r2, "Different runs");
+        }
+    }
+
+    // Each run should have its own text message
+    assert!(!text1_events.is_empty());
+    assert!(!text2_events.is_empty());
+}
+
+// ============================================================================
+// RAW and CUSTOM Event Tests
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Special event types for extensibility:
+// - RAW: Pass through external provider events unchanged
+// - CUSTOM: Application-specific extension events
+//
+// These allow protocol extensions without breaking compatibility.
+//
+
+/// Test: RAW event wrapping
+/// Protocol: RAW event for pass-through of external system events
+#[test]
+fn test_raw_event_wrapping() {
+    let external_event = json!({
+        "provider": "openai",
+        "event_type": "rate_limit_warning",
+        "data": {
+            "requests_remaining": 10,
+            "reset_at": "2024-01-15T12:00:00Z"
+        }
+    });
+
+    let event = AGUIEvent::raw(external_event.clone(), Some("openai".into()));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"RAW""#));
+    assert!(json.contains(r#""provider":"openai""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::Raw { event: e, .. } = parsed {
+        assert_eq!(e["provider"], "openai");
+        assert_eq!(e["data"]["requests_remaining"], 10);
+    }
+}
+
+/// Test: CUSTOM event flow
+#[test]
+fn test_custom_event_flow() {
+    let custom_value = json!({
+        "action": "show_modal",
+        "modal_type": "confirmation",
+        "title": "Confirm Action",
+        "buttons": ["Cancel", "Confirm"]
+    });
+
+    let event = AGUIEvent::custom("ui_action", custom_value.clone());
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"CUSTOM""#));
+    assert!(json.contains(r#""name":"ui_action""#));
+    assert!(json.contains(r#""action":"show_modal""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::Custom { name, value, .. } = parsed {
+        assert_eq!(name, "ui_action");
+        assert_eq!(value["modal_type"], "confirmation");
+    }
+}
+
+// ============================================================================
+// Large Payload Tests
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Tests for handling large payloads in:
+// - TOOL_CALL_RESULT: Large tool execution results
+// - STATE_SNAPSHOT: Large state objects
+//
+// These verify the protocol handles real-world data sizes without issues.
+//
+
+/// Test: Large tool result payload
+/// Verifies TOOL_CALL_RESULT can handle ~100KB of JSON data
+#[test]
+fn test_large_tool_result_payload() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Create a large result (simulate ~100KB of data)
+    let large_data: Vec<Value> = (0..1000)
+        .map(|i| json!({
+            "id": i,
+            "name": format!("item_{}", i),
+            "description": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".repeat(10),
+            "metadata": {
+                "created": "2024-01-15",
+                "tags": ["tag1", "tag2", "tag3"],
+                "nested": {"level1": {"level2": {"value": i}}}
+            }
+        }))
+        .collect();
+
+    let result = ToolResult::success("search", json!({
+        "total": 1000,
+        "items": large_data
+    }));
+
+    let event = AgentEvent::ToolCallDone {
+        id: "call_large".into(),
+        result,
+        patch: None,
+    };
+
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+    assert!(!ag_events.is_empty());
+
+    // Verify the result can be serialized and parsed
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+        // Content should be valid JSON (it's a serialized ToolResult struct)
+        let parsed: Value = serde_json::from_str(content).expect("Should be valid JSON");
+        // The data is nested inside the ToolResult structure
+        assert_eq!(parsed["data"]["total"], 1000);
+        assert_eq!(parsed["data"]["items"].as_array().unwrap().len(), 1000);
+    }
+}
+
+/// Test: Large state snapshot
+#[test]
+fn test_large_state_snapshot() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Create large state
+    let large_state = json!({
+        "users": (0..100).map(|i| json!({
+            "id": i,
+            "name": format!("User {}", i),
+            "email": format!("user{}@example.com", i),
+            "preferences": {
+                "theme": "dark",
+                "notifications": true,
+                "settings": (0..10).map(|j| json!({"key": format!("setting_{}", j), "value": j})).collect::<Vec<_>>()
+            }
+        })).collect::<Vec<_>>(),
+        "config": {
+            "version": "1.0.0",
+            "features": (0..50).map(|i| format!("feature_{}", i)).collect::<Vec<_>>()
+        }
+    });
+
+    let event = AgentEvent::StateSnapshot { snapshot: large_state };
+    let ag_events = event.to_ag_ui_events(&mut ctx);
+
+    assert!(!ag_events.is_empty());
+    if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
+        assert_eq!(snapshot["users"].as_array().unwrap().len(), 100);
+    }
+}

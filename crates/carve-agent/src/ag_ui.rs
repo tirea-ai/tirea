@@ -3,20 +3,54 @@
 //! This module provides types for the AG-UI (Agent-User Interaction) Protocol,
 //! enabling integration with CopilotKit and other AG-UI compatible frontends.
 //!
+//! # Protocol References
+//!
+//! - **AG-UI Protocol Spec**: <https://docs.ag-ui.com/concepts/events>
+//! - **CopilotKit Docs**: <https://docs.copilotkit.ai/>
+//! - **Event Types**: <https://docs.ag-ui.com/sdk/js/core/events>
+//!
 //! # Protocol Overview
 //!
 //! AG-UI is an open, lightweight, event-based protocol that standardizes how
 //! AI agents connect to user-facing applications. Events are streamed as JSON
 //! over SSE, WebSocket, or other transports.
 //!
-//! # Event Categories
+//! # Event Categories (per AG-UI spec)
 //!
-//! - **Lifecycle**: RunStarted, RunFinished, RunError, StepStarted, StepFinished
-//! - **Text Message**: TextMessageStart, TextMessageContent, TextMessageEnd, TextMessageChunk
-//! - **Tool Call**: ToolCallStart, ToolCallArgs, ToolCallEnd, ToolCallResult, ToolCallChunk
-//! - **State**: StateSnapshot, StateDelta, MessagesSnapshot
-//! - **Activity**: ActivitySnapshot, ActivityDelta
-//! - **Special**: Raw, Custom
+//! - **Lifecycle**: RUN_STARTED, RUN_FINISHED, RUN_ERROR, STEP_STARTED, STEP_FINISHED
+//! - **Text Message**: TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END
+//! - **Tool Call**: TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END, TOOL_CALL_RESULT
+//! - **State**: STATE_SNAPSHOT, STATE_DELTA, MESSAGES_SNAPSHOT
+//! - **Activity**: ACTIVITY_SNAPSHOT, ACTIVITY_DELTA (for progress indicators)
+//! - **Special**: RAW (passthrough), CUSTOM (extension point)
+//!
+//! # Standard Event Flows (per AG-UI spec)
+//!
+//! ## 1. Basic Text Streaming Flow
+//! ```text
+//! RUN_STARTED → TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END → RUN_FINISHED
+//! ```
+//!
+//! ## 2. Tool Call Flow
+//! ```text
+//! RUN_STARTED → TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END → TOOL_CALL_RESULT → RUN_FINISHED
+//! ```
+//!
+//! ## 3. State Synchronization Flow
+//! ```text
+//! RUN_STARTED → STATE_SNAPSHOT → STATE_DELTA* → RUN_FINISHED
+//! ```
+//!
+//! ## 4. Interaction (Permission/Frontend Tool) Flow
+//! ```text
+//! RUN_STARTED → ... → TOOL_CALL_START(frontend) → TOOL_CALL_ARGS → TOOL_CALL_END
+//!   → [Client executes/approves] → New run with tool result → RUN_FINISHED
+//! ```
+//!
+//! ## 5. Activity Progress Flow
+//! ```text
+//! RUN_STARTED → ACTIVITY_SNAPSHOT → ACTIVITY_DELTA* → RUN_FINISHED
+//! ```
 //!
 //! # Example
 //!
