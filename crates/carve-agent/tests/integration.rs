@@ -3842,3 +3842,197 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
         assert!(matches!(output, Some(StreamOutput::ToolCallDelta { .. })));
     }
 }
+
+// ============================================================================
+// Interaction to AG-UI Conversion Scenario Tests
+// ============================================================================
+
+use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+use carve_agent::stream::AgentEvent;
+use carve_agent::Interaction;
+
+/// Test complete scenario: Permission confirmation via Interaction → AG-UI
+#[test]
+fn test_scenario_permission_confirmation_to_ag_ui() {
+    // 1. Plugin creates an Interaction for permission confirmation
+    let interaction = Interaction::new("perm_write_file_123", "confirm")
+        .with_message("Allow tool 'write_file' to write to /etc/config?")
+        .with_parameters(json!({
+            "tool_id": "write_file",
+            "tool_args": {
+                "path": "/etc/config",
+                "content": "new config"
+            }
+        }));
+
+    // 2. Create AgentEvent::Pending (what the agent loop would emit)
+    let event = AgentEvent::Pending {
+        interaction: interaction.clone(),
+    };
+
+    // 3. Convert to AG-UI events
+    let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
+    let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+
+    // 4. Verify AG-UI event sequence
+    assert_eq!(ag_ui_events.len(), 3, "Should produce 3 AG-UI events");
+
+    // Event 1: ToolCallStart
+    match &ag_ui_events[0] {
+        AGUIEvent::ToolCallStart {
+            tool_call_id,
+            tool_call_name,
+            ..
+        } => {
+            assert_eq!(tool_call_id, "perm_write_file_123");
+            assert_eq!(tool_call_name, "confirm"); // action becomes tool name
+        }
+        _ => panic!("Expected ToolCallStart, got {:?}", ag_ui_events[0]),
+    }
+
+    // Event 2: ToolCallArgs
+    match &ag_ui_events[1] {
+        AGUIEvent::ToolCallArgs {
+            tool_call_id,
+            delta,
+            ..
+        } => {
+            assert_eq!(tool_call_id, "perm_write_file_123");
+            let args: Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(args["id"], "perm_write_file_123");
+            assert_eq!(
+                args["message"],
+                "Allow tool 'write_file' to write to /etc/config?"
+            );
+            assert_eq!(args["parameters"]["tool_id"], "write_file");
+        }
+        _ => panic!("Expected ToolCallArgs, got {:?}", ag_ui_events[1]),
+    }
+
+    // Event 3: ToolCallEnd
+    match &ag_ui_events[2] {
+        AGUIEvent::ToolCallEnd { tool_call_id, .. } => {
+            assert_eq!(tool_call_id, "perm_write_file_123");
+        }
+        _ => panic!("Expected ToolCallEnd, got {:?}", ag_ui_events[2]),
+    }
+}
+
+/// Test scenario: Custom frontend action (file picker)
+#[test]
+fn test_scenario_custom_frontend_action_to_ag_ui() {
+    // 1. Create a custom frontend action interaction
+    let interaction = Interaction::new("picker_001", "file_picker")
+        .with_message("Select a configuration file")
+        .with_parameters(json!({
+            "accept": [".json", ".yaml", ".toml"],
+            "multiple": false,
+            "directory": "/home/user/configs"
+        }))
+        .with_response_schema(json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "name": { "type": "string" }
+            },
+            "required": ["path"]
+        }));
+
+    // 2. Convert directly to AG-UI events
+    let ag_ui_events = interaction.to_ag_ui_events();
+
+    // 3. Verify the tool call represents our custom action
+    assert_eq!(ag_ui_events.len(), 3);
+
+    match &ag_ui_events[0] {
+        AGUIEvent::ToolCallStart {
+            tool_call_name, ..
+        } => {
+            assert_eq!(tool_call_name, "file_picker"); // Custom action name
+        }
+        _ => panic!("Expected ToolCallStart"),
+    }
+
+    match &ag_ui_events[1] {
+        AGUIEvent::ToolCallArgs { delta, .. } => {
+            let args: Value = serde_json::from_str(delta).unwrap();
+            // Verify response_schema is included for client validation
+            assert!(args["response_schema"].is_object());
+            assert_eq!(args["response_schema"]["type"], "object");
+            // Verify parameters
+            assert_eq!(args["parameters"]["multiple"], false);
+        }
+        _ => panic!("Expected ToolCallArgs"),
+    }
+}
+
+/// Test scenario: Text streaming interrupted by pending interaction
+#[test]
+fn test_scenario_text_interrupted_by_interaction() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // 1. Start text streaming
+    let text_event = AgentEvent::TextDelta {
+        delta: "I'll help you ".into(),
+    };
+    let events1 = text_event.to_ag_ui_events(&mut ctx);
+    assert!(events1.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+
+    // 2. More text
+    let text_event2 = AgentEvent::TextDelta {
+        delta: "with that file.".into(),
+    };
+    let events2 = text_event2.to_ag_ui_events(&mut ctx);
+    assert!(events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+
+    // 3. Interaction interrupts (e.g., permission needed)
+    let interaction = Interaction::new("int_1", "confirm")
+        .with_message("Proceed with file operation?");
+    let pending_event = AgentEvent::Pending { interaction };
+    let events3 = pending_event.to_ag_ui_events(&mut ctx);
+
+    // Should end text stream before tool call
+    assert!(events3.len() >= 4, "Should have TextMessageEnd + 3 tool call events");
+    assert!(
+        matches!(events3[0], AGUIEvent::TextMessageEnd { .. }),
+        "First event should be TextMessageEnd"
+    );
+    assert!(
+        matches!(events3[1], AGUIEvent::ToolCallStart { .. }),
+        "Second event should be ToolCallStart"
+    );
+}
+
+/// Test scenario: Multiple interaction types
+#[test]
+fn test_scenario_various_interaction_types() {
+    // Different action types all use the same mechanism
+    let interactions = vec![
+        ("confirm", "confirm", "Allow this action?"),
+        ("input", "input", "Enter your name:"),
+        ("select", "select", "Choose an option:"),
+        ("oauth", "oauth", "Authenticate with GitHub"),
+        ("custom_widget", "custom_widget", "Configure settings"),
+    ];
+
+    for (id, action, message) in interactions {
+        let interaction = Interaction::new(id, action).with_message(message);
+
+        let events = interaction.to_ag_ui_events();
+
+        // All produce the same event structure
+        assert_eq!(events.len(), 3);
+
+        match &events[0] {
+            AGUIEvent::ToolCallStart {
+                tool_call_id,
+                tool_call_name,
+                ..
+            } => {
+                assert_eq!(tool_call_id, id);
+                assert_eq!(tool_call_name, action); // action → tool name
+            }
+            _ => panic!("Expected ToolCallStart for action: {}", action),
+        }
+    }
+}
