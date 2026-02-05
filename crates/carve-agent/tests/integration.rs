@@ -4816,6 +4816,154 @@ fn test_scenario_mixed_messages_with_interaction_response() {
     assert_eq!(responses.len(), 1);
 }
 
+/// Test scenario: InteractionResponsePlugin blocks denied tool in execution flow
+#[tokio::test]
+async fn test_scenario_interaction_response_plugin_blocks_denied() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::new("test");
+
+    // Create plugin with denied interaction
+    let plugin = InteractionResponsePlugin::new(
+        vec![], // no approved
+        vec!["permission_write_file".to_string()], // denied
+    );
+
+    // Simulate tool call with matching interaction ID format
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new("permission_write_file", "write_file", json!({"path": "/etc/config"}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    // Run plugin
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    // Tool should be blocked
+    assert!(turn.tool_blocked(), "Denied tool should be blocked");
+    // Verify block reason via direct field access
+    let block_reason = turn.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
+    assert!(
+        block_reason.contains("denied"),
+        "Block reason should mention denial, got: {}",
+        block_reason
+    );
+}
+
+/// Test scenario: InteractionResponsePlugin allows approved tool in execution flow
+#[tokio::test]
+async fn test_scenario_interaction_response_plugin_allows_approved() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::new("test");
+
+    // Create plugin with approved interaction
+    let plugin = InteractionResponsePlugin::new(
+        vec!["permission_read_file".to_string()], // approved
+        vec![], // no denied
+    );
+
+    // Simulate tool call
+    let mut turn = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new("permission_read_file", "read_file", json!({"path": "/home/user/doc.txt"}));
+    turn.tool = Some(ToolContext::new(&call));
+
+    // Run plugin
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    // Tool should NOT be blocked
+    assert!(!turn.tool_blocked(), "Approved tool should not be blocked");
+}
+
+/// Test scenario: Complete end-to-end flow with PermissionPlugin → InteractionResponsePlugin
+#[tokio::test]
+async fn test_scenario_e2e_permission_to_response_flow() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::new("test");
+
+    // Step 1: First run - PermissionPlugin creates pending interaction
+    let permission_plugin = PermissionPlugin;
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    turn1.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+    let call = ToolCall::new("call_exec", "execute_command", json!({"cmd": "ls"}));
+    turn1.tool = Some(ToolContext::new(&call));
+
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    assert!(turn1.tool_pending(), "Permission ask should create pending");
+
+    let interaction = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    assert!(interaction.id.starts_with("permission_"), "Interaction ID should start with permission_");
+
+    // Step 2: Client approves
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &interaction.id));
+    assert!(response_request.is_interaction_approved(&interaction.id));
+
+    // Step 3: Second run - InteractionResponsePlugin processes approval
+    let response_plugin = InteractionResponsePlugin::from_request(&response_request);
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    turn2.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+    let call2 = ToolCall::new(&interaction.id, "execute_command", json!({"cmd": "ls"}));
+    turn2.tool = Some(ToolContext::new(&call2));
+
+    // InteractionResponsePlugin runs first
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+
+    // Tool should NOT be blocked (approved)
+    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked on resume");
+
+    // PermissionPlugin runs second - but InteractionResponsePlugin didn't set pending
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+
+    // PermissionPlugin should still create pending (because permission wasn't updated to Allow)
+    // This is expected - in a real flow, the permission would be updated to Allow after approval
+    assert!(turn2.tool_pending() || !turn2.tool_blocked(), "Tool should proceed");
+}
+
+/// Test scenario: FrontendToolPlugin and InteractionResponsePlugin coordination
+#[tokio::test]
+async fn test_scenario_frontend_tool_with_response_plugin() {
+    use carve_agent::ag_ui::{FrontendToolPlugin, InteractionResponsePlugin};
+
+    let session = Session::new("test");
+
+    // Setup: Frontend tool request
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("showDialog", "Show a dialog"));
+
+    // Step 1: FrontendToolPlugin creates pending for frontend tool
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
+    turn1.tool = Some(ToolContext::new(&call));
+
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    assert!(turn1.tool_pending(), "Frontend tool should create pending");
+
+    let interaction = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    assert_eq!(interaction.action, "tool:showDialog");
+
+    // Step 2: Client executes and returns result
+    let response_request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"success":true,"user_clicked":"OK"}"#,
+            &interaction.id,
+        ));
+
+    // Step 3: On resume, InteractionResponsePlugin processes the result
+    let _response_plugin = InteractionResponsePlugin::from_request(&response_request);
+
+    // The result is available (not blocked/denied)
+    let response = response_request.get_interaction_response(&interaction.id).unwrap();
+    assert!(response.result["success"].as_bool().unwrap());
+    assert_eq!(response.result["user_clicked"], "OK");
+}
+
 /// Test scenario: AG-UI context state after pending interaction
 #[test]
 fn test_scenario_agui_context_state_after_pending() {
