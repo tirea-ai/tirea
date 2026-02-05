@@ -4501,3 +4501,365 @@ fn test_scenario_empty_request() {
     assert!(!plugin.is_frontend_tool("any_tool"));
     assert!(!plugin.is_frontend_tool(""));
 }
+
+// ============================================================================
+// Permission Resume Flow Scenario Tests
+// ============================================================================
+
+use carve_agent::ag_ui::AGUIMessage;
+use carve_agent::plugins::PermissionPlugin;
+
+/// Test scenario: Complete permission approval flow
+/// Agent → Pending → AG-UI Events → Client Approves → Resume
+#[tokio::test]
+async fn test_scenario_permission_approved_complete_flow() {
+
+    // Phase 1: Agent requests permission
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    // Set up ask permission
+    turn.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+
+    // Simulate tool call
+    let tool_call = ToolCall::new("call_write_file", "write_file", json!({"path": "/etc/config"}));
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    // PermissionPlugin creates pending interaction
+    let plugin = PermissionPlugin;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(turn.tool_pending());
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Phase 2: Convert to AG-UI events
+    let ag_ui_events = interaction.to_ag_ui_events();
+    assert_eq!(ag_ui_events.len(), 3);
+
+    // Phase 3: Client receives events and approves
+    // (Simulated by creating a new request with tool response)
+    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &interaction.id));
+
+    // Phase 4: Check approval
+    assert!(client_response_request.is_interaction_approved(&interaction.id));
+    assert!(!client_response_request.is_interaction_denied(&interaction.id));
+
+    // Phase 5: Get response and verify
+    let response = client_response_request
+        .get_interaction_response(&interaction.id)
+        .unwrap();
+    assert!(response.approved());
+}
+
+/// Test scenario: Complete permission denial flow
+#[tokio::test]
+async fn test_scenario_permission_denied_complete_flow() {
+
+    // Phase 1: Agent requests permission
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    turn.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+
+    let tool_call = ToolCall::new("call_delete", "delete_file", json!({"path": "/important.txt"}));
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    let plugin = PermissionPlugin;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(turn.tool_pending());
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Phase 2-3: Client denies
+    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("false", &interaction.id));
+
+    // Phase 4: Check denial
+    assert!(client_response_request.is_interaction_denied(&interaction.id));
+    assert!(!client_response_request.is_interaction_approved(&interaction.id));
+
+    let response = client_response_request
+        .get_interaction_response(&interaction.id)
+        .unwrap();
+    assert!(response.denied());
+}
+
+/// Test scenario: Frontend tool execution complete flow
+#[tokio::test]
+async fn test_scenario_frontend_tool_execution_complete_flow() {
+    // Phase 1: Agent calls frontend tool
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+
+    let plugin = FrontendToolPlugin::from_request(&request);
+
+    let session = Session::new("test");
+    let mut turn = TurnContext::new(&session, vec![]);
+
+    let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
+    turn.tool = Some(ToolContext::new(&tool_call));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+    assert!(turn.tool_pending());
+    let interaction = turn
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Verify action format
+    assert_eq!(interaction.action, "tool:copyToClipboard");
+
+    // Phase 2: Convert to AG-UI
+    let ag_ui_events = interaction.to_ag_ui_events();
+    assert_eq!(ag_ui_events.len(), 3);
+
+    // Phase 3: Client executes and returns result
+    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"success":true,"bytes_copied":6}"#,
+            &interaction.id,
+        ));
+
+    // Phase 4: Agent receives result
+    let response = client_response_request
+        .get_interaction_response(&interaction.id)
+        .unwrap();
+
+    assert!(response.result["success"].as_bool().unwrap());
+    assert_eq!(response.result["bytes_copied"], 6);
+}
+
+/// Test scenario: Multiple interactions in sequence
+#[tokio::test]
+async fn test_scenario_multiple_interactions_sequence() {
+
+    let session = Session::new("test");
+    let plugin = PermissionPlugin;
+
+    // First tool: write_file
+    let mut turn1 = TurnContext::new(&session, vec![]);
+    turn1.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+    let call1 = ToolCall::new("call_1", "write_file", json!({}));
+    turn1.tool = Some(ToolContext::new(&call1));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    let interaction1 = turn1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Second tool: read_file
+    let mut turn2 = TurnContext::new(&session, vec![]);
+    turn2.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+    let call2 = ToolCall::new("call_2", "read_file", json!({}));
+    turn2.tool = Some(ToolContext::new(&call2));
+
+    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    let interaction2 = turn2
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Client responds to both
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &interaction1.id))
+        .with_message(AGUIMessage::tool("false", &interaction2.id));
+
+    // Verify responses
+    assert!(response_request.is_interaction_approved(&interaction1.id));
+    assert!(response_request.is_interaction_denied(&interaction2.id));
+
+    let responses = response_request.interaction_responses();
+    assert_eq!(responses.len(), 2);
+}
+
+/// Test scenario: Frontend tool with complex result
+#[test]
+fn test_scenario_frontend_tool_complex_result() {
+    let client_response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{
+                "success": true,
+                "selected_files": [
+                    {"path": "/home/user/doc1.txt", "size": 1024},
+                    {"path": "/home/user/doc2.txt", "size": 2048}
+                ],
+                "metadata": {
+                    "dialog_duration_ms": 1500,
+                    "user_action": "confirm"
+                }
+            }"#,
+            "file_picker_call_1",
+        ));
+
+    let response = client_response_request
+        .get_interaction_response("file_picker_call_1")
+        .unwrap();
+
+    assert!(response.result["success"].as_bool().unwrap());
+    assert_eq!(response.result["selected_files"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        response.result["selected_files"][0]["path"],
+        "/home/user/doc1.txt"
+    );
+    assert_eq!(response.result["metadata"]["user_action"], "confirm");
+}
+
+/// Test scenario: Permission with custom response format
+#[test]
+fn test_scenario_permission_custom_response_format() {
+    // Using object format with reason
+    let request1 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"approved":true,"reason":"User trusts this operation"}"#,
+            "perm_1",
+        ));
+
+    assert!(request1.is_interaction_approved("perm_1"));
+
+    // Using object format with denied flag
+    let request2 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"denied":true,"reason":"User is cautious"}"#,
+            "perm_2",
+        ));
+
+    assert!(request2.is_interaction_denied("perm_2"));
+
+    // Using allowed flag
+    let request3 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(r#"{"allowed":true}"#, "perm_3"));
+
+    assert!(request3.is_interaction_approved("perm_3"));
+}
+
+/// Test scenario: Interaction response with input value
+#[test]
+fn test_scenario_input_interaction_response() {
+    // User provides text input
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("John Doe", "input_name_1"));
+
+    let response = request.get_interaction_response("input_name_1").unwrap();
+    assert_eq!(response.result, Value::String("John Doe".into()));
+
+    // Not approved or denied - it's just input
+    assert!(!response.approved());
+    assert!(!response.denied());
+}
+
+/// Test scenario: Selection interaction response
+#[test]
+fn test_scenario_select_interaction_response() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool(
+            r#"{"selected_index":2,"selected_value":"Option C"}"#,
+            "select_option_1",
+        ));
+
+    let response = request.get_interaction_response("select_option_1").unwrap();
+    assert_eq!(response.result["selected_index"], 2);
+    assert_eq!(response.result["selected_value"], "Option C");
+}
+
+/// Test scenario: Mixed message types in request
+#[test]
+fn test_scenario_mixed_messages_with_interaction_response() {
+    // Real-world scenario: conversation + tool responses
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Please write to the file"))
+        .with_message(AGUIMessage::assistant("I'll write to the file, but need permission"))
+        .with_message(AGUIMessage::tool("true", "perm_write_1"))
+        .with_message(AGUIMessage::assistant("Done!"));
+
+    // Should find the tool response
+    assert!(request.has_interaction_response("perm_write_1"));
+    assert!(request.is_interaction_approved("perm_write_1"));
+
+    // Should have exactly one interaction response
+    let responses = request.interaction_responses();
+    assert_eq!(responses.len(), 1);
+}
+
+/// Test scenario: AG-UI context state after pending interaction
+#[test]
+fn test_scenario_agui_context_state_after_pending() {
+    let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
+
+    // Start text streaming
+    let text_event = AgentEvent::TextDelta {
+        delta: "Let me help you ".into(),
+    };
+    let events1 = text_event.to_ag_ui_events(&mut ctx);
+    // First text delta should produce TextMessageStart
+    assert!(events1.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+
+    // More text
+    let text_event2 = AgentEvent::TextDelta {
+        delta: "with that.".into(),
+    };
+    let events2 = text_event2.to_ag_ui_events(&mut ctx);
+    // Second text delta should produce only TextMessageContent (not Start)
+    assert!(events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(!events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+
+    // Pending interaction arrives
+    let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
+    let pending_event = AgentEvent::Pending { interaction };
+    let pending_events = pending_event.to_ag_ui_events(&mut ctx);
+
+    // Should have: TextMessageEnd + 3 tool call events
+    assert!(pending_events.len() >= 4);
+    assert!(
+        matches!(pending_events[0], AGUIEvent::TextMessageEnd { .. }),
+        "First event should be TextMessageEnd to close the text stream"
+    );
+    assert!(
+        matches!(pending_events[1], AGUIEvent::ToolCallStart { .. }),
+        "Second event should be ToolCallStart for the interaction"
+    );
+
+    // After pending, text stream should be ended - verify by checking that
+    // another text event would start a new stream
+    let text_event3 = AgentEvent::TextDelta {
+        delta: "New text".into(),
+    };
+    let events3 = text_event3.to_ag_ui_events(&mut ctx);
+    // Should produce TextMessageStart again since previous stream was ended
+    assert!(events3.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+}

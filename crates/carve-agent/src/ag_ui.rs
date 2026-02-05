@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::state_types::Interaction;
+use crate::state_types::{Interaction, InteractionResponse};
 
 // ============================================================================
 // Base Event Fields
@@ -1110,6 +1110,124 @@ impl RunAgentRequest {
     pub fn with_tool(mut self, tool: AGUIToolDef) -> Self {
         self.tools.push(tool);
         self
+    }
+
+    // ========================================================================
+    // Interaction Response Methods
+    // ========================================================================
+
+    /// Extract all interaction responses from tool messages.
+    ///
+    /// Returns a list of interaction responses parsed from tool role messages.
+    /// Each tool message with a `tool_call_id` is treated as a response to
+    /// a pending interaction with that ID.
+    pub fn interaction_responses(&self) -> Vec<InteractionResponse> {
+        self.messages
+            .iter()
+            .filter(|m| m.role == MessageRole::Tool)
+            .filter_map(|m| {
+                m.tool_call_id.as_ref().map(|id| {
+                    // Try to parse content as JSON, fallback to string value
+                    let result = serde_json::from_str(&m.content)
+                        .unwrap_or_else(|_| Value::String(m.content.clone()));
+                    InteractionResponse::new(id.clone(), result)
+                })
+            })
+            .collect()
+    }
+
+    /// Get the response for a specific interaction ID.
+    pub fn get_interaction_response(&self, interaction_id: &str) -> Option<InteractionResponse> {
+        self.interaction_responses()
+            .into_iter()
+            .find(|r| r.interaction_id == interaction_id)
+    }
+
+    /// Check if a specific interaction was approved.
+    ///
+    /// An interaction is considered approved if:
+    /// - The result is boolean `true`
+    /// - The result is string "true", "yes", "approved", "allow", "confirm" (case-insensitive)
+    /// - The result is an object with `approved: true` or `allowed: true`
+    pub fn is_interaction_approved(&self, interaction_id: &str) -> bool {
+        self.get_interaction_response(interaction_id)
+            .map(|r| InteractionResponse::is_approved(&r.result))
+            .unwrap_or(false)
+    }
+
+    /// Check if a specific interaction was denied.
+    ///
+    /// An interaction is considered denied if:
+    /// - The result is boolean `false`
+    /// - The result is string "false", "no", "denied", "deny", "reject", "cancel" (case-insensitive)
+    /// - The result is an object with `approved: false` or `denied: true`
+    pub fn is_interaction_denied(&self, interaction_id: &str) -> bool {
+        self.get_interaction_response(interaction_id)
+            .map(|r| InteractionResponse::is_denied(&r.result))
+            .unwrap_or(false)
+    }
+
+    /// Check if the request contains a response for a pending interaction.
+    pub fn has_interaction_response(&self, interaction_id: &str) -> bool {
+        self.get_interaction_response(interaction_id).is_some()
+    }
+}
+
+impl InteractionResponse {
+    /// Check if a result value indicates approval.
+    pub fn is_approved(result: &Value) -> bool {
+        match result {
+            Value::Bool(b) => *b,
+            Value::String(s) => {
+                let lower = s.to_lowercase();
+                matches!(
+                    lower.as_str(),
+                    "true" | "yes" | "approved" | "allow" | "confirm" | "ok" | "accept"
+                )
+            }
+            Value::Object(obj) => {
+                obj.get("approved")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                    || obj
+                        .get("allowed")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if a result value indicates denial.
+    pub fn is_denied(result: &Value) -> bool {
+        match result {
+            Value::Bool(b) => !*b,
+            Value::String(s) => {
+                let lower = s.to_lowercase();
+                matches!(
+                    lower.as_str(),
+                    "false" | "no" | "denied" | "deny" | "reject" | "cancel" | "abort"
+                )
+            }
+            Value::Object(obj) => {
+                obj.get("approved")
+                    .and_then(|v| v.as_bool())
+                    .map(|v| !v)
+                    .unwrap_or(false)
+                    || obj.get("denied").and_then(|v| v.as_bool()).unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if this response indicates approval.
+    pub fn approved(&self) -> bool {
+        Self::is_approved(&self.result)
+    }
+
+    /// Check if this response indicates denial.
+    pub fn denied(&self) -> bool {
+        Self::is_denied(&self.result)
     }
 }
 
@@ -3215,6 +3333,215 @@ mod tests {
 
         assert!(request.frontend_tools().is_empty());
         assert_eq!(request.backend_tools().len(), 2);
+    }
+
+    // ========================================================================
+    // Interaction Response Tests
+    // ========================================================================
+
+    #[test]
+    fn test_interaction_response_extract_basic() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::user("Hello"))
+            .with_message(AGUIMessage::tool("true", "perm_123"));
+
+        let responses = request.interaction_responses();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].interaction_id, "perm_123");
+        assert_eq!(responses[0].result, Value::Bool(true));
+    }
+
+    #[test]
+    fn test_interaction_response_extract_multiple() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("true", "perm_1"))
+            .with_message(AGUIMessage::tool("false", "perm_2"))
+            .with_message(AGUIMessage::tool(r#"{"data":"value"}"#, "perm_3"));
+
+        let responses = request.interaction_responses();
+        assert_eq!(responses.len(), 3);
+
+        assert_eq!(responses[0].interaction_id, "perm_1");
+        assert_eq!(responses[0].result, Value::Bool(true));
+
+        assert_eq!(responses[1].interaction_id, "perm_2");
+        assert_eq!(responses[1].result, Value::Bool(false));
+
+        assert_eq!(responses[2].interaction_id, "perm_3");
+        assert_eq!(responses[2].result["data"], "value");
+    }
+
+    #[test]
+    fn test_interaction_response_extract_json() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(
+                r#"{"approved":true,"reason":"User clicked Allow"}"#,
+                "confirm_1",
+            ));
+
+        let response = request.get_interaction_response("confirm_1").unwrap();
+        assert!(response.result["approved"].as_bool().unwrap());
+        assert_eq!(response.result["reason"], "User clicked Allow");
+    }
+
+    #[test]
+    fn test_interaction_response_extract_string_fallback() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("user input text", "input_1"));
+
+        let response = request.get_interaction_response("input_1").unwrap();
+        assert_eq!(response.result, Value::String("user input text".into()));
+    }
+
+    #[test]
+    fn test_interaction_response_not_found() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::user("Hello"));
+
+        assert!(request.get_interaction_response("nonexistent").is_none());
+        assert!(!request.has_interaction_response("nonexistent"));
+    }
+
+    #[test]
+    fn test_is_interaction_approved_boolean_true() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("true", "perm_1"));
+
+        assert!(request.is_interaction_approved("perm_1"));
+        assert!(!request.is_interaction_denied("perm_1"));
+    }
+
+    #[test]
+    fn test_is_interaction_denied_boolean_false() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("false", "perm_1"));
+
+        assert!(request.is_interaction_denied("perm_1"));
+        assert!(!request.is_interaction_approved("perm_1"));
+    }
+
+    #[test]
+    fn test_is_interaction_approved_string_variants() {
+        let approved_strings = vec!["true", "yes", "approved", "allow", "confirm", "ok", "accept"];
+
+        for s in approved_strings {
+            let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+                .with_message(AGUIMessage::tool(s, "perm_1"));
+
+            assert!(
+                request.is_interaction_approved("perm_1"),
+                "Expected '{}' to be approved",
+                s
+            );
+        }
+
+        // Test case insensitivity
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("YES", "perm_1"));
+        assert!(request.is_interaction_approved("perm_1"));
+    }
+
+    #[test]
+    fn test_is_interaction_denied_string_variants() {
+        let denied_strings = vec!["false", "no", "denied", "deny", "reject", "cancel", "abort"];
+
+        for s in denied_strings {
+            let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+                .with_message(AGUIMessage::tool(s, "perm_1"));
+
+            assert!(
+                request.is_interaction_denied("perm_1"),
+                "Expected '{}' to be denied",
+                s
+            );
+        }
+
+        // Test case insensitivity
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("CANCEL", "perm_1"));
+        assert!(request.is_interaction_denied("perm_1"));
+    }
+
+    #[test]
+    fn test_is_interaction_approved_object_format() {
+        // approved: true
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(r#"{"approved":true}"#, "perm_1"));
+        assert!(request.is_interaction_approved("perm_1"));
+
+        // allowed: true
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(r#"{"allowed":true}"#, "perm_2"));
+        assert!(request.is_interaction_approved("perm_2"));
+
+        // approved: false
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(r#"{"approved":false}"#, "perm_3"));
+        assert!(!request.is_interaction_approved("perm_3"));
+        assert!(request.is_interaction_denied("perm_3"));
+    }
+
+    #[test]
+    fn test_is_interaction_denied_object_format() {
+        // denied: true
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(r#"{"denied":true}"#, "perm_1"));
+        assert!(request.is_interaction_denied("perm_1"));
+
+        // denied: false (should NOT be considered denied)
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(r#"{"denied":false}"#, "perm_2"));
+        assert!(!request.is_interaction_denied("perm_2"));
+    }
+
+    #[test]
+    fn test_interaction_response_approved_denied_methods() {
+        let approved = InteractionResponse::new("id1", Value::Bool(true));
+        assert!(approved.approved());
+        assert!(!approved.denied());
+
+        let denied = InteractionResponse::new("id2", Value::Bool(false));
+        assert!(!denied.approved());
+        assert!(denied.denied());
+
+        let custom = InteractionResponse::new("id3", json!({"data": "some value"}));
+        assert!(!custom.approved());
+        assert!(!custom.denied());
+    }
+
+    #[test]
+    fn test_has_interaction_response() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("true", "existing_id"));
+
+        assert!(request.has_interaction_response("existing_id"));
+        assert!(!request.has_interaction_response("nonexistent_id"));
+    }
+
+    #[test]
+    fn test_interaction_response_ignores_non_tool_messages() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::user("Hello"))
+            .with_message(AGUIMessage::assistant("Hi there"))
+            .with_message(AGUIMessage::system("You are helpful"));
+
+        assert!(request.interaction_responses().is_empty());
+    }
+
+    #[test]
+    fn test_interaction_response_with_frontend_tool_result() {
+        // Simulate frontend tool execution result
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool(
+                r#"{"success":true,"copied_text":"Hello World"}"#,
+                "tool:copyToClipboard_call_123",
+            ));
+
+        let response = request
+            .get_interaction_response("tool:copyToClipboard_call_123")
+            .unwrap();
+        assert!(response.result["success"].as_bool().unwrap());
+        assert_eq!(response.result["copied_text"], "Hello World");
     }
 
     // ========================================================================
