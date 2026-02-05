@@ -3367,4 +3367,215 @@ mod tests {
         let plugin = FrontendToolPlugin::new(HashSet::new());
         assert_eq!(plugin.id(), "ag_ui_frontend_tool");
     }
+
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_sets_pending_for_frontend_tool() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        // Create plugin with frontend tool
+        let mut tools = HashSet::new();
+        tools.insert("copyToClipboard".to_string());
+        let plugin = FrontendToolPlugin::new(tools);
+
+        // Set up tool context for frontend tool
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // Execute plugin
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        // Should set pending
+        assert!(turn.tool_pending());
+        assert!(!turn.tool_blocked());
+
+        // Check interaction was created correctly
+        let interaction = turn.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
+        assert_eq!(interaction.id, "call_1");
+        assert_eq!(interaction.action, "tool:copyToClipboard");
+        assert_eq!(interaction.parameters["text"], "hello");
+    }
+
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_ignores_backend_tool() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        // Create plugin with frontend tool (not including "search")
+        let mut tools = HashSet::new();
+        tools.insert("copyToClipboard".to_string());
+        let plugin = FrontendToolPlugin::new(tools);
+
+        // Set up tool context for backend tool
+        let call = ToolCall::new("call_1", "search", json!({"query": "rust"}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // Execute plugin
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        // Should NOT set pending
+        assert!(!turn.tool_pending());
+        assert!(!turn.tool_blocked());
+    }
+
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_ignores_other_phases() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        let mut tools = HashSet::new();
+        tools.insert("copyToClipboard".to_string());
+        let plugin = FrontendToolPlugin::new(tools);
+
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({}));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // Test various phases - none should set pending
+        for phase in [
+            Phase::SessionStart,
+            Phase::TurnStart,
+            Phase::BeforeInference,
+            Phase::AfterInference,
+            Phase::AfterToolExecute,
+            Phase::TurnEnd,
+            Phase::SessionEnd,
+        ] {
+            plugin.on_phase(phase, &mut turn).await;
+            assert!(!turn.tool_pending(), "Phase {:?} should not set pending", phase);
+        }
+    }
+
+    /// Test complete flow: FrontendToolPlugin → Interaction → AG-UI Events
+    #[tokio::test]
+    async fn test_frontend_tool_complete_flow() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // 1. Setup: Create plugin from request
+        let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search the web"))
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+
+        let plugin = FrontendToolPlugin::from_request(&request);
+
+        // 2. Simulate tool call to frontend tool
+        let session = Session::new("test");
+        let mut turn = TurnContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_123", "copyToClipboard", json!({
+            "text": "Hello, World!",
+            "format": "plain"
+        }));
+        turn.tool = Some(ToolContext::new(&call));
+
+        // 3. Plugin intercepts in BeforeToolExecute
+        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+
+        assert!(turn.tool_pending());
+
+        // 4. Get the interaction
+        let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+
+        // 5. Convert to AG-UI events
+        let events = interaction.to_ag_ui_events();
+
+        // 6. Verify AG-UI event sequence
+        assert_eq!(events.len(), 3);
+
+        // ToolCallStart
+        match &events[0] {
+            AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } => {
+                assert_eq!(tool_call_id, "call_123");
+                assert_eq!(tool_call_name, "tool:copyToClipboard");
+            }
+            _ => panic!("Expected ToolCallStart"),
+        }
+
+        // ToolCallArgs
+        match &events[1] {
+            AGUIEvent::ToolCallArgs { tool_call_id, delta, .. } => {
+                assert_eq!(tool_call_id, "call_123");
+                let args: Value = serde_json::from_str(delta).unwrap();
+                assert_eq!(args["id"], "call_123");
+                assert_eq!(args["parameters"]["text"], "Hello, World!");
+                assert_eq!(args["parameters"]["format"], "plain");
+            }
+            _ => panic!("Expected ToolCallArgs"),
+        }
+
+        // ToolCallEnd
+        match &events[2] {
+            AGUIEvent::ToolCallEnd { tool_call_id, .. } => {
+                assert_eq!(tool_call_id, "call_123");
+            }
+            _ => panic!("Expected ToolCallEnd"),
+        }
+    }
+
+    /// Test mixed frontend/backend tools scenario
+    #[tokio::test]
+    async fn test_frontend_tool_plugin_mixed_tools() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::backend("read_file", "Read"))
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+            .with_tool(AGUIToolDef::frontend("showNotification", "Notify"));
+
+        let plugin = FrontendToolPlugin::from_request(&request);
+
+        let session = Session::new("test");
+
+        // Test backend tool - should not be pending
+        {
+            let mut turn = TurnContext::new(&session, vec![]);
+            let call = ToolCall::new("c1", "search", json!({}));
+            turn.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+            assert!(!turn.tool_pending(), "Backend tool 'search' should not be pending");
+        }
+
+        // Test another backend tool
+        {
+            let mut turn = TurnContext::new(&session, vec![]);
+            let call = ToolCall::new("c2", "read_file", json!({}));
+            turn.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+            assert!(!turn.tool_pending(), "Backend tool 'read_file' should not be pending");
+        }
+
+        // Test frontend tool - should be pending
+        {
+            let mut turn = TurnContext::new(&session, vec![]);
+            let call = ToolCall::new("c3", "copyToClipboard", json!({}));
+            turn.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+            assert!(turn.tool_pending(), "Frontend tool 'copyToClipboard' should be pending");
+        }
+
+        // Test another frontend tool
+        {
+            let mut turn = TurnContext::new(&session, vec![]);
+            let call = ToolCall::new("c4", "showNotification", json!({}));
+            turn.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+            assert!(turn.tool_pending(), "Frontend tool 'showNotification' should be pending");
+        }
+    }
 }
