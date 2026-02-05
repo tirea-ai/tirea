@@ -9,6 +9,7 @@
 //! Use `AgentEvent::to_ag_ui_events()` to convert to AG-UI format.
 
 use crate::ag_ui::{AGUIContext, AGUIEvent};
+use crate::state_types::Interaction;
 use crate::traits::tool::ToolResult;
 use crate::types::ToolCall;
 use crate::ui_stream::UIStreamEvent;
@@ -242,6 +243,12 @@ pub enum AgentEvent {
     MessagesSnapshot { messages: Vec<Value> },
 
     // ========================================================================
+    // Interaction Events
+    // ========================================================================
+    /// Pending interaction request (client action required).
+    Pending { interaction: Interaction },
+
+    // ========================================================================
     // Completion Events
     // ========================================================================
     /// Agent loop completed with final response.
@@ -303,6 +310,14 @@ impl AgentEvent {
             }
             AgentEvent::MessagesSnapshot { messages } => {
                 vec![UIStreamEvent::data("messages-snapshot", Value::Array(messages.clone()))]
+            }
+
+            // Interaction events
+            AgentEvent::Pending { interaction } => {
+                vec![UIStreamEvent::data(
+                    "interaction",
+                    serde_json::to_value(interaction).unwrap_or_default(),
+                )]
             }
 
             // Completion events
@@ -391,6 +406,18 @@ impl AgentEvent {
             }
             AgentEvent::MessagesSnapshot { messages } => {
                 vec![AGUIEvent::messages_snapshot(messages.clone())]
+            }
+
+            // Interaction events
+            AgentEvent::Pending { interaction } => {
+                let mut events = vec![];
+                // End text stream if active
+                if ctx.end_text() {
+                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+                }
+                // Convert interaction to AG-UI tool call events
+                events.extend(interaction.to_ag_ui_events());
+                events
             }
 
             // Completion events
@@ -1278,5 +1305,63 @@ mod tests {
         let collector = StreamCollector::new();
         assert!(!collector.has_tool_calls());
         assert_eq!(collector.text(), "");
+    }
+
+    // ========================================================================
+    // AgentEvent::Pending Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agent_event_pending_to_ui_events() {
+        let interaction = Interaction::new("perm_1", "confirm")
+            .with_message("Allow action?");
+
+        let event = AgentEvent::Pending { interaction };
+        let ui_events = event.to_ui_events("txt_0");
+
+        assert_eq!(ui_events.len(), 1);
+        if let UIStreamEvent::Data { data_type, data } = &ui_events[0] {
+            assert_eq!(data_type, "data-interaction");
+            assert_eq!(data["id"], "perm_1");
+            assert_eq!(data["action"], "confirm");
+            assert_eq!(data["message"], "Allow action?");
+        } else {
+            panic!("Expected Data event");
+        }
+    }
+
+    #[test]
+    fn test_agent_event_pending_to_ag_ui_events() {
+        let interaction = Interaction::new("perm_1", "confirm")
+            .with_message("Allow tool?")
+            .with_parameters(json!({ "tool_id": "write_file" }));
+
+        let event = AgentEvent::Pending { interaction };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+
+        // Should produce 3 tool call events
+        assert_eq!(ag_ui_events.len(), 3);
+        assert!(matches!(ag_ui_events[0], AGUIEvent::ToolCallStart { .. }));
+        assert!(matches!(ag_ui_events[1], AGUIEvent::ToolCallArgs { .. }));
+        assert!(matches!(ag_ui_events[2], AGUIEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn test_agent_event_pending_ends_text_stream() {
+        let interaction = Interaction::new("int_1", "input");
+
+        let event = AgentEvent::Pending { interaction };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // Start text streaming
+        ctx.start_text();
+
+        let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+
+        // Should include TextMessageEnd before tool call events
+        assert_eq!(ag_ui_events.len(), 4);
+        assert!(matches!(ag_ui_events[0], AGUIEvent::TextMessageEnd { .. }));
+        assert!(matches!(ag_ui_events[1], AGUIEvent::ToolCallStart { .. }));
     }
 }

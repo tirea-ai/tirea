@@ -30,8 +30,10 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
+
+use crate::state_types::Interaction;
 
 // ============================================================================
 // Base Event Fields
@@ -640,6 +642,36 @@ impl AGUIEvent {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
+    }
+}
+
+// ============================================================================
+// Interaction to AG-UI Conversion
+// ============================================================================
+
+impl Interaction {
+    /// Convert to AG-UI tool call events.
+    ///
+    /// Maps the interaction to a frontend tool call sequence:
+    /// - `action` becomes the tool name
+    /// - `id` becomes the tool call ID
+    /// - Other fields are passed as tool arguments
+    ///
+    /// This is a pure protocol mapping with no semantic interpretation.
+    /// The client determines how to handle each action.
+    pub fn to_ag_ui_events(&self) -> Vec<AGUIEvent> {
+        let args = json!({
+            "id": self.id,
+            "message": self.message,
+            "parameters": self.parameters,
+            "response_schema": self.response_schema,
+        });
+
+        vec![
+            AGUIEvent::tool_call_start(&self.id, &self.action, None),
+            AGUIEvent::tool_call_args(&self.id, serde_json::to_string(&args).unwrap_or_default()),
+            AGUIEvent::tool_call_end(&self.id),
+        ]
     }
 }
 
@@ -3013,5 +3045,108 @@ mod tests {
 
         assert!(request.frontend_tools().is_empty());
         assert_eq!(request.backend_tools().len(), 2);
+    }
+
+    // ========================================================================
+    // Interaction to AG-UI Conversion Tests
+    // ========================================================================
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_basic() {
+        let interaction = Interaction::new("int_1", "confirm")
+            .with_message("Allow action?");
+
+        let events = interaction.to_ag_ui_events();
+
+        assert_eq!(events.len(), 3);
+
+        // First event: ToolCallStart
+        match &events[0] {
+            AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } => {
+                assert_eq!(tool_call_id, "int_1");
+                assert_eq!(tool_call_name, "confirm");
+            }
+            _ => panic!("Expected ToolCallStart"),
+        }
+
+        // Second event: ToolCallArgs
+        match &events[1] {
+            AGUIEvent::ToolCallArgs { tool_call_id, delta, .. } => {
+                assert_eq!(tool_call_id, "int_1");
+                let args: Value = serde_json::from_str(delta).unwrap();
+                assert_eq!(args["id"], "int_1");
+                assert_eq!(args["message"], "Allow action?");
+            }
+            _ => panic!("Expected ToolCallArgs"),
+        }
+
+        // Third event: ToolCallEnd
+        match &events[2] {
+            AGUIEvent::ToolCallEnd { tool_call_id, .. } => {
+                assert_eq!(tool_call_id, "int_1");
+            }
+            _ => panic!("Expected ToolCallEnd"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_with_parameters() {
+        let interaction = Interaction::new("perm_123", "confirm")
+            .with_message("Allow write_file?")
+            .with_parameters(json!({
+                "tool_id": "write_file",
+                "path": "/etc/passwd"
+            }));
+
+        let events = interaction.to_ag_ui_events();
+
+        // Check args contain parameters
+        match &events[1] {
+            AGUIEvent::ToolCallArgs { delta, .. } => {
+                let args: Value = serde_json::from_str(delta).unwrap();
+                assert_eq!(args["parameters"]["tool_id"], "write_file");
+                assert_eq!(args["parameters"]["path"], "/etc/passwd");
+            }
+            _ => panic!("Expected ToolCallArgs"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_custom_action() {
+        let interaction = Interaction::new("picker_1", "file_picker")
+            .with_parameters(json!({ "accept": ".txt,.md" }));
+
+        let events = interaction.to_ag_ui_events();
+
+        // Action becomes tool name
+        match &events[0] {
+            AGUIEvent::ToolCallStart { tool_call_name, .. } => {
+                assert_eq!(tool_call_name, "file_picker");
+            }
+            _ => panic!("Expected ToolCallStart"),
+        }
+    }
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_with_response_schema() {
+        let interaction = Interaction::new("input_1", "input")
+            .with_message("Enter your name:")
+            .with_response_schema(json!({
+                "type": "object",
+                "properties": {
+                    "value": { "type": "string" }
+                }
+            }));
+
+        let events = interaction.to_ag_ui_events();
+
+        match &events[1] {
+            AGUIEvent::ToolCallArgs { delta, .. } => {
+                let args: Value = serde_json::from_str(delta).unwrap();
+                assert!(args["response_schema"].is_object());
+                assert_eq!(args["response_schema"]["type"], "object");
+            }
+            _ => panic!("Expected ToolCallArgs"),
+        }
     }
 }
