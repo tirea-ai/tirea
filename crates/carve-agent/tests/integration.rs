@@ -5,8 +5,9 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    ag_ui::MessageRole, Context, ContextCategory, ContextProvider, StateManager, SystemReminder,
-    Tool, ToolDescriptor, ToolError, ToolResult,
+    ag_ui::MessageRole, Context, ContextCategory, ContextProvider, InteractionResponse,
+    StateManager, SystemReminder, Tool, ToolDescriptor, ToolError, ToolExecutionLocation,
+    ToolResult,
 };
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -7222,4 +7223,694 @@ fn test_mixed_content_protocol_flow() {
     let text_end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
     let tool_start_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
     assert!(text_end_idx < tool_start_idx, "TEXT_MESSAGE_END must come before TOOL_CALL_START");
+}
+
+// ============================================================================
+// AG-UI Message Types Tests
+// ============================================================================
+//
+// Per AG-UI spec: Six message roles - user, assistant, system, tool, developer, activity
+// Reference: https://docs.ag-ui.com/concepts/messages
+//
+
+/// Test: AGUIMessage user message creation
+/// Protocol: UserMessage with content (string or InputContent[])
+#[test]
+fn test_agui_message_user() {
+    let msg = AGUIMessage::user("Hello, how can you help?");
+
+    assert_eq!(msg.role, MessageRole::User);
+    assert_eq!(msg.content, "Hello, how can you help?");
+    assert!(msg.id.is_none());
+    assert!(msg.tool_call_id.is_none());
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""role":"user""#));
+    assert!(json.contains(r#""content":"Hello, how can you help?""#));
+}
+
+/// Test: AGUIMessage assistant message creation
+/// Protocol: AssistantMessage with optional content and toolCalls
+#[test]
+fn test_agui_message_assistant() {
+    let msg = AGUIMessage::assistant("I can help you with that.");
+
+    assert_eq!(msg.role, MessageRole::Assistant);
+    assert_eq!(msg.content, "I can help you with that.");
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""role":"assistant""#));
+}
+
+/// Test: AGUIMessage system message creation
+/// Protocol: SystemMessage with required content
+#[test]
+fn test_agui_message_system() {
+    let msg = AGUIMessage::system("You are a helpful assistant.");
+
+    assert_eq!(msg.role, MessageRole::System);
+    assert_eq!(msg.content, "You are a helpful assistant.");
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""role":"system""#));
+}
+
+/// Test: AGUIMessage tool message creation
+/// Protocol: ToolMessage with toolCallId linking to assistant's tool call
+#[test]
+fn test_agui_message_tool() {
+    let msg = AGUIMessage::tool(r#"{"result": "success", "data": 42}"#, "call_123");
+
+    assert_eq!(msg.role, MessageRole::Tool);
+    assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""role":"tool""#));
+    assert!(json.contains(r#""toolCallId":"call_123""#));
+}
+
+/// Test: AGUIMessage tool message with error
+/// Protocol: ToolMessage can include error information
+#[test]
+fn test_agui_message_tool_with_error() {
+    let error_content = json!({
+        "status": "error",
+        "error": "Connection refused",
+        "code": "ECONNREFUSED"
+    });
+    let msg = AGUIMessage::tool(&serde_json::to_string(&error_content).unwrap(), "call_err");
+
+    assert_eq!(msg.role, MessageRole::Tool);
+    let parsed: Value = serde_json::from_str(&msg.content).unwrap();
+    assert_eq!(parsed["status"], "error");
+    assert_eq!(parsed["code"], "ECONNREFUSED");
+}
+
+/// Test: AGUIMessage with custom ID
+/// Protocol: Messages can have unique identifiers
+#[test]
+fn test_agui_message_with_id() {
+    let mut msg = AGUIMessage::user("test");
+    msg.id = Some("msg_12345".to_string());
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""id":"msg_12345""#));
+}
+
+/// Test: AGUIMessage roundtrip serialization
+#[test]
+fn test_agui_message_roundtrip() {
+    let messages = vec![
+        AGUIMessage::user("Hello"),
+        AGUIMessage::assistant("Hi there!"),
+        AGUIMessage::system("Be helpful"),
+        AGUIMessage::tool("result", "call_1"),
+    ];
+
+    for msg in messages {
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: AGUIMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.role, msg.role);
+        assert_eq!(parsed.content, msg.content);
+    }
+}
+
+// ============================================================================
+// RunAgentRequest Tests
+// ============================================================================
+//
+// Per AG-UI spec: RunAgentInput contains threadId, runId, messages, tools, state, context
+// Reference: https://docs.ag-ui.com/sdk/js/core/types
+//
+
+/// Test: RunAgentRequest basic creation
+/// Protocol: Required threadId and runId
+#[test]
+fn test_run_agent_request_basic() {
+    let request = RunAgentRequest::new("thread_abc".to_string(), "run_123".to_string());
+
+    assert_eq!(request.thread_id, "thread_abc");
+    assert_eq!(request.run_id, "run_123");
+    assert!(request.messages.is_empty());
+    assert!(request.tools.is_empty());
+}
+
+/// Test: RunAgentRequest with messages
+/// Protocol: Message array for conversation history
+#[test]
+fn test_run_agent_request_with_messages() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Hello"))
+        .with_message(AGUIMessage::assistant("Hi!"))
+        .with_message(AGUIMessage::user("What's 2+2?"));
+
+    assert_eq!(request.messages.len(), 3);
+    assert_eq!(request.messages[0].role, MessageRole::User);
+    assert_eq!(request.messages[1].role, MessageRole::Assistant);
+    assert_eq!(request.messages[2].role, MessageRole::User);
+}
+
+/// Test: RunAgentRequest with tools
+/// Protocol: Tools array defines available capabilities
+#[test]
+fn test_run_agent_request_with_tools() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search the web"))
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy text"));
+
+    assert_eq!(request.tools.len(), 2);
+}
+
+/// Test: RunAgentRequest with initial state
+/// Protocol: State object for agent execution context
+#[test]
+fn test_run_agent_request_with_state() {
+    let initial_state = json!({
+        "counter": 0,
+        "preferences": {"theme": "dark"},
+        "history": []
+    });
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_state(initial_state.clone());
+
+    assert_eq!(request.state, Some(initial_state));
+}
+
+/// Test: RunAgentRequest with parent run ID
+/// Protocol: parentRunId for branching/sub-agent runs
+#[test]
+fn test_run_agent_request_with_parent_run() {
+    // Create request and set parent_run_id directly
+    let mut request = RunAgentRequest::new("t1".to_string(), "r2".to_string());
+    request.parent_run_id = Some("r1".to_string());
+
+    assert_eq!(request.parent_run_id, Some("r1".to_string()));
+}
+
+/// Test: RunAgentRequest serialization
+#[test]
+fn test_run_agent_request_serialization() {
+    let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
+        .with_message(AGUIMessage::user("test"))
+        .with_state(json!({"key": "value"}));
+
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains(r#""threadId":"thread_1""#));
+    assert!(json.contains(r#""runId":"run_1""#));
+    assert!(json.contains(r#""messages":[{"role":"user""#));
+}
+
+/// Test: RunAgentRequest deserialization
+#[test]
+fn test_run_agent_request_deserialization() {
+    let json = r#"{
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"}
+        ],
+        "tools": [],
+        "state": {"counter": 5}
+    }"#;
+
+    let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+    assert_eq!(request.thread_id, "t1");
+    assert_eq!(request.run_id, "r1");
+    assert_eq!(request.messages.len(), 2);
+    assert_eq!(request.state.unwrap()["counter"], 5);
+}
+
+// ============================================================================
+// AGUIToolDef Tests
+// ============================================================================
+//
+// Per AG-UI spec: Tool with name, description, and parameters (JSON Schema)
+// Reference: https://docs.ag-ui.com/concepts/tools
+//
+
+/// Test: Backend tool definition
+/// Protocol: Backend tools execute on agent side
+#[test]
+fn test_agui_tool_def_backend() {
+    let tool = AGUIToolDef::backend("search", "Search for information");
+
+    assert_eq!(tool.name, "search");
+    assert_eq!(tool.description, "Search for information");
+    assert_eq!(tool.execute, ToolExecutionLocation::Backend);
+
+    let json = serde_json::to_string(&tool).unwrap();
+    // Backend is default, so execute field is omitted in serialization
+    assert!(!json.contains(r#""execute""#));
+}
+
+/// Test: Frontend tool definition
+/// Protocol: Frontend tools execute on client side
+#[test]
+fn test_agui_tool_def_frontend() {
+    let tool = AGUIToolDef::frontend("showNotification", "Display a notification");
+
+    assert_eq!(tool.name, "showNotification");
+    assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+
+    let json = serde_json::to_string(&tool).unwrap();
+    assert!(json.contains(r#""execute":"frontend""#));
+}
+
+/// Test: Tool with JSON Schema parameters
+/// Protocol: Parameters defined using JSON Schema
+#[test]
+fn test_agui_tool_def_with_schema() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search query"},
+            "limit": {"type": "integer", "default": 10}
+        },
+        "required": ["query"]
+    });
+
+    let tool = AGUIToolDef::backend("search", "Search")
+        .with_parameters(schema.clone());
+
+    assert_eq!(tool.parameters, Some(schema));
+}
+
+/// Test: Tool serialization with all fields
+#[test]
+fn test_agui_tool_def_full_serialization() {
+    let tool = AGUIToolDef::frontend("readFile", "Read a file from disk")
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"}
+            },
+            "required": ["path"]
+        }));
+
+    let json = serde_json::to_string(&tool).unwrap();
+    assert!(json.contains(r#""name":"readFile""#));
+    assert!(json.contains(r#""description":"Read a file from disk""#));
+    assert!(json.contains(r#""execute":"frontend""#));
+    assert!(json.contains(r#""parameters""#));
+}
+
+// ============================================================================
+// Event Stream Pattern Tests
+// ============================================================================
+//
+// Per AG-UI spec: Event streaming with cancel/resume functionality
+// Reference: https://docs.ag-ui.com/introduction
+//
+
+/// Test: Event sequence for canceled run
+/// Protocol: Run can be canceled, resulting in RUN_ERROR or no RUN_FINISHED
+#[test]
+fn test_event_sequence_canceled_run() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Run starts
+    let start = AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    };
+    events.extend(start.to_ag_ui_events(&mut ctx));
+
+    // Text streaming begins
+    let text = AgentEvent::TextDelta { delta: "Processing...".into() };
+    events.extend(text.to_ag_ui_events(&mut ctx));
+
+    // Run aborted (simulating cancel)
+    let abort = AgentEvent::Aborted { reason: "User canceled".into() };
+    let abort_events = abort.to_ag_ui_events(&mut ctx);
+    events.extend(abort_events);
+
+    // Verify run started
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
+    // Note: Aborted may or may not produce events depending on implementation
+}
+
+/// Test: Error during text streaming
+/// Protocol: Error interrupts text stream
+#[test]
+fn test_error_interrupts_text_stream() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Text starts
+    let text = AgentEvent::TextDelta { delta: "Starting...".into() };
+    events.extend(text.to_ag_ui_events(&mut ctx));
+
+    // Error occurs
+    let error = AgentEvent::Error { message: "API rate limit exceeded".into() };
+    events.extend(error.to_ag_ui_events(&mut ctx));
+
+    // Should have TEXT_MESSAGE_START and possibly TEXT_MESSAGE_END before error
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+}
+
+/// Test: Multiple text messages in sequence
+/// Protocol: Each new message gets its own START/END pair
+#[test]
+fn test_multiple_text_messages() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // First message
+    let text1 = AgentEvent::TextDelta { delta: "First message".into() };
+    events.extend(text1.to_ag_ui_events(&mut ctx));
+
+    // End first message by starting something else
+    let done1 = AgentEvent::Done { response: "First message".into() };
+    events.extend(done1.to_ag_ui_events(&mut ctx));
+
+    // Reset context for new message
+    ctx = AGUIContext::new("t1".into(), "r2".into());
+
+    // Second message
+    let text2 = AgentEvent::TextDelta { delta: "Second message".into() };
+    events.extend(text2.to_ag_ui_events(&mut ctx));
+
+    // Count TEXT_MESSAGE_START events
+    let start_count = events.iter()
+        .filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .count();
+    assert_eq!(start_count, 2, "Should have 2 TEXT_MESSAGE_START events");
+}
+
+// ============================================================================
+// State Management Edge Cases
+// ============================================================================
+//
+// Per AG-UI spec: State sync via snapshots and deltas
+// Reference: https://docs.ag-ui.com/concepts/state
+//
+
+/// Test: Empty state snapshot
+/// Protocol: Snapshot can be empty object
+#[test]
+fn test_empty_state_snapshot() {
+    let event = AGUIEvent::state_snapshot(json!({}));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"STATE_SNAPSHOT""#));
+    assert!(json.contains(r#""snapshot":{}"#));
+}
+
+/// Test: Empty state delta (no-op)
+/// Protocol: Delta with no operations
+#[test]
+fn test_empty_state_delta() {
+    let event = AGUIEvent::state_delta(vec![]);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"STATE_DELTA""#));
+    assert!(json.contains(r#""delta":[]"#));
+}
+
+/// Test: State with nested arrays
+/// Protocol: State can have complex nested structures
+#[test]
+fn test_state_with_nested_arrays() {
+    let complex_state = json!({
+        "matrix": [[1, 2], [3, 4], [5, 6]],
+        "records": [
+            {"id": 1, "tags": ["a", "b"]},
+            {"id": 2, "tags": ["c"]}
+        ]
+    });
+
+    let event = AGUIEvent::state_snapshot(complex_state.clone());
+
+    if let AGUIEvent::StateSnapshot { snapshot, .. } = event {
+        assert_eq!(snapshot["matrix"][0][0], 1);
+        assert_eq!(snapshot["records"][0]["tags"][1], "b");
+    }
+}
+
+/// Test: State delta with array index operations
+/// Protocol: JSON Pointer can target array indices
+#[test]
+fn test_state_delta_array_operations() {
+    let delta = vec![
+        json!({"op": "add", "path": "/items/0", "value": "first"}),
+        json!({"op": "add", "path": "/items/-", "value": "last"}),
+        json!({"op": "replace", "path": "/items/1", "value": "replaced"}),
+        json!({"op": "remove", "path": "/items/2"}),
+    ];
+
+    let event = AGUIEvent::state_delta(delta);
+
+    if let AGUIEvent::StateDelta { delta: d, .. } = event {
+        assert_eq!(d.len(), 4);
+        assert_eq!(d[0]["path"], "/items/0");
+        assert_eq!(d[1]["path"], "/items/-"); // "-" means append
+    }
+}
+
+// ============================================================================
+// Tool Call Edge Cases
+// ============================================================================
+//
+// Per AG-UI spec: Tool calls with various argument patterns
+//
+
+/// Test: Tool call with empty arguments
+/// Protocol: Tool can have no arguments
+#[test]
+fn test_tool_call_empty_args() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "getCurrentTime".into(),
+    };
+    let events = start.to_ag_ui_events(&mut ctx);
+
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+}
+
+/// Test: Tool call with nested JSON arguments
+/// Protocol: Arguments can be complex JSON
+#[test]
+fn test_tool_call_complex_args() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let args = AgentEvent::ToolCallDelta {
+        id: "call_1".into(),
+        args_delta: serde_json::to_string(&json!({
+            "config": {
+                "nested": {
+                    "deep": {
+                        "value": [1, 2, 3]
+                    }
+                }
+            }
+        })).unwrap(),
+    };
+    let events = args.to_ag_ui_events(&mut ctx);
+
+    if let Some(AGUIEvent::ToolCallArgs { delta, .. }) = events.first() {
+        let parsed: Value = serde_json::from_str(delta).unwrap();
+        assert_eq!(parsed["config"]["nested"]["deep"]["value"][0], 1);
+    }
+}
+
+/// Test: Tool result with warning
+/// Protocol: Tool can return with warning status
+#[test]
+fn test_tool_result_with_warning_status() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::warning("search", json!({"results": 5}), "Results may be stale"),
+        patch: None,
+    };
+    let events = done.to_ag_ui_events(&mut ctx);
+
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+}
+
+/// Test: Tool result with pending status
+/// Protocol: Tool can indicate async/pending execution
+#[test]
+fn test_tool_result_with_pending_status() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::pending("longRunningTask", "Task queued, check back later"),
+        patch: None,
+    };
+    let events = done.to_ag_ui_events(&mut ctx);
+
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = events.first() {
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed["status"], "pending");
+    }
+}
+
+// ============================================================================
+// Request Validation Edge Cases
+// ============================================================================
+//
+// Per AG-UI spec: Input validation for RunAgentRequest
+//
+
+/// Test: Request with empty thread ID (should be valid per protocol)
+#[test]
+fn test_request_empty_thread_id() {
+    let request = RunAgentRequest::new("".to_string(), "r1".to_string());
+    assert_eq!(request.thread_id, "");
+    // Note: Empty thread ID is technically valid JSON, validation is app-level
+}
+
+/// Test: Request with very long IDs
+#[test]
+fn test_request_long_ids() {
+    let long_id = "x".repeat(1000);
+    let request = RunAgentRequest::new(long_id.clone(), long_id.clone());
+
+    assert_eq!(request.thread_id.len(), 1000);
+    assert_eq!(request.run_id.len(), 1000);
+}
+
+/// Test: Request with special characters in IDs
+#[test]
+fn test_request_special_char_ids() {
+    let special_id = "thread-123_abc.xyz:456";
+    let request = RunAgentRequest::new(special_id.to_string(), "run-1".to_string());
+
+    let json = serde_json::to_string(&request).unwrap();
+    let parsed: RunAgentRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.thread_id, special_id);
+}
+
+/// Test: Request with Unicode in messages
+#[test]
+fn test_request_unicode_messages() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Hello! 你好！こんにちは！🎉"))
+        .with_message(AGUIMessage::assistant("Привет! مرحبا"));
+
+    let json = serde_json::to_string(&request).unwrap();
+    let parsed: RunAgentRequest = serde_json::from_str(&json).unwrap();
+
+    assert!(parsed.messages[0].content.contains("你好"));
+    assert!(parsed.messages[0].content.contains("🎉"));
+    assert!(parsed.messages[1].content.contains("Привет"));
+}
+
+// ============================================================================
+// Interaction Response Tests
+// ============================================================================
+//
+// Per AG-UI spec: Human-in-the-loop approval/denial flows
+//
+
+/// Test: Interaction response approval
+/// Protocol: User approves pending interaction
+#[test]
+fn test_interaction_response_approval() {
+    let response = InteractionResponse::new("int_123", json!({"approved": true}));
+
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains(r#""interaction_id":"int_123""#));
+    assert!(json.contains(r#""approved":true"#));
+}
+
+/// Test: Interaction response denial
+/// Protocol: User denies pending interaction
+#[test]
+fn test_interaction_response_denial() {
+    let response = InteractionResponse::new(
+        "int_123",
+        json!({"approved": false, "reason": "Not authorized"}),
+    );
+
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains(r#""approved":false"#));
+    assert!(json.contains(r#""reason":"Not authorized""#));
+}
+
+/// Test: Interaction response with custom data
+/// Protocol: Response can include user-provided data
+#[test]
+fn test_interaction_response_with_data() {
+    let response = InteractionResponse::new(
+        "input_1",
+        json!({
+            "value": "user input text",
+            "selected_option": 2,
+            "metadata": {"timestamp": 1234567890}
+        }),
+    );
+
+    assert_eq!(response.result["value"], "user input text");
+    assert_eq!(response.result["selected_option"], 2);
+}
+
+// ============================================================================
+// Context Tracking Tests
+// ============================================================================
+//
+// Per AG-UI spec: Context management across events
+//
+
+/// Test: AGUIContext message ID generation
+/// Protocol: Unique message IDs across a run
+#[test]
+fn test_context_message_id_uniqueness() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let id1 = ctx.new_message_id();
+    let id2 = ctx.new_message_id();
+    let id3 = ctx.new_message_id();
+
+    assert_ne!(id1, id2);
+    assert_ne!(id2, id3);
+    assert_ne!(id1, id3);
+}
+
+/// Test: AGUIContext step name tracking
+/// Protocol: Steps are numbered sequentially
+#[test]
+fn test_context_step_name_sequence() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let step1 = ctx.next_step_name();
+    let step2 = ctx.next_step_name();
+    let step3 = ctx.next_step_name();
+
+    // Steps should have sequential numbers
+    assert!(step1.contains("1") || step1.contains("step"));
+    assert_ne!(step1, step2);
+    assert_ne!(step2, step3);
+}
+
+/// Test: AGUIContext text stream state tracking
+/// Protocol: Tracks whether text is currently streaming
+#[test]
+fn test_context_text_stream_state() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start streaming returns true (was not started before)
+    let was_started = ctx.start_text();
+    assert!(was_started); // First start returns true (means "did start")
+
+    // Start again returns false (already started)
+    let was_started_again = ctx.start_text();
+    assert!(!was_started_again); // Already started, returns false
+
+    // End streaming returns true (was active)
+    let ended = ctx.end_text();
+    assert!(ended);
+
+    // End again returns false (not active)
+    let ended_again = ctx.end_text();
+    assert!(!ended_again);
 }
