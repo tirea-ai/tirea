@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    Context, ContextCategory, ContextProvider, StateManager, SystemReminder, Tool, ToolDescriptor,
-    ToolError, ToolResult,
+    ag_ui::MessageRole, Context, ContextCategory, ContextProvider, StateManager, SystemReminder,
+    Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -6498,4 +6498,728 @@ fn test_large_state_snapshot() {
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
         assert_eq!(snapshot["users"].as_array().unwrap().len(), 100);
     }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Compliance Tests
+// ============================================================================
+//
+// These tests verify compliance with AG-UI protocol specification.
+// Reference: https://docs.ag-ui.com/concepts/events
+//            https://docs.ag-ui.com/sdk/js/core/events
+//
+
+// ----------------------------------------------------------------------------
+// Convenience Event Tests (TextMessageChunk, ToolCallChunk)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Convenience events auto-expand to their component events.
+// TextMessageChunk → TextMessageStart + TextMessageContent + TextMessageEnd
+// ToolCallChunk → ToolCallStart + ToolCallArgs + ToolCallEnd
+
+/// Test: TextMessageChunk convenience event serialization
+/// Protocol: TEXT_MESSAGE_CHUNK auto-expands to Start → Content → End
+#[test]
+fn test_text_message_chunk_serialization() {
+    let chunk = AGUIEvent::text_message_chunk(
+        Some("msg_1".into()),
+        Some(MessageRole::Assistant),
+        Some("Hello, world!".into()),
+    );
+
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(json.contains(r#""type":"TEXT_MESSAGE_CHUNK""#));
+    assert!(json.contains(r#""messageId":"msg_1""#));
+    assert!(json.contains(r#""delta":"Hello, world!""#));
+    assert!(json.contains(r#""role":"assistant""#));
+
+    // Verify roundtrip
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, AGUIEvent::TextMessageChunk { .. }));
+}
+
+/// Test: ToolCallChunk convenience event serialization
+/// Protocol: TOOL_CALL_CHUNK auto-expands to Start → Args → End
+#[test]
+fn test_tool_call_chunk_serialization() {
+    let chunk = AGUIEvent::tool_call_chunk(
+        Some("call_1".into()),
+        Some("search".into()),
+        None,
+        Some(r#"{"query":"rust"}"#.into()),
+    );
+
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(json.contains(r#""type":"TOOL_CALL_CHUNK""#));
+    assert!(json.contains(r#""toolCallId":"call_1""#));
+    assert!(json.contains(r#""toolCallName":"search""#));
+    assert!(json.contains(r#""delta":"#));
+
+    // Verify roundtrip
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    assert!(matches!(parsed, AGUIEvent::ToolCallChunk { .. }));
+}
+
+/// Test: ToolCallChunk with parentMessageId
+/// Protocol: Optional parentMessageId links tool call to a message
+#[test]
+fn test_tool_call_chunk_with_parent_message() {
+    let chunk = AGUIEvent::tool_call_chunk(
+        Some("call_1".into()),
+        Some("read_file".into()),
+        Some("msg_123".into()),
+        Some(r#"{"path":"/etc/hosts"}"#.into()),
+    );
+
+    let json = serde_json::to_string(&chunk).unwrap();
+    assert!(json.contains(r#""parentMessageId":"msg_123""#));
+}
+
+// ----------------------------------------------------------------------------
+// Run Lifecycle Tests (parentRunId, branching)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Runs can branch via parentRunId for sub-agents or retries.
+
+/// Test: RunStarted with parentRunId for branching
+/// Protocol: parentRunId enables run branching/sub-agents
+#[test]
+fn test_run_started_with_parent_run_id() {
+    let event = AGUIEvent::run_started_with_input("t1", "r2", Some("r1".into()), json!({"query": "test"}));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"RUN_STARTED""#));
+    assert!(json.contains(r#""runId":"r2""#));
+    assert!(json.contains(r#""parentRunId":"r1""#));
+    assert!(json.contains(r#""input":"#));
+
+    // Roundtrip
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::RunStarted { parent_run_id, .. } = parsed {
+        assert_eq!(parent_run_id, Some("r1".to_string()));
+    } else {
+        panic!("Expected RunStarted");
+    }
+}
+
+/// Test: RunError with error code
+/// Protocol: Error code is optional for categorizing errors
+#[test]
+fn test_run_error_with_code() {
+    let event = AGUIEvent::run_error("Connection timeout".to_string(), Some("TIMEOUT".to_string()));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"RUN_ERROR""#));
+    assert!(json.contains(r#""message":"Connection timeout""#));
+    assert!(json.contains(r#""code":"TIMEOUT""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::RunError { code, .. } = parsed {
+        assert_eq!(code, Some("TIMEOUT".to_string()));
+    }
+}
+
+/// Test: RunError without code
+#[test]
+fn test_run_error_without_code() {
+    let event = AGUIEvent::run_error("Unknown error".to_string(), None);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"RUN_ERROR""#));
+    assert!(!json.contains(r#""code""#)); // code should be omitted
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::RunError { code, .. } = parsed {
+        assert_eq!(code, None);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Step Event Tests (StepStarted/StepFinished pairing)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Step events track discrete subtasks with matching stepName.
+
+/// Test: Step events with matching names
+/// Protocol: StepStarted and StepFinished must have matching stepName
+#[test]
+fn test_step_events_matching_names() {
+    let start = AGUIEvent::step_started("data_processing");
+    let finish = AGUIEvent::step_finished("data_processing");
+
+    // Verify matching step names
+    if let AGUIEvent::StepStarted { step_name: start_name, .. } = &start {
+        if let AGUIEvent::StepFinished { step_name: finish_name, .. } = &finish {
+            assert_eq!(start_name, finish_name);
+        }
+    }
+
+    // Verify serialization
+    let start_json = serde_json::to_string(&start).unwrap();
+    let finish_json = serde_json::to_string(&finish).unwrap();
+    assert!(start_json.contains(r#""type":"STEP_STARTED""#));
+    assert!(finish_json.contains(r#""type":"STEP_FINISHED""#));
+    assert!(start_json.contains(r#""stepName":"data_processing""#));
+    assert!(finish_json.contains(r#""stepName":"data_processing""#));
+}
+
+/// Test: Multiple step sequences
+/// Protocol: Verify correct step name tracking across multiple steps
+#[test]
+fn test_multiple_step_sequences() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Step 1
+    let step1_start = AgentEvent::StepStart;
+    let events1 = step1_start.to_ag_ui_events(&mut ctx);
+    let step1_name = if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
+        step_name.clone()
+    } else {
+        panic!("Expected StepStarted");
+    };
+
+    let step1_end = AgentEvent::StepEnd;
+    let events1_end = step1_end.to_ag_ui_events(&mut ctx);
+    if let AGUIEvent::StepFinished { step_name, .. } = &events1_end[0] {
+        assert_eq!(*step_name, step1_name);
+    }
+
+    // Step 2
+    let step2_start = AgentEvent::StepStart;
+    let events2 = step2_start.to_ag_ui_events(&mut ctx);
+    let step2_name = if let AGUIEvent::StepStarted { step_name, .. } = &events2[0] {
+        step_name.clone()
+    } else {
+        panic!("Expected StepStarted");
+    };
+
+    // Step names should be different
+    assert_ne!(step1_name, step2_name);
+}
+
+// ----------------------------------------------------------------------------
+// JSON Patch Operation Tests (RFC 6902)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: StateDelta uses RFC 6902 JSON Patch with 6 operation types.
+
+/// Test: JSON Patch - add operation
+/// Protocol: RFC 6902 add operation
+#[test]
+fn test_json_patch_add_operation() {
+    let delta = vec![json!({"op": "add", "path": "/newField", "value": "test"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"add""#));
+    assert!(json.contains(r#""path":"/newField""#));
+}
+
+/// Test: JSON Patch - replace operation
+/// Protocol: RFC 6902 replace operation
+#[test]
+fn test_json_patch_replace_operation() {
+    let delta = vec![json!({"op": "replace", "path": "/existing", "value": "updated"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"replace""#));
+}
+
+/// Test: JSON Patch - remove operation
+/// Protocol: RFC 6902 remove operation
+#[test]
+fn test_json_patch_remove_operation() {
+    let delta = vec![json!({"op": "remove", "path": "/obsoleteField"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"remove""#));
+    assert!(json.contains(r#""path":"/obsoleteField""#));
+}
+
+/// Test: JSON Patch - move operation
+/// Protocol: RFC 6902 move operation
+#[test]
+fn test_json_patch_move_operation() {
+    let delta = vec![json!({"op": "move", "from": "/oldPath", "path": "/newPath"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"move""#));
+    assert!(json.contains(r#""from":"/oldPath""#));
+    assert!(json.contains(r#""path":"/newPath""#));
+}
+
+/// Test: JSON Patch - copy operation
+/// Protocol: RFC 6902 copy operation
+#[test]
+fn test_json_patch_copy_operation() {
+    let delta = vec![json!({"op": "copy", "from": "/source", "path": "/destination"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"copy""#));
+    assert!(json.contains(r#""from":"/source""#));
+}
+
+/// Test: JSON Patch - test operation
+/// Protocol: RFC 6902 test operation for validation
+#[test]
+fn test_json_patch_test_operation() {
+    let delta = vec![json!({"op": "test", "path": "/version", "value": "1.0"})];
+    let event = AGUIEvent::state_delta(delta);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""op":"test""#));
+    assert!(json.contains(r#""value":"1.0""#));
+}
+
+/// Test: JSON Patch - multiple operations
+/// Protocol: Multiple patch operations in a single delta
+#[test]
+fn test_json_patch_multiple_operations() {
+    let delta = vec![
+        json!({"op": "test", "path": "/version", "value": "1.0"}),
+        json!({"op": "replace", "path": "/version", "value": "2.0"}),
+        json!({"op": "add", "path": "/newFeature", "value": true}),
+        json!({"op": "remove", "path": "/deprecatedField"}),
+    ];
+    let event = AGUIEvent::state_delta(delta.clone());
+
+    if let AGUIEvent::StateDelta { delta: d, .. } = event {
+        assert_eq!(d.len(), 4);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// MessagesSnapshot Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: MessagesSnapshot delivers complete conversation history.
+
+/// Test: MessagesSnapshot for conversation restoration
+/// Protocol: MESSAGES_SNAPSHOT for initial load or reconnection
+#[test]
+fn test_messages_snapshot_conversation_history() {
+    let messages = vec![
+        json!({"role": "user", "content": "Hello"}),
+        json!({"role": "assistant", "content": "Hi! How can I help?"}),
+        json!({"role": "user", "content": "What's the weather?"}),
+        json!({"role": "assistant", "content": "I'll check that for you."}),
+    ];
+
+    let event = AGUIEvent::messages_snapshot(messages.clone());
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"MESSAGES_SNAPSHOT""#));
+
+    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = event {
+        assert_eq!(m.len(), 4);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[1]["role"], "assistant");
+    }
+}
+
+/// Test: MessagesSnapshot with tool messages
+/// Protocol: Conversation history can include tool messages
+#[test]
+fn test_messages_snapshot_with_tool_messages() {
+    let messages = vec![
+        json!({"role": "user", "content": "Search for rust tutorials"}),
+        json!({"role": "assistant", "content": "I'll search for that.", "tool_calls": [{"id": "call_1", "name": "search"}]}),
+        json!({"role": "tool", "tool_call_id": "call_1", "content": "Found 10 results"}),
+        json!({"role": "assistant", "content": "I found 10 tutorials about Rust."}),
+    ];
+
+    let event = AGUIEvent::messages_snapshot(messages);
+
+    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = event {
+        assert_eq!(m.len(), 4);
+        assert_eq!(m[2]["role"], "tool");
+        assert_eq!(m[2]["tool_call_id"], "call_1");
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Activity Event Tests (replace flag)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Activity snapshots have replace flag.
+// replace: true (default) - replace existing activity message
+// replace: false - preserve existing message ID
+
+/// Test: Activity snapshot with replace: true
+/// Protocol: replace: true replaces existing activity message
+#[test]
+fn test_activity_snapshot_replace_true() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("status".to_string(), json!("processing"));
+
+    let event = AGUIEvent::activity_snapshot("act_1", "file_upload", content, Some(true));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""replace":true"#));
+}
+
+/// Test: Activity snapshot with replace: false
+/// Protocol: replace: false preserves existing message ID
+#[test]
+fn test_activity_snapshot_replace_false() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("progress".to_string(), json!(0.5));
+
+    let event = AGUIEvent::activity_snapshot("act_1", "download", content, Some(false));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""replace":false"#));
+}
+
+/// Test: Activity snapshot without replace (defaults behavior)
+#[test]
+fn test_activity_snapshot_replace_none() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("data".to_string(), json!("test"));
+
+    let event = AGUIEvent::activity_snapshot("act_1", "process", content, None);
+
+    let json = serde_json::to_string(&event).unwrap();
+    // replace field should be omitted when None
+    assert!(!json.contains(r#""replace""#) || json.contains(r#""replace":null"#));
+}
+
+// ----------------------------------------------------------------------------
+// ToolCallStart with parentMessageId Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Tool calls can optionally link to a parent message.
+
+/// Test: ToolCallStart with parentMessageId
+/// Protocol: Optional parentMessageId for linking tool calls to messages
+#[test]
+fn test_tool_call_start_with_parent_message_id() {
+    let event = AGUIEvent::tool_call_start("call_1", "search", Some("msg_123".into()));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"TOOL_CALL_START""#));
+    assert!(json.contains(r#""parentMessageId":"msg_123""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::ToolCallStart { parent_message_id, .. } = parsed {
+        assert_eq!(parent_message_id, Some("msg_123".to_string()));
+    }
+}
+
+/// Test: ToolCallStart without parentMessageId
+#[test]
+fn test_tool_call_start_without_parent_message_id() {
+    let event = AGUIEvent::tool_call_start("call_1", "read_file", None);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(!json.contains(r#""parentMessageId""#));
+}
+
+// ----------------------------------------------------------------------------
+// ToolCallResult Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: ToolCallResult delivers execution output.
+
+/// Test: ToolCallResult structure
+/// Protocol: TOOL_CALL_RESULT with messageId, toolCallId, content
+#[test]
+fn test_tool_call_result_structure() {
+    let event = AGUIEvent::tool_call_result("result_1", "call_1", r#"{"success": true, "data": "result"}"#);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"TOOL_CALL_RESULT""#));
+    assert!(json.contains(r#""messageId":"result_1""#));
+    assert!(json.contains(r#""toolCallId":"call_1""#));
+    assert!(json.contains(r#""content":"#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::ToolCallResult { message_id, tool_call_id, content, .. } = parsed {
+        assert_eq!(message_id, "result_1");
+        assert_eq!(tool_call_id, "call_1");
+        assert!(content.contains("success"));
+    }
+}
+
+/// Test: ToolCallResult with error content
+#[test]
+fn test_tool_call_result_error_content() {
+    let error_result = json!({
+        "status": "error",
+        "tool_name": "write_file",
+        "message": "Permission denied"
+    });
+    let event = AGUIEvent::tool_call_result("result_err", "call_write", &serde_json::to_string(&error_result).unwrap());
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""toolCallId":"call_write""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::ToolCallResult { content, .. } = parsed {
+        let result: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(result["status"], "error");
+    }
+}
+
+// ----------------------------------------------------------------------------
+// TextMessage Role Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Text messages have role (developer, system, assistant, user, tool).
+
+/// Test: Text message roles
+/// Protocol: Verify all role types serialize correctly
+#[test]
+fn test_text_message_all_roles() {
+    let roles = vec![
+        (MessageRole::Developer, "developer"),
+        (MessageRole::System, "system"),
+        (MessageRole::Assistant, "assistant"),
+        (MessageRole::User, "user"),
+        (MessageRole::Tool, "tool"),
+    ];
+
+    for (role, expected) in roles {
+        let event = AGUIEvent::text_message_chunk(
+            Some("msg_1".into()),
+            Some(role),
+            Some("test".into()),
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(&format!(r#""role":"{}""#, expected)), "Role {} not found in JSON", expected);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Event Timestamp Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: All events can have optional timestamp in milliseconds.
+
+/// Test: Event with timestamp
+/// Protocol: BaseEvent includes optional timestamp
+#[test]
+fn test_event_with_timestamp() {
+    let mut event = AGUIEvent::run_started("t1", "r1", None);
+    event = event.with_timestamp(1704067200000); // 2024-01-01 00:00:00 UTC
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""timestamp":1704067200000"#));
+}
+
+/// Test: Event timestamp roundtrip
+#[test]
+fn test_event_timestamp_roundtrip() {
+    let timestamp = 1704067200000u64;
+    let event = AGUIEvent::state_snapshot(json!({"test": true})).with_timestamp(timestamp);
+
+    let json = serde_json::to_string(&event).unwrap();
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+
+    if let AGUIEvent::StateSnapshot { base, .. } = parsed {
+        assert_eq!(base.timestamp, Some(timestamp));
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Raw Event Tests (source attribution)
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Raw events pass external system events with optional source.
+
+/// Test: Raw event with source attribution
+/// Protocol: RAW event with optional source field
+#[test]
+fn test_raw_event_with_source() {
+    let external = json!({"type": "model_response", "tokens": 150});
+    let event = AGUIEvent::raw(external.clone(), Some("anthropic".into()));
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"RAW""#));
+    assert!(json.contains(r#""source":"anthropic""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::Raw { source, .. } = parsed {
+        assert_eq!(source, Some("anthropic".to_string()));
+    }
+}
+
+/// Test: Raw event without source
+#[test]
+fn test_raw_event_without_source() {
+    let external = json!({"custom": "data"});
+    let event = AGUIEvent::raw(external, None);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(!json.contains(r#""source""#));
+}
+
+// ----------------------------------------------------------------------------
+// Custom Event Tests
+// ----------------------------------------------------------------------------
+//
+// Per AG-UI spec: Custom events for application-specific extensions.
+
+/// Test: Custom event with name and value
+/// Protocol: CUSTOM event for protocol extensions
+#[test]
+fn test_custom_event_structure() {
+    let value = json!({
+        "action": "highlight",
+        "target": "line:42",
+        "color": "yellow"
+    });
+    let event = AGUIEvent::custom("editor_highlight", value.clone());
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""type":"CUSTOM""#));
+    assert!(json.contains(r#""name":"editor_highlight""#));
+    assert!(json.contains(r#""action":"highlight""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::Custom { name, value: v, .. } = parsed {
+        assert_eq!(name, "editor_highlight");
+        assert_eq!(v["target"], "line:42");
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Full Protocol Flow Tests
+// ----------------------------------------------------------------------------
+//
+// End-to-end tests for complete AG-UI protocol flows.
+
+/// Test: Complete tool call flow with all events
+/// Protocol: Full TOOL_CALL flow: START → ARGS → END → RESULT
+#[test]
+fn test_complete_tool_call_protocol_flow() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Start
+    let start = AgentEvent::ToolCallStart {
+        id: "call_search".into(),
+        name: "web_search".into(),
+    };
+    events.extend(start.to_ag_ui_events(&mut ctx));
+
+    // Args streaming
+    let args1 = AgentEvent::ToolCallDelta {
+        id: "call_search".into(),
+        args_delta: r#"{"query":"#.into(),
+    };
+    events.extend(args1.to_ag_ui_events(&mut ctx));
+
+    let args2 = AgentEvent::ToolCallDelta {
+        id: "call_search".into(),
+        args_delta: r#""rust tutorials"}"#.into(),
+    };
+    events.extend(args2.to_ag_ui_events(&mut ctx));
+
+    // Ready (end args)
+    let ready = AgentEvent::ToolCallReady {
+        id: "call_search".into(),
+        name: "web_search".into(),
+        arguments: json!({"query": "rust tutorials"}),
+    };
+    events.extend(ready.to_ag_ui_events(&mut ctx));
+
+    // Result
+    let done = AgentEvent::ToolCallDone {
+        id: "call_search".into(),
+        result: ToolResult::success("web_search", json!({"results": 10})),
+        patch: None,
+    };
+    events.extend(done.to_ag_ui_events(&mut ctx));
+
+    // Verify complete sequence
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+}
+
+/// Test: State sync flow (snapshot then deltas)
+/// Protocol: STATE_SNAPSHOT → STATE_DELTA*
+#[test]
+fn test_state_sync_protocol_flow() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Initial snapshot
+    let snapshot = AgentEvent::StateSnapshot {
+        snapshot: json!({"counter": 0, "items": []}),
+    };
+    events.extend(snapshot.to_ag_ui_events(&mut ctx));
+
+    // Delta 1: increment counter
+    let delta1 = AgentEvent::StateDelta {
+        delta: vec![json!({"op": "replace", "path": "/counter", "value": 1})],
+    };
+    events.extend(delta1.to_ag_ui_events(&mut ctx));
+
+    // Delta 2: add item
+    let delta2 = AgentEvent::StateDelta {
+        delta: vec![json!({"op": "add", "path": "/items/-", "value": "item1"})],
+    };
+    events.extend(delta2.to_ag_ui_events(&mut ctx));
+
+    // Verify flow
+    assert_eq!(events.len(), 3);
+    assert!(matches!(&events[0], AGUIEvent::StateSnapshot { .. }));
+    assert!(matches!(&events[1], AGUIEvent::StateDelta { .. }));
+    assert!(matches!(&events[2], AGUIEvent::StateDelta { .. }));
+}
+
+/// Test: Mixed content flow (text + tool + text)
+/// Protocol: Verify correct event sequencing with interleaved content
+#[test]
+fn test_mixed_content_protocol_flow() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Text starts
+    let text1 = AgentEvent::TextDelta { delta: "Let me search".into() };
+    events.extend(text1.to_ag_ui_events(&mut ctx));
+
+    // Tool interrupts (should end text first)
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    events.extend(tool_start.to_ag_ui_events(&mut ctx));
+
+    // Tool completes
+    let tool_ready = AgentEvent::ToolCallReady {
+        id: "call_1".into(),
+        name: "search".into(),
+        arguments: json!({}),
+    };
+    events.extend(tool_ready.to_ag_ui_events(&mut ctx));
+
+    let tool_done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::success("search", json!({"count": 5})),
+        patch: None,
+    };
+    events.extend(tool_done.to_ag_ui_events(&mut ctx));
+
+    // Text resumes
+    let text2 = AgentEvent::TextDelta { delta: "Found 5 results".into() };
+    events.extend(text2.to_ag_ui_events(&mut ctx));
+
+    // Verify TEXT_MESSAGE_END appears before TOOL_CALL_START
+    let text_end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
+    let tool_start_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
+    assert!(text_end_idx < tool_start_idx, "TEXT_MESSAGE_END must come before TOOL_CALL_START");
 }
