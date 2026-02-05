@@ -4312,4 +4312,744 @@ mod tests {
         assert!(!denied.contains(&"id_3".to_string()));
         assert!(denied.contains(&"id_4".to_string()));
     }
+
+    // ========================================================================
+    // RunAgentRequest Validation Tests (CRITICAL)
+    // ========================================================================
+
+    #[test]
+    fn test_run_agent_request_validate_success() {
+        let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string());
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn test_run_agent_request_validate_empty_thread_id() {
+        let request = RunAgentRequest::new("".to_string(), "run_1".to_string());
+        let result = request.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("threadId"));
+    }
+
+    #[test]
+    fn test_run_agent_request_validate_empty_run_id() {
+        let request = RunAgentRequest::new("thread_1".to_string(), "".to_string());
+        let result = request.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("runId"));
+    }
+
+    #[test]
+    fn test_run_agent_request_empty_messages() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+        assert!(request.messages.is_empty());
+        assert!(request.last_user_message().is_none());
+        assert!(request.interaction_responses().is_empty());
+    }
+
+    // ========================================================================
+    // AGUIEvent Serialization Tests (HIGH)
+    // ========================================================================
+
+    #[test]
+    fn test_agui_event_run_started_roundtrip() {
+        let event = AGUIEvent::run_started("thread_1", "run_1", None);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"RUN_STARTED""#));
+        assert!(json.contains(r#""threadId":"thread_1""#));
+        assert!(json.contains(r#""runId":"run_1""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_run_finished_roundtrip() {
+        let event = AGUIEvent::run_finished("thread_1", "run_1", Some("Result".into()));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"RUN_FINISHED""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_run_error_roundtrip() {
+        let event = AGUIEvent::run_error("Something went wrong", Some("ERR_001".into()));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"RUN_ERROR""#));
+        assert!(json.contains(r#""message":"Something went wrong""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_text_message_start_roundtrip() {
+        let event = AGUIEvent::text_message_start("msg_1");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TEXT_MESSAGE_START""#));
+        assert!(json.contains(r#""messageId":"msg_1""#));
+        assert!(json.contains(r#""role":"assistant""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_text_message_content_roundtrip() {
+        let event = AGUIEvent::text_message_content("msg_1", "Hello world");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TEXT_MESSAGE_CONTENT""#));
+        assert!(json.contains(r#""delta":"Hello world""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_text_message_end_roundtrip() {
+        let event = AGUIEvent::text_message_end("msg_1");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TEXT_MESSAGE_END""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_tool_call_start_roundtrip() {
+        let event = AGUIEvent::tool_call_start("call_1", "read_file", None);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TOOL_CALL_START""#));
+        assert!(json.contains(r#""toolCallId":"call_1""#));
+        assert!(json.contains(r#""toolCallName":"read_file""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_tool_call_args_roundtrip() {
+        let event = AGUIEvent::tool_call_args("call_1", r#"{"path":"/tmp"}"#);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TOOL_CALL_ARGS""#));
+        assert!(json.contains(r#""toolCallId":"call_1""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_tool_call_end_roundtrip() {
+        let event = AGUIEvent::tool_call_end("call_1");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TOOL_CALL_END""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_tool_call_result_roundtrip() {
+        let event = AGUIEvent::tool_call_result("msg_1", "call_1", r#"{"success": true}"#);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"TOOL_CALL_RESULT""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_step_started_roundtrip() {
+        let event = AGUIEvent::step_started("step_1");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"STEP_STARTED""#));
+        assert!(json.contains(r#""stepName":"step_1""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_step_finished_roundtrip() {
+        let event = AGUIEvent::step_finished("step_1");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"STEP_FINISHED""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_state_snapshot_roundtrip() {
+        let event = AGUIEvent::StateSnapshot {
+            snapshot: json!({"counter": 42}),
+            base: BaseEventFields::default(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"STATE_SNAPSHOT""#));
+        assert!(json.contains(r#""counter":42"#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_state_delta_roundtrip() {
+        let event = AGUIEvent::StateDelta {
+            delta: vec![json!({"op": "replace", "path": "/counter", "value": 43})],
+            base: BaseEventFields::default(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"STATE_DELTA""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_custom_roundtrip() {
+        let event = AGUIEvent::Custom {
+            name: "my_event".into(),
+            value: json!({"data": [1, 2, 3]}),
+            base: BaseEventFields::default(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""type":"CUSTOM""#));
+        assert!(json.contains(r#""name":"my_event""#));
+
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_roundtrip_lifecycle_events() {
+        let events = vec![
+            AGUIEvent::run_started("t1", "r1", None),
+            AGUIEvent::run_finished("t1", "r1", None),
+            AGUIEvent::run_error("error", None),
+            AGUIEvent::step_started("step_1"),
+            AGUIEvent::step_finished("step_1"),
+        ];
+
+        for event in events {
+            let json = serde_json::to_string(&event).unwrap();
+            let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, parsed, "Roundtrip failed for event: {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_agui_event_roundtrip_text_events() {
+        let events = vec![
+            AGUIEvent::text_message_start("m1"),
+            AGUIEvent::text_message_content("m1", "Hello"),
+            AGUIEvent::text_message_end("m1"),
+        ];
+
+        for event in events {
+            let json = serde_json::to_string(&event).unwrap();
+            let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, parsed);
+        }
+    }
+
+    #[test]
+    fn test_agui_event_roundtrip_tool_events() {
+        let events = vec![
+            AGUIEvent::tool_call_start("c1", "read", None),
+            AGUIEvent::tool_call_args("c1", "{}"),
+            AGUIEvent::tool_call_end("c1"),
+            AGUIEvent::tool_call_result("m1", "c1", "done"),
+        ];
+
+        for event in events {
+            let json = serde_json::to_string(&event).unwrap();
+            let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event, parsed);
+        }
+    }
+
+    #[test]
+    fn test_agui_event_with_unicode() {
+        let event = AGUIEvent::text_message_content("m1", "你好世界 🌍 مرحبا");
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+
+        if let AGUIEvent::TextMessageContent { delta, .. } = parsed {
+            assert!(delta.contains("你好"));
+            assert!(delta.contains("🌍"));
+        }
+    }
+
+    #[test]
+    fn test_agui_event_with_special_characters() {
+        let event = AGUIEvent::text_message_content("m1", "Line1\nLine2\t\"quoted\"\\backslash");
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_agui_event_with_empty_delta() {
+        let event = AGUIEvent::text_message_content("m1", "");
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    // ========================================================================
+    // AGUIToolDef Tests (HIGH)
+    // ========================================================================
+
+    #[test]
+    fn test_aguitooldef_backend_factory() {
+        let tool = AGUIToolDef::backend("read_file", "Read a file from disk");
+        assert_eq!(tool.name, "read_file");
+        assert_eq!(tool.description, "Read a file from disk");
+        assert_eq!(tool.execute, ToolExecutionLocation::Backend);
+        assert!(!tool.is_frontend());
+    }
+
+    #[test]
+    fn test_aguitooldef_frontend_factory() {
+        let tool = AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard");
+        assert_eq!(tool.name, "copyToClipboard");
+        assert_eq!(tool.description, "Copy text to clipboard");
+        assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+        assert!(tool.is_frontend());
+    }
+
+    #[test]
+    fn test_aguitooldef_serialization_roundtrip() {
+        let tool = AGUIToolDef::backend("test_tool", "A test tool")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            }));
+
+        let json = serde_json::to_string(&tool).unwrap();
+        let parsed: AGUIToolDef = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(tool.name, parsed.name);
+        assert_eq!(tool.description, parsed.description);
+    }
+
+    #[test]
+    fn test_aguitooldef_with_parameters() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "filename": { "type": "string" },
+                "encoding": { "type": "string", "default": "utf-8" }
+            },
+            "required": ["filename"]
+        });
+
+        let tool = AGUIToolDef::backend("write_file", "Write to file")
+            .with_parameters(schema.clone());
+
+        assert_eq!(tool.parameters, Some(schema));
+    }
+
+    #[test]
+    fn test_aguitooldef_default_execution_location() {
+        let location = ToolExecutionLocation::default();
+        assert_eq!(location, ToolExecutionLocation::Backend);
+    }
+
+    // ========================================================================
+    // MessageRole Tests (MEDIUM)
+    // ========================================================================
+
+    #[test]
+    fn test_message_role_all_variants_serialize() {
+        let variants = vec![
+            (MessageRole::Developer, "developer"),
+            (MessageRole::System, "system"),
+            (MessageRole::Assistant, "assistant"),
+            (MessageRole::User, "user"),
+            (MessageRole::Tool, "tool"),
+        ];
+
+        for (role, expected) in variants {
+            let json = serde_json::to_string(&role).unwrap();
+            assert_eq!(json, format!("\"{}\"", expected));
+
+            let parsed: MessageRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(role, parsed);
+        }
+    }
+
+    #[test]
+    fn test_message_role_default() {
+        let role: MessageRole = Default::default();
+        assert_eq!(role, MessageRole::Assistant);
+    }
+
+    // ========================================================================
+    // AGUIMessage Tests (MEDIUM)
+    // ========================================================================
+
+    #[test]
+    fn test_aguimessage_factory_methods_all_variants() {
+        let user_msg = AGUIMessage::user("Hello");
+        assert_eq!(user_msg.role, MessageRole::User);
+        assert_eq!(user_msg.content, "Hello");
+
+        let assistant_msg = AGUIMessage::assistant("Hi there");
+        assert_eq!(assistant_msg.role, MessageRole::Assistant);
+        assert_eq!(assistant_msg.content, "Hi there");
+
+        let system_msg = AGUIMessage::system("You are helpful");
+        assert_eq!(system_msg.role, MessageRole::System);
+        assert_eq!(system_msg.content, "You are helpful");
+
+        let tool_msg = AGUIMessage::tool("result", "call_1");
+        assert_eq!(tool_msg.role, MessageRole::Tool);
+        assert_eq!(tool_msg.content, "result");
+        assert_eq!(tool_msg.tool_call_id, Some("call_1".to_string()));
+    }
+
+    #[test]
+    fn test_aguimessage_empty_content() {
+        let msg = AGUIMessage::user("");
+        assert_eq!(msg.content, "");
+        assert_eq!(msg.role, MessageRole::User);
+    }
+
+    #[test]
+    fn test_aguimessage_serialization_roundtrip() {
+        let msg = AGUIMessage::tool(r#"{"success":true}"#, "call_1");
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: AGUIMessage = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(msg.role, parsed.role);
+        assert_eq!(msg.content, parsed.content);
+        assert_eq!(msg.tool_call_id, parsed.tool_call_id);
+    }
+
+    #[test]
+    fn test_aguimessage_special_characters() {
+        let content = "Hello\nWorld\t\"quoted\" and emoji 🎉";
+        let msg = AGUIMessage::user(content);
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: AGUIMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.content, content);
+    }
+
+    // ========================================================================
+    // InteractionResponse Approval/Denial Tests (HIGH)
+    // ========================================================================
+
+    #[test]
+    fn test_interaction_response_all_approved_string_variants() {
+        let approved_strings = vec![
+            "true", "yes", "approved", "allow", "confirm", "ok", "accept",
+            "TRUE", "YES", "APPROVED", "ALLOW", "CONFIRM", "OK", "ACCEPT",
+            "True", "Yes", "Approved", "Allow", "Confirm", "Ok", "Accept",
+        ];
+
+        for s in approved_strings {
+            let result = Value::String(s.to_string());
+            assert!(
+                InteractionResponse::is_approved(&result),
+                "String '{}' should be approved",
+                s
+            );
+            assert!(
+                !InteractionResponse::is_denied(&result),
+                "String '{}' should not be denied",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn test_interaction_response_all_denied_string_variants() {
+        let denied_strings = vec![
+            "false", "no", "denied", "deny", "reject", "cancel", "abort",
+            "FALSE", "NO", "DENIED", "DENY", "REJECT", "CANCEL", "ABORT",
+            "False", "No", "Denied", "Deny", "Reject", "Cancel", "Abort",
+        ];
+
+        for s in denied_strings {
+            let result = Value::String(s.to_string());
+            assert!(
+                InteractionResponse::is_denied(&result),
+                "String '{}' should be denied",
+                s
+            );
+            assert!(
+                !InteractionResponse::is_approved(&result),
+                "String '{}' should not be approved",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn test_interaction_response_boolean_values() {
+        assert!(InteractionResponse::is_approved(&json!(true)));
+        assert!(!InteractionResponse::is_denied(&json!(true)));
+
+        assert!(InteractionResponse::is_denied(&json!(false)));
+        assert!(!InteractionResponse::is_approved(&json!(false)));
+    }
+
+    #[test]
+    fn test_interaction_response_object_with_approved_field() {
+        assert!(InteractionResponse::is_approved(&json!({"approved": true})));
+        assert!(!InteractionResponse::is_approved(&json!({"approved": false})));
+
+        assert!(InteractionResponse::is_denied(&json!({"approved": false})));
+        assert!(!InteractionResponse::is_denied(&json!({"approved": true})));
+    }
+
+    #[test]
+    fn test_interaction_response_object_with_allowed_field() {
+        assert!(InteractionResponse::is_approved(&json!({"allowed": true})));
+        assert!(!InteractionResponse::is_approved(&json!({"allowed": false})));
+    }
+
+    #[test]
+    fn test_interaction_response_object_with_denied_field() {
+        assert!(InteractionResponse::is_denied(&json!({"denied": true})));
+        assert!(!InteractionResponse::is_denied(&json!({"denied": false})));
+
+        assert!(!InteractionResponse::is_approved(&json!({"denied": true})));
+    }
+
+    #[test]
+    fn test_interaction_response_invalid_types_not_approved_or_denied() {
+        // Numbers are neither approved nor denied
+        assert!(!InteractionResponse::is_approved(&json!(1)));
+        assert!(!InteractionResponse::is_denied(&json!(1)));
+
+        // Arrays are neither approved nor denied
+        assert!(!InteractionResponse::is_approved(&json!([1, 2, 3])));
+        assert!(!InteractionResponse::is_denied(&json!([1, 2, 3])));
+
+        // Null is neither approved nor denied
+        assert!(!InteractionResponse::is_approved(&json!(null)));
+        assert!(!InteractionResponse::is_denied(&json!(null)));
+
+        // Empty object is neither approved nor denied
+        assert!(!InteractionResponse::is_approved(&json!({})));
+        assert!(!InteractionResponse::is_denied(&json!({})));
+    }
+
+    #[test]
+    fn test_interaction_response_unrecognized_string() {
+        // Random strings are neither approved nor denied
+        assert!(!InteractionResponse::is_approved(&json!("maybe")));
+        assert!(!InteractionResponse::is_denied(&json!("maybe")));
+
+        assert!(!InteractionResponse::is_approved(&json!("hello")));
+        assert!(!InteractionResponse::is_denied(&json!("hello")));
+    }
+
+    // ========================================================================
+    // AGUIContext Tests (MEDIUM)
+    // ========================================================================
+
+    #[test]
+    fn test_agui_context_new_message_id() {
+        let mut ctx = AGUIContext::new("thread_1".into(), "run_abc123".into());
+        let msg_id = ctx.new_message_id();
+
+        // Message ID should contain part of run_id
+        assert!(msg_id.starts_with("msg_"));
+    }
+
+    #[test]
+    fn test_agui_context_next_step_name_multiple() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        let step1 = ctx.next_step_name();
+        let step2 = ctx.next_step_name();
+        let step3 = ctx.next_step_name();
+
+        assert_eq!(step1, "step_1");
+        assert_eq!(step2, "step_2");
+        assert_eq!(step3, "step_3");
+    }
+
+    #[test]
+    fn test_agui_context_current_step_name_no_step() {
+        let ctx = AGUIContext::new("t1".into(), "r1".into());
+        let current = ctx.current_step_name();
+        assert!(current.starts_with("step_"));
+    }
+
+    #[test]
+    fn test_agui_context_text_stream_lifecycle() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // Initially not started
+        assert!(!ctx.text_started);
+
+        // Start text
+        ctx.start_text();
+        assert!(ctx.text_started);
+
+        // End text
+        ctx.end_text();
+        assert!(!ctx.text_started);
+
+        // Start again
+        ctx.start_text();
+        assert!(ctx.text_started);
+    }
+
+    #[test]
+    fn test_agui_context_start_text_idempotent() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        ctx.start_text();
+        assert!(ctx.text_started);
+
+        // Calling start_text again should keep it started
+        ctx.start_text();
+        assert!(ctx.text_started);
+    }
+
+    #[test]
+    fn test_agui_context_end_text_on_inactive() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // End without start should not panic
+        ctx.end_text();
+        assert!(!ctx.text_started);
+    }
+
+    // ========================================================================
+    // ToolExecutionLocation Tests (MEDIUM)
+    // ========================================================================
+
+    #[test]
+    fn test_tool_execution_location_all_variants() {
+        let backend = ToolExecutionLocation::Backend;
+        let frontend = ToolExecutionLocation::Frontend;
+
+        let backend_json = serde_json::to_string(&backend).unwrap();
+        let frontend_json = serde_json::to_string(&frontend).unwrap();
+
+        assert_eq!(backend_json, r#""backend""#);
+        assert_eq!(frontend_json, r#""frontend""#);
+
+        let parsed_backend: ToolExecutionLocation = serde_json::from_str(&backend_json).unwrap();
+        let parsed_frontend: ToolExecutionLocation = serde_json::from_str(&frontend_json).unwrap();
+
+        assert_eq!(parsed_backend, ToolExecutionLocation::Backend);
+        assert_eq!(parsed_frontend, ToolExecutionLocation::Frontend);
+    }
+
+    #[test]
+    fn test_tool_execution_location_default_is_backend() {
+        let location = ToolExecutionLocation::default();
+        assert_eq!(location, ToolExecutionLocation::Backend);
+    }
+
+    // ========================================================================
+    // BaseEventFields Tests (LOW)
+    // ========================================================================
+
+    #[test]
+    fn test_base_event_fields_default() {
+        let fields = BaseEventFields::default();
+        assert!(fields.timestamp.is_none());
+        assert!(fields.raw_event.is_none());
+    }
+
+    #[test]
+    fn test_base_event_fields_with_timestamp() {
+        let fields = BaseEventFields {
+            timestamp: Some(1234567890),
+            raw_event: None,
+        };
+
+        let json = serde_json::to_string(&fields).unwrap();
+        assert!(json.contains("1234567890"));
+    }
+
+    #[test]
+    fn test_base_event_fields_skip_serialization_when_none() {
+        let fields = BaseEventFields::default();
+        let json = serde_json::to_string(&fields).unwrap();
+
+        // Should be empty object or minimal
+        assert!(!json.contains("timestamp"));
+        assert!(!json.contains("rawEvent"));
+    }
+
+    // ========================================================================
+    // RequestError Additional Tests (LOW)
+    // ========================================================================
+
+    #[test]
+    fn test_request_error_invalid_field_new() {
+        let err = RequestError::invalid_field("field cannot be empty");
+        assert_eq!(err.code, "INVALID_FIELD");
+        assert!(err.message.contains("field cannot be empty"));
+    }
+
+    #[test]
+    fn test_request_error_validation_new() {
+        let err = RequestError::validation("invalid input");
+        assert_eq!(err.code, "VALIDATION_ERROR");
+        assert!(err.message.contains("invalid input"));
+    }
+
+    // ========================================================================
+    // Interaction.to_ag_ui_events Tests (MEDIUM)
+    // ========================================================================
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_structure() {
+        let interaction = Interaction::new("int_1", "confirm")
+            .with_message("Allow this?")
+            .with_parameters(json!({"tool_id": "read_file"}));
+
+        let events = interaction.to_ag_ui_events();
+
+        // Should produce 3 events: Start, Args, End
+        assert_eq!(events.len(), 3);
+
+        // First should be ToolCallStart
+        assert!(matches!(&events[0], AGUIEvent::ToolCallStart { .. }));
+
+        // Second should be ToolCallArgs
+        assert!(matches!(&events[1], AGUIEvent::ToolCallArgs { .. }));
+
+        // Third should be ToolCallEnd
+        assert!(matches!(&events[2], AGUIEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_with_empty_fields() {
+        let interaction = Interaction::new("int_1", "confirm");
+        // No message, no parameters
+
+        let events = interaction.to_ag_ui_events();
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_interaction_to_ag_ui_events_tool_call_id() {
+        let interaction = Interaction::new("my_interaction_id", "my_action");
+        let events = interaction.to_ag_ui_events();
+
+        if let AGUIEvent::ToolCallStart { tool_call_id, .. } = &events[0] {
+            assert_eq!(tool_call_id, "my_interaction_id");
+        } else {
+            panic!("First event should be ToolCallStart");
+        }
+    }
 }
