@@ -81,6 +81,7 @@
 //! ```
 
 pub mod ag_ui;
+pub mod activity;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -116,6 +117,9 @@ pub use storage::{FileStorage, MemoryStorage, Storage, StorageError};
 // Stream exports
 pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
 
+// Activity exports
+pub use activity::ActivityHub;
+
 // UI Stream exports (AI SDK v6 compatible)
 pub use ui_stream::{
     AiSdkAdapter, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
@@ -123,8 +127,9 @@ pub use ui_stream::{
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    run_agent_stream, run_agent_stream_sse, AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef,
-    AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
+    run_agent_stream, run_agent_stream_sse, run_agent_stream_sse_with_parent,
+    run_agent_stream_with_parent, AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter,
+    RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports
@@ -143,15 +148,15 @@ pub use convert::{
 // Loop exports
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_step, run_turn, tool_map, tool_map_from_arc, AgentConfig,
-    AgentLoopError, StepResult,
+    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
+    AgentLoopError, RoundResult,
 };
 
 // Plugin exports
 pub use plugin::AgentPlugin;
 
 // Phase exports
-pub use phase::{Phase, ToolContext, TurnContext, TurnResult};
+pub use phase::{Phase, ToolContext, StepContext, StepOutcome};
 
 // State types exports
 pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};

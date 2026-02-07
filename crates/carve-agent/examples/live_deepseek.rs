@@ -318,13 +318,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 4: Counter Tool with State ---");
     test_counter_with_state(&client).await?;
 
-    // Test 5: Multi-turn conversation
-    println!("\n--- Test 5: Multi-turn Conversation ---");
-    test_multi_turn(&client).await?;
+    // Test 5: Multi-run conversation
+    println!("\n--- Test 5: Multi-run Conversation ---");
+    test_multi_run(&client).await?;
 
-    // Test 6: Multi-turn with tools
-    println!("\n--- Test 6: Multi-turn with Tools ---");
-    test_multi_turn_with_tools(&client).await?;
+    // Test 6: Multi-run with tools
+    println!("\n--- Test 6: Multi-run with Tools ---");
+    test_multi_run_with_tools(&client).await?;
 
     // Test 7: Session persistence and restore
     println!("\n--- Test 7: Session Persistence & Restore ---");
@@ -467,11 +467,11 @@ async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-async fn test_multi_turn(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
-    // Turn 1: Introduce a topic
-    let mut session = Session::new("test-multi-turn")
+    // Run 1: Introduce a topic
+    let mut session = Session::new("test-multi-run")
         .with_message(Message::system("You are a helpful assistant. Keep your answers brief."))
         .with_message(Message::user("My name is Alice. Remember it."));
 
@@ -481,10 +481,10 @@ async fn test_multi_turn(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .map_err(|e| format!("LLM error: {}", e))?;
     session = new_session;
 
-    println!("Turn 1 - User: My name is Alice. Remember it.");
-    println!("Turn 1 - Assistant: {}", response);
+    println!("Run 1 - User: My name is Alice. Remember it.");
+    println!("Run 1 - Assistant: {}", response);
 
-    // Turn 2: Test if context is remembered
+    // Run 2: Test if context is remembered
     session = session.with_message(Message::user("What is my name?"));
 
     let (new_session, response) =
@@ -493,10 +493,10 @@ async fn test_multi_turn(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .map_err(|e| format!("LLM error: {}", e))?;
     session = new_session;
 
-    println!("Turn 2 - User: What is my name?");
-    println!("Turn 2 - Assistant: {}", response);
+    println!("Run 2 - User: What is my name?");
+    println!("Run 2 - Assistant: {}", response);
 
-    // Turn 3: Another follow-up
+    // Run 3: Another follow-up
     session = session.with_message(Message::user("Say my name backwards."));
 
     let (session, response) =
@@ -504,14 +504,14 @@ async fn test_multi_turn(client: &Client) -> Result<(), Box<dyn std::error::Erro
             .await
             .map_err(|e| format!("LLM error: {}", e))?;
 
-    println!("Turn 3 - User: Say my name backwards.");
-    println!("Turn 3 - Assistant: {}", response);
+    println!("Run 3 - User: Say my name backwards.");
+    println!("Run 3 - Assistant: {}", response);
     println!("Total messages in session: {}", session.message_count());
 
     // Verify context was maintained
     let response_lower = response.to_lowercase();
     if response_lower.contains("ecila") || response_lower.contains("e-c-i-l-a") {
-        println!("✅ Context maintained correctly across turns!");
+        println!("✅ Context maintained correctly across runs!");
     } else {
         println!("⚠️ Context may not be fully maintained (expected 'ecilA')");
     }
@@ -519,7 +519,7 @@ async fn test_multi_turn(client: &Client) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
@@ -532,7 +532,7 @@ async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::
              Always use the tool when asked about the counter.",
         ));
 
-    // Turn 1: Get current value
+    // Run 1: Get current value
     session = session.with_message(Message::user("What is the current counter value?"));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
@@ -540,10 +540,10 @@ async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::
         .map_err(|e| format!("LLM error: {}", e))?;
     session = new_session;
 
-    println!("Turn 1 - User: What is the current counter value?");
-    println!("Turn 1 - Assistant: {}", response);
+    println!("Run 1 - User: What is the current counter value?");
+    println!("Run 1 - Assistant: {}", response);
 
-    // Turn 2: Increment
+    // Run 2: Increment
     session = session.with_message(Message::user("Add 5 to it."));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
@@ -551,10 +551,10 @@ async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::
         .map_err(|e| format!("LLM error: {}", e))?;
     session = new_session;
 
-    println!("Turn 2 - User: Add 5 to it.");
-    println!("Turn 2 - Assistant: {}", response);
+    println!("Run 2 - User: Add 5 to it.");
+    println!("Run 2 - Assistant: {}", response);
 
-    // Turn 3: Decrement
+    // Run 3: Decrement
     session = session.with_message(Message::user("Now subtract 3."));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
@@ -562,18 +562,18 @@ async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::
         .map_err(|e| format!("LLM error: {}", e))?;
     session = new_session;
 
-    println!("Turn 3 - User: Now subtract 3.");
-    println!("Turn 3 - Assistant: {}", response);
+    println!("Run 3 - User: Now subtract 3.");
+    println!("Run 3 - Assistant: {}", response);
 
-    // Turn 4: Verify final state
+    // Run 4: Verify final state
     session = session.with_message(Message::user("What is the final value?"));
 
     let (session, response) = run_loop(client, &config, session, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
-    println!("Turn 4 - User: What is the final value?");
-    println!("Turn 4 - Assistant: {}", response);
+    println!("Run 4 - User: What is the final value?");
+    println!("Run 4 - Assistant: {}", response);
 
     // Check state
     let final_state = session.rebuild_state()?;
@@ -585,7 +585,7 @@ async fn test_multi_turn_with_tools(client: &Client) -> Result<(), Box<dyn std::
     println!("  Final counter: {} (expected: 12 = 10 + 5 - 3)", final_counter);
 
     if final_counter == 12 {
-        println!("✅ Multi-turn with tools working correctly!");
+        println!("✅ Multi-run with tools working correctly!");
     } else {
         println!("⚠️ Final counter value unexpected (got {}, expected 12)", final_counter);
     }
@@ -624,7 +624,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     println!("User: My favorite number is 42. Remember it. Also, what is the counter?");
     println!("Assistant: {}", response);
 
-    // Add another turn
+    // Add another step
     session = session.with_message(Message::user("Increment the counter by my favorite number."));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
@@ -942,7 +942,7 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
     let mut session = Session::with_initial_state("test-replay", json!({ "counter": 0 }))
         .with_message(Message::system("You are a helpful assistant. Use the counter tool."));
 
-    // Step 1: Set counter to 10
+    // Run 1: Set counter to 10
     session = session.with_message(Message::user("Set the counter to 10."));
     let (new_session, _) = run_loop(client, &config, session, &tools)
         .await
@@ -951,9 +951,9 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_1 = session.rebuild_state()?;
     let patches_after_1 = session.patch_count();
-    println!("After step 1: counter = {}, patches = {}", state_after_1["counter"], patches_after_1);
+    println!("After run 1: counter = {}, patches = {}", state_after_1["counter"], patches_after_1);
 
-    // Step 2: Add 20
+    // Run 2: Add 20
     session = session.with_message(Message::user("Now add 20 to the counter."));
     let (new_session, _) = run_loop(client, &config, session, &tools)
         .await
@@ -962,9 +962,9 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_2 = session.rebuild_state()?;
     let patches_after_2 = session.patch_count();
-    println!("After step 2: counter = {}, patches = {}", state_after_2["counter"], patches_after_2);
+    println!("After run 2: counter = {}, patches = {}", state_after_2["counter"], patches_after_2);
 
-    // Step 3: Add 30
+    // Run 3: Add 30
     session = session.with_message(Message::user("Add 30 more."));
     let (new_session, _) = run_loop(client, &config, session, &tools)
         .await
@@ -973,7 +973,7 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_3 = session.rebuild_state()?;
     let patches_after_3 = session.patch_count();
-    println!("After step 3: counter = {}, patches = {}", state_after_3["counter"], patches_after_3);
+    println!("After run 3: counter = {}, patches = {}", state_after_3["counter"], patches_after_3);
 
     // Now replay to earlier states
     println!("\n[Replaying to earlier states]");
@@ -1009,7 +1009,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let mut session = Session::new("test-long-conv")
         .with_message(Message::system("You are a helpful assistant. Keep answers brief."));
 
-    // Add 20 turns of conversation history
+    // Add 20 runs of conversation history
     for i in 1..=20 {
         session = session
             .with_message(Message::user(format!("Message {} from user. Remember the number {}.", i, i * 10)))

@@ -5,7 +5,7 @@
 
 use crate::{CarveResult, Op, Patch, Path};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Collector for patch operations.
 ///
@@ -17,25 +17,45 @@ use std::sync::Mutex;
 ///
 /// `PatchSink` uses a `Mutex` internally to support async contexts.
 /// In single-threaded usage, the lock overhead is minimal.
-pub struct PatchSink<'a>(&'a Mutex<Vec<Op>>);
+pub struct PatchSink<'a> {
+    ops: &'a Mutex<Vec<Op>>,
+    on_collect: Option<Arc<dyn Fn(&Op) + Send + Sync + 'a>>,
+}
 
 impl<'a> PatchSink<'a> {
     /// Create a new PatchSink wrapping a Mutex.
     #[doc(hidden)]
     pub fn new(ops: &'a Mutex<Vec<Op>>) -> Self {
-        Self(ops)
+        Self {
+            ops,
+            on_collect: None,
+        }
+    }
+
+    /// Create a new PatchSink with a collect hook.
+    ///
+    /// The hook is invoked after each operation is collected.
+    #[doc(hidden)]
+    pub fn new_with_hook(ops: &'a Mutex<Vec<Op>>, hook: Arc<dyn Fn(&Op) + Send + Sync + 'a>) -> Self {
+        Self {
+            ops,
+            on_collect: Some(hook),
+        }
     }
 
     /// Collect an operation.
     #[inline]
     pub fn collect(&self, op: Op) {
-        self.0.lock().unwrap().push(op);
+        self.ops.lock().unwrap().push(op.clone());
+        if let Some(hook) = &self.on_collect {
+            hook(&op);
+        }
     }
 
     /// Get the inner Mutex reference (for creating nested PatchSinks).
     #[doc(hidden)]
     pub fn inner(&self) -> &'a Mutex<Vec<Op>> {
-        self.0
+        self.ops
     }
 }
 
@@ -112,5 +132,23 @@ mod tests {
 
         let collected = ops.lock().unwrap();
         assert_eq!(collected.len(), 2);
+    }
+
+    #[test]
+    fn test_patch_sink_collect_hook() {
+        let ops = Mutex::new(Vec::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_hook = seen.clone();
+        let hook = Arc::new(move |op: &Op| {
+            seen_hook.lock().unwrap().push(format!("{:?}", op));
+        });
+        let sink = PatchSink::new_with_hook(&ops, hook);
+
+        sink.collect(Op::set(Path::root().key("a"), Value::from(1)));
+        sink.collect(Op::delete(Path::root().key("b")));
+
+        let collected = ops.lock().unwrap();
+        assert_eq!(collected.len(), 2);
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 }

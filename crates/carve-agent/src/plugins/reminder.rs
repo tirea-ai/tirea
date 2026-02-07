@@ -128,17 +128,17 @@ impl AgentPlugin for ReminderPlugin {
         Some((REMINDER_STATE_PATH, json!({ "items": [] })))
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, turn: &mut crate::phase::TurnContext<'_>) {
+    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
         use crate::phase::Phase;
 
         match phase {
             Phase::BeforeInference => {
                 // Inject any stored reminders as session context
-                if let Some(state) = turn.get::<Value>(REMINDER_STATE_PATH) {
+                if let Some(state) = step.get::<Value>(REMINDER_STATE_PATH) {
                     if let Some(items) = state.get("items").and_then(|v| v.as_array()) {
                         for item in items {
                             if let Some(text) = item.as_str() {
-                                turn.session(format!("Reminder: {}", text));
+                                step.session(format!("Reminder: {}", text));
                             }
                         }
                     }
@@ -146,7 +146,7 @@ impl AgentPlugin for ReminderPlugin {
 
                 // Clear reminders after injection if configured
                 if self.clear_after_llm_request {
-                    turn.set(REMINDER_STATE_PATH, json!({ "items": [] }));
+                    step.set(REMINDER_STATE_PATH, json!({ "items": [] }));
                 }
             }
             _ => {}
@@ -259,21 +259,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
-        use crate::phase::{Phase, TurnContext};
+        use crate::phase::{Phase, StepContext};
         use crate::session::Session;
 
         let plugin = ReminderPlugin::new();
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up reminder data
-        turn.set(REMINDER_STATE_PATH, json!({ "items": ["Test reminder"] }));
+        step.set(REMINDER_STATE_PATH, json!({ "items": ["Test reminder"] }));
 
         // Call on_phase with BeforeInference
-        plugin.on_phase(Phase::BeforeInference, &mut turn).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         // Should have injected reminder as session context
-        assert!(!turn.session_context.is_empty());
-        assert!(turn.session_context[0].contains("Test reminder"));
+        assert!(!step.session_context.is_empty());
+        assert!(step.session_context[0].contains("Test reminder"));
     }
 }

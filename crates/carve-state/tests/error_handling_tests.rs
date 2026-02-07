@@ -3,7 +3,7 @@
 //! These tests verify that meaningful error messages are produced
 //! when operations fail.
 
-use carve_state::{apply_patch, path, CarveError, Context, Op, Patch, PatchSink, Path, State};
+use carve_state::{apply_patch, path, CarveError, Context, Op, Patch, PatchSink, Path, State as StateTrait};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Helper to create a state ref and collect patches for testing.
-fn with_state_ref<T: State, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
+fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
 where
     F: FnOnce(T::Ref<'_>),
 {

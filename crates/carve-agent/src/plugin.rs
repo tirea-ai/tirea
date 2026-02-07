@@ -1,12 +1,12 @@
 //! Agent plugin system with Phase-based execution.
 //!
 //! Plugins extend agent behavior by responding to execution phases.
-//! Each phase receives a mutable `TurnContext` for reading/writing state.
+//! Each phase receives a mutable `StepContext` for reading/writing state.
 //!
 //! # Phases
 //!
 //! - `SessionStart` / `SessionEnd` - Session lifecycle (called once)
-//! - `TurnStart` / `TurnEnd` - Turn lifecycle
+//! - `StepStart` / `StepEnd` - Step lifecycle
 //! - `BeforeInference` / `AfterInference` - LLM call lifecycle
 //! - `BeforeToolExecute` / `AfterToolExecute` - Tool execution lifecycle
 //!
@@ -21,17 +21,17 @@
 //! impl AgentPlugin for MyPlugin {
 //!     fn id(&self) -> &str { "my_plugin" }
 //!
-//!     async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 //!         match phase {
-//!             Phase::TurnStart => {
-//!                 turn.system(format!("Time: {}", chrono::Local::now()));
+//!             Phase::StepStart => {
+//!                 step.system(format!("Time: {}", chrono::Local::now()));
 //!             }
 //!             Phase::BeforeInference => {
-//!                 turn.exclude("dangerous_tool");
+//!                 step.exclude("dangerous_tool");
 //!             }
 //!             Phase::AfterToolExecute => {
-//!                 if turn.tool_id() == Some("read_file") {
-//!                     turn.reminder("Check for sensitive data.");
+//!                 if step.tool_id() == Some("read_file") {
+//!                     step.reminder("Check for sensitive data.");
 //!                 }
 //!             }
 //!             _ => {}
@@ -40,7 +40,7 @@
 //! }
 //! ```
 
-use crate::phase::{Phase, TurnContext};
+use crate::phase::{Phase, StepContext};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -55,15 +55,15 @@ use serde_json::Value;
 /// Use pattern matching to handle specific phases:
 ///
 /// ```ignore
-/// async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 ///     match phase {
 ///         Phase::SessionStart => { /* initialize */ }
-///         Phase::TurnStart => { /* prepare context */ }
+///         Phase::StepStart => { /* prepare context */ }
 ///         Phase::BeforeInference => { /* inject context, filter tools */ }
 ///         Phase::AfterInference => { /* process response */ }
 ///         Phase::BeforeToolExecute => { /* check permissions */ }
 ///         Phase::AfterToolExecute => { /* add reminders */ }
-///         Phase::TurnEnd => { /* cleanup */ }
+///         Phase::StepEnd => { /* cleanup */ }
 ///         Phase::SessionEnd => { /* finalize */ }
 ///     }
 /// }
@@ -71,12 +71,12 @@ use serde_json::Value;
 ///
 /// # Context Manipulation
 ///
-/// Through `TurnContext`, plugins can:
+/// Through `StepContext`, plugins can:
 ///
-/// - **Inject context**: `turn.system()`, `turn.session()`, `turn.reminder()`
-/// - **Filter tools**: `turn.exclude()`, `turn.include_only()`
-/// - **Control execution**: `turn.block()`, `turn.pending()`, `turn.confirm()`
-/// - **Store data**: `turn.set()`, `turn.get()`
+/// - **Inject context**: `step.system()`, `step.session()`, `step.reminder()`
+/// - **Filter tools**: `step.exclude()`, `step.include_only()`
+/// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
+/// - **Store data**: `step.set()`, `step.get()`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
@@ -90,13 +90,13 @@ pub trait AgentPlugin: Send + Sync {
     /// # Arguments
     ///
     /// - `phase`: The current execution phase
-    /// - `turn`: Mutable context for the current turn
-    async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>);
+    /// - `step`: Mutable context for the current step
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>);
 
     /// Provide initial data for this plugin.
     ///
     /// Returns a tuple of (key, initial_value) that will be stored
-    /// in `TurnContext.data` at session start.
+    /// in `StepContext.data` at session start.
     ///
     /// # Example
     ///
@@ -113,7 +113,7 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::phase::TurnContext;
+    use crate::phase::StepContext;
     use crate::session::Session;
     use crate::state_types::Interaction;
     use crate::traits::tool::ToolDescriptor;
@@ -140,13 +140,13 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
-                Phase::TurnStart => {
-                    turn.system("Test system context");
+                Phase::StepStart => {
+                    step.system("Test system context");
                 }
                 Phase::BeforeInference => {
-                    turn.session("Test session context");
+                    step.session("Test session context");
                 }
                 _ => {}
             }
@@ -165,7 +165,7 @@ mod tests {
             "noop"
         }
 
-        async fn on_phase(&self, _phase: Phase, _turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
             // No-op
         }
     }
@@ -178,18 +178,18 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
-                Phase::TurnStart => {
-                    turn.system("Current time: 2024-01-01");
+                Phase::StepStart => {
+                    step.system("Current time: 2024-01-01");
                 }
                 Phase::BeforeInference => {
-                    turn.session("Remember to be helpful.");
-                    turn.exclude("dangerous_tool");
+                    step.session("Remember to be helpful.");
+                    step.exclude("dangerous_tool");
                 }
                 Phase::AfterToolExecute => {
-                    if turn.tool_id() == Some("read_file") {
-                        turn.reminder("Check for sensitive data.");
+                    if step.tool_id() == Some("read_file") {
+                        step.reminder("Check for sensitive data.");
                     }
                 }
                 _ => {}
@@ -215,14 +215,14 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
 
-            if let Some(tool_id) = turn.tool_id() {
+            if let Some(tool_id) = step.tool_id() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
-                    turn.block("Permission denied");
+                    step.block("Permission denied");
                 }
             }
         }
@@ -246,14 +246,14 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
 
-            if let Some(tool_id) = turn.tool_id() {
-                if self.confirm_tools.contains(&tool_id.to_string()) && !turn.tool_pending() {
-                    turn.pending(
+            if let Some(tool_id) = step.tool_id() {
+                if self.confirm_tools.contains(&tool_id.to_string()) && !step.tool_pending() {
+                    step.pending(
                         Interaction::new("confirm", "confirm")
                             .with_message("Execute this tool?"),
                     );
@@ -306,27 +306,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plugin_on_phase_turn_start() {
+    async fn test_plugin_on_phase_step_start() {
         let plugin = TestPlugin::new("test");
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        plugin.on_phase(Phase::TurnStart, &mut turn).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
 
-        assert_eq!(turn.system_context.len(), 1);
-        assert_eq!(turn.system_context[0], "Test system context");
+        assert_eq!(step.system_context.len(), 1);
+        assert_eq!(step.system_context[0], "Test system context");
     }
 
     #[tokio::test]
     async fn test_plugin_on_phase_before_inference() {
         let plugin = TestPlugin::new("test");
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut turn).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
-        assert_eq!(turn.session_context.len(), 1);
-        assert_eq!(turn.session_context[0], "Test session context");
+        assert_eq!(step.session_context.len(), 1);
+        assert_eq!(step.session_context[0], "Test session context");
     }
 
     #[tokio::test]
@@ -334,78 +334,78 @@ mod tests {
         let plugin = ContextInjectionPlugin;
         let session = mock_session();
         let tools = mock_tools();
-        let mut turn = TurnContext::new(&session, tools);
+        let mut step = StepContext::new(&session, tools);
 
-        // TurnStart - adds system context
-        plugin.on_phase(Phase::TurnStart, &mut turn).await;
-        assert_eq!(turn.system_context[0], "Current time: 2024-01-01");
+        // StepStart - adds system context
+        plugin.on_phase(Phase::StepStart, &mut step).await;
+        assert_eq!(step.system_context[0], "Current time: 2024-01-01");
 
         // BeforeInference - adds session context and filters tools
-        plugin.on_phase(Phase::BeforeInference, &mut turn).await;
-        assert_eq!(turn.session_context[0], "Remember to be helpful.");
-        assert!(!turn.tools.iter().any(|t| t.id == "dangerous_tool"));
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        assert_eq!(step.session_context[0], "Remember to be helpful.");
+        assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
-        plugin.on_phase(Phase::AfterToolExecute, &mut turn).await;
-        assert_eq!(turn.system_reminders[0], "Check for sensitive data.");
+        step.tool = Some(crate::phase::ToolContext::new(&call));
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        assert_eq!(step.system_reminders[0], "Check for sensitive data.");
     }
 
     #[tokio::test]
     async fn test_permission_plugin_blocks_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
+        step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_blocked());
+        assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_allows_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
+        step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(!turn.tool_blocked());
+        assert!(!step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_confirmation_plugin_sets_pending() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
+        step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending());
+        assert!(step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_confirmation_plugin_skips_non_matching() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
+        step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(!turn.tool_pending());
+        assert!(!step.tool_pending());
     }
 
     #[tokio::test]
@@ -417,49 +417,49 @@ mod tests {
 
         let session = mock_session();
         let tools = mock_tools();
-        let mut turn = TurnContext::new(&session, tools);
+        let mut step = StepContext::new(&session, tools);
 
-        // Run all plugins for TurnStart
+        // Run all plugins for StepStart
         for plugin in &plugins {
-            plugin.on_phase(Phase::TurnStart, &mut turn).await;
+            plugin.on_phase(Phase::StepStart, &mut step).await;
         }
-        assert!(!turn.system_context.is_empty());
+        assert!(!step.system_context.is_empty());
 
         // Run all plugins for BeforeInference
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeInference, &mut turn).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
         }
-        assert!(!turn.session_context.is_empty());
-        assert!(!turn.tools.iter().any(|t| t.id == "dangerous_tool"));
+        assert!(!step.session_context.is_empty());
+        assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
         // Run all plugins for BeforeToolExecute with dangerous tool
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        turn.tool = Some(crate::phase::ToolContext::new(&call));
+        step.tool = Some(crate::phase::ToolContext::new(&call));
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         }
-        assert!(turn.tool_blocked());
+        assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_noop_plugin_all_phases() {
         let plugin = NoOpPlugin;
         let session = mock_session();
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // All phases should be callable without panic or side effects
-        plugin.on_phase(Phase::SessionStart, &mut turn).await;
-        plugin.on_phase(Phase::TurnStart, &mut turn).await;
-        plugin.on_phase(Phase::BeforeInference, &mut turn).await;
-        plugin.on_phase(Phase::AfterInference, &mut turn).await;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-        plugin.on_phase(Phase::AfterToolExecute, &mut turn).await;
-        plugin.on_phase(Phase::TurnEnd, &mut turn).await;
-        plugin.on_phase(Phase::SessionEnd, &mut turn).await;
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::StepEnd, &mut step).await;
+        plugin.on_phase(Phase::SessionEnd, &mut step).await;
 
         // Context should be unchanged
-        assert!(turn.system_context.is_empty());
-        assert!(turn.session_context.is_empty());
-        assert!(turn.system_reminders.is_empty());
+        assert!(step.system_context.is_empty());
+        assert!(step.session_context.is_empty());
+        assert!(step.system_reminders.is_empty());
     }
 }

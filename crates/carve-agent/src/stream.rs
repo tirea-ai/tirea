@@ -218,12 +218,6 @@ pub enum AgentEvent {
         result: ToolResult,
         patch: Option<TrackedPatch>,
     },
-    /// Turn completed (LLM finished, tools may or may not have been called).
-    TurnDone {
-        text: String,
-        tool_calls: Vec<ToolCall>,
-    },
-
     // ========================================================================
     // Step Events
     // ========================================================================
@@ -241,6 +235,23 @@ pub enum AgentEvent {
     StateDelta { delta: Vec<Value> },
     /// Messages snapshot (for reconnection).
     MessagesSnapshot { messages: Vec<Value> },
+
+    // ========================================================================
+    // Activity Events (AG-UI compatible)
+    // ========================================================================
+    /// Activity snapshot (complete activity state).
+    ActivitySnapshot {
+        message_id: String,
+        activity_type: String,
+        content: Value,
+        replace: Option<bool>,
+    },
+    /// Activity delta (RFC 6902 JSON Patch operations).
+    ActivityDelta {
+        message_id: String,
+        activity_type: String,
+        patch: Vec<Value>,
+    },
 
     // ========================================================================
     // Interaction Events
@@ -288,11 +299,6 @@ impl AgentEvent {
             AgentEvent::ToolCallDone { id, result, .. } => {
                 vec![UIStreamEvent::tool_output_available(id, result.to_json())]
             }
-            AgentEvent::TurnDone { .. } => {
-                // Turn done is internal - UI uses text-end and finish-step
-                vec![]
-            }
-
             // Step events
             AgentEvent::StepStart => {
                 vec![UIStreamEvent::start_step()]
@@ -310,6 +316,34 @@ impl AgentEvent {
             }
             AgentEvent::MessagesSnapshot { messages } => {
                 vec![UIStreamEvent::data("messages-snapshot", Value::Array(messages.clone()))]
+            }
+
+            // Activity events - use custom data events for AI SDK
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "content": content,
+                    "replace": replace,
+                });
+                vec![UIStreamEvent::data("activity-snapshot", payload)]
+            }
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "patch": patch,
+                });
+                vec![UIStreamEvent::data("activity-delta", payload)]
             }
 
             // Interaction events
@@ -384,11 +418,6 @@ impl AgentEvent {
                 let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
                 vec![AGUIEvent::tool_call_result(&result_msg_id, id, content)]
             }
-            AgentEvent::TurnDone { .. } => {
-                // Internal event, no AG-UI equivalent
-                vec![]
-            }
-
             // Step events
             AgentEvent::StepStart => {
                 vec![AGUIEvent::step_started(ctx.next_step_name())]
@@ -408,6 +437,32 @@ impl AgentEvent {
                 vec![AGUIEvent::messages_snapshot(messages.clone())]
             }
 
+            // Activity events
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                vec![AGUIEvent::activity_snapshot(
+                    message_id.clone(),
+                    activity_type.clone(),
+                    value_to_map(content),
+                    replace.clone(),
+                )]
+            }
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                vec![AGUIEvent::activity_delta(
+                    message_id.clone(),
+                    activity_type.clone(),
+                    patch.clone(),
+                )]
+            }
+
             // Interaction events
             AgentEvent::Pending { interaction } => {
                 let mut events = vec![];
@@ -421,13 +476,18 @@ impl AgentEvent {
             }
 
             // Completion events
-            AgentEvent::Done { .. } => {
+            AgentEvent::Done { response } => {
                 let mut events = vec![];
                 // End text stream if active
                 if ctx.end_text() {
                     events.push(AGUIEvent::text_message_end(&ctx.message_id));
                 }
-                events.push(AGUIEvent::run_finished(&ctx.thread_id, &ctx.run_id, None));
+                let result = if response.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({ "response": response }))
+                };
+                events.push(AGUIEvent::run_finished(&ctx.thread_id, &ctx.run_id, result));
                 events
             }
             AgentEvent::Aborted { reason } => {
@@ -440,9 +500,24 @@ impl AgentEvent {
     }
 }
 
+fn value_to_map(value: &Value) -> HashMap<String, Value> {
+    match value.as_object() {
+        Some(map) => map
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        None => {
+            let mut map = HashMap::new();
+            map.insert("value".to_string(), value.clone());
+            map
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ag_ui::{AGUIContext, AGUIEvent};
     use serde_json::json;
 
     #[test]
@@ -556,22 +631,49 @@ mod tests {
             assert!(patch.is_none());
         }
 
-        // Test TurnDone
-        let event = AgentEvent::TurnDone {
-            text: "Done".to_string(),
-            tool_calls: vec![],
-        };
-        if let AgentEvent::TurnDone { text, tool_calls } = event {
-            assert_eq!(text, "Done");
-            assert!(tool_calls.is_empty());
-        }
-
         // Test Done
         let event = AgentEvent::Done {
             response: "Final response".to_string(),
         };
         if let AgentEvent::Done { response } = event {
             assert_eq!(response, "Final response");
+        }
+
+        // Test ActivitySnapshot
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_1".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!({"progress": 0.5}),
+            replace: Some(true),
+        };
+        if let AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } = event
+        {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content["progress"], 0.5);
+            assert_eq!(replace, Some(true));
+        }
+
+        // Test ActivityDelta
+        let event = AgentEvent::ActivityDelta {
+            message_id: "activity_1".to_string(),
+            activity_type: "progress".to_string(),
+            patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.75})],
+        };
+        if let AgentEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+        } = event
+        {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(patch.len(), 1);
         }
 
         // Test Error
@@ -1071,14 +1173,104 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_event_to_ui_events_turn_done_empty() {
-        let event = AgentEvent::TurnDone {
-            text: "Done".to_string(),
-            tool_calls: vec![],
+    fn test_agent_event_to_ui_events_activity_snapshot() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_1".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!({"progress": 0.7}),
+            replace: Some(true),
         };
         let ui_events = event.to_ui_events("txt_0");
-        // TurnDone is internal, produces no UI events
-        assert!(ui_events.is_empty());
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"data-activity-snapshot""#));
+        assert!(json.contains(r#""progress":0.7"#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_activity_snapshot_includes_replace() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_replace".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!({"progress": 0.4}),
+            replace: Some(true),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""replace":true"#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_activity_delta() {
+        let event = AgentEvent::ActivityDelta {
+            message_id: "activity_1".to_string(),
+            activity_type: "progress".to_string(),
+            patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.9})],
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        let json = serde_json::to_string(&ui_events[0]).unwrap();
+        assert!(json.contains(r#""type":"data-activity-delta""#));
+        assert!(json.contains(r#""path":"/progress""#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_activity_delta_excludes_replace() {
+        let event = AgentEvent::ActivityDelta {
+            message_id: "activity_2".to_string(),
+            activity_type: "progress".to_string(),
+            patch: vec![json!({"op": "replace", "path": "/progress", "value": 1.0})],
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        match &ui_events[0] {
+            UIStreamEvent::Data { data, .. } => {
+                assert!(data.get("replace").is_none());
+                assert!(data.get("patch").is_some());
+            }
+            _ => panic!("Expected data event"),
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_maps_non_object_content_to_value_key() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_array".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!(["a", "b"]),
+            replace: None,
+        };
+
+        let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AGUIEvent::ActivitySnapshot { content, .. } => {
+                assert_eq!(content.get("value"), Some(&json!(["a", "b"])));
+                assert_eq!(content.len(), 1);
+            }
+            _ => panic!("Expected ActivitySnapshot"),
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_maps_scalar_content_to_value_key() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_scalar".to_string(),
+            activity_type: "status".to_string(),
+            content: json!("ok"),
+            replace: None,
+        };
+
+        let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            AGUIEvent::ActivitySnapshot { content, .. } => {
+                assert_eq!(content.get("value"), Some(&json!("ok")));
+                assert_eq!(content.len(), 1);
+            }
+            _ => panic!("Expected ActivitySnapshot"),
+        }
     }
 
     // ========================================================================
@@ -1135,6 +1327,16 @@ mod tests {
         let event = AgentEvent::StepStart;
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("step_start"));
+
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_1".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!({"progress": 1.0}),
+            replace: Some(true),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("activity_snapshot"));
+        assert!(json.contains("activity_1"));
     }
 
     #[test]
@@ -1149,6 +1351,17 @@ mod tests {
             assert_eq!(delta, "Hello");
         } else {
             panic!("Expected TextDelta");
+        }
+
+        let json = r#"{"event_type":"activity_snapshot","message_id":"activity_1","activity_type":"progress","content":{"progress":0.3},"replace":true}"#;
+        let event: AgentEvent = serde_json::from_str(json).unwrap();
+        if let AgentEvent::ActivitySnapshot { message_id, activity_type, content, replace } = event {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content["progress"], 0.3);
+            assert_eq!(replace, Some(true));
+        } else {
+            panic!("Expected ActivitySnapshot");
         }
     }
 
@@ -1230,20 +1443,6 @@ mod tests {
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
         assert!(matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason == "User cancelled"));
-    }
-
-    #[test]
-    fn test_agent_event_turn_done_conversion() {
-        let event = AgentEvent::TurnDone {
-            text: "Response text".to_string(),
-            tool_calls: vec![
-                ToolCall::new("call_1", "search", json!({"q": "test"})),
-            ],
-        };
-        let ui_events = event.to_ui_events("txt_0");
-        // TurnDone converts to empty vec in current implementation
-        // The turn_done event is used internally and doesn't map directly to UI events
-        assert!(ui_events.is_empty() || matches!(&ui_events[0], UIStreamEvent::FinishStep));
     }
 
     #[test]
@@ -1363,5 +1562,36 @@ mod tests {
         assert_eq!(ag_ui_events.len(), 4);
         assert!(matches!(ag_ui_events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(ag_ui_events[1], AGUIEvent::ToolCallStart { .. }));
+    }
+
+    #[test]
+    fn test_agent_event_activity_snapshot_to_ag_ui_with_scalar_content() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_1".to_string(),
+            activity_type: "status".to_string(),
+            content: json!("ok"),
+            replace: Some(true),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::ActivitySnapshot { content, .. } = &events[0] {
+            assert_eq!(content.get("value"), Some(&json!("ok")));
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    #[test]
+    fn test_agent_event_activity_delta_to_ag_ui() {
+        let event = AgentEvent::ActivityDelta {
+            message_id: "activity_1".to_string(),
+            activity_type: "status".to_string(),
+            patch: vec![json!({"op": "replace", "path": "/status", "value": "done"})],
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AGUIEvent::ActivityDelta { .. }));
     }
 }

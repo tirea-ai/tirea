@@ -132,20 +132,20 @@ impl AgentPlugin for PermissionPlugin {
         ))
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, turn: &mut crate::phase::TurnContext<'_>) {
+    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
         use crate::phase::Phase;
 
         if phase != Phase::BeforeToolExecute {
             return;
         }
 
-        let Some(tool_id) = turn.tool_id() else {
+        let Some(tool_id) = step.tool_id() else {
             return;
         };
 
         // Get permission from stored data (simplified - in real implementation,
         // this would read from session state)
-        let permission = turn
+        let permission = step
             .get::<Value>(PERMISSION_STATE_PATH)
             .and_then(|state| {
                 state
@@ -160,7 +160,7 @@ impl AgentPlugin for PermissionPlugin {
                     })
             })
             .unwrap_or_else(|| {
-                turn.get::<Value>(PERMISSION_STATE_PATH)
+                step.get::<Value>(PERMISSION_STATE_PATH)
                     .and_then(|state| {
                         state
                             .get("default_behavior")
@@ -180,11 +180,11 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                turn.block(format!("Tool '{}' is denied", tool_id));
+                step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 // Create a pending interaction for confirmation
-                if !turn.tool_pending() {
+                if !step.tool_pending() {
                     let interaction = Interaction::new(
                         format!("permission_{}", tool_id),
                         "confirm",
@@ -192,7 +192,7 @@ impl AgentPlugin for PermissionPlugin {
                     .with_message(format!("Allow tool '{}' to execute?", tool_id))
                     .with_parameters(json!({ "tool_id": tool_id }));
 
-                    turn.pending(interaction);
+                    step.pending(interaction);
                 }
             }
         }
@@ -333,81 +333,81 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_allow() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        // Set up allow permission in turn data
-        turn.set(
+        // Set up allow permission in step data
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "allow", "tools": {} }),
         );
 
         // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should not block
-        assert!(!turn.tool_blocked());
-        assert!(!turn.tool_pending());
+        assert!(!step.tool_blocked());
+        assert!(!step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_deny() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        // Set up deny permission in turn data
-        turn.set(
+        // Set up deny permission in step data
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "deny", "tools": {} }),
         );
 
         // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should block
-        assert!(turn.tool_blocked());
+        assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        // Set up ask permission in turn data
-        turn.set(
+        // Set up ask permission in step data
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "ask", "tools": {} }),
         );
 
         // Set up tool context
         let call = ToolCall::new("call_1", "test_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should set pending
-        assert!(turn.tool_pending());
+        assert!(step.tool_pending());
     }
 
     #[test]
@@ -451,132 +451,132 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_allow() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up with deny default but allow for specific tool
-        turn.set(
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "deny", "tools": { "allowed_tool": "allow" } }),
         );
 
         // Set up tool context for allowed tool
         let call = ToolCall::new("call_1", "allowed_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should not block because tool is explicitly allowed
-        assert!(!turn.tool_blocked());
+        assert!(!step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_deny() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up with allow default but deny for specific tool
-        turn.set(
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "allow", "tools": { "denied_tool": "deny" } }),
         );
 
         // Set up tool context for denied tool
         let call = ToolCall::new("call_1", "denied_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should block because tool is explicitly denied
-        assert!(turn.tool_blocked());
+        assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_ask() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up with allow default but ask for specific tool
-        turn.set(
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "allow", "tools": { "ask_tool": "ask" } }),
         );
 
         // Set up tool context for ask tool
         let call = ToolCall::new("call_1", "ask_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should set pending because tool requires confirmation
-        assert!(turn.tool_pending());
+        assert!(step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_tool_behavior() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up with invalid behavior string - should fall back to default
-        turn.set(
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } }),
         );
 
         // Set up tool context
         let call = ToolCall::new("call_1", "invalid_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should fall back to default "allow" behavior
-        assert!(!turn.tool_blocked());
-        assert!(!turn.tool_pending());
+        assert!(!step.tool_blocked());
+        assert!(!step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_default_behavior() {
-        use crate::phase::{Phase, TurnContext, ToolContext};
+        use crate::phase::{Phase, StepContext, ToolContext};
         use crate::session::Session;
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Set up with invalid default behavior string - should fall back to Ask
-        turn.set(
+        step.set(
             PERMISSION_STATE_PATH,
             json!({ "default_behavior": "invalid_default", "tools": {} }),
         );
 
         // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should fall back to Ask behavior
-        assert!(turn.tool_pending());
+        assert!(step.tool_pending());
     }
 }

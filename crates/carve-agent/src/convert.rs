@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_build_request_conversation_history() {
-        // Simulate a multi-turn conversation
+        // Simulate a multi-step conversation
         let messages = vec![
             Message::user("What is 2+2?"),
             Message::assistant("2+2 equals 4."),

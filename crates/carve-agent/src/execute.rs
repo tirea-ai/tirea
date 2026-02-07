@@ -218,20 +218,23 @@ mod tests {
     async fn test_execute_tools_parallel() {
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         tools.insert("echo".to_string(), Arc::new(EchoTool));
+        tools.insert("counter".to_string(), Arc::new(CounterTool));
 
         let calls = vec![
             ToolCall::new("call_1", "echo", json!({"n": 1})),
             ToolCall::new("call_2", "echo", json!({"n": 2})),
-            ToolCall::new("call_3", "unknown", json!({})),
+            ToolCall::new("call_3", "counter", json!({})),
+            ToolCall::new("call_4", "unknown", json!({})),
         ];
 
         let state = json!({});
         let executions = execute_tools_parallel(&tools, &calls, &state).await;
 
-        assert_eq!(executions.len(), 3);
+        assert_eq!(executions.len(), 4);
         assert!(executions[0].result.is_success());
         assert!(executions[1].result.is_success());
-        assert!(executions[2].result.is_error());
+        assert!(executions[2].result.is_success());
+        assert!(executions[3].result.is_error());
     }
 
     #[tokio::test]

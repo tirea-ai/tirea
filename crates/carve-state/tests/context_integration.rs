@@ -3,7 +3,7 @@
 //! These tests verify the core API design where developers use typed state references
 //! through Context, and all operations are automatically collected.
 
-use carve_state::{apply_patch, Context, State};
+use carve_state::{apply_patch, Context, State as StateTrait};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

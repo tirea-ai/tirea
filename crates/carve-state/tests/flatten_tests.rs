@@ -3,14 +3,14 @@
 //! Flatten allows nested struct fields to be read/written at the parent level
 //! rather than under a separate key in JSON.
 
-use carve_state::{apply_patch, PatchSink, Path, State};
+use carve_state::{apply_patch, PatchSink, Path, State as StateTrait};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Mutex;
 
 /// Helper to create a state ref and collect patches for testing.
-fn with_state_ref<T: State, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
+fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
 where
     F: FnOnce(T::Ref<'_>),
 {

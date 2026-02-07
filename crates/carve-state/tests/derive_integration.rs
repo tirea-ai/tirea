@@ -1,6 +1,6 @@
 //! Integration tests for State derive macro.
 
-use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State, StateExt};
+use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State as StateTrait, StateExt};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Helper to create a state ref and collect patches for testing.
-fn with_state_ref<T: State, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
+fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -> carve_state::Patch
 where
     F: FnOnce(T::Ref<'_>),
 {
@@ -489,7 +489,7 @@ fn test_skip_attribute_write() {
 // Framework integration: using State trait generically
 // ============================================================================
 
-fn generic_from_value<T: State>(doc: &serde_json::Value) -> CarveResult<T> {
+fn generic_from_value<T: StateTrait>(doc: &serde_json::Value) -> CarveResult<T> {
     T::from_value(doc)
 }
 
@@ -747,6 +747,7 @@ fn test_state_ext_at_root_write() {
     state.set_name("Bob");
     state.set_age(25);
 
+    drop(state);
     let patch = carve_state::Patch::with_ops(ops.into_inner().unwrap());
     let result = apply_patch(&doc, &patch).unwrap();
 
@@ -769,6 +770,7 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let state1 = SimpleStruct::at_root(&doc, sink1);
     let name1 = state1.name().unwrap();
     state1.set_age(200);
+    drop(state1);
 
     // Using State::state_ref with Path::root()
     let ops2 = Mutex::new(Vec::new());
@@ -776,6 +778,7 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let state2 = SimpleStruct::state_ref(&doc, Path::root(), sink2);
     let name2 = state2.name().unwrap();
     state2.set_age(200);
+    drop(state2);
 
     // Results should be identical
     assert_eq!(name1, name2);

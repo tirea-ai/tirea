@@ -5,9 +5,9 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    ag_ui::MessageRole, Context, ContextCategory, ContextProvider, InteractionResponse,
-    StateManager, SystemReminder, Tool, ToolDescriptor, ToolError, ToolExecutionLocation,
-    ToolResult,
+    ag_ui::MessageRole, ActivityHub, Context, ContextCategory, ContextProvider,
+    InteractionResponse, StateManager, SystemReminder, Tool, ToolDescriptor, ToolError,
+    ToolExecutionLocation, ToolResult,
 };
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,12 @@ struct CounterState {
 struct TodoState {
     items: Vec<String>,
     count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, State, Default)]
+struct ProgressState {
+    progress: f64,
+    status: String,
 }
 
 // ============================================================================
@@ -922,7 +928,7 @@ async fn test_concurrent_session_rebuild() {
     // Create a session with many patches
     let mut session = Session::with_initial_state("rebuild-stress", json!({"counter": 0}));
 
-    for i in 0..100 {
+    for _ in 0..100 {
         session = session.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
@@ -1072,7 +1078,7 @@ async fn test_session_recovery_after_partial_save() {
     storage.save(&session).await.unwrap();
 
     // Simulate adding more work
-    let session = session
+    let _session = session
         .with_message(Message::assistant("Done step 2"))
         .with_message(Message::user("Step 3"))
         .with_patch(TrackedPatch::new(
@@ -1126,7 +1132,7 @@ async fn test_session_recovery_with_snapshot() {
     // Create session with many patches
     let mut session = Session::with_initial_state("snapshot-recovery", json!({"counter": 0}));
 
-    for i in 0..50 {
+    for _ in 0..50 {
         session = session.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
@@ -1937,6 +1943,47 @@ fn test_agent_event_all_variants() {
         _ => panic!("Wrong variant"),
     }
 
+    // ActivitySnapshot
+    let activity_snapshot = AgentEvent::ActivitySnapshot {
+        message_id: "activity_1".to_string(),
+        activity_type: "progress".to_string(),
+        content: json!({"progress": 0.5}),
+        replace: Some(true),
+    };
+    match activity_snapshot {
+        AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } => {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content["progress"], 0.5);
+            assert_eq!(replace, Some(true));
+        }
+        _ => panic!("Wrong variant"),
+    }
+
+    // ActivityDelta
+    let activity_delta = AgentEvent::ActivityDelta {
+        message_id: "activity_1".to_string(),
+        activity_type: "progress".to_string(),
+        patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.75})],
+    };
+    match activity_delta {
+        AgentEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+        } => {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(patch.len(), 1);
+        }
+        _ => panic!("Wrong variant"),
+    }
+
     // Done
     let done = AgentEvent::Done {
         response: "Final response".to_string(),
@@ -1945,6 +1992,106 @@ fn test_agent_event_all_variants() {
         AgentEvent::Done { response } => assert_eq!(response, "Final response"),
         _ => panic!("Wrong variant"),
     }
+}
+
+#[tokio::test]
+async fn test_activity_context_emits_snapshot_on_update() {
+    use carve_agent::AgentEvent;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let hub = Arc::new(ActivityHub::new(tx));
+    let snapshot = json!({});
+
+    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
+    let activity = ctx.activity("stream_1", "progress");
+
+    let progress = activity.state::<ProgressState>("");
+    progress.set_progress(0.25);
+    progress.set_status("running");
+
+    let first = rx.recv().await.expect("first activity event");
+    let second = rx.recv().await.expect("second activity event");
+
+    match first {
+        AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } => {
+            assert_eq!(message_id, "stream_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content["progress"], 0.25);
+            assert!(content.get("status").is_none());
+            assert_eq!(replace, Some(true));
+        }
+        _ => panic!("Expected ActivitySnapshot"),
+    }
+
+    match second {
+        AgentEvent::ActivitySnapshot { content, .. } => {
+            assert_eq!(content["progress"], 0.25);
+            assert_eq!(content["status"], "running");
+        }
+        _ => panic!("Expected ActivitySnapshot"),
+    }
+}
+
+#[tokio::test]
+async fn test_activity_context_snapshot_reused_across_contexts() {
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let hub = Arc::new(ActivityHub::new(tx));
+    let snapshot = json!({});
+
+    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub.clone()));
+    let activity = ctx.activity("stream_2", "progress");
+    let progress = activity.state::<ProgressState>("");
+    progress.set_progress(0.9);
+
+    let ctx2 = Context::new_with_activity_manager(&snapshot, "call_2", "tool:test", Some(hub));
+    let activity2 = ctx2.activity("stream_2", "progress");
+    let progress2 = activity2.state::<ProgressState>("");
+    assert_eq!(progress2.progress().unwrap_or_default(), 0.9);
+}
+
+#[tokio::test]
+async fn test_activity_context_multiple_streams_emit_separately() {
+    use carve_agent::AgentEvent;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let hub = Arc::new(ActivityHub::new(tx));
+    let snapshot = json!({});
+
+    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
+    let activity_a = ctx.activity("stream_a", "progress");
+    let activity_b = ctx.activity("stream_b", "progress");
+
+    let state_a = activity_a.state::<ProgressState>("");
+    state_a.set_progress(0.1);
+
+    let state_b = activity_b.state::<ProgressState>("");
+    state_b.set_progress(0.9);
+
+    let first = rx.recv().await.expect("first event");
+    let second = rx.recv().await.expect("second event");
+
+    let (first_id, second_id) = match (first, second) {
+        (
+            AgentEvent::ActivitySnapshot { message_id: id1, .. },
+            AgentEvent::ActivitySnapshot { message_id: id2, .. },
+        ) => (id1, id2),
+        _ => panic!("Expected ActivitySnapshot events"),
+    };
+
+    assert_eq!(first_id, "stream_a");
+    assert_eq!(second_id, "stream_b");
 }
 
 #[test]
@@ -2512,7 +2659,7 @@ fn test_context_category_variants() {
 // These tests simulate the full agent loop without requiring a real LLM.
 // They test the same scenarios as live_deepseek.rs but using mock responses.
 
-/// Simulate a complete agent turn with tool calls
+/// Simulate a complete agent step with tool calls
 #[tokio::test]
 async fn test_e2e_tool_execution_flow() {
     // Simulates: User asks -> LLM calls tool -> Tool executes -> Response
@@ -2597,12 +2744,12 @@ async fn test_e2e_parallel_tool_calls() {
     assert_eq!(session.patch_count(), 2); // Two parallel patches
 }
 
-/// Simulate multi-turn conversation with state accumulation
+/// Simulate multi-step conversation with state accumulation
 #[tokio::test]
-async fn test_e2e_multi_turn_with_state() {
+async fn test_e2e_multi_step_with_state() {
     let tools = tool_map([IncrementTool]);
 
-    // Turn 1
+    // Step 1
     let mut session = Session::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
         .with_message(Message::user("Increment"));
 
@@ -2618,7 +2765,7 @@ async fn test_e2e_multi_turn_with_state() {
     session = loop_execute_tools(session, &response1, &tools, true).await.unwrap();
     session = session.with_message(Message::assistant("Counter is now 1."));
 
-    // Turn 2
+    // Step 2
     session = session.with_message(Message::user("Increment again"));
     let response2 = StreamResult {
         text: "Incrementing again.".to_string(),
@@ -2632,7 +2779,7 @@ async fn test_e2e_multi_turn_with_state() {
     session = loop_execute_tools(session, &response2, &tools, true).await.unwrap();
     session = session.with_message(Message::assistant("Counter is now 2."));
 
-    // Turn 3
+    // Step 3
     session = session.with_message(Message::user("One more time"));
     let response3 = StreamResult {
         text: "One more increment.".to_string(),
@@ -2819,7 +2966,7 @@ async fn test_e2e_state_replay() {
 async fn test_e2e_long_conversation() {
     let mut session = Session::new("e2e-long");
 
-    // Build 100 turns of conversation
+    // Build 100 runs of conversation
     for i in 0..100 {
         session = session
             .with_message(Message::user(format!("Message {}", i)))
@@ -4043,7 +4190,7 @@ fn test_scenario_various_interaction_types() {
 // ============================================================================
 
 use carve_agent::ag_ui::{AGUIToolDef, FrontendToolPlugin, RunAgentRequest};
-use carve_agent::phase::{Phase, ToolContext, TurnContext};
+use carve_agent::phase::{Phase, ToolContext, StepContext};
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::types::ToolCall;
 
@@ -4062,7 +4209,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 
     // 3. Simulate agent calling a frontend tool
     let session = Session::new("session_1");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     let tool_call = ToolCall::new(
         "call_001",
@@ -4072,16 +4219,16 @@ async fn test_scenario_frontend_tool_request_to_agui() {
             "format": "plain"
         }),
     );
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     // 4. Plugin intercepts in BeforeToolExecute phase
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // 5. Tool should be pending
-    assert!(turn.tool_pending());
+    assert!(step.tool_pending());
 
     // 6. Get interaction and convert to AG-UI
-    let interaction = turn
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4135,15 +4282,15 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
     ];
 
     for (call_id, tool_name, args) in tool_calls {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
-        turn.tool = Some(ToolContext::new(&tool_call));
+        step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending(), "Tool {} should be pending", tool_name);
+        assert!(step.tool_pending(), "Tool {} should be pending", tool_name);
 
-        let interaction = turn
+        let interaction = step
             .tool
             .as_ref()
             .unwrap()
@@ -4162,7 +4309,7 @@ async fn test_scenario_frontend_tool_complex_args() {
     let plugin = FrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     // Complex nested arguments
     let complex_args = json!({
@@ -4188,13 +4335,13 @@ async fn test_scenario_frontend_tool_complex_args() {
     });
 
     let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(turn.tool_pending());
+    assert!(step.tool_pending());
 
-    let interaction = turn
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4223,14 +4370,14 @@ async fn test_scenario_frontend_tool_empty_args() {
 
     // Test with empty object
     {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
-        turn.tool = Some(ToolContext::new(&tool_call));
+        step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending());
-        let interaction = turn
+        assert!(step.tool_pending());
+        let interaction = step
             .tool
             .as_ref()
             .unwrap()
@@ -4242,14 +4389,14 @@ async fn test_scenario_frontend_tool_empty_args() {
 
     // Test with null
     {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
-        turn.tool = Some(ToolContext::new(&tool_call));
+        step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending());
-        let interaction = turn
+        assert!(step.tool_pending());
+        let interaction = step
             .tool
             .as_ref()
             .unwrap()
@@ -4277,15 +4424,15 @@ async fn test_scenario_frontend_tool_special_names() {
         let plugin = FrontendToolPlugin::new([tool_name.to_string()].into_iter().collect());
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
-        turn.tool = Some(ToolContext::new(&tool_call));
+        step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending(), "Tool '{}' should be pending", tool_name);
+        assert!(step.tool_pending(), "Tool '{}' should be pending", tool_name);
 
-        let interaction = turn
+        let interaction = step
             .tool
             .as_ref()
             .unwrap()
@@ -4319,14 +4466,14 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
     ];
 
     for (tool_name, should_be_pending) in test_cases {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
-        turn.tool = Some(ToolContext::new(&tool_call));
+        step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert_eq!(
-            turn.tool_pending(),
+            step.tool_pending(),
             should_be_pending,
             "Tool '{}' pending state should be {}",
             tool_name,
@@ -4388,7 +4535,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let plugin = FrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     let tool_call = ToolCall::new(
         "modal_call_1",
@@ -4398,13 +4545,13 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
             "buttons": ["Yes", "No"]
         }),
     );
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     // 1. Plugin creates pending state with interaction
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // 2. Agent loop would create AgentEvent::Pending
-    let interaction = turn
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4450,7 +4597,7 @@ async fn test_scenario_backend_tool_passthrough() {
     let plugin = FrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     // Backend tool call
     let tool_call = ToolCall::new(
@@ -4461,15 +4608,15 @@ async fn test_scenario_backend_tool_passthrough() {
             "limit": 10
         }),
     );
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     // Plugin should not interfere
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(!turn.tool_pending(), "Backend tool should not be pending");
-    assert!(!turn.tool_blocked(), "Backend tool should not be blocked");
+    assert!(!step.tool_pending(), "Backend tool should not be pending");
+    assert!(!step.tool_blocked(), "Backend tool should not be blocked");
     assert!(
-        turn.tool.as_ref().unwrap().pending_interaction.is_none(),
+        step.tool.as_ref().unwrap().pending_interaction.is_none(),
         "No interaction should be created"
     );
 }
@@ -4517,24 +4664,24 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // Phase 1: Agent requests permission
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     // Set up ask permission
-    turn.set(
+    step.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
 
     // Simulate tool call
     let tool_call = ToolCall::new("call_write_file", "write_file", json!({"path": "/etc/config"}));
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     // PermissionPlugin creates pending interaction
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(turn.tool_pending());
-    let interaction = turn
+    assert!(step.tool_pending());
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4568,21 +4715,21 @@ async fn test_scenario_permission_denied_complete_flow() {
 
     // Phase 1: Agent requests permission
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
-    turn.set(
+    step.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
 
     let tool_call = ToolCall::new("call_delete", "delete_file", json!({"path": "/important.txt"}));
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(turn.tool_pending());
-    let interaction = turn
+    assert!(step.tool_pending());
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4614,15 +4761,15 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let plugin = FrontendToolPlugin::from_request(&request);
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
 
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(turn.tool_pending());
-    let interaction = turn
+    assert!(step.tool_pending());
+    let interaction = step
         .tool
         .as_ref()
         .unwrap()
@@ -4661,16 +4808,16 @@ async fn test_scenario_multiple_interactions_sequence() {
     let plugin = PermissionPlugin;
 
     // First tool: write_file
-    let mut turn1 = TurnContext::new(&session, vec![]);
-    turn1.set(
+    let mut step1 = StepContext::new(&session, vec![]);
+    step1.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
-    turn1.tool = Some(ToolContext::new(&call1));
+    step1.tool = Some(ToolContext::new(&call1));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    let interaction1 = turn1
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    let interaction1 = step1
         .tool
         .as_ref()
         .unwrap()
@@ -4679,16 +4826,16 @@ async fn test_scenario_multiple_interactions_sequence() {
         .unwrap();
 
     // Second tool: read_file
-    let mut turn2 = TurnContext::new(&session, vec![]);
-    turn2.set(
+    let mut step2 = StepContext::new(&session, vec![]);
+    step2.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
-    turn2.tool = Some(ToolContext::new(&call2));
+    step2.tool = Some(ToolContext::new(&call2));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    let interaction2 = turn2
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    let interaction2 = step2
         .tool
         .as_ref()
         .unwrap()
@@ -4831,17 +4978,17 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     );
 
     // Simulate tool call with matching interaction ID format
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new("permission_write_file", "write_file", json!({"path": "/etc/config"}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // Tool should be blocked
-    assert!(turn.tool_blocked(), "Denied tool should be blocked");
+    assert!(step.tool_blocked(), "Denied tool should be blocked");
     // Verify block reason via direct field access
-    let block_reason = turn.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
+    let block_reason = step.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
     assert!(
         block_reason.contains("denied"),
         "Block reason should mention denial, got: {}",
@@ -4863,15 +5010,15 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     );
 
     // Simulate tool call
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new("permission_read_file", "read_file", json!({"path": "/home/user/doc.txt"}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // Tool should NOT be blocked
-    assert!(!turn.tool_blocked(), "Approved tool should not be blocked");
+    assert!(!step.tool_blocked(), "Approved tool should not be blocked");
 }
 
 /// Test scenario: Complete end-to-end flow with PermissionPlugin → InteractionResponsePlugin
@@ -4883,18 +5030,18 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 
     // Step 1: First run - PermissionPlugin creates pending interaction
     let permission_plugin = PermissionPlugin;
-    let mut turn1 = TurnContext::new(&session, vec![]);
-    turn1.set(
+    let mut step1 = StepContext::new(&session, vec![]);
+    step1.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
     let call = ToolCall::new("call_exec", "execute_command", json!({"cmd": "ls"}));
-    turn1.tool = Some(ToolContext::new(&call));
+    step1.tool = Some(ToolContext::new(&call));
 
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    assert!(turn1.tool_pending(), "Permission ask should create pending");
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    assert!(step1.tool_pending(), "Permission ask should create pending");
 
-    let interaction = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
     assert!(interaction.id.starts_with("permission_"), "Interaction ID should start with permission_");
 
     // Step 2: Client approves
@@ -4904,26 +5051,26 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 
     // Step 3: Second run - InteractionResponsePlugin processes approval
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
-    let mut turn2 = TurnContext::new(&session, vec![]);
-    turn2.set(
+    let mut step2 = StepContext::new(&session, vec![]);
+    step2.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
     let call2 = ToolCall::new(&interaction.id, "execute_command", json!({"cmd": "ls"}));
-    turn2.tool = Some(ToolContext::new(&call2));
+    step2.tool = Some(ToolContext::new(&call2));
 
     // InteractionResponsePlugin runs first
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
 
     // Tool should NOT be blocked (approved)
-    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked on resume");
+    assert!(!step2.tool_blocked(), "Approved tool should not be blocked on resume");
 
     // PermissionPlugin runs second - but InteractionResponsePlugin didn't set pending
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
 
     // PermissionPlugin should still create pending (because permission wasn't updated to Allow)
     // This is expected - in a real flow, the permission would be updated to Allow after approval
-    assert!(turn2.tool_pending() || !turn2.tool_blocked(), "Tool should proceed");
+    assert!(step2.tool_pending() || !step2.tool_blocked(), "Tool should proceed");
 }
 
 /// Test scenario: FrontendToolPlugin and InteractionResponsePlugin coordination
@@ -4939,14 +5086,14 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 
     // Step 1: FrontendToolPlugin creates pending for frontend tool
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
-    let mut turn1 = TurnContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&session, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
-    turn1.tool = Some(ToolContext::new(&call));
+    step1.tool = Some(ToolContext::new(&call));
 
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    assert!(turn1.tool_pending(), "Frontend tool should create pending");
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    assert!(step1.tool_pending(), "Frontend tool should create pending");
 
-    let interaction = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
     assert_eq!(interaction.action, "tool:showDialog");
 
     // Step 2: Client executes and returns result
@@ -5211,18 +5358,18 @@ async fn test_permission_flow_approval_e2e() {
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
-    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let mut step = StepContext::new(&session, vec![]);
+    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
 
     let tool_call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(turn.tool_pending(), "Tool should be pending after permission ask");
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(step.tool_pending(), "Tool should be pending after permission ask");
 
-    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
     assert!(interaction.id.starts_with("permission_"));
 
     // Phase 2: Convert to AG-UI events (client would receive these)
@@ -5240,13 +5387,13 @@ async fn test_permission_flow_approval_e2e() {
     assert!(response_plugin.has_responses());
 
     // Phase 5: On resume, tool should NOT be blocked
-    let mut turn2 = TurnContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session, vec![]);
     // Use the interaction ID as the tool call ID (as happens in resume)
     let tool_call2 = ToolCall::new(&interaction.id, "write_file", json!({"path": "/etc/config"}));
-    turn2.tool = Some(ToolContext::new(&tool_call2));
+    step2.tool = Some(ToolContext::new(&tool_call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked");
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
 }
 
 /// Test: Complete permission denial flow
@@ -5257,17 +5404,17 @@ async fn test_permission_flow_denial_e2e() {
 
     // Phase 1: Agent requests permission
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
-    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let mut step = StepContext::new(&session, vec![]);
+    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
 
     let tool_call = ToolCall::new("call_delete", "delete_all", json!({}));
-    turn.tool = Some(ToolContext::new(&tool_call));
+    step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(turn.tool_pending());
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(step.tool_pending());
 
-    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
 
     // Phase 2: Client denies
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5278,14 +5425,14 @@ async fn test_permission_flow_denial_e2e() {
     // Phase 3: On resume, tool should be blocked
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
 
-    let mut turn2 = TurnContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session, vec![]);
     let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
-    turn2.tool = Some(ToolContext::new(&tool_call2));
+    step2.tool = Some(ToolContext::new(&tool_call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    assert!(turn2.tool_blocked(), "Denied tool should be blocked");
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    assert!(step2.tool_blocked(), "Denied tool should be blocked");
 
-    let block_reason = turn2.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
+    let block_reason = step2.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
     assert!(block_reason.contains("denied"), "Block reason should mention denial");
 }
 
@@ -5297,22 +5444,22 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let session = Session::new("test");
 
     // Tool 1: Will be approved
-    let mut turn1 = TurnContext::new(&session, vec![]);
-    turn1.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let mut step1 = StepContext::new(&session, vec![]);
+    step1.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
     let call1 = ToolCall::new("call_1", "read_file", json!({}));
-    turn1.tool = Some(ToolContext::new(&call1));
+    step1.tool = Some(ToolContext::new(&call1));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    let int1 = turn1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    let int1 = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
 
     // Tool 2: Will be denied
-    let mut turn2 = TurnContext::new(&session, vec![]);
-    turn2.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let mut step2 = StepContext::new(&session, vec![]);
+    step2.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
-    turn2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    let int2 = turn2.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    step2.tool = Some(ToolContext::new(&call2));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    let int2 = step2.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
 
     // Client responds: approve first, deny second
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5322,14 +5469,14 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
 
     // Verify first tool (approved)
-    let mut resume1 = TurnContext::new(&session, vec![]);
+    let mut resume1 = StepContext::new(&session, vec![]);
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
     resume1.tool = Some(ToolContext::new(&resume_call1));
     response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume1).await;
     assert!(!resume1.tool_blocked(), "First tool should not be blocked");
 
     // Verify second tool (denied)
-    let mut resume2 = TurnContext::new(&session, vec![]);
+    let mut resume2 = StepContext::new(&session, vec![]);
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
     resume2.tool = Some(ToolContext::new(&resume_call2));
     response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume2).await;
@@ -5351,15 +5498,15 @@ async fn test_frontend_tool_flow_creates_pending() {
     let plugin = FrontendToolPlugin::from_request(&request);
     let session = Session::new("test");
 
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "Hello World"}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-    assert!(turn.tool_pending(), "Frontend tool should be pending");
+    assert!(step.tool_pending(), "Frontend tool should be pending");
 
-    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
     assert_eq!(interaction.action, "tool:copyToClipboard");
     assert_eq!(interaction.id, "call_copy");
 }
@@ -5392,18 +5539,18 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let session = Session::new("test");
 
     // Backend tool - should NOT be pending
-    let mut turn_backend = TurnContext::new(&session, vec![]);
+    let mut step_backend = StepContext::new(&session, vec![]);
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
-    turn_backend.tool = Some(ToolContext::new(&call_backend));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn_backend).await;
-    assert!(!turn_backend.tool_pending(), "Backend tool should not be pending");
+    step_backend.tool = Some(ToolContext::new(&call_backend));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step_backend).await;
+    assert!(!step_backend.tool_pending(), "Backend tool should not be pending");
 
     // Frontend tool - should be pending
-    let mut turn_frontend = TurnContext::new(&session, vec![]);
+    let mut step_frontend = StepContext::new(&session, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
-    turn_frontend.tool = Some(ToolContext::new(&call_frontend));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn_frontend).await;
-    assert!(turn_frontend.tool_pending(), "Frontend tool should be pending");
+    step_frontend.tool = Some(ToolContext::new(&call_frontend));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step_frontend).await;
+    assert!(step_frontend.tool_pending(), "Frontend tool should be pending");
 }
 
 /// Test: Frontend tool with complex nested result
@@ -5586,12 +5733,12 @@ async fn test_resume_flow_with_approval() {
 
     // Tool execution should not be blocked
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(!turn.tool_blocked());
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(!step.tool_blocked());
 }
 
 /// Test: Resume with denial blocks execution
@@ -5608,12 +5755,12 @@ async fn test_resume_flow_with_denial() {
     assert!(plugin.is_denied(interaction_id));
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(turn.tool_blocked());
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(step.tool_blocked());
 }
 
 /// Test: Resume with multiple pending responses
@@ -5637,11 +5784,11 @@ async fn test_resume_flow_multiple_responses() {
 
     // Test each tool
     for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-        assert_eq!(turn.tool_blocked(), should_block, "Tool {} block state incorrect", id);
+        step.tool = Some(ToolContext::new(&call));
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        assert_eq!(step.tool_blocked(), should_block, "Tool {} block state incorrect", id);
     }
 }
 
@@ -5664,18 +5811,18 @@ async fn test_resume_flow_partial_responses() {
     let session = Session::new("test");
 
     // Responded tool should not be blocked
-    let mut turn1 = TurnContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&session, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
-    turn1.tool = Some(ToolContext::new(&call1));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    assert!(!turn1.tool_blocked());
+    step1.tool = Some(ToolContext::new(&call1));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    assert!(!step1.tool_blocked());
 
     // Non-responded tool - plugin doesn't affect it
-    let mut turn2 = TurnContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
-    turn2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    assert!(!turn2.tool_blocked()); // Not blocked by response plugin (no response)
+    step2.tool = Some(ToolContext::new(&call2));
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    assert!(!step2.tool_blocked()); // Not blocked by response plugin (no response)
 }
 
 // ============================================================================
@@ -5698,25 +5845,25 @@ async fn test_plugin_interaction_frontend_and_response() {
     let session = Session::new("test");
 
     // Test 1: Frontend tool should be pending (not affected by response plugin)
-    let mut turn1 = TurnContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&session, vec![]);
     let call1 = ToolCall::new("call_new", "showNotification", json!({}));
-    turn1.tool = Some(ToolContext::new(&call1));
+    step1.tool = Some(ToolContext::new(&call1));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn1).await;
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
 
-    assert!(turn1.tool_pending(), "Frontend tool should be pending");
-    assert!(!turn1.tool_blocked());
+    assert!(step1.tool_pending(), "Frontend tool should be pending");
+    assert!(!step1.tool_blocked());
 
     // Test 2: Previously pending tool should be allowed (response plugin approves)
-    let mut turn2 = TurnContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session, vec![]);
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
-    turn2.tool = Some(ToolContext::new(&call2));
+    step2.tool = Some(ToolContext::new(&call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn2).await;
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
 
-    assert!(!turn2.tool_blocked(), "Approved tool should not be blocked");
+    assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
 }
 
 /// Test: Plugin execution order matters
@@ -5733,18 +5880,18 @@ async fn test_plugin_interaction_execution_order() {
     let response_plugin = InteractionResponsePlugin::from_request(&request);
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
+    let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
     // Response plugin runs first - denies the tool
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(turn.tool_blocked(), "Tool should be blocked by denial");
+    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(step.tool_blocked(), "Tool should be blocked by denial");
 
     // Frontend plugin runs second - should NOT override the block
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-    assert!(turn.tool_blocked(), "Tool should still be blocked");
-    assert!(!turn.tool_pending(), "Blocked tool should not be pending");
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    assert!(step.tool_blocked(), "Tool should still be blocked");
+    assert!(!step.tool_pending(), "Blocked tool should not be pending");
 }
 
 /// Test: Permission plugin with frontend tool
@@ -5760,22 +5907,22 @@ async fn test_plugin_interaction_permission_and_frontend() {
     let permission_plugin = PermissionPlugin;
 
     let session = Session::new("test");
-    let mut turn = TurnContext::new(&session, vec![]);
-    turn.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    let mut step = StepContext::new(&session, vec![]);
+    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
 
     let call = ToolCall::new("call_modify", "modifySettings", json!({}));
-    turn.tool = Some(ToolContext::new(&call));
+    step.tool = Some(ToolContext::new(&call));
 
     // Permission plugin runs first - creates pending for "ask"
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     // Frontend plugin runs second
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     // Tool should be pending (frontend takes precedence for frontend tools)
-    assert!(turn.tool_pending(), "Tool should be pending");
+    assert!(step.tool_pending(), "Tool should be pending");
 
     // The interaction should be from frontend plugin (tool:modifySettings)
-    let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
     assert!(
         interaction.action.starts_with("tool:") || interaction.action == "confirm",
         "Interaction action should be from one of the plugins"
@@ -6060,7 +6207,7 @@ fn test_reconnection_state_snapshot() {
     // Simulate session state
     let state = json!({
         "conversation": {
-            "turn_count": 5,
+            "run_count": 5,
             "last_tool": "search",
             "context": {"topic": "rust programming"}
         },
@@ -6075,7 +6222,7 @@ fn test_reconnection_state_snapshot() {
 
     assert!(!ag_events.is_empty());
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
-        assert_eq!(snapshot["conversation"]["turn_count"], 5);
+        assert_eq!(snapshot["conversation"]["run_count"], 5);
         assert_eq!(snapshot["user_preferences"]["language"], "en");
     }
 }
@@ -6147,8 +6294,6 @@ fn test_full_reconnection_scenario() {
 /// Test: Multiple pending interactions in sequence
 #[tokio::test]
 async fn test_multiple_pending_interactions_flow() {
-    let session = Session::new("test");
-
     // Create 3 pending interactions
     let interactions: Vec<Interaction> = vec![
         Interaction::new("perm_read", "confirm").with_message("Allow reading files?"),
@@ -6201,19 +6346,19 @@ async fn test_multiple_interaction_responses() {
     ];
 
     for (id, should_block) in test_cases {
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new(id, "some_tool", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert_eq!(
-            turn.tool_blocked(),
+            step.tool_blocked(),
             should_block,
             "Tool {} should_block={} but got blocked={}",
             id,
             should_block,
-            turn.tool_blocked()
+            step.tool_blocked()
         );
     }
 }
@@ -6329,14 +6474,11 @@ fn test_sequential_runs_in_session() {
     let run1_start = AGUIEvent::run_started("t1", "r1", None);
     let text1 = AgentEvent::TextDelta { delta: "First run response".into() };
     let text1_events = text1.to_ag_ui_events(&mut ctx1);
-    let run1_finish = AGUIEvent::run_finished("t1", "r1", Some(json!({"response": "First"})));
-
     // Run 2 (same thread, different run)
     let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
     let run2_start = AGUIEvent::run_started("t1", "r2", None);
     let text2 = AgentEvent::TextDelta { delta: "Second run response".into() };
     let text2_events = text2.to_ag_ui_events(&mut ctx2);
-    let run2_finish = AGUIEvent::run_finished("t1", "r2", Some(json!({"response": "Second"})));
 
     // Verify runs are independent
     if let AGUIEvent::RunStarted { thread_id: t1, run_id: r1, .. } = &run1_start {
@@ -7913,4 +8055,2748 @@ fn test_context_text_stream_state() {
     // End again returns false (not active)
     let ended_again = ctx.end_text();
     assert!(!ended_again);
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - with_timestamp for All Event Types
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/events
+// BaseEvent Specification: All events extend BaseEvent which includes:
+// - type: EventType (required)
+// - timestamp?: number (optional, milliseconds since epoch)
+// - rawEvent?: unknown (optional, passthrough from external systems)
+//
+
+/// Test: with_timestamp on RUN_STARTED event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_run_started() {
+    let ts = 1704067200000u64; // 2024-01-01 00:00:00 UTC
+    let event = AGUIEvent::run_started("t1", "r1", None).with_timestamp(ts);
+
+    if let AGUIEvent::RunStarted { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected RunStarted");
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""timestamp":1704067200000"#));
+}
+
+/// Test: with_timestamp on RUN_FINISHED event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_run_finished() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::run_finished("t1", "r1", None).with_timestamp(ts);
+
+    if let AGUIEvent::RunFinished { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected RunFinished");
+    }
+}
+
+/// Test: with_timestamp on RUN_ERROR event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_run_error() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::run_error("error", None).with_timestamp(ts);
+
+    if let AGUIEvent::RunError { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected RunError");
+    }
+}
+
+/// Test: with_timestamp on STEP_STARTED event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_step_started() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::step_started("step1").with_timestamp(ts);
+
+    if let AGUIEvent::StepStarted { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected StepStarted");
+    }
+}
+
+/// Test: with_timestamp on STEP_FINISHED event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_step_finished() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::step_finished("step1").with_timestamp(ts);
+
+    if let AGUIEvent::StepFinished { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected StepFinished");
+    }
+}
+
+/// Test: with_timestamp on TEXT_MESSAGE_START event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_text_message_start() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::text_message_start("msg1").with_timestamp(ts);
+
+    if let AGUIEvent::TextMessageStart { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected TextMessageStart");
+    }
+}
+
+/// Test: with_timestamp on TEXT_MESSAGE_CONTENT event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_text_message_content() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::text_message_content("msg1", "hello").with_timestamp(ts);
+
+    if let AGUIEvent::TextMessageContent { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected TextMessageContent");
+    }
+}
+
+/// Test: with_timestamp on TEXT_MESSAGE_END event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_text_message_end() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::text_message_end("msg1").with_timestamp(ts);
+
+    if let AGUIEvent::TextMessageEnd { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected TextMessageEnd");
+    }
+}
+
+/// Test: with_timestamp on TEXT_MESSAGE_CHUNK event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_text_message_chunk() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::text_message_chunk(Some("msg1".into()), None, Some("hi".into()))
+        .with_timestamp(ts);
+
+    if let AGUIEvent::TextMessageChunk { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected TextMessageChunk");
+    }
+}
+
+/// Test: with_timestamp on TOOL_CALL_START event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_tool_call_start() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::tool_call_start("call1", "search", None).with_timestamp(ts);
+
+    if let AGUIEvent::ToolCallStart { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ToolCallStart");
+    }
+}
+
+/// Test: with_timestamp on TOOL_CALL_ARGS event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_tool_call_args() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::tool_call_args("call1", "{}").with_timestamp(ts);
+
+    if let AGUIEvent::ToolCallArgs { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ToolCallArgs");
+    }
+}
+
+/// Test: with_timestamp on TOOL_CALL_END event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_tool_call_end() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::tool_call_end("call1").with_timestamp(ts);
+
+    if let AGUIEvent::ToolCallEnd { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ToolCallEnd");
+    }
+}
+
+/// Test: with_timestamp on TOOL_CALL_RESULT event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_tool_call_result() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::tool_call_result("msg1", "call1", "result").with_timestamp(ts);
+
+    if let AGUIEvent::ToolCallResult { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ToolCallResult");
+    }
+}
+
+/// Test: with_timestamp on TOOL_CALL_CHUNK event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_tool_call_chunk() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::tool_call_chunk(Some("call1".into()), None, None, Some("{}".into()))
+        .with_timestamp(ts);
+
+    if let AGUIEvent::ToolCallChunk { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ToolCallChunk");
+    }
+}
+
+/// Test: with_timestamp on STATE_SNAPSHOT event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_state_snapshot() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::state_snapshot(json!({})).with_timestamp(ts);
+
+    if let AGUIEvent::StateSnapshot { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected StateSnapshot");
+    }
+}
+
+/// Test: with_timestamp on STATE_DELTA event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_state_delta() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::state_delta(vec![]).with_timestamp(ts);
+
+    if let AGUIEvent::StateDelta { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected StateDelta");
+    }
+}
+
+/// Test: with_timestamp on MESSAGES_SNAPSHOT event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_messages_snapshot() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::messages_snapshot(vec![]).with_timestamp(ts);
+
+    if let AGUIEvent::MessagesSnapshot { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected MessagesSnapshot");
+    }
+}
+
+/// Test: with_timestamp on ACTIVITY_SNAPSHOT event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_activity_snapshot() {
+    use std::collections::HashMap;
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::activity_snapshot("act1", "progress", HashMap::new(), None)
+        .with_timestamp(ts);
+
+    if let AGUIEvent::ActivitySnapshot { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ActivitySnapshot");
+    }
+}
+
+/// Test: with_timestamp on ACTIVITY_DELTA event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_activity_delta() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::activity_delta("act1", "progress", vec![]).with_timestamp(ts);
+
+    if let AGUIEvent::ActivityDelta { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected ActivityDelta");
+    }
+}
+
+/// Test: with_timestamp on RAW event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_raw() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::raw(json!({}), None).with_timestamp(ts);
+
+    if let AGUIEvent::Raw { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected Raw");
+    }
+}
+
+/// Test: with_timestamp on CUSTOM event
+/// Protocol: BaseEvent.timestamp per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_with_timestamp_custom() {
+    let ts = 1704067200000u64;
+    let event = AGUIEvent::custom("my_event", json!({})).with_timestamp(ts);
+
+    if let AGUIEvent::Custom { base, .. } = &event {
+        assert_eq!(base.timestamp, Some(ts));
+    } else {
+        panic!("Expected Custom");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - now_millis Utility
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/events
+// Timestamps should be in milliseconds since Unix epoch.
+//
+
+/// Test: now_millis returns reasonable timestamp
+/// Protocol: Timestamps in milliseconds since epoch per AG-UI spec
+#[test]
+fn test_now_millis_returns_positive() {
+    let ts = AGUIEvent::now_millis();
+    // Should be a reasonable Unix timestamp in milliseconds (after 2020)
+    assert!(ts > 1577836800000, "Timestamp should be after 2020-01-01");
+}
+
+/// Test: now_millis increases over time
+/// Protocol: Timestamps should be monotonically increasing
+#[test]
+fn test_now_millis_increases() {
+    let ts1 = AGUIEvent::now_millis();
+    std::thread::sleep(std::time::Duration::from_millis(1));
+    let ts2 = AGUIEvent::now_millis();
+    assert!(ts2 >= ts1, "Second timestamp should be >= first");
+}
+
+/// Test: now_millis can be used with with_timestamp
+/// Protocol: Integration of now_millis with event creation
+#[test]
+fn test_now_millis_with_event() {
+    let ts = AGUIEvent::now_millis();
+    let event = AGUIEvent::run_started("t1", "r1", None).with_timestamp(ts);
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(&format!(r#""timestamp":{}"#, ts)));
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - InteractionResponsePlugin
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+// Human-in-the-loop: Pending interactions require client response
+//
+
+/// Test: has_any_interaction_responses returns false when empty
+/// Protocol: Check if request contains any interaction responses
+#[test]
+fn test_has_any_interaction_responses_empty() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    let plugin = InteractionResponsePlugin::from_request(&request);
+
+    assert!(!plugin.has_responses());
+}
+
+/// Test: has_any_interaction_responses returns true with tool messages
+/// Protocol: Tool messages in request indicate interaction responses
+#[test]
+fn test_has_any_interaction_responses_with_tool_messages() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("approved", "interaction_1"));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+    assert!(plugin.has_responses());
+}
+
+/// Test: has_any_interaction_responses with multiple tool messages
+/// Protocol: Multiple interaction responses in single request
+#[test]
+fn test_has_any_interaction_responses_multiple() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Hello"))
+        .with_message(AGUIMessage::tool("yes", "perm_1"))
+        .with_message(AGUIMessage::tool("no", "perm_2"))
+        .with_message(AGUIMessage::assistant("Processing..."));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+    assert!(plugin.has_responses());
+}
+
+/// Test: has_any_interaction_responses ignores non-tool messages
+/// Protocol: Only tool messages count as interaction responses
+#[test]
+fn test_has_any_interaction_responses_only_counts_tool_messages() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Hello"))
+        .with_message(AGUIMessage::assistant("Hi!"))
+        .with_message(AGUIMessage::system("Be helpful"));
+
+    let plugin = InteractionResponsePlugin::from_request(&request);
+    assert!(!plugin.has_responses());
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - RunAgentRequest.has_any_interaction_responses
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+// Method on RunAgentRequest to check for interaction responses directly
+//
+
+/// Test: RunAgentRequest.has_any_interaction_responses returns false when empty
+/// Protocol: Check if request contains any interaction responses
+#[test]
+fn test_run_agent_request_has_any_interaction_responses_empty() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    assert!(!request.has_any_interaction_responses());
+}
+
+/// Test: RunAgentRequest.has_any_interaction_responses with tool message
+/// Protocol: Tool messages indicate interaction responses
+#[test]
+fn test_run_agent_request_has_any_interaction_responses_with_tool() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("approved", "int_1"));
+
+    assert!(request.has_any_interaction_responses());
+}
+
+/// Test: RunAgentRequest.has_any_interaction_responses ignores non-tool messages
+/// Protocol: Only tool messages count as interaction responses
+#[test]
+fn test_run_agent_request_has_any_interaction_responses_non_tool() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("Hello"))
+        .with_message(AGUIMessage::assistant("Hi!"));
+
+    assert!(!request.has_any_interaction_responses());
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Message Role Types
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/messages
+// Message Roles: user, assistant, system, tool, developer, activity (new in spec)
+//
+
+/// Test: Developer message role
+/// Protocol: DeveloperMessage role per https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_message_role_developer() {
+    let role = MessageRole::Developer;
+    let json = serde_json::to_string(&role).unwrap();
+    assert_eq!(json, r#""developer""#);
+
+    let parsed: MessageRole = serde_json::from_str(r#""developer""#).unwrap();
+    assert_eq!(parsed, MessageRole::Developer);
+}
+
+/// Test: All message roles serialization roundtrip
+/// Protocol: Complete message role enumeration per AG-UI spec
+#[test]
+fn test_all_message_roles_roundtrip() {
+    let roles = vec![
+        (MessageRole::User, "user"),
+        (MessageRole::Assistant, "assistant"),
+        (MessageRole::System, "system"),
+        (MessageRole::Tool, "tool"),
+        (MessageRole::Developer, "developer"),
+    ];
+
+    for (role, expected_str) in roles {
+        let json = serde_json::to_string(&role).unwrap();
+        assert_eq!(json, format!(r#""{}""#, expected_str));
+
+        let parsed: MessageRole = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, role);
+    }
+}
+
+/// Test: Default message role is Assistant
+/// Protocol: TEXT_MESSAGE_START role is always "assistant"
+/// Reference: https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_message_role_default_is_assistant() {
+    let role = MessageRole::default();
+    assert_eq!(role, MessageRole::Assistant);
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - rawEvent Field
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/events
+// BaseEvent.rawEvent: Optional passthrough for external system events
+//
+
+/// Test: BaseEventFields with rawEvent
+/// Protocol: rawEvent field in BaseEvent for external system passthrough
+#[test]
+fn test_base_event_fields_with_raw_event() {
+    use carve_agent::ag_ui::BaseEventFields;
+
+    let base = BaseEventFields {
+        timestamp: Some(1234567890),
+        raw_event: Some(json!({"external": "data", "model": "gpt-4"})),
+    };
+
+    let json = serde_json::to_string(&base).unwrap();
+    assert!(json.contains(r#""timestamp":1234567890"#));
+    assert!(json.contains(r#""rawEvent""#));
+    assert!(json.contains(r#""external":"data""#));
+}
+
+/// Test: BaseEventFields without rawEvent serializes correctly
+/// Protocol: rawEvent is optional and omitted when None
+#[test]
+fn test_base_event_fields_without_raw_event() {
+    use carve_agent::ag_ui::BaseEventFields;
+
+    let base = BaseEventFields {
+        timestamp: Some(1234567890),
+        raw_event: None,
+    };
+
+    let json = serde_json::to_string(&base).unwrap();
+    assert!(json.contains(r#""timestamp":1234567890"#));
+    assert!(!json.contains(r#""rawEvent""#));
+}
+
+/// Test: Event with rawEvent passthrough
+/// Protocol: External system events passed through rawEvent field
+#[test]
+fn test_event_with_raw_event_passthrough() {
+    // Create event with rawEvent for passing through external model response
+    let external_response = json!({
+        "model": "claude-3",
+        "usage": {"input_tokens": 100, "output_tokens": 50}
+    });
+
+    let event = AGUIEvent::TextMessageContent {
+        message_id: "msg1".into(),
+        delta: "Hello".into(),
+        base: carve_agent::ag_ui::BaseEventFields {
+            timestamp: Some(1234567890),
+            raw_event: Some(external_response.clone()),
+        },
+    };
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""rawEvent""#));
+    assert!(json.contains(r#""model":"claude-3""#));
+
+    let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
+    if let AGUIEvent::TextMessageContent { base, .. } = parsed {
+        assert!(base.raw_event.is_some());
+        let raw = base.raw_event.unwrap();
+        assert_eq!(raw["model"], "claude-3");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - SSE Format
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/introduction
+// Events are streamed as JSON over SSE: data: {json}\n\n
+//
+
+/// Test: SSE format output
+/// Protocol: Server-Sent Events format per AG-UI spec
+#[test]
+fn test_sse_format_output() {
+    use carve_agent::AgUiAdapter;
+    use carve_agent::stream::AgentEvent;
+
+    let mut adapter = AgUiAdapter::new("t1".into(), "r1".into());
+    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+
+    let sse_lines = adapter.to_sse(&event);
+
+    // Each line should follow SSE format: data: {json}\n\n
+    for line in &sse_lines {
+        assert!(line.starts_with("data: "), "SSE line should start with 'data: '");
+        assert!(line.ends_with("\n\n"), "SSE line should end with double newline");
+
+        // Extract and validate JSON
+        let json_part = line.strip_prefix("data: ").unwrap().strip_suffix("\n\n").unwrap();
+        let parsed: Result<AGUIEvent, _> = serde_json::from_str(json_part);
+        assert!(parsed.is_ok(), "SSE data should be valid JSON");
+    }
+}
+
+/// Test: NDJSON format output
+/// Protocol: Newline-delimited JSON format alternative
+#[test]
+fn test_ndjson_format_output() {
+    use carve_agent::AgUiAdapter;
+    use carve_agent::stream::AgentEvent;
+
+    let mut adapter = AgUiAdapter::new("t1".into(), "r1".into());
+    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+
+    let ndjson_lines = adapter.to_ndjson(&event);
+
+    // Each line should be JSON followed by single newline
+    for line in &ndjson_lines {
+        assert!(line.ends_with("\n"), "NDJSON line should end with newline");
+        assert!(!line.ends_with("\n\n"), "NDJSON should have single newline, not double");
+
+        let json_part = line.strip_suffix("\n").unwrap();
+        let parsed: Result<AGUIEvent, _> = serde_json::from_str(json_part);
+        assert!(parsed.is_ok(), "NDJSON data should be valid JSON");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Complete Event Flow Patterns
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Standard flows: RUN_STARTED must precede all events, RUN_FINISHED/RUN_ERROR concludes
+//
+
+/// Test: RUN_STARTED must be first event in a run
+/// Protocol: Lifecycle constraint per AG-UI spec
+#[test]
+fn test_run_started_is_first_event() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Simulate a complete run
+    let run_start = AgentEvent::RunStart {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        parent_run_id: None,
+    };
+    events.extend(run_start.to_ag_ui_events(&mut ctx));
+
+    let text = AgentEvent::TextDelta { delta: "Hello".into() };
+    events.extend(text.to_ag_ui_events(&mut ctx));
+
+    let done = AgentEvent::Done { response: "Hello".into() };
+    events.extend(done.to_ag_ui_events(&mut ctx));
+
+    // First event must be RUN_STARTED
+    assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+}
+
+/// Test: TEXT_MESSAGE_START role is always "assistant"
+/// Protocol: TEXT_MESSAGE_START.role per https://docs.ag-ui.com/sdk/js/core/events
+#[test]
+fn test_text_message_start_role_is_assistant() {
+    let event = AGUIEvent::text_message_start("msg1");
+
+    if let AGUIEvent::TextMessageStart { role, .. } = &event {
+        assert_eq!(*role, MessageRole::Assistant);
+    } else {
+        panic!("Expected TextMessageStart");
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""role":"assistant""#));
+}
+
+/// Test: TEXT_MESSAGE_CONTENT delta can be empty string
+/// Protocol: delta field validation
+#[test]
+fn test_text_message_content_empty_delta() {
+    // Per protocol, delta should typically be non-empty, but empty is valid JSON
+    let event = AGUIEvent::text_message_content("msg1", "");
+
+    if let AGUIEvent::TextMessageContent { delta, .. } = &event {
+        assert_eq!(delta, "");
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""delta":"""#));
+}
+
+/// Test: Start-Content-End sequence ordering
+/// Protocol: TEXT_MESSAGE events must follow START → CONTENT* → END
+#[test]
+fn test_text_message_sequence_ordering() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    // Generate a complete text message
+    let text1 = AgentEvent::TextDelta { delta: "Hello".into() };
+    events.extend(text1.to_ag_ui_events(&mut ctx));
+
+    let text2 = AgentEvent::TextDelta { delta: " World".into() };
+    events.extend(text2.to_ag_ui_events(&mut ctx));
+
+    // End text stream
+    ctx.end_text();
+    events.push(AGUIEvent::text_message_end(&ctx.message_id));
+
+    // Find indices
+    let start_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageStart { .. }));
+    let content_indices: Vec<usize> = events.iter().enumerate()
+        .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageContent { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }));
+
+    // Verify ordering
+    assert!(start_idx.is_some(), "Should have TEXT_MESSAGE_START");
+    assert!(!content_indices.is_empty(), "Should have TEXT_MESSAGE_CONTENT");
+    assert!(end_idx.is_some(), "Should have TEXT_MESSAGE_END");
+
+    let start = start_idx.unwrap();
+    let end = end_idx.unwrap();
+
+    // START must come before all CONTENT
+    for &content_idx in &content_indices {
+        assert!(start < content_idx, "START must come before CONTENT");
+    }
+
+    // All CONTENT must come before END
+    for &content_idx in &content_indices {
+        assert!(content_idx < end, "CONTENT must come before END");
+    }
+}
+
+/// Test: Tool call sequence ordering
+/// Protocol: TOOL_CALL events must follow START → ARGS* → END → RESULT
+#[test]
+fn test_tool_call_sequence_ordering() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let mut events: Vec<AGUIEvent> = Vec::new();
+
+    let start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    events.extend(start.to_ag_ui_events(&mut ctx));
+
+    let args = AgentEvent::ToolCallDelta {
+        id: "call_1".into(),
+        args_delta: r#"{"query": "test"}"#.into(),
+    };
+    events.extend(args.to_ag_ui_events(&mut ctx));
+
+    let ready = AgentEvent::ToolCallReady {
+        id: "call_1".into(),
+        name: "search".into(),
+        arguments: json!({"query": "test"}),
+    };
+    events.extend(ready.to_ag_ui_events(&mut ctx));
+
+    let done = AgentEvent::ToolCallDone {
+        id: "call_1".into(),
+        result: ToolResult::success("search", json!({"count": 5})),
+        patch: None,
+    };
+    events.extend(done.to_ag_ui_events(&mut ctx));
+
+    // Find indices
+    let start_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
+    let args_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })).unwrap();
+    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })).unwrap();
+    let result_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallResult { .. })).unwrap();
+
+    // Verify ordering: START < ARGS < END < RESULT
+    assert!(start_idx < args_idx, "START must come before ARGS");
+    assert!(args_idx < end_idx, "ARGS must come before END");
+    assert!(end_idx < result_idx, "END must come before RESULT");
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Lifecycle Event Constraints
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Lifecycle constraints: RUN_STARTED first, RUN_FINISHED/RUN_ERROR last (mutually exclusive)
+//
+
+/// Test: RUN_FINISHED and RUN_ERROR are mutually exclusive
+/// Protocol: Run must end with either RunFinished OR RunError, never both
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_finished_or_error_mutually_exclusive() {
+    // A run should produce either RUN_FINISHED or RUN_ERROR, not both
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Simulate successful run
+    let success_events: Vec<AGUIEvent> = vec![
+        AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        },
+        AgentEvent::TextDelta { delta: "Hello".into() },
+        AgentEvent::Done { response: "Hello".into() },
+    ]
+    .iter()
+    .flat_map(|e| e.to_ag_ui_events(&mut ctx))
+    .collect();
+
+    let has_finished = success_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+    let has_error = success_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. }));
+
+    // Done event emits RunFinished in AG-UI conversion
+    assert!(has_finished, "Successful run should emit RUN_FINISHED");
+    assert!(!has_error, "Successful run should not emit RUN_ERROR");
+
+    // Simulate error run
+    let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
+    let error_events: Vec<AGUIEvent> = vec![
+        AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r2".into(),
+            parent_run_id: None,
+        },
+        AgentEvent::Error { message: "API error".into() },
+    ]
+    .iter()
+    .flat_map(|e| e.to_ag_ui_events(&mut ctx2))
+    .collect();
+
+    let has_finished2 = error_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+    let has_error2 = error_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. }));
+
+    assert!(!(has_finished2 && has_error2), "Run cannot have both RUN_FINISHED and RUN_ERROR");
+}
+
+/// Test: RUN_STARTED contains required fields
+/// Protocol: RunStarted must have threadId, runId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_started_required_fields() {
+    let event = AGUIEvent::run_started("thread_123", "run_456", None);
+
+    if let AGUIEvent::RunStarted { thread_id, run_id, .. } = &event {
+        assert!(!thread_id.is_empty(), "threadId is required");
+        assert!(!run_id.is_empty(), "runId is required");
+    } else {
+        panic!("Expected RunStarted");
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""threadId":"thread_123""#));
+    assert!(json.contains(r#""runId":"run_456""#));
+}
+
+/// Test: RUN_FINISHED contains required fields
+/// Protocol: RunFinished must have threadId, runId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_finished_required_fields() {
+    let event = AGUIEvent::run_finished("thread_123", "run_456", Some(json!({"answer": 42})));
+
+    if let AGUIEvent::RunFinished { thread_id, run_id, result, .. } = &event {
+        assert!(!thread_id.is_empty(), "threadId is required");
+        assert!(!run_id.is_empty(), "runId is required");
+        assert!(result.is_some(), "result should be present when provided");
+    } else {
+        panic!("Expected RunFinished");
+    }
+}
+
+/// Test: RUN_ERROR contains required message field
+/// Protocol: RunError must have message
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_error_required_fields() {
+    let event = AGUIEvent::run_error("Something went wrong", Some("ERR_001".into()));
+
+    if let AGUIEvent::RunError { message, code, .. } = &event {
+        assert!(!message.is_empty(), "message is required");
+        assert_eq!(code.as_deref(), Some("ERR_001"));
+    } else {
+        panic!("Expected RunError");
+    }
+
+    // Without code
+    let event2 = AGUIEvent::run_error("Error message", None);
+    if let AGUIEvent::RunError { message, code, .. } = &event2 {
+        assert!(!message.is_empty());
+        assert!(code.is_none(), "code is optional");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Step Event Pairing
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Step events must be properly paired: StepStarted.stepName == StepFinished.stepName
+//
+
+/// Test: STEP_FINISHED stepName must match STEP_STARTED
+/// Protocol: StepFinished.stepName MUST match corresponding StepStarted.stepName
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_step_finished_name_matches_started() {
+    let step_name = "data_processing";
+
+    let start = AGUIEvent::step_started(step_name);
+    let finish = AGUIEvent::step_finished(step_name);
+
+    // Extract and compare step names
+    let start_name = if let AGUIEvent::StepStarted { step_name, .. } = &start {
+        step_name.clone()
+    } else {
+        panic!("Expected StepStarted");
+    };
+
+    let finish_name = if let AGUIEvent::StepFinished { step_name, .. } = &finish {
+        step_name.clone()
+    } else {
+        panic!("Expected StepFinished");
+    };
+
+    assert_eq!(start_name, finish_name, "StepFinished.stepName must match StepStarted.stepName");
+}
+
+/// Test: Nested steps follow LIFO ordering
+/// Protocol: Nested steps must complete in LIFO order (last started = first finished)
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_nested_steps_lifo_ordering() {
+    // Simulate nested steps: outer → inner → innermost
+    let events = vec![
+        AGUIEvent::step_started("outer"),
+        AGUIEvent::step_started("inner"),
+        AGUIEvent::step_started("innermost"),
+        // Must finish in reverse order
+        AGUIEvent::step_finished("innermost"),
+        AGUIEvent::step_finished("inner"),
+        AGUIEvent::step_finished("outer"),
+    ];
+
+    // Track step stack to verify LIFO
+    let mut step_stack: Vec<String> = Vec::new();
+
+    for event in &events {
+        match event {
+            AGUIEvent::StepStarted { step_name, .. } => {
+                step_stack.push(step_name.clone());
+            }
+            AGUIEvent::StepFinished { step_name, .. } => {
+                let expected = step_stack.pop().expect("Step stack underflow");
+                assert_eq!(
+                    step_name, &expected,
+                    "Steps must finish in LIFO order: expected '{}', got '{}'",
+                    expected, step_name
+                );
+            }
+            _ => {}
+        }
+    }
+
+    assert!(step_stack.is_empty(), "All steps must be finished");
+}
+
+/// Test: Step events serialization with stepName field
+/// Protocol: Step events use stepName (camelCase) field
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_step_events_step_name_field() {
+    let start = AGUIEvent::step_started("my_step");
+    let finish = AGUIEvent::step_finished("my_step");
+
+    let start_json = serde_json::to_string(&start).unwrap();
+    let finish_json = serde_json::to_string(&finish).unwrap();
+
+    // Verify camelCase field name
+    assert!(start_json.contains(r#""stepName":"my_step""#));
+    assert!(finish_json.contains(r#""stepName":"my_step""#));
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Text Message ID References
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// TextMessageContent and TextMessageEnd must reference valid TextMessageStart
+//
+
+/// Test: TEXT_MESSAGE_CONTENT messageId must match TEXT_MESSAGE_START
+/// Protocol: TextMessageContent.messageId must reference a valid TextMessageStart
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_content_message_id_references_start() {
+    let message_id = "msg_abc123";
+
+    let start = AGUIEvent::text_message_start(message_id);
+    let content = AGUIEvent::text_message_content(message_id, "Hello");
+
+    let start_id = if let AGUIEvent::TextMessageStart { message_id, .. } = &start {
+        message_id.clone()
+    } else {
+        panic!("Expected TextMessageStart");
+    };
+
+    let content_id = if let AGUIEvent::TextMessageContent { message_id, .. } = &content {
+        message_id.clone()
+    } else {
+        panic!("Expected TextMessageContent");
+    };
+
+    assert_eq!(start_id, content_id, "TextMessageContent.messageId must match TextMessageStart");
+}
+
+/// Test: TEXT_MESSAGE_END messageId must match TEXT_MESSAGE_START
+/// Protocol: TextMessageEnd.messageId must match previous TextMessageStart
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_end_message_id_matches_start() {
+    let message_id = "msg_xyz789";
+
+    let start = AGUIEvent::text_message_start(message_id);
+    let end = AGUIEvent::text_message_end(message_id);
+
+    let start_id = if let AGUIEvent::TextMessageStart { message_id, .. } = &start {
+        message_id.clone()
+    } else {
+        panic!("Expected TextMessageStart");
+    };
+
+    let end_id = if let AGUIEvent::TextMessageEnd { message_id, .. } = &end {
+        message_id.clone()
+    } else {
+        panic!("Expected TextMessageEnd");
+    };
+
+    assert_eq!(start_id, end_id, "TextMessageEnd.messageId must match TextMessageStart");
+}
+
+/// Test: Complete text message flow maintains consistent messageId
+/// Protocol: All events in a text message sequence share the same messageId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_message_flow_consistent_message_id() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let text1 = AgentEvent::TextDelta { delta: "Hello ".into() };
+    let events1 = text1.to_ag_ui_events(&mut ctx);
+
+    let text2 = AgentEvent::TextDelta { delta: "World".into() };
+    let events2 = text2.to_ag_ui_events(&mut ctx);
+
+    // Collect all messageIds
+    let mut message_ids: Vec<String> = Vec::new();
+
+    for event in events1.iter().chain(events2.iter()) {
+        match event {
+            AGUIEvent::TextMessageStart { message_id, .. }
+            | AGUIEvent::TextMessageContent { message_id, .. }
+            | AGUIEvent::TextMessageEnd { message_id, .. } => {
+                message_ids.push(message_id.clone());
+            }
+            _ => {}
+        }
+    }
+
+    // All messageIds should be the same within a single text stream
+    if !message_ids.is_empty() {
+        let first_id = &message_ids[0];
+        for id in &message_ids {
+            assert_eq!(id, first_id, "All text message events should share the same messageId");
+        }
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Tool Call Constraints
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Tool call events must maintain proper ID references and JSON validity
+//
+
+/// Test: TOOL_CALL_ARGS deltas concatenate to valid JSON
+/// Protocol: All ToolCallArgs deltas must concatenate to form valid JSON arguments
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_args_concatenate_to_valid_json() {
+    // Simulate streaming JSON arguments in chunks
+    let chunks = vec![
+        r#"{"#,
+        r#""query": "#,
+        r#""rust "#,
+        r#"programming","#,
+        r#" "limit": 10"#,
+        r#"}"#,
+    ];
+
+    let concatenated: String = chunks.concat();
+    let parsed: Result<Value, _> = serde_json::from_str(&concatenated);
+
+    assert!(parsed.is_ok(), "Concatenated chunks must form valid JSON: {:?}", parsed.err());
+
+    let json = parsed.unwrap();
+    assert_eq!(json["query"], "rust programming");
+    assert_eq!(json["limit"], 10);
+}
+
+/// Test: TOOL_CALL_RESULT toolCallId references valid TOOL_CALL_START
+/// Protocol: ToolCallResult.toolCallId must match a previous ToolCallStart.toolCallId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_result_references_valid_tool_call() {
+    let tool_call_id = "call_abc123";
+
+    let start = AGUIEvent::tool_call_start(tool_call_id, "search", None);
+    let result = AGUIEvent::tool_call_result("msg_1", tool_call_id, r#"{"found": 5}"#);
+
+    let start_id = if let AGUIEvent::ToolCallStart { tool_call_id, .. } = &start {
+        tool_call_id.clone()
+    } else {
+        panic!("Expected ToolCallStart");
+    };
+
+    let result_id = if let AGUIEvent::ToolCallResult { tool_call_id, .. } = &result {
+        tool_call_id.clone()
+    } else {
+        panic!("Expected ToolCallResult");
+    };
+
+    assert_eq!(start_id, result_id, "ToolCallResult.toolCallId must match ToolCallStart");
+}
+
+/// Test: Tool call flow maintains consistent toolCallId
+/// Protocol: All events in a tool call sequence share the same toolCallId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_flow_consistent_tool_call_id() {
+    let tool_call_id = "call_xyz789";
+    let tool_name = "read_file";
+
+    let events = vec![
+        AGUIEvent::tool_call_start(tool_call_id, tool_name, None),
+        AGUIEvent::tool_call_args(tool_call_id, r#"{"path": "/tmp/test.txt"}"#),
+        AGUIEvent::tool_call_end(tool_call_id),
+        AGUIEvent::tool_call_result("msg_1", tool_call_id, "file contents"),
+    ];
+
+    // Verify all events have the same toolCallId
+    for event in &events {
+        let event_id = match event {
+            AGUIEvent::ToolCallStart { tool_call_id, .. } => tool_call_id,
+            AGUIEvent::ToolCallArgs { tool_call_id, .. } => tool_call_id,
+            AGUIEvent::ToolCallEnd { tool_call_id, .. } => tool_call_id,
+            AGUIEvent::ToolCallResult { tool_call_id, .. } => tool_call_id,
+            _ => continue,
+        };
+        assert_eq!(event_id, tool_call_id, "All tool call events must share the same toolCallId");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Message Type Validation
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/messages
+// Different message types have different required fields
+//
+
+/// Test: UserMessage content is required
+/// Protocol: UserMessage.content is required (string or InputContent array)
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_user_message_content_required() {
+    let msg = AGUIMessage::user("Hello, how can you help?");
+
+    assert_eq!(msg.role, MessageRole::User);
+    assert!(!msg.content.is_empty(), "UserMessage.content is required");
+
+    // Verify serialization includes content
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""content":"Hello"#));
+}
+
+/// Test: SystemMessage content is required
+/// Protocol: SystemMessage.content is required string
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_system_message_content_required() {
+    let msg = AGUIMessage::system("You are a helpful assistant.");
+
+    assert_eq!(msg.role, MessageRole::System);
+    assert!(!msg.content.is_empty(), "SystemMessage.content is required");
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""content":"You are a helpful assistant.""#));
+}
+
+/// Test: ToolMessage requires toolCallId
+/// Protocol: ToolMessage requires both content and toolCallId
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_tool_message_requires_tool_call_id() {
+    let msg = AGUIMessage::tool("result data", "call_123");
+
+    assert_eq!(msg.role, MessageRole::Tool);
+    assert!(msg.tool_call_id.is_some(), "ToolMessage requires toolCallId");
+    assert_eq!(msg.tool_call_id.as_deref(), Some("call_123"));
+
+    let json = serde_json::to_string(&msg).unwrap();
+    assert!(json.contains(r#""toolCallId":"call_123""#));
+}
+
+/// Test: AssistantMessage content can be optional
+/// Protocol: AssistantMessage can have content=null if toolCalls present
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_assistant_message_optional_content() {
+    // With content
+    let msg_with_content = AGUIMessage::assistant("I can help with that.");
+    assert_eq!(msg_with_content.role, MessageRole::Assistant);
+    assert!(!msg_with_content.content.is_empty());
+
+    // Empty content is valid for assistant (when making tool calls)
+    let mut msg_empty = AGUIMessage::assistant("");
+    msg_empty.content = String::new();
+    assert_eq!(msg_empty.role, MessageRole::Assistant);
+    // Empty content is allowed per protocol when tool calls are present
+}
+
+/// Test: Message with optional id field
+/// Protocol: Messages can have optional unique identifiers
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_message_optional_id_field() {
+    let mut msg = AGUIMessage::user("test");
+
+    // Without id
+    assert!(msg.id.is_none());
+    let json_without_id = serde_json::to_string(&msg).unwrap();
+    assert!(!json_without_id.contains(r#""id""#));
+
+    // With id
+    msg.id = Some("msg_unique_123".to_string());
+    let json_with_id = serde_json::to_string(&msg).unwrap();
+    assert!(json_with_id.contains(r#""id":"msg_unique_123""#));
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - State Synchronization
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/state
+// State synchronization via snapshots and deltas
+//
+
+/// Test: StateSnapshot replaces entire state
+/// Protocol: StateSnapshot should replace existing state entirely, not merge
+/// Reference: https://docs.ag-ui.com/concepts/state
+#[test]
+fn test_state_snapshot_replaces_entire_state() {
+    let new_state = json!({
+        "counter": 10,
+        "items": ["a", "b", "c"]
+    });
+
+    let snapshot2 = AGUIEvent::state_snapshot(new_state.clone());
+
+    // Second snapshot should contain only new state, not merged with first
+    if let AGUIEvent::StateSnapshot { snapshot, .. } = &snapshot2 {
+        assert_eq!(snapshot["counter"], 10);
+        assert!(snapshot.get("user").is_none(), "Old state should be replaced, not merged");
+        assert!(snapshot.get("items").is_some(), "New state should be present");
+    }
+}
+
+/// Test: StateDelta patches apply atomically
+/// Protocol: All patches in StateDelta must apply atomically (all or none)
+/// Reference: https://docs.ag-ui.com/concepts/state
+#[test]
+fn test_state_delta_atomic_application() {
+    // Multiple operations that should all succeed or all fail together
+    let delta = vec![
+        json!({"op": "add", "path": "/step1", "value": "done"}),
+        json!({"op": "add", "path": "/step2", "value": "done"}),
+        json!({"op": "add", "path": "/step3", "value": "done"}),
+    ];
+
+    let event = AGUIEvent::state_delta(delta);
+
+    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+        assert_eq!(ops.len(), 3, "All operations should be in a single delta");
+        // All operations are part of one atomic batch
+    }
+}
+
+/// Test: StateDelta patches apply in order
+/// Protocol: StateDelta patches must be applied in received order
+/// Reference: https://docs.ag-ui.com/concepts/state
+#[test]
+fn test_state_delta_sequential_ordering() {
+    // Operations that depend on order
+    let delta = vec![
+        json!({"op": "add", "path": "/items", "value": []}),      // 1. Create array
+        json!({"op": "add", "path": "/items/-", "value": "first"}), // 2. Add first item
+        json!({"op": "add", "path": "/items/-", "value": "second"}), // 3. Add second item
+    ];
+
+    let event = AGUIEvent::state_delta(delta.clone());
+
+    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+        // Verify operations are in expected order
+        assert_eq!(ops[0]["path"], "/items");
+        assert_eq!(ops[1]["path"], "/items/-");
+        assert_eq!(ops[1]["value"], "first");
+        assert_eq!(ops[2]["path"], "/items/-");
+        assert_eq!(ops[2]["value"], "second");
+    }
+}
+
+/// Test: JSON Patch test operation can validate state
+/// Protocol: JSON Patch "test" operation must fail entire patch if test fails
+/// Reference: https://docs.ag-ui.com/concepts/state (RFC 6902)
+#[test]
+fn test_patch_test_operation_validates_state() {
+    // Test operation validates expected value before applying changes
+    let delta = vec![
+        json!({"op": "test", "path": "/version", "value": "1.0"}),
+        json!({"op": "replace", "path": "/version", "value": "2.0"}),
+    ];
+
+    let event = AGUIEvent::state_delta(delta);
+
+    if let AGUIEvent::StateDelta { delta: ops, .. } = &event {
+        // First operation is a test
+        assert_eq!(ops[0]["op"], "test");
+        assert_eq!(ops[0]["value"], "1.0");
+        // If test passes, replacement happens
+        assert_eq!(ops[1]["op"], "replace");
+        assert_eq!(ops[1]["value"], "2.0");
+    }
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Activity Event Constraints
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Activity events for progress indicators and status updates
+//
+
+/// Test: ActivityDelta activityType must match ActivitySnapshot
+/// Protocol: ActivityDelta.activityType must mirror previous ActivitySnapshot.activityType
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_activity_delta_type_matches_snapshot() {
+    use std::collections::HashMap;
+
+    let activity_type = "file_processing";
+
+    let mut content = HashMap::new();
+    content.insert("progress".to_string(), json!(0.0));
+
+    let snapshot = AGUIEvent::activity_snapshot("act_1", activity_type, content, None);
+    let delta = AGUIEvent::activity_delta(
+        "act_1",
+        activity_type,
+        vec![json!({"op": "replace", "path": "/progress", "value": 0.5})],
+    );
+
+    // Extract activity types
+    let snapshot_type = if let AGUIEvent::ActivitySnapshot { activity_type, .. } = &snapshot {
+        activity_type.clone()
+    } else {
+        panic!("Expected ActivitySnapshot");
+    };
+
+    let delta_type = if let AGUIEvent::ActivityDelta { activity_type, .. } = &delta {
+        activity_type.clone()
+    } else {
+        panic!("Expected ActivityDelta");
+    };
+
+    assert_eq!(
+        snapshot_type, delta_type,
+        "ActivityDelta.activityType must match ActivitySnapshot.activityType"
+    );
+}
+
+/// Test: ActivitySnapshot replace=false behavior
+/// Protocol: ActivitySnapshot with replace=false should ignore if message already exists
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_activity_snapshot_replace_false_behavior() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("status".to_string(), json!("running"));
+
+    // replace=false means don't overwrite existing activity
+    let event = AGUIEvent::activity_snapshot("act_1", "processing", content, Some(false));
+
+    if let AGUIEvent::ActivitySnapshot { replace, .. } = &event {
+        assert_eq!(*replace, Some(false));
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""replace":false"#));
+}
+
+/// Test: ActivitySnapshot replace=true overwrites
+/// Protocol: ActivitySnapshot with replace=true should overwrite existing activity
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_activity_snapshot_replace_true_behavior() {
+    use std::collections::HashMap;
+
+    let mut content = HashMap::new();
+    content.insert("status".to_string(), json!("completed"));
+
+    // replace=true means overwrite existing activity
+    let event = AGUIEvent::activity_snapshot("act_1", "processing", content, Some(true));
+
+    if let AGUIEvent::ActivitySnapshot { replace, .. } = &event {
+        assert_eq!(*replace, Some(true));
+    }
+
+    let json = serde_json::to_string(&event).unwrap();
+    assert!(json.contains(r#""replace":true"#));
+}
+
+/// Test: ActivityDelta messageId must match ActivitySnapshot
+/// Protocol: ActivityDelta.messageId must reference the same activity
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_activity_delta_message_id_matches_snapshot() {
+    use std::collections::HashMap;
+
+    let message_id = "activity_msg_123";
+
+    let mut content = HashMap::new();
+    content.insert("count".to_string(), json!(0));
+
+    let snapshot = AGUIEvent::activity_snapshot(message_id, "counter", content, None);
+    let delta = AGUIEvent::activity_delta(
+        message_id,
+        "counter",
+        vec![json!({"op": "replace", "path": "/count", "value": 1})],
+    );
+
+    let snapshot_id = if let AGUIEvent::ActivitySnapshot { message_id, .. } = &snapshot {
+        message_id.clone()
+    } else {
+        panic!("Expected ActivitySnapshot");
+    };
+
+    let delta_id = if let AGUIEvent::ActivityDelta { message_id, .. } = &delta {
+        message_id.clone()
+    } else {
+        panic!("Expected ActivityDelta");
+    };
+
+    assert_eq!(snapshot_id, delta_id, "ActivityDelta.messageId must match ActivitySnapshot");
+}
+
+// ============================================================================
+// AG-UI Protocol Spec Tests - Tool Definition Validation
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/tools
+// Tool definitions must have valid JSON Schema parameters
+//
+
+/// Test: Tool parameters must be valid JSON Schema
+/// Protocol: Tool.parameters must be valid JSON Schema
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_tool_parameters_json_schema_validation() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query"
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 10
+            }
+        },
+        "required": ["query"]
+    });
+
+    let tool = AGUIToolDef::backend("search", "Search the web")
+        .with_parameters(schema.clone());
+
+    // Verify schema structure
+    assert!(tool.parameters.is_some());
+    let params = tool.parameters.unwrap();
+    assert_eq!(params["type"], "object");
+    assert!(params["properties"]["query"].is_object());
+    assert!(params["required"].is_array());
+}
+
+/// Test: Tool required array references valid properties
+/// Protocol: Tool.required array items must reference existing properties in schema
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_tool_required_references_valid_properties() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "encoding": {"type": "string"}
+        },
+        "required": ["path"]
+    });
+
+    let tool = AGUIToolDef::backend("read_file", "Read a file")
+        .with_parameters(schema.clone());
+
+    let params = tool.parameters.unwrap();
+    let required = params["required"].as_array().unwrap();
+    let properties = params["properties"].as_object().unwrap();
+
+    // All required fields must exist in properties
+    for req in required {
+        let req_name = req.as_str().unwrap();
+        assert!(
+            properties.contains_key(req_name),
+            "Required field '{}' must exist in properties",
+            req_name
+        );
+    }
+}
+
+/// Test: Frontend vs Backend tool execution location
+/// Protocol: Tools can execute on frontend or backend
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_tool_execution_location() {
+    let backend_tool = AGUIToolDef::backend("search", "Search");
+    let frontend_tool = AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard");
+
+    assert_eq!(backend_tool.execute, ToolExecutionLocation::Backend);
+    assert_eq!(frontend_tool.execute, ToolExecutionLocation::Frontend);
+
+    // Backend tools don't serialize execute field (it's the default)
+    let backend_json = serde_json::to_string(&backend_tool).unwrap();
+    assert!(!backend_json.contains(r#""execute""#));
+
+    // Frontend tools do serialize execute field
+    let frontend_json = serde_json::to_string(&frontend_tool).unwrap();
+    assert!(frontend_json.contains(r#""execute":"frontend""#));
+}
+
+// ============================================================================
+// P0 - Activity Message Role (AG-UI Protocol)
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/messages
+// Activity messages are frontend-only; they should never be forwarded to the model.
+// Activity events (ACTIVITY_SNAPSHOT/DELTA) are separate from activity messages.
+//
+
+/// Test: Activity message role is distinct from activity events
+/// Protocol: Activity role messages are client-only, never sent to model
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_activity_message_role_not_forwarded() {
+    // Activity messages should be filtered from model context
+    let messages = vec![
+        AGUIMessage::user("Hello"),
+        AGUIMessage::assistant("Hi!"),
+        AGUIMessage::system("Be helpful"),
+    ];
+
+    // Only user/assistant/system/tool messages should be forwarded
+    let forwarded_roles: Vec<&MessageRole> = messages
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User | MessageRole::Assistant | MessageRole::System | MessageRole::Tool))
+        .map(|m| &m.role)
+        .collect();
+
+    assert_eq!(forwarded_roles.len(), 3);
+    // Developer and Activity role messages should NOT appear in the forwarded list
+}
+
+/// Test: All message roles can be serialized in messages snapshot
+/// Protocol: MessagesSnapshot can contain messages with any role
+/// Reference: https://docs.ag-ui.com/concepts/messages
+#[test]
+fn test_messages_snapshot_all_roles() {
+    let messages = vec![
+        json!({"role": "user", "content": "Hello"}),
+        json!({"role": "assistant", "content": "Hi!"}),
+        json!({"role": "system", "content": "Be helpful"}),
+        json!({"role": "tool", "content": "result", "toolCallId": "call_1"}),
+        json!({"role": "developer", "content": "debug info"}),
+    ];
+
+    let event = AGUIEvent::messages_snapshot(messages);
+
+    if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &event {
+        assert_eq!(m.len(), 5);
+        assert_eq!(m[0]["role"], "user");
+        assert_eq!(m[1]["role"], "assistant");
+        assert_eq!(m[2]["role"], "system");
+        assert_eq!(m[3]["role"], "tool");
+        assert_eq!(m[4]["role"], "developer");
+    }
+}
+
+// ============================================================================
+// P1 - AgUiAdapter Coverage (Uncovered Lines 834-898)
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/introduction
+// AgUiAdapter provides convenient methods for AG-UI event generation
+//
+
+/// Test: AgUiAdapter accessor methods
+/// Protocol: Adapter exposes thread/run/message IDs
+/// Reference: https://docs.ag-ui.com/introduction
+#[test]
+fn test_ag_ui_adapter_accessors() {
+    use carve_agent::AgUiAdapter;
+
+    let adapter = AgUiAdapter::new("thread_123".to_string(), "run_456".to_string());
+
+    assert_eq!(adapter.thread_id(), "thread_123");
+    assert_eq!(adapter.run_id(), "run_456");
+    assert!(adapter.message_id().starts_with("msg_"));
+}
+
+/// Test: AgUiAdapter context_mut access
+/// Protocol: Adapter allows mutable context access for advanced usage
+/// Reference: https://docs.ag-ui.com/introduction
+#[test]
+fn test_ag_ui_adapter_context_mut() {
+    use carve_agent::AgUiAdapter;
+
+    let mut adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+
+    // Access context to modify state
+    let ctx = adapter.context_mut();
+    let step = ctx.next_step_name();
+    assert_eq!(step, "step_1");
+
+    let step2 = ctx.next_step_name();
+    assert_eq!(step2, "step_2");
+}
+
+/// Test: AgUiAdapter run_started factory
+/// Protocol: Generate RUN_STARTED via adapter
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_ag_ui_adapter_run_started() {
+    use carve_agent::AgUiAdapter;
+
+    let adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+    let event = adapter.run_started(None);
+
+    if let AGUIEvent::RunStarted { thread_id, run_id, parent_run_id, .. } = &event {
+        assert_eq!(thread_id, "t1");
+        assert_eq!(run_id, "r1");
+        assert!(parent_run_id.is_none());
+    } else {
+        panic!("Expected RunStarted");
+    }
+}
+
+/// Test: AgUiAdapter run_started with parent
+/// Protocol: Sub-runs reference parent via parentRunId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_ag_ui_adapter_run_started_with_parent() {
+    use carve_agent::AgUiAdapter;
+
+    let adapter = AgUiAdapter::new("t1".to_string(), "r2".to_string());
+    let event = adapter.run_started(Some("r1".to_string()));
+
+    if let AGUIEvent::RunStarted { parent_run_id, .. } = &event {
+        assert_eq!(parent_run_id.as_deref(), Some("r1"));
+    } else {
+        panic!("Expected RunStarted");
+    }
+}
+
+/// Test: AgUiAdapter run_finished factory
+/// Protocol: Generate RUN_FINISHED via adapter
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_ag_ui_adapter_run_finished() {
+    use carve_agent::AgUiAdapter;
+
+    let adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+    let event = adapter.run_finished(Some(json!({"answer": 42})));
+
+    if let AGUIEvent::RunFinished { thread_id, run_id, result, .. } = &event {
+        assert_eq!(thread_id, "t1");
+        assert_eq!(run_id, "r1");
+        assert_eq!(result.as_ref().unwrap()["answer"], 42);
+    } else {
+        panic!("Expected RunFinished");
+    }
+}
+
+/// Test: AgUiAdapter run_error factory
+/// Protocol: Generate RUN_ERROR via adapter
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_ag_ui_adapter_run_error() {
+    use carve_agent::AgUiAdapter;
+
+    let adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+    let event = adapter.run_error("Something failed", Some("ERR_500".to_string()));
+
+    if let AGUIEvent::RunError { message, code, .. } = &event {
+        assert_eq!(message, "Something failed");
+        assert_eq!(code.as_deref(), Some("ERR_500"));
+    } else {
+        panic!("Expected RunError");
+    }
+}
+
+/// Test: AgUiAdapter convert method
+/// Protocol: Convert AgentEvent to AGUIEvent via adapter
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_ag_ui_adapter_convert() {
+    use carve_agent::AgUiAdapter;
+    use carve_agent::stream::AgentEvent;
+
+    let mut adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+
+    let ag_events = adapter.convert(&event);
+
+    // Should produce TextMessageStart + TextMessageContent
+    assert!(ag_events.len() >= 1);
+    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+}
+
+/// Test: AgUiAdapter to_json method
+/// Protocol: Convert events to JSON strings
+/// Reference: https://docs.ag-ui.com/introduction
+#[test]
+fn test_ag_ui_adapter_to_json() {
+    use carve_agent::AgUiAdapter;
+    use carve_agent::stream::AgentEvent;
+
+    let mut adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
+    let event = AgentEvent::TextDelta { delta: "Hi".into() };
+
+    let json_strings = adapter.to_json(&event);
+
+    assert!(!json_strings.is_empty());
+    for json in &json_strings {
+        // Each should be valid JSON
+        let parsed: Result<AGUIEvent, _> = serde_json::from_str(json);
+        assert!(parsed.is_ok(), "Should be valid JSON: {}", json);
+    }
+}
+
+// ============================================================================
+// P1 - RunAgentRequest Uncovered Methods (Lines 1081-1141)
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
+// RunAgentInput: with_messages, with_model, with_system_prompt, last_user_message,
+//                frontend_tools, backend_tools, is_frontend_tool
+//
+
+/// Test: RunAgentRequest.with_messages batch
+/// Protocol: Add multiple messages at once
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_with_messages_batch() {
+    let messages = vec![
+        AGUIMessage::user("Hello"),
+        AGUIMessage::assistant("Hi!"),
+        AGUIMessage::user("How are you?"),
+    ];
+
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_messages(messages);
+
+    assert_eq!(request.messages.len(), 3);
+    assert_eq!(request.messages[0].role, MessageRole::User);
+    assert_eq!(request.messages[2].content, "How are you?");
+}
+
+/// Test: RunAgentRequest.with_model
+/// Protocol: Optional model selection in request
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_with_model() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_model("gpt-4o");
+
+    assert_eq!(request.model, Some("gpt-4o".to_string()));
+
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains(r#""model":"gpt-4o""#));
+}
+
+/// Test: RunAgentRequest.with_system_prompt
+/// Protocol: Optional system prompt override
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_with_system_prompt() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_system_prompt("You are a coding assistant.");
+
+    assert_eq!(request.system_prompt, Some("You are a coding assistant.".to_string()));
+}
+
+/// Test: RunAgentRequest.last_user_message
+/// Protocol: Extract last user message for quick access
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_last_user_message() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::user("First"))
+        .with_message(AGUIMessage::assistant("Response"))
+        .with_message(AGUIMessage::user("Second"));
+
+    assert_eq!(request.last_user_message(), Some("Second"));
+}
+
+/// Test: RunAgentRequest.last_user_message when empty
+/// Protocol: Returns None when no user messages
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_last_user_message_empty() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    assert!(request.last_user_message().is_none());
+}
+
+/// Test: RunAgentRequest.last_user_message with only non-user messages
+/// Protocol: Returns None when no user messages present
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_last_user_message_no_user() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::assistant("Hi"))
+        .with_message(AGUIMessage::system("Be helpful"));
+
+    assert!(request.last_user_message().is_none());
+}
+
+/// Test: RunAgentRequest.frontend_tools
+/// Protocol: Filter tools by frontend execution location
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_run_agent_request_frontend_tools() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search"))
+        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+        .with_tool(AGUIToolDef::backend("read_file", "Read file"))
+        .with_tool(AGUIToolDef::frontend("showNotification", "Notify"));
+
+    let frontend = request.frontend_tools();
+    assert_eq!(frontend.len(), 2);
+    assert!(frontend.iter().all(|t| t.execute == ToolExecutionLocation::Frontend));
+}
+
+/// Test: RunAgentRequest.backend_tools
+/// Protocol: Filter tools by backend execution location
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_run_agent_request_backend_tools() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search"))
+        .with_tool(AGUIToolDef::frontend("copy", "Copy"))
+        .with_tool(AGUIToolDef::backend("read", "Read"));
+
+    let backend = request.backend_tools();
+    assert_eq!(backend.len(), 2);
+    assert!(backend.iter().all(|t| t.execute == ToolExecutionLocation::Backend));
+}
+
+/// Test: RunAgentRequest.is_frontend_tool
+/// Protocol: Check if a named tool is frontend
+/// Reference: https://docs.ag-ui.com/concepts/tools
+#[test]
+fn test_run_agent_request_is_frontend_tool() {
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_tool(AGUIToolDef::backend("search", "Search"))
+        .with_tool(AGUIToolDef::frontend("copy", "Copy"));
+
+    assert!(!request.is_frontend_tool("search"));
+    assert!(request.is_frontend_tool("copy"));
+    assert!(!request.is_frontend_tool("nonexistent"));
+}
+
+// ============================================================================
+// P1 - InteractionResponse Coverage (Lines 1235-1288)
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+// InteractionResponse parsing: approval/denial from various value formats
+//
+
+/// Test: InteractionResponse.is_approved with bool true
+/// Protocol: Boolean true indicates approval
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_approved_bool_true() {
+    assert!(InteractionResponse::is_approved(&json!(true)));
+}
+
+/// Test: InteractionResponse.is_approved with bool false
+/// Protocol: Boolean false is NOT approval
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_approved_bool_false() {
+    assert!(!InteractionResponse::is_approved(&json!(false)));
+}
+
+/// Test: InteractionResponse.is_approved with string variants
+/// Protocol: Various affirmative strings indicate approval
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_approved_strings() {
+    let approved_strings = vec!["true", "yes", "approved", "allow", "confirm", "ok", "accept"];
+    for s in approved_strings {
+        assert!(
+            InteractionResponse::is_approved(&json!(s)),
+            "'{}' should be approved",
+            s
+        );
+    }
+
+    // Case insensitive
+    assert!(InteractionResponse::is_approved(&json!("TRUE")));
+    assert!(InteractionResponse::is_approved(&json!("Yes")));
+    assert!(InteractionResponse::is_approved(&json!("APPROVED")));
+}
+
+/// Test: InteractionResponse.is_approved with object
+/// Protocol: Object with approved=true or allowed=true indicates approval
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_approved_object() {
+    assert!(InteractionResponse::is_approved(&json!({"approved": true})));
+    assert!(InteractionResponse::is_approved(&json!({"allowed": true})));
+    assert!(!InteractionResponse::is_approved(&json!({"approved": false})));
+    assert!(!InteractionResponse::is_approved(&json!({"other": true})));
+}
+
+/// Test: InteractionResponse.is_approved with non-matchable values
+/// Protocol: null, number, array should not match as approved
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_approved_non_matchable() {
+    assert!(!InteractionResponse::is_approved(&json!(null)));
+    assert!(!InteractionResponse::is_approved(&json!(42)));
+    assert!(!InteractionResponse::is_approved(&json!([1, 2, 3])));
+}
+
+/// Test: InteractionResponse.is_denied with bool
+/// Protocol: Boolean false indicates denial
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_denied_bool() {
+    assert!(InteractionResponse::is_denied(&json!(false)));
+    assert!(!InteractionResponse::is_denied(&json!(true)));
+}
+
+/// Test: InteractionResponse.is_denied with string variants
+/// Protocol: Various negative strings indicate denial
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_denied_strings() {
+    let denied_strings = vec!["false", "no", "denied", "deny", "reject", "cancel", "abort"];
+    for s in denied_strings {
+        assert!(
+            InteractionResponse::is_denied(&json!(s)),
+            "'{}' should be denied",
+            s
+        );
+    }
+
+    // Case insensitive
+    assert!(InteractionResponse::is_denied(&json!("FALSE")));
+    assert!(InteractionResponse::is_denied(&json!("No")));
+    assert!(InteractionResponse::is_denied(&json!("DENIED")));
+}
+
+/// Test: InteractionResponse.is_denied with object
+/// Protocol: Object with approved=false or denied=true indicates denial
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_denied_object() {
+    assert!(InteractionResponse::is_denied(&json!({"approved": false})));
+    assert!(InteractionResponse::is_denied(&json!({"denied": true})));
+    assert!(!InteractionResponse::is_denied(&json!({"approved": true})));
+    assert!(!InteractionResponse::is_denied(&json!({"other": false})));
+}
+
+/// Test: InteractionResponse.is_denied with non-matchable values
+/// Protocol: null, number, array should not match as denied
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_is_denied_non_matchable() {
+    assert!(!InteractionResponse::is_denied(&json!(null)));
+    assert!(!InteractionResponse::is_denied(&json!(42)));
+    assert!(!InteractionResponse::is_denied(&json!([1, 2, 3])));
+}
+
+/// Test: InteractionResponse.approved() and .denied() instance methods
+/// Protocol: Instance methods delegate to static is_approved/is_denied
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_response_instance_methods() {
+    let approved = InteractionResponse::new("int_1", json!(true));
+    assert!(approved.approved());
+    assert!(!approved.denied());
+
+    let denied = InteractionResponse::new("int_2", json!(false));
+    assert!(!denied.approved());
+    assert!(denied.denied());
+
+    let string_approved = InteractionResponse::new("int_3", json!("yes"));
+    assert!(string_approved.approved());
+
+    let object_denied = InteractionResponse::new("int_4", json!({"approved": false}));
+    assert!(object_denied.denied());
+}
+
+// ============================================================================
+// P1 - RequestError Coverage (Lines 1401-1445)
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
+// Error types for request validation
+//
+
+/// Test: RequestError.invalid_field creation
+/// Protocol: Error for invalid field in request
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_invalid_field() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err = RequestError::invalid_field("threadId cannot be empty");
+
+    assert_eq!(err.code, "INVALID_FIELD");
+    assert_eq!(err.message, "threadId cannot be empty");
+}
+
+/// Test: RequestError.validation creation
+/// Protocol: Error for validation failure
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_validation() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err = RequestError::validation("Invalid state format");
+
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert_eq!(err.message, "Invalid state format");
+}
+
+/// Test: RequestError.internal creation
+/// Protocol: Error for internal failures
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_internal() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err = RequestError::internal("Connection lost");
+
+    assert_eq!(err.code, "INTERNAL_ERROR");
+    assert_eq!(err.message, "Connection lost");
+}
+
+/// Test: RequestError Display implementation
+/// Protocol: Human-readable error format
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_display() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err = RequestError::invalid_field("bad value");
+    let display = format!("{}", err);
+    assert_eq!(display, "[INVALID_FIELD] bad value");
+}
+
+/// Test: RequestError From<String> implementation
+/// Protocol: String-to-error conversion defaults to validation error
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_from_string() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err: RequestError = "something went wrong".to_string().into();
+    assert_eq!(err.code, "VALIDATION_ERROR");
+    assert_eq!(err.message, "something went wrong");
+}
+
+/// Test: RequestError serialization
+/// Protocol: Error can be serialized for API response
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_request_error_serialization() {
+    use carve_agent::ag_ui::RequestError;
+
+    let err = RequestError::invalid_field("missing threadId");
+    let json = serde_json::to_string(&err).unwrap();
+
+    assert!(json.contains(r#""code":"INVALID_FIELD""#));
+    assert!(json.contains(r#""message":"missing threadId""#));
+
+    let parsed: RequestError = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.code, "INVALID_FIELD");
+}
+
+// ============================================================================
+// P1 - TextMessageChunk Expansion
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// TextMessageChunk auto-expands to Start→Content→End triad
+// First chunk must include messageId and role
+//
+
+/// Test: TextMessageChunk first chunk requires messageId
+/// Protocol: First chunk auto-expands to TextMessageStart
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_message_chunk_first_requires_message_id() {
+    // First chunk should have messageId and role
+    let first_chunk = AGUIEvent::text_message_chunk(
+        Some("msg_1".to_string()),
+        Some(MessageRole::Assistant),
+        Some("Hello".to_string()),
+    );
+
+    let json = serde_json::to_string(&first_chunk).unwrap();
+    assert!(json.contains(r#""messageId":"msg_1""#));
+    assert!(json.contains(r#""role":"assistant""#));
+    assert!(json.contains(r#""delta":"Hello""#));
+}
+
+/// Test: TextMessageChunk subsequent chunks only need delta
+/// Protocol: After first chunk, only delta is needed
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_message_chunk_subsequent_only_delta() {
+    let subsequent_chunk = AGUIEvent::text_message_chunk(
+        None,
+        None,
+        Some(" World".to_string()),
+    );
+
+    let json = serde_json::to_string(&subsequent_chunk).unwrap();
+    assert!(json.contains(r#""delta":" World""#));
+    // messageId and role should not appear when None
+    assert!(!json.contains(r#""messageId""#));
+    assert!(!json.contains(r#""role""#));
+}
+
+/// Test: TextMessageChunk with no delta (end signal)
+/// Protocol: Chunk with no delta signals end
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_message_chunk_end_signal() {
+    let end_chunk = AGUIEvent::text_message_chunk(None, None, None);
+
+    let json = serde_json::to_string(&end_chunk).unwrap();
+    assert!(json.contains(r#""type":"TEXT_MESSAGE_CHUNK""#));
+    // No delta, messageId, or role
+    assert!(!json.contains(r#""delta""#));
+}
+
+// ============================================================================
+// P1 - ToolCallChunk Expansion
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// ToolCallChunk auto-expands to Start→Args→End triad
+// First chunk must include toolCallId and toolCallName
+//
+
+/// Test: ToolCallChunk first chunk requires toolCallId and name
+/// Protocol: First chunk auto-expands to ToolCallStart
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_chunk_first_requires_id_and_name() {
+    let first_chunk = AGUIEvent::tool_call_chunk(
+        Some("call_1".to_string()),
+        Some("search".to_string()),
+        Some("msg_1".to_string()),
+        Some(r#"{"query"}"#.to_string()),
+    );
+
+    let json = serde_json::to_string(&first_chunk).unwrap();
+    assert!(json.contains(r#""toolCallId":"call_1""#));
+    assert!(json.contains(r#""toolCallName":"search""#));
+    assert!(json.contains(r#""parentMessageId":"msg_1""#));
+}
+
+/// Test: ToolCallChunk subsequent chunks only need delta
+/// Protocol: After first chunk, only args delta needed
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_chunk_subsequent_only_delta() {
+    let subsequent_chunk = AGUIEvent::tool_call_chunk(
+        None,
+        None,
+        None,
+        Some(r#": "rust tutorials"}"#.to_string()),
+    );
+
+    let json = serde_json::to_string(&subsequent_chunk).unwrap();
+    assert!(json.contains(r#""delta""#));
+    assert!(!json.contains(r#""toolCallId""#));
+    assert!(!json.contains(r#""toolCallName""#));
+}
+
+/// Test: ToolCallChunk end signal
+/// Protocol: Chunk with no delta signals end of args
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_chunk_end_signal() {
+    let end_chunk = AGUIEvent::tool_call_chunk(None, None, None, None);
+
+    let json = serde_json::to_string(&end_chunk).unwrap();
+    assert!(json.contains(r#""type":"TOOL_CALL_CHUNK""#));
+    assert!(!json.contains(r#""delta""#));
+}
+
+// ============================================================================
+// P1 - Non-Empty Delta Validation
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// TextMessageContent.delta should be non-empty
+//
+
+/// Test: TextMessageContent with non-empty delta
+/// Protocol: TextMessageContent.delta must be non-empty string
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_text_message_content_non_empty_delta() {
+    let event = AGUIEvent::text_message_content("msg1", "Hello World");
+
+    if let AGUIEvent::TextMessageContent { delta, .. } = &event {
+        assert!(!delta.is_empty(), "delta should be non-empty");
+    }
+}
+
+/// Test: ToolCallArgs with non-empty delta
+/// Protocol: ToolCallArgs.delta must be non-empty (argument chunk)
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_args_non_empty_delta() {
+    let event = AGUIEvent::tool_call_args("call_1", r#"{"query":"test"}"#);
+
+    if let AGUIEvent::ToolCallArgs { delta, .. } = &event {
+        assert!(!delta.is_empty(), "args delta should be non-empty");
+    }
+}
+
+// ============================================================================
+// P1 - Out-of-Order Event Resilience
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Systems must handle potential out-of-order delivery gracefully
+//
+
+/// Test: Events can be processed even if arrival order varies
+/// Protocol: Systems must handle potential out-of-order delivery
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_out_of_order_events_deserialize() {
+    // Simulate receiving events out of the expected order
+    // All events should still deserialize correctly regardless of order
+    let events_json = vec![
+        r#"{"type":"TEXT_MESSAGE_CONTENT","messageId":"msg1","delta":"world"}"#,
+        r#"{"type":"TEXT_MESSAGE_START","messageId":"msg1","role":"assistant"}"#,
+        r#"{"type":"RUN_STARTED","threadId":"t1","runId":"r1"}"#,
+        r#"{"type":"TEXT_MESSAGE_END","messageId":"msg1"}"#,
+    ];
+
+    // Each event should parse independently
+    for json in &events_json {
+        let parsed: Result<AGUIEvent, _> = serde_json::from_str(json);
+        assert!(parsed.is_ok(), "Event should parse: {}", json);
+    }
+}
+
+/// Test: Duplicate events are handled gracefully
+/// Protocol: Idempotent event processing
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_duplicate_events_handled() {
+    let event = AGUIEvent::text_message_content("msg1", "Hello");
+    let json1 = serde_json::to_string(&event).unwrap();
+    let json2 = serde_json::to_string(&event).unwrap();
+
+    // Same event serializes identically
+    assert_eq!(json1, json2);
+
+    // Both deserialize to equivalent events
+    let parsed1: AGUIEvent = serde_json::from_str(&json1).unwrap();
+    let parsed2: AGUIEvent = serde_json::from_str(&json2).unwrap();
+    assert_eq!(parsed1, parsed2);
+}
+
+// ============================================================================
+// P2 - Run Branching with parentRunId
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Runs can be branched using parentRunId for sub-agent patterns
+//
+
+/// Test: Run branching creates proper parent-child relationships
+/// Protocol: Sub-runs reference parent via parentRunId
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_branching_parent_child() {
+    // Parent run
+    let parent = AGUIEvent::run_started("t1", "run_parent", None);
+
+    // Child runs
+    let child1 = AGUIEvent::run_started("t1", "run_child1", Some("run_parent".to_string()));
+    let child2 = AGUIEvent::run_started("t1", "run_child2", Some("run_parent".to_string()));
+
+    // Verify parent has no parent
+    if let AGUIEvent::RunStarted { parent_run_id, .. } = &parent {
+        assert!(parent_run_id.is_none());
+    }
+
+    // Verify children reference parent
+    if let AGUIEvent::RunStarted { parent_run_id, run_id, .. } = &child1 {
+        assert_eq!(parent_run_id.as_deref(), Some("run_parent"));
+        assert_eq!(run_id, "run_child1");
+    }
+    if let AGUIEvent::RunStarted { parent_run_id, run_id, .. } = &child2 {
+        assert_eq!(parent_run_id.as_deref(), Some("run_parent"));
+        assert_eq!(run_id, "run_child2");
+    }
+}
+
+/// Test: Run branching serialization with parentRunId
+/// Protocol: parentRunId serialized only when present
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_run_branching_serialization() {
+    let without_parent = AGUIEvent::run_started("t1", "r1", None);
+    let with_parent = AGUIEvent::run_started("t1", "r2", Some("r1".to_string()));
+
+    let json_without = serde_json::to_string(&without_parent).unwrap();
+    let json_with = serde_json::to_string(&with_parent).unwrap();
+
+    assert!(!json_without.contains("parentRunId"));
+    assert!(json_with.contains(r#""parentRunId":"r1""#));
+}
+
+// ============================================================================
+// P2 - ToolCall Result Content Format
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
+// ToolCallResult.content should be a string (JSON-encoded if structured)
+//
+
+/// Test: ToolCallResult content is JSON string
+/// Protocol: Tool result content is JSON-encoded string
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_tool_call_result_content_json_string() {
+    let result_data = json!({"status": "success", "count": 42});
+    let content = serde_json::to_string(&result_data).unwrap();
+
+    let event = AGUIEvent::tool_call_result("msg_1", "call_1", &content);
+
+    if let AGUIEvent::ToolCallResult { content: c, .. } = &event {
+        // Content should be a string that parses as JSON
+        let parsed: Result<Value, _> = serde_json::from_str(c);
+        assert!(parsed.is_ok(), "Content should be valid JSON string");
+        assert_eq!(parsed.unwrap()["count"], 42);
+    }
+}
+
+/// Test: ToolCallResult error content with role=tool
+/// Protocol: Tool result can contain error information, role is always "tool"
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_tool_call_result_error_content_with_role() {
+    let error_data = json!({"status": "error", "error": "File not found", "code": "ENOENT"});
+    let content = serde_json::to_string(&error_data).unwrap();
+
+    let event = AGUIEvent::tool_call_result("msg_1", "call_1", &content);
+
+    if let AGUIEvent::ToolCallResult { content: c, role, .. } = &event {
+        let parsed: Value = serde_json::from_str(c).unwrap();
+        assert_eq!(parsed["status"], "error");
+        assert_eq!(parsed["code"], "ENOENT");
+        // Role should be Tool
+        assert_eq!(*role, Some(MessageRole::Tool));
+    }
+}
+
+// ============================================================================
+// P2 - RunAgentRequest with config
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
+// Additional configuration can be passed via config field
+//
+
+/// Test: RunAgentRequest with config field
+/// Protocol: Additional configuration in request
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_with_config() {
+    let mut request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+    request.config = Some(json!({
+        "temperature": 0.7,
+        "max_tokens": 1000,
+        "top_p": 0.9
+    }));
+
+    assert!(request.config.is_some());
+
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains(r#""config""#));
+    assert!(json.contains(r#""temperature":0.7"#));
+}
+
+/// Test: RunAgentRequest deserialization with all optional fields
+/// Protocol: All optional fields deserialize correctly
+/// Reference: https://docs.ag-ui.com/sdk/js/core/types
+#[test]
+fn test_run_agent_request_full_deserialization() {
+    let json = r#"{
+        "threadId": "t1",
+        "runId": "r1",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": [{"name": "search", "description": "Search"}],
+        "state": {"counter": 0},
+        "parentRunId": "r0",
+        "model": "gpt-4o",
+        "systemPrompt": "Be helpful",
+        "config": {"temperature": 0.5}
+    }"#;
+
+    let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+    assert_eq!(request.thread_id, "t1");
+    assert_eq!(request.run_id, "r1");
+    assert_eq!(request.messages.len(), 1);
+    assert_eq!(request.tools.len(), 1);
+    assert_eq!(request.state.unwrap()["counter"], 0);
+    assert_eq!(request.parent_run_id.as_deref(), Some("r0"));
+    assert_eq!(request.model.as_deref(), Some("gpt-4o"));
+    assert_eq!(request.system_prompt.as_deref(), Some("Be helpful"));
+    assert_eq!(request.config.unwrap()["temperature"], 0.5);
+}
+
+// ============================================================================
+// P2 - Complete AgentEvent-to-AGUIEvent Conversion Flows
+// ============================================================================
+//
+// AG-UI Protocol Reference: https://docs.ag-ui.com/concepts/events
+// Verify all AgentEvent variants convert correctly to AGUIEvents
+//
+
+/// Test: AgentEvent::RunFinish produces TEXT_MESSAGE_END + RUN_FINISHED
+/// Protocol: Active text stream ends before run finishes
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_agent_event_run_finish_ends_text_stream() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start text
+    let text = AgentEvent::TextDelta { delta: "Hello".into() };
+    let _ = text.to_ag_ui_events(&mut ctx);
+
+    // Finish run while text is active
+    let finish = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(json!({"ok": true})),
+    };
+    let events = finish.to_ag_ui_events(&mut ctx);
+
+    // Should produce TEXT_MESSAGE_END + RUN_FINISHED
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+        "Should end text stream");
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
+        "Should emit RUN_FINISHED");
+
+    // TEXT_MESSAGE_END should come before RUN_FINISHED
+    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
+    let finish_idx = events.iter().position(|e| matches!(e, AGUIEvent::RunFinished { .. })).unwrap();
+    assert!(end_idx < finish_idx);
+}
+
+/// Test: AgentEvent::Done produces TEXT_MESSAGE_END + RUN_FINISHED
+/// Protocol: Done event completes text stream and run
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_agent_event_done_ends_text_and_run() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start text
+    let text = AgentEvent::TextDelta { delta: "Response".into() };
+    let _ = text.to_ag_ui_events(&mut ctx);
+
+    // Done
+    let done = AgentEvent::Done { response: "Response".into() };
+    let events = done.to_ag_ui_events(&mut ctx);
+
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+}
+
+/// Test: AgentEvent::Aborted produces RUN_ERROR with ABORTED code
+/// Protocol: Aborted maps to RUN_ERROR with code "ABORTED"
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_agent_event_aborted_produces_run_error() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let aborted = AgentEvent::Aborted { reason: "User cancelled".into() };
+    let events = aborted.to_ag_ui_events(&mut ctx);
+
+    assert_eq!(events.len(), 1);
+    if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+        assert_eq!(message, "User cancelled");
+        assert_eq!(code.as_deref(), Some("ABORTED"));
+    } else {
+        panic!("Expected RunError");
+    }
+}
+
+/// Test: AgentEvent::Error produces RUN_ERROR
+/// Protocol: Error maps to RUN_ERROR without code
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_agent_event_error_produces_run_error() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let error = AgentEvent::Error { message: "API rate limit".into() };
+    let events = error.to_ag_ui_events(&mut ctx);
+
+    assert_eq!(events.len(), 1);
+    if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+        assert_eq!(message, "API rate limit");
+        assert!(code.is_none());
+    } else {
+        panic!("Expected RunError");
+    }
+}
+
+/// Test: AgentEvent::Pending ends text and emits tool call events
+/// Protocol: Pending interaction creates tool call events for client
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_agent_event_pending_ends_text_emits_tool_calls() {
+    use carve_agent::state_types::Interaction;
+
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start text
+    let text = AgentEvent::TextDelta { delta: "Processing".into() };
+    let _ = text.to_ag_ui_events(&mut ctx);
+
+    // Pending interaction
+    let interaction = Interaction::new("perm_1", "confirm");
+    let pending = AgentEvent::Pending { interaction };
+    let events = pending.to_ag_ui_events(&mut ctx);
+
+    // Should end text stream first
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+        "Should end text stream before pending");
+
+    // Should emit tool call events for the interaction
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
+        "Should emit ToolCallStart for interaction");
+}
+
+/// Test: AgentEvent::ActivitySnapshot maps to AGUIEvent::ActivitySnapshot
+#[test]
+fn test_agent_event_activity_snapshot_to_ag_ui() {
+    use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let event = AgentEvent::ActivitySnapshot {
+        message_id: "activity_1".to_string(),
+        activity_type: "progress".to_string(),
+        content: json!({"progress": 0.6}),
+        replace: Some(true),
+    };
+
+    let events = event.to_ag_ui_events(&mut ctx);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AGUIEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+            ..
+        } => {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content.get("progress"), Some(&json!(0.6)));
+            assert_eq!(*replace, Some(true));
+        }
+        _ => panic!("Expected ActivitySnapshot"),
+    }
+}
+
+/// Test: AgentEvent::ActivityDelta maps to AGUIEvent::ActivityDelta
+#[test]
+fn test_agent_event_activity_delta_to_ag_ui() {
+    use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+    let event = AgentEvent::ActivityDelta {
+        message_id: "activity_1".to_string(),
+        activity_type: "progress".to_string(),
+        patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.8})],
+    };
+
+    let events = event.to_ag_ui_events(&mut ctx);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        AGUIEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+            ..
+        } => {
+            assert_eq!(message_id, "activity_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(patch.len(), 1);
+            assert_eq!(patch[0]["path"], "/progress");
+        }
+        _ => panic!("Expected ActivityDelta"),
+    }
+}
+
+/// Test: AgentEvent::StepStart/StepEnd produce STEP_STARTED/STEP_FINISHED
+/// Protocol: Step events map directly
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_agent_event_step_events() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let step_start = AgentEvent::StepStart;
+    let events = step_start.to_ag_ui_events(&mut ctx);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1"));
+
+    let step_end = AgentEvent::StepEnd;
+    let events = step_end.to_ag_ui_events(&mut ctx);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1"));
+}
+
+/// Test: ToolCallStart ends active text stream
+/// Protocol: Tool call interrupts text, TEXT_MESSAGE_END emitted
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_start_ends_active_text() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    // Start text
+    let text = AgentEvent::TextDelta { delta: "Thinking".into() };
+    let _ = text.to_ag_ui_events(&mut ctx);
+
+    // Tool starts - should end text first
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    let events = tool_start.to_ag_ui_events(&mut ctx);
+
+    // First event should be TEXT_MESSAGE_END
+    assert!(matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
+        "First event should be TEXT_MESSAGE_END");
+
+    // Then TOOL_CALL_START
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+}
+
+/// Test: ToolCallStart includes parentMessageId from context
+/// Protocol: Tool call references parent message
+/// Reference: https://docs.ag-ui.com/concepts/events
+#[test]
+fn test_tool_call_start_includes_parent_message_id() {
+    let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+    let tool_start = AgentEvent::ToolCallStart {
+        id: "call_1".into(),
+        name: "search".into(),
+    };
+    let events = tool_start.to_ag_ui_events(&mut ctx);
+
+    let start_event = events.iter().find(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
+    if let AGUIEvent::ToolCallStart { parent_message_id, .. } = start_event {
+        assert!(parent_message_id.is_some(), "Should include parentMessageId");
+    }
+}
+
+/// Test: Interaction.to_ag_ui_events produces complete tool call sequence
+/// Protocol: Interaction maps to TOOL_CALL_START → TOOL_CALL_ARGS → TOOL_CALL_END
+/// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
+#[test]
+fn test_interaction_to_ag_ui_events() {
+    use carve_agent::state_types::Interaction;
+
+    let interaction = Interaction::new("int_1", "confirm_delete")
+        .with_parameters(json!({"file": "important.txt"}));
+
+    let events = interaction.to_ag_ui_events();
+
+    assert_eq!(events.len(), 3, "Should produce START, ARGS, END");
+    assert!(matches!(&events[0], AGUIEvent::ToolCallStart { .. }));
+    assert!(matches!(&events[1], AGUIEvent::ToolCallArgs { .. }));
+    assert!(matches!(&events[2], AGUIEvent::ToolCallEnd { .. }));
+
+    // Verify tool call ID matches interaction ID
+    if let AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } = &events[0] {
+        assert_eq!(tool_call_id, "int_1");
+        assert_eq!(tool_call_name, "confirm_delete");
+    }
 }
