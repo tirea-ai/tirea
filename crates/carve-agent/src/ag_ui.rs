@@ -1582,7 +1582,6 @@ use std::sync::Arc;
 ///     tools,
 ///     "thread_123".to_string(),
 ///     "run_456".to_string(),
-///     None,
 /// );
 ///
 /// // Convert to SSE and send to client
@@ -1592,6 +1591,26 @@ use std::sync::Arc;
 /// }
 /// ```
 pub fn run_agent_stream(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    thread_id: String,
+    run_id: String,
+) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
+    run_agent_stream_with_parent(
+        client,
+        config,
+        session,
+        tools,
+        thread_id,
+        run_id,
+        None,
+    )
+}
+
+/// Run the agent loop and return a stream of AG-UI events with an explicit parent run ID.
+pub fn run_agent_stream_with_parent(
     client: Client,
     config: AgentConfig,
     session: Session,
@@ -1669,10 +1688,38 @@ pub fn run_agent_stream_sse(
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
+) -> Pin<Box<dyn Stream<Item = String> + Send>> {
+    run_agent_stream_sse_with_parent(
+        client,
+        config,
+        session,
+        tools,
+        thread_id,
+        run_id,
+        None,
+    )
+}
+
+/// Run the agent loop and return SSE strings with an explicit parent run ID.
+pub fn run_agent_stream_sse_with_parent(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    thread_id: String,
+    run_id: String,
     parent_run_id: Option<String>,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     Box::pin(stream! {
-        let mut inner = run_agent_stream(client, config, session, tools, thread_id, run_id, parent_run_id);
+        let mut inner = run_agent_stream_with_parent(
+            client,
+            config,
+            session,
+            tools,
+            thread_id,
+            run_id,
+            parent_run_id,
+        );
         while let Some(event) = inner.next().await {
             if let Ok(json) = serde_json::to_string(&event) {
                 yield format!("data: {}\n\n", json);
@@ -1739,7 +1786,7 @@ pub fn run_agent_stream_with_request(
     }
 
     // Use existing run_agent_stream with the enhanced config
-    run_agent_stream(
+    run_agent_stream_with_parent(
         client,
         config,
         session,
@@ -1811,6 +1858,34 @@ mod tests {
 
         if let AGUIEvent::RunStarted { parent_run_id, .. } = first_event {
             assert_eq!(parent_run_id.as_deref(), Some("parent_123"));
+        } else {
+            panic!("Expected RunStarted event");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_stream_defaults_parent_run_id_to_none() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("test-session");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+        let mut stream = run_agent_stream(
+            client,
+            config,
+            session,
+            tools,
+            "thread_1".to_string(),
+            "run_1".to_string(),
+        );
+        let first_event = stream.next().await.expect("first event");
+
+        if let AGUIEvent::RunStarted { parent_run_id, .. } = first_event {
+            assert!(parent_run_id.is_none());
         } else {
             panic!("Expected RunStarted event");
         }
