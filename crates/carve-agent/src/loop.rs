@@ -15,7 +15,7 @@
 //!     │
 //!     ▼
 //! ┌─────────────────────────┐
-//! │      TurnStart          │ ← plugins can inject system context
+//! │      StepStart          │ ← plugins can inject system context
 //! ├─────────────────────────┤
 //! │    BeforeInference      │ ← plugins can filter tools, add session context
 //! ├─────────────────────────┤
@@ -31,7 +31,7 @@
 //! │  │ AfterToolExecute  │  │ ← plugins can add reminders
 //! │  └───────────────────┘  │
 //! ├─────────────────────────┤
-//! │       TurnEnd           │
+//! │       StepEnd           │
 //! └─────────────────────────┘
 //!     │
 //!     ▼
@@ -40,18 +40,21 @@
 
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, execute_single_tool, ToolExecution};
-use crate::phase::{Phase, ToolContext, TurnContext};
+use crate::activity::ActivityHub;
+use crate::phase::{Phase, ToolContext, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
+use carve_state::ActivityManager;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -156,56 +159,56 @@ impl AgentConfig {
 }
 
 /// Emit a phase to all plugins.
-async fn emit_phase(phase: Phase, turn: &mut TurnContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+async fn emit_phase(phase: Phase, step: &mut StepContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
     for plugin in plugins {
-        plugin.on_phase(phase, turn).await;
+        plugin.on_phase(phase, step).await;
     }
 }
 
-/// Initialize plugin data in TurnContext.
-fn init_plugin_data(turn: &mut TurnContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+/// Initialize plugin data in StepContext.
+fn init_plugin_data(step: &mut StepContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
     for plugin in plugins {
         if let Some((key, value)) = plugin.initial_data() {
-            turn.set(key, value);
+            step.set(key, value);
         }
     }
 }
 
-/// Build messages from TurnContext for LLM request.
-fn build_messages(turn: &mut TurnContext<'_>, system_prompt: &str) {
-    turn.messages.clear();
+/// Build messages from StepContext for LLM request.
+fn build_messages(step: &mut StepContext<'_>, system_prompt: &str) {
+    step.messages.clear();
 
     // [1] System Prompt + Context
-    let system = if turn.system_context.is_empty() {
+    let system = if step.system_context.is_empty() {
         system_prompt.to_string()
     } else {
-        format!("{}\n\n{}", system_prompt, turn.system_context.join("\n"))
+        format!("{}\n\n{}", system_prompt, step.system_context.join("\n"))
     };
 
     if !system.is_empty() {
-        turn.messages.push(Message::system(system));
+        step.messages.push(Message::system(system));
     }
 
     // [2] Session Context
-    for ctx in &turn.session_context {
-        turn.messages.push(Message::system(ctx.clone()));
+    for ctx in &step.session_context {
+        step.messages.push(Message::system(ctx.clone()));
     }
 
     // [3+] History from session
-    turn.messages.extend(turn.session.messages.clone());
+    step.messages.extend(step.session.messages.clone());
 }
 
-/// Run one turn of the agent loop (non-streaming).
+/// Run one step of the agent loop (non-streaming).
 ///
-/// A turn consists of:
-/// 1. Emit TurnStart phase
+/// A step consists of:
+/// 1. Emit StepStart phase
 /// 2. Emit BeforeInference phase
 /// 3. Send messages to LLM
 /// 4. Emit AfterInference phase
 /// 5. If LLM returns tool calls, execute them with BeforeToolExecute/AfterToolExecute phases
-/// 6. Emit TurnEnd phase
+/// 6. Emit StepEnd phase
 /// 7. Return the result
-pub async fn run_turn(
+pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
     session: Session,
@@ -215,23 +218,24 @@ pub async fn run_turn(
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
 
-    // Create TurnContext - use scoped blocks to manage borrows
+    // Create StepContext - use scoped blocks to manage borrows
     let (messages, filtered_tools, skip_inference) = {
-        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+        let mut step = StepContext::new(&session, tool_descriptors.clone());
+        init_plugin_data(&mut step, &config.plugins);
 
-        // Phase 1: TurnStart
-        emit_phase(Phase::TurnStart, &mut turn, &config.plugins).await;
+        // Phase 1: StepStart
+        emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
 
         // Phase 2: BeforeInference
-        emit_phase(Phase::BeforeInference, &mut turn, &config.plugins).await;
+        emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
         // Build messages
-        build_messages(&mut turn, &config.system_prompt);
+        build_messages(&mut step, &config.system_prompt);
 
-        // Get data before dropping turn
-        let skip = turn.skip_inference;
-        let msgs = turn.messages.clone();
-        let tools_filter: Vec<String> = turn.tools.iter().map(|td| td.id.clone()).collect();
+        // Get data before dropping step
+        let skip = step.skip_inference;
+        let msgs = step.messages.clone();
+        let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
 
         (msgs, tools_filter, skip)
     };
@@ -277,9 +281,10 @@ pub async fn run_turn(
 
     // Phase 3: AfterInference (with new context)
     {
-        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
-        turn.response = Some(result.clone());
-        emit_phase(Phase::AfterInference, &mut turn, &config.plugins).await;
+        let mut step = StepContext::new(&session, tool_descriptors.clone());
+        init_plugin_data(&mut step, &config.plugins);
+        step.response = Some(result.clone());
+        emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
     }
 
     // Add assistant message
@@ -289,10 +294,11 @@ pub async fn run_turn(
         session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
     };
 
-    // Phase 6: TurnEnd (with new context)
+    // Phase 6: StepEnd (with new context)
     {
-        let mut turn = TurnContext::new(&session, tool_descriptors);
-        emit_phase(Phase::TurnEnd, &mut turn, &config.plugins).await;
+        let mut step = StepContext::new(&session, tool_descriptors);
+        init_plugin_data(&mut step, &config.plugins);
+        emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
     }
 
     Ok((session, result))
@@ -334,16 +340,17 @@ pub async fn execute_tools_with_config(
     let mut executions = Vec::new();
 
     for call in &result.tool_calls {
-        // Create TurnContext for this tool
-        let mut turn = TurnContext::new(&session, tool_descriptors.clone());
-        turn.tool = Some(ToolContext::new(call));
+        // Create StepContext for this tool
+        let mut step = StepContext::new(&session, tool_descriptors.clone());
+        init_plugin_data(&mut step, &config.plugins);
+        step.tool = Some(ToolContext::new(call));
 
         // Phase 4: BeforeToolExecute
-        emit_phase(Phase::BeforeToolExecute, &mut turn, &config.plugins).await;
+        emit_phase(Phase::BeforeToolExecute, &mut step, &config.plugins).await;
 
         // Check if blocked
-        let execution = if turn.tool_blocked() {
-            let reason = turn
+        let execution = if step.tool_blocked() {
+            let reason = step
                 .tool
                 .as_ref()
                 .and_then(|t| t.block_reason.clone())
@@ -353,7 +360,7 @@ pub async fn execute_tools_with_config(
                 result: ToolResult::error(&call.name, reason),
                 patch: None,
             }
-        } else if turn.tool_pending() {
+        } else if step.tool_pending() {
             ToolExecution {
                 call: call.clone(),
                 result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
@@ -366,12 +373,12 @@ pub async fn execute_tools_with_config(
         };
 
         // Set tool result in context
-        turn.set_tool_result(execution.result.clone());
+        step.set_tool_result(execution.result.clone());
 
         // Phase 5: AfterToolExecute
-        emit_phase(Phase::AfterToolExecute, &mut turn, &config.plugins).await;
+        emit_phase(Phase::AfterToolExecute, &mut step, &config.plugins).await;
 
-        executions.push((execution, turn.system_reminders.clone()));
+        executions.push((execution, step.system_reminders.clone()));
     }
 
     // Collect patches and tool response messages
@@ -429,9 +436,25 @@ pub async fn execute_tools_with_plugins(
 
     // Execute tools
     let results = if parallel {
-        execute_tools_parallel_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
+        execute_tools_parallel_with_phases(
+            tools,
+            &result.tool_calls,
+            &state,
+            &tool_descriptors,
+            plugins,
+            None,
+        )
+        .await
     } else {
-        execute_tools_sequential_with_phases(tools, &result.tool_calls, &state, &tool_descriptors, plugins).await
+        execute_tools_sequential_with_phases(
+            tools,
+            &result.tool_calls,
+            &state,
+            &tool_descriptors,
+            plugins,
+            None,
+        )
+        .await
     };
 
     // Collect patches and tool response messages
@@ -463,6 +486,7 @@ async fn execute_tools_parallel_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> Vec<ToolExecutionResult> {
     use futures::future::join_all;
 
@@ -472,9 +496,18 @@ async fn execute_tools_parallel_with_phases(
         let call = call.clone();
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
+        let activity_manager = activity_manager.clone();
 
         async move {
-            execute_single_tool_with_phases(tool.as_deref(), &call, &state, &tool_descriptors, &plugins).await
+            execute_single_tool_with_phases(
+                tool.as_deref(),
+                &call,
+                &state,
+                &tool_descriptors,
+                &plugins,
+                activity_manager,
+            )
+            .await
         }
     });
 
@@ -488,6 +521,7 @@ async fn execute_tools_sequential_with_phases(
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> Vec<ToolExecutionResult> {
     use carve_state::apply_patch;
 
@@ -497,7 +531,15 @@ async fn execute_tools_sequential_with_phases(
     for call in calls {
         let tool = tools.get(&call.name).cloned();
         let result =
-            execute_single_tool_with_phases(tool.as_deref(), call, &state, tool_descriptors, plugins).await;
+            execute_single_tool_with_phases(
+                tool.as_deref(),
+                call,
+                &state,
+                tool_descriptors,
+                plugins,
+                activity_manager.clone(),
+            )
+            .await;
 
         // Apply patch to state for next tool
         if let Some(ref patch) = result.execution.patch {
@@ -529,20 +571,22 @@ async fn execute_single_tool_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> ToolExecutionResult {
-    // Create a minimal session for TurnContext
+    // Create a minimal session for StepContext
     let temp_session = Session::with_initial_state("temp", state.clone());
 
-    // Create TurnContext for this tool
-    let mut turn = TurnContext::new(&temp_session, tool_descriptors.to_vec());
-    turn.tool = Some(ToolContext::new(call));
+    // Create StepContext for this tool
+    let mut step = StepContext::new(&temp_session, tool_descriptors.to_vec());
+    init_plugin_data(&mut step, plugins);
+    step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
-    emit_phase(Phase::BeforeToolExecute, &mut turn, plugins).await;
+    emit_phase(Phase::BeforeToolExecute, &mut step, plugins).await;
 
     // Check if blocked or pending
-    let (execution, pending_interaction) = if turn.tool_blocked() {
-        let reason = turn
+    let (execution, pending_interaction) = if step.tool_blocked() {
+        let reason = step
             .tool
             .as_ref()
             .and_then(|t| t.block_reason.clone())
@@ -555,8 +599,8 @@ async fn execute_single_tool_with_phases(
             },
             None,
         )
-    } else if turn.tool_pending() {
-        let interaction = turn
+    } else if step.tool_pending() {
+        let interaction = step
             .tool
             .as_ref()
             .and_then(|t| t.pending_interaction.clone());
@@ -578,19 +622,48 @@ async fn execute_single_tool_with_phases(
             None,
         )
     } else {
-        // Execute the tool
-        (execute_single_tool(tool, call, state).await, None)
+        // Execute the tool with context
+        let ctx = carve_state::Context::new_with_activity_manager(
+            state,
+            &call.id,
+            format!("tool:{}", call.name),
+            activity_manager,
+        );
+        let result = match tool
+            .unwrap()
+            .execute(call.arguments.clone(), &ctx)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => ToolResult::error(&call.name, e.to_string()),
+        };
+
+        let patch = ctx.take_patch();
+        let patch = if patch.patch().is_empty() {
+            None
+        } else {
+            Some(patch)
+        };
+
+        (
+            ToolExecution {
+                call: call.clone(),
+                result,
+                patch,
+            },
+            None,
+        )
     };
 
     // Set tool result in context
-    turn.set_tool_result(execution.result.clone());
+    step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_phase(Phase::AfterToolExecute, &mut turn, plugins).await;
+    emit_phase(Phase::AfterToolExecute, &mut step, plugins).await;
 
     ToolExecutionResult {
         execution,
-        reminders: turn.system_reminders.clone(),
+        reminders: step.system_reminders.clone(),
         pending_interaction,
     }
 }
@@ -611,16 +684,16 @@ pub async fn run_loop(
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
 
-    // Create TurnContext for session lifecycle
-    let mut session_turn = TurnContext::new(&session, tool_descriptors.clone());
-    init_plugin_data(&mut session_turn, &config.plugins);
+    // Create StepContext for session lifecycle
+    let mut session_step = StepContext::new(&session, tool_descriptors.clone());
+    init_plugin_data(&mut session_step, &config.plugins);
 
     // Phase: SessionStart
-    emit_phase(Phase::SessionStart, &mut session_turn, &config.plugins).await;
+    emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
 
     loop {
-        // Run one turn
-        let (new_session, result) = run_turn(client, config, session, tools).await?;
+        // Run one step
+        let (new_session, result) = run_step(client, config, session, tools).await?;
         session = new_session;
         last_text = result.text.clone();
 
@@ -640,8 +713,9 @@ pub async fn run_loop(
     }
 
     // Phase: SessionEnd
-    let mut end_turn = TurnContext::new(&session, tool_descriptors);
-    emit_phase(Phase::SessionEnd, &mut end_turn, &config.plugins).await;
+    let mut end_step = StepContext::new(&session, tool_descriptors);
+    init_plugin_data(&mut end_step, &config.plugins);
+    emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
 
     Ok((session, last_text))
 }
@@ -658,6 +732,8 @@ pub fn run_loop_stream(
     Box::pin(stream! {
         let mut session = session;
         let mut rounds = 0;
+        let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
+        let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
         // Get tool descriptors
         let tool_descriptors: Vec<ToolDescriptor> =
@@ -665,24 +741,25 @@ pub fn run_loop_stream(
 
         // Phase: SessionStart (use scoped block to manage borrow)
         {
-            let mut session_turn = TurnContext::new(&session, tool_descriptors.clone());
-            init_plugin_data(&mut session_turn, &config.plugins);
-            emit_phase(Phase::SessionStart, &mut session_turn, &config.plugins).await;
+            let mut session_step = StepContext::new(&session, tool_descriptors.clone());
+            init_plugin_data(&mut session_step, &config.plugins);
+            emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
         }
 
         loop {
-            // Phase: TurnStart and BeforeInference (collect messages and tools filter)
+            // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let (messages, filtered_tools, skip_inference) = {
-                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
+                let mut step = StepContext::new(&session, tool_descriptors.clone());
+                init_plugin_data(&mut step, &config.plugins);
 
-                emit_phase(Phase::TurnStart, &mut turn, &config.plugins).await;
-                emit_phase(Phase::BeforeInference, &mut turn, &config.plugins).await;
+                emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
+                emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
-                build_messages(&mut turn, &config.system_prompt);
+                build_messages(&mut step, &config.system_prompt);
 
-                let skip = turn.skip_inference;
-                let msgs = turn.messages.clone();
-                let tools_filter: Vec<String> = turn.tools.iter().map(|td| td.id.clone()).collect();
+                let skip = step.skip_inference;
+                let msgs = step.messages.clone();
+                let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
 
                 (msgs, tools_filter, skip)
             };
@@ -700,6 +777,9 @@ pub fn run_loop_stream(
                 .map(|t| t.as_ref())
                 .collect();
             let request = build_request(&messages, &filtered_tool_refs);
+
+            // Step boundary: starting LLM call
+            yield AgentEvent::StepStart;
 
             // Stream LLM response
             let stream_result = client
@@ -746,16 +826,14 @@ pub fn run_loop_stream(
 
             // Phase: AfterInference (with new context)
             {
-                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
-                turn.response = Some(result.clone());
-                emit_phase(Phase::AfterInference, &mut turn, &config.plugins).await;
+                let mut step = StepContext::new(&session, tool_descriptors.clone());
+                init_plugin_data(&mut step, &config.plugins);
+                step.response = Some(result.clone());
+                emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
             }
 
-            // Emit turn done
-            yield AgentEvent::TurnDone {
-                text: result.text.clone(),
-                tool_calls: result.tool_calls.clone(),
-            };
+            // Step boundary: finished LLM call
+            yield AgentEvent::StepEnd;
 
             // Add assistant message
             session = if result.tool_calls.is_empty() {
@@ -764,17 +842,19 @@ pub fn run_loop_stream(
                 session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
             };
 
-            // Phase: TurnEnd (with new context)
+            // Phase: StepEnd (with new context)
             {
-                let mut turn = TurnContext::new(&session, tool_descriptors.clone());
-                emit_phase(Phase::TurnEnd, &mut turn, &config.plugins).await;
+                let mut step = StepContext::new(&session, tool_descriptors.clone());
+                init_plugin_data(&mut step, &config.plugins);
+                emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
             }
 
             // Check if we need to execute tools
             if !result.needs_tools() {
                 // Phase: SessionEnd
-                let mut end_turn = TurnContext::new(&session, tool_descriptors.clone());
-                emit_phase(Phase::SessionEnd, &mut end_turn, &config.plugins).await;
+                let mut end_step = StepContext::new(&session, tool_descriptors.clone());
+                init_plugin_data(&mut end_step, &config.plugins);
+                emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
 
                 yield AgentEvent::Done { response: result.text };
                 return;
@@ -789,11 +869,48 @@ pub fn run_loop_stream(
                 }
             };
 
-            let results = if config.parallel_tools {
-                execute_tools_parallel_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
-            } else {
-                execute_tools_sequential_with_phases(&tools, &result.tool_calls, &state, &tool_descriptors, &config.plugins).await
+            let mut tool_future: Pin<Box<dyn Future<Output = Vec<ToolExecutionResult>> + Send>> =
+                if config.parallel_tools {
+                    Box::pin(execute_tools_parallel_with_phases(
+                        &tools,
+                        &result.tool_calls,
+                        &state,
+                        &tool_descriptors,
+                        &config.plugins,
+                        Some(activity_manager.clone()),
+                    ))
+                } else {
+                    Box::pin(execute_tools_sequential_with_phases(
+                        &tools,
+                        &result.tool_calls,
+                        &state,
+                        &tool_descriptors,
+                        &config.plugins,
+                        Some(activity_manager.clone()),
+                    ))
+                };
+            let mut activity_closed = false;
+            let results = loop {
+                tokio::select! {
+                    activity = activity_rx.recv(), if !activity_closed => {
+                        match activity {
+                            Some(event) => {
+                                yield event;
+                            }
+                            None => {
+                                activity_closed = true;
+                            }
+                        }
+                    }
+                    res = &mut tool_future => {
+                        break res;
+                    }
+                }
             };
+
+            while let Ok(event) = activity_rx.try_recv() {
+                yield event;
+            }
 
             // Check if any tool has pending interaction
             let mut has_pending = false;
@@ -854,11 +971,11 @@ pub fn run_loop_stream(
     })
 }
 
-/// Single step execution for fine-grained control.
+/// Single round execution for fine-grained control.
 ///
 /// This allows callers to control the loop manually.
 #[derive(Debug)]
-pub enum StepResult {
+pub enum RoundResult {
     /// LLM responded with text, no tools needed.
     Done {
         session: Session,
@@ -872,20 +989,20 @@ pub enum StepResult {
     },
 }
 
-/// Run a single step of the agent loop.
+/// Run a single round of the agent loop.
 ///
 /// This gives you fine-grained control over the loop.
-pub async fn run_step(
+pub async fn run_round(
     client: &Client,
     config: &AgentConfig,
     session: Session,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<StepResult, AgentLoopError> {
-    // Run one turn
-    let (session, result) = run_turn(client, config, session, tools).await?;
+) -> Result<RoundResult, AgentLoopError> {
+    // Run one step
+    let (session, result) = run_step(client, config, session, tools).await?;
 
     if !result.needs_tools() {
-        return Ok(StepResult::Done {
+        return Ok(RoundResult::Done {
             session,
             response: result.text,
         });
@@ -894,7 +1011,7 @@ pub async fn run_step(
     // Execute tools
     let session = execute_tools_with_config(session, &result, tools, config).await?;
 
-    Ok(StepResult::ToolsExecuted {
+    Ok(RoundResult::ToolsExecuted {
         session,
         text: result.text,
         tool_calls: result.tool_calls,
@@ -955,15 +1072,22 @@ mod tests {
     use super::*;
     use crate::phase::Phase;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+    use crate::activity::ActivityHub;
     use async_trait::async_trait;
-    use carve_state::Context;
+    use carve_state::{ActivityManager, Context};
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
+    use tokio::sync::Notify;
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
     struct TestCounterState {
         counter: i64,
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+    struct ActivityProgressState {
+        progress: f64,
     }
 
     struct EchoTool;
@@ -984,6 +1108,28 @@ mod tests {
         async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
             let msg = args["message"].as_str().unwrap_or("no message");
             Ok(ToolResult::success("echo", json!({ "echoed": msg })))
+        }
+    }
+
+    struct ActivityGateTool {
+        ready: Arc<Notify>,
+        proceed: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl Tool for ActivityGateTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("activity_gate", "Activity Gate", "Emits activity updates")
+        }
+
+        async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+            let activity = ctx.activity("stream_gate", "progress");
+            let progress = activity.state::<ActivityProgressState>("");
+            progress.set_progress(0.1);
+            self.ready.notify_one();
+            self.proceed.notified().await;
+            progress.set_progress(1.0);
+            Ok(ToolResult::success("activity_gate", json!({ "ok": true })))
         }
     }
 
@@ -1071,6 +1217,55 @@ mod tests {
         });
     }
 
+    #[tokio::test]
+    async fn test_activity_event_emitted_before_tool_completion() {
+        use crate::stream::AgentEvent;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(tx));
+
+        let ready = Arc::new(Notify::new());
+        let proceed = Arc::new(Notify::new());
+        let tool = ActivityGateTool {
+            ready: ready.clone(),
+            proceed: proceed.clone(),
+        };
+
+        let call = crate::types::ToolCall::new("call_1", "activity_gate", json!({}));
+        let descriptors = vec![tool.descriptor()];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
+        let state = json!({});
+
+        let mut tool_future = Box::pin(execute_single_tool_with_phases(
+            Some(&tool),
+            &call,
+            &state,
+            &descriptors,
+            &plugins,
+            Some(activity_manager),
+        ));
+
+        tokio::select! {
+            _ = ready.notified() => {
+                let event = rx.recv().await.expect("activity event");
+                match event {
+                    AgentEvent::ActivitySnapshot { message_id, content, .. } => {
+                        assert_eq!(message_id, "stream_gate");
+                        assert_eq!(content["progress"], 0.1);
+                    }
+                    _ => panic!("Expected ActivitySnapshot"),
+                }
+                proceed.notify_one();
+            }
+            _res = &mut tool_future => {
+                panic!("Tool finished before activity event");
+            }
+        }
+
+        let result = tool_future.await;
+        assert!(result.execution.result.is_success());
+    }
+
     struct CounterTool;
 
     #[async_trait]
@@ -1124,27 +1319,27 @@ mod tests {
     }
 
     #[test]
-    fn test_step_result_variants() {
+    fn test_round_result_variants() {
         let session = Session::new("test");
 
-        let done = StepResult::Done {
+        let done = RoundResult::Done {
             session: session.clone(),
             response: "Hello".to_string(),
         };
 
-        let tools_executed = StepResult::ToolsExecuted {
+        let tools_executed = RoundResult::ToolsExecuted {
             session,
             text: "Calling tools".to_string(),
             tool_calls: vec![],
         };
 
         match done {
-            StepResult::Done { response, .. } => assert_eq!(response, "Hello"),
+            RoundResult::Done { response, .. } => assert_eq!(response, "Hello"),
             _ => panic!("Expected Done"),
         }
 
         match tools_executed {
-            StepResult::ToolsExecuted { text, .. } => assert_eq!(text, "Calling tools"),
+            RoundResult::ToolsExecuted { text, .. } => assert_eq!(text, "Calling tools"),
             _ => panic!("Expected ToolsExecuted"),
         }
     }
@@ -1201,17 +1396,17 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
-                Phase::TurnStart => {
-                    turn.system("Test system context");
+                Phase::StepStart => {
+                    step.system("Test system context");
                 }
                 Phase::BeforeInference => {
-                    turn.session("Test session context");
+                    step.session("Test session context");
                 }
                 Phase::AfterToolExecute => {
-                    if turn.tool_id() == Some("echo") {
-                        turn.reminder("Check the echo result");
+                    if step.tool_id() == Some("echo") {
+                        step.reminder("Check the echo result");
                     }
                 }
                 _ => {}
@@ -1236,10 +1431,10 @@ mod tests {
             "blocker"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeToolExecute {
-                if turn.tool_id() == Some("echo") {
-                    turn.block("Echo tool is blocked");
+                if step.tool_id() == Some("echo") {
+                    step.block("Echo tool is blocked");
                 }
             }
         }
@@ -1281,9 +1476,9 @@ mod tests {
             "reminder"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::AfterToolExecute {
-                turn.reminder("Tool execution completed");
+                step.reminder("Tool execution completed");
             }
         }
     }
@@ -1318,35 +1513,35 @@ mod tests {
     fn test_build_messages_with_context() {
         let session = Session::new("test").with_message(Message::user("Hello"));
         let tool_descriptors = vec![ToolDescriptor::new("test", "Test", "Test tool")];
-        let mut turn = TurnContext::new(&session, tool_descriptors);
+        let mut step = StepContext::new(&session, tool_descriptors);
 
-        turn.system("System context 1");
-        turn.system("System context 2");
-        turn.session("Session context");
+        step.system("System context 1");
+        step.system("System context 2");
+        step.session("Session context");
 
-        build_messages(&mut turn, "Base system prompt");
+        build_messages(&mut step, "Base system prompt");
 
-        assert_eq!(turn.messages.len(), 3);
+        assert_eq!(step.messages.len(), 3);
         // First message should be system prompt + context
-        assert!(turn.messages[0].content.contains("Base system prompt"));
-        assert!(turn.messages[0].content.contains("System context 1"));
-        assert!(turn.messages[0].content.contains("System context 2"));
+        assert!(step.messages[0].content.contains("Base system prompt"));
+        assert!(step.messages[0].content.contains("System context 1"));
+        assert!(step.messages[0].content.contains("System context 2"));
         // Second message should be session context
-        assert_eq!(turn.messages[1].content, "Session context");
+        assert_eq!(step.messages[1].content, "Session context");
         // Third message should be user message
-        assert_eq!(turn.messages[2].content, "Hello");
+        assert_eq!(step.messages[2].content, "Hello");
     }
 
     #[test]
     fn test_build_messages_empty_system() {
         let session = Session::new("test").with_message(Message::user("Hello"));
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
-        build_messages(&mut turn, "");
+        build_messages(&mut step, "");
 
         // Only user message
-        assert_eq!(turn.messages.len(), 1);
-        assert_eq!(turn.messages[0].content, "Hello");
+        assert_eq!(step.messages.len(), 1);
+        assert_eq!(step.messages[0].content, "Hello");
     }
 
     struct ToolFilterPlugin;
@@ -1357,9 +1552,9 @@ mod tests {
             "filter"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeInference {
-                turn.exclude("dangerous_tool");
+                step.exclude("dangerous_tool");
             }
         }
     }
@@ -1373,13 +1568,13 @@ mod tests {
                 ToolDescriptor::new("safe_tool", "Safe", "Safe tool"),
                 ToolDescriptor::new("dangerous_tool", "Dangerous", "Dangerous tool"),
             ];
-            let mut turn = TurnContext::new(&session, tool_descriptors);
+            let mut step = StepContext::new(&session, tool_descriptors);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
 
-            emit_phase(Phase::BeforeInference, &mut turn, &plugins).await;
+            emit_phase(Phase::BeforeInference, &mut step, &plugins).await;
 
-            assert_eq!(turn.tools.len(), 1);
-            assert_eq!(turn.tools[0].id, "safe_tool");
+            assert_eq!(step.tools.len(), 1);
+            assert_eq!(step.tools[0].id, "safe_tool");
         });
     }
 
@@ -1393,7 +1588,7 @@ mod tests {
                 "data"
             }
 
-            async fn on_phase(&self, _phase: Phase, _turn: &mut TurnContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 
             fn initial_data(&self) -> Option<(&'static str, Value)> {
                 Some(("plugin_config", json!({"enabled": true})))
@@ -1401,14 +1596,54 @@ mod tests {
         }
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
 
-        init_plugin_data(&mut turn, &plugins);
+        init_plugin_data(&mut step, &plugins);
 
-        let config: Option<serde_json::Map<String, Value>> = turn.get("plugin_config");
+        let config: Option<serde_json::Map<String, Value>> = step.get("plugin_config");
         assert!(config.is_some());
         assert_eq!(config.unwrap()["enabled"], true);
+    }
+
+    #[tokio::test]
+    async fn test_plugin_initial_data_available_in_before_tool_execute() {
+        struct GuardedPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for GuardedPlugin {
+            fn id(&self) -> &str {
+                "guarded"
+            }
+
+            fn initial_data(&self) -> Option<(&'static str, Value)> {
+                Some(("allow_exec", json!(true)))
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::BeforeToolExecute && step.get::<bool>("allow_exec") != Some(true) {
+                    step.block("missing plugin initial data");
+                }
+            }
+        }
+
+        let tool = EchoTool;
+        let call = crate::types::ToolCall::new("call_1", "echo", json!({ "message": "hello" }));
+        let state = json!({});
+        let tool_descriptors = vec![tool.descriptor()];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
+
+        let result = execute_single_tool_with_phases(
+            Some(&tool),
+            &call,
+            &state,
+            &tool_descriptors,
+            &plugins,
+            None,
+        )
+        .await;
+
+        assert!(result.execution.result.is_success());
     }
 
     // ============================================================================
@@ -1443,7 +1678,7 @@ mod tests {
             fn id(&self) -> &str {
                 "dummy"
             }
-            async fn on_phase(&self, _phase: Phase, _turn: &mut TurnContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
         }
 
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
@@ -1462,11 +1697,11 @@ mod tests {
             "pending"
         }
 
-        async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase == Phase::BeforeToolExecute {
-                if turn.tool_id() == Some("echo") {
+                if step.tool_id() == Some("echo") {
                     use crate::state_types::Interaction;
-                    turn.pending(
+                    step.pending(
                         Interaction::new("confirm_1", "confirm")
                             .with_message("Execute echo?"),
                     );

@@ -2,7 +2,7 @@
 //!
 //! This module provides the core types for the plugin phase system:
 //! - `Phase`: Execution phases in the agent loop
-//! - `TurnContext`: Mutable context passed through all phases
+//! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Context for the currently executing tool
 
 use crate::session::Session;
@@ -20,8 +20,8 @@ use std::collections::HashMap;
 pub enum Phase {
     /// Session started (called once).
     SessionStart,
-    /// Turn started - prepare context.
-    TurnStart,
+    /// Step started - prepare context.
+    StepStart,
     /// Before LLM inference - build messages, filter tools.
     BeforeInference,
     /// After LLM inference - process response.
@@ -30,8 +30,8 @@ pub enum Phase {
     BeforeToolExecute,
     /// After tool execution.
     AfterToolExecute,
-    /// Turn ended.
-    TurnEnd,
+    /// Step ended.
+    StepEnd,
     /// Session ended (called once).
     SessionEnd,
 }
@@ -40,21 +40,21 @@ impl std::fmt::Display for Phase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Phase::SessionStart => write!(f, "SessionStart"),
-            Phase::TurnStart => write!(f, "TurnStart"),
+            Phase::StepStart => write!(f, "StepStart"),
             Phase::BeforeInference => write!(f, "BeforeInference"),
             Phase::AfterInference => write!(f, "AfterInference"),
             Phase::BeforeToolExecute => write!(f, "BeforeToolExecute"),
             Phase::AfterToolExecute => write!(f, "AfterToolExecute"),
-            Phase::TurnEnd => write!(f, "TurnEnd"),
+            Phase::StepEnd => write!(f, "StepEnd"),
             Phase::SessionEnd => write!(f, "SessionEnd"),
         }
     }
 }
 
-/// Result of a turn execution.
+/// Result of a step execution.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TurnResult {
-    /// Continue to next turn.
+pub enum StepOutcome {
+    /// Continue to next step.
     Continue,
     /// Session complete.
     Complete,
@@ -109,12 +109,12 @@ impl ToolContext {
     }
 }
 
-/// Turn context - mutable state passed through all phases.
+/// Step context - mutable state passed through all phases.
 ///
 /// This is the primary interface for plugins to interact with the agent loop.
 /// It provides access to session state, message building, tool filtering,
 /// and flow control.
-pub struct TurnContext<'a> {
+pub struct StepContext<'a> {
     // === Session State (read-only) ===
     /// Current session.
     pub session: &'a Session,
@@ -148,8 +148,8 @@ pub struct TurnContext<'a> {
     data: HashMap<String, Value>,
 }
 
-impl<'a> TurnContext<'a> {
-    /// Create a new turn context.
+impl<'a> StepContext<'a> {
+    /// Create a new step context.
     pub fn new(session: &'a Session, tools: Vec<ToolDescriptor>) -> Self {
         Self {
             session,
@@ -165,7 +165,7 @@ impl<'a> TurnContext<'a> {
         }
     }
 
-    /// Reset turn-specific state for a new turn.
+    /// Reset step-specific state for a new step.
     pub fn reset(&mut self) {
         self.system_context.clear();
         self.session_context.clear();
@@ -322,17 +322,27 @@ impl<'a> TurnContext<'a> {
         self.data.remove(key)
     }
 
+    /// Replace all plugin data with the provided map.
+    pub fn set_data_map(&mut self, data: HashMap<String, Value>) {
+        self.data = data;
+    }
+
+    /// Clone all plugin data.
+    pub fn data_snapshot(&self) -> HashMap<String, Value> {
+        self.data.clone()
+    }
+
     // =========================================================================
-    // Turn Result
+    // Step Outcome
     // =========================================================================
 
-    /// Get the turn result based on current state.
-    pub fn result(&self) -> TurnResult {
+    /// Get the step outcome based on current state.
+    pub fn result(&self) -> StepOutcome {
         // Check if any tool is pending
         if let Some(ref tool) = self.tool {
             if tool.pending {
                 if let Some(ref interaction) = tool.pending_interaction {
-                    return TurnResult::Pending(interaction.clone());
+                    return StepOutcome::Pending(interaction.clone());
                 }
             }
         }
@@ -340,11 +350,11 @@ impl<'a> TurnContext<'a> {
         // Check if LLM response has more tool calls or is complete
         if let Some(ref response) = self.response {
             if response.tool_calls.is_empty() && !response.text.is_empty() {
-                return TurnResult::Complete;
+                return StepOutcome::Complete;
             }
         }
 
-        TurnResult::Continue
+        StepOutcome::Continue
     }
 }
 
@@ -373,12 +383,12 @@ mod tests {
     #[test]
     fn test_phase_display() {
         assert_eq!(Phase::SessionStart.to_string(), "SessionStart");
-        assert_eq!(Phase::TurnStart.to_string(), "TurnStart");
+        assert_eq!(Phase::StepStart.to_string(), "StepStart");
         assert_eq!(Phase::BeforeInference.to_string(), "BeforeInference");
         assert_eq!(Phase::AfterInference.to_string(), "AfterInference");
         assert_eq!(Phase::BeforeToolExecute.to_string(), "BeforeToolExecute");
         assert_eq!(Phase::AfterToolExecute.to_string(), "AfterToolExecute");
-        assert_eq!(Phase::TurnEnd.to_string(), "TurnEnd");
+        assert_eq!(Phase::StepEnd.to_string(), "StepEnd");
         assert_eq!(Phase::SessionEnd.to_string(), "SessionEnd");
     }
 
@@ -396,14 +406,14 @@ mod tests {
     }
 
     // =========================================================================
-    // TurnContext tests
+    // StepContext tests
     // =========================================================================
 
     #[test]
-    fn test_turn_context_new() {
+    fn test_step_context_new() {
         let session = mock_session();
         let tools = mock_tools();
-        let ctx = TurnContext::new(&session, tools.clone());
+        let ctx = StepContext::new(&session, tools.clone());
 
         assert!(ctx.system_context.is_empty());
         assert!(ctx.session_context.is_empty());
@@ -416,10 +426,10 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_context_reset() {
+    fn test_step_context_reset() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.system("test");
         ctx.session("test");
@@ -441,7 +451,7 @@ mod tests {
     #[test]
     fn test_system_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -454,7 +464,7 @@ mod tests {
     #[test]
     fn test_set_system_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -467,7 +477,7 @@ mod tests {
     #[test]
     fn test_clear_system_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.system("Context 1");
         ctx.clear_system();
@@ -478,7 +488,7 @@ mod tests {
     #[test]
     fn test_session_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.session("Session 1");
         ctx.session("Session 2");
@@ -489,7 +499,7 @@ mod tests {
     #[test]
     fn test_set_session_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.session("Session 1");
         ctx.set_session("Replaced");
@@ -501,7 +511,7 @@ mod tests {
     #[test]
     fn test_reminder() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -512,7 +522,7 @@ mod tests {
     #[test]
     fn test_clear_reminders() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.clear_reminders();
@@ -528,7 +538,7 @@ mod tests {
     fn test_exclude_tool() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.exclude("delete_file");
 
@@ -540,7 +550,7 @@ mod tests {
     fn test_include_only_tools() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.include_only(&["read_file"]);
 
@@ -555,7 +565,7 @@ mod tests {
     #[test]
     fn test_tool_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -569,7 +579,7 @@ mod tests {
     #[test]
     fn test_block_tool() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -586,7 +596,7 @@ mod tests {
     #[test]
     fn test_pending_tool() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -602,7 +612,7 @@ mod tests {
     #[test]
     fn test_confirm_tool() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -619,7 +629,7 @@ mod tests {
     #[test]
     fn test_set_tool_result() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -638,7 +648,7 @@ mod tests {
     #[test]
     fn test_set_get_data() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.set("counter", 42i32);
         let value: Option<i32> = ctx.get("counter");
@@ -649,7 +659,7 @@ mod tests {
     #[test]
     fn test_get_nonexistent_data() {
         let session = mock_session();
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
         let value: Option<i32> = ctx.get("nonexistent");
         assert!(value.is_none());
@@ -658,7 +668,7 @@ mod tests {
     #[test]
     fn test_has_data() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         assert!(!ctx.has("key"));
         ctx.set("key", "value");
@@ -668,7 +678,7 @@ mod tests {
     #[test]
     fn test_remove_data() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.set("key", "value");
         let removed = ctx.remove("key");
@@ -680,7 +690,7 @@ mod tests {
     #[test]
     fn test_complex_data_types() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct Config {
@@ -700,21 +710,21 @@ mod tests {
     }
 
     // =========================================================================
-    // TurnResult tests
+    // StepOutcome tests
     // =========================================================================
 
     #[test]
-    fn test_turn_result_continue() {
+    fn test_step_result_continue() {
         let session = mock_session();
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
-        assert_eq!(ctx.result(), TurnResult::Continue);
+        assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
-    fn test_turn_result_pending() {
+    fn test_step_result_pending() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -724,22 +734,22 @@ mod tests {
         ctx.pending(interaction.clone());
 
         match ctx.result() {
-            TurnResult::Pending(i) => assert_eq!(i.id, "confirm_1"),
+            StepOutcome::Pending(i) => assert_eq!(i.id, "confirm_1"),
             _ => panic!("Expected Pending result"),
         }
     }
 
     #[test]
-    fn test_turn_result_complete() {
+    fn test_step_result_complete() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Done!".to_string(),
             tool_calls: vec![],
         });
 
-        assert_eq!(ctx.result(), TurnResult::Complete);
+        assert_eq!(ctx.result(), StepOutcome::Complete);
     }
 
     // =========================================================================
@@ -787,12 +797,12 @@ mod tests {
     fn test_phase_all_8_values() {
         let phases = vec![
             Phase::SessionStart,
-            Phase::TurnStart,
+            Phase::StepStart,
             Phase::BeforeInference,
             Phase::AfterInference,
             Phase::BeforeToolExecute,
             Phase::AfterToolExecute,
-            Phase::TurnEnd,
+            Phase::StepEnd,
             Phase::SessionEnd,
         ];
 
@@ -808,19 +818,19 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_context_empty_session() {
+    fn test_step_context_empty_session() {
         let session = Session::new("empty");
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
         assert!(ctx.tools.is_empty());
         assert!(ctx.system_context.is_empty());
-        assert_eq!(ctx.result(), TurnResult::Continue);
+        assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
-    fn test_turn_context_multiple_system_contexts() {
+    fn test_step_context_multiple_system_contexts() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -832,9 +842,9 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_context_multiple_session_contexts() {
+    fn test_step_context_multiple_session_contexts() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.session("Session 1");
         ctx.session("Session 2");
@@ -843,9 +853,9 @@ mod tests {
     }
 
     #[test]
-    fn test_turn_context_multiple_reminders() {
+    fn test_step_context_multiple_reminders() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -859,7 +869,7 @@ mod tests {
         let session = mock_session();
         let tools = mock_tools();
         let original_len = tools.len();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.exclude("nonexistent_tool");
 
@@ -871,7 +881,7 @@ mod tests {
     fn test_exclude_multiple_tools() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.exclude("read_file");
         ctx.exclude("delete_file");
@@ -884,7 +894,7 @@ mod tests {
     fn test_include_only_empty_list() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.include_only(&[]);
 
@@ -895,7 +905,7 @@ mod tests {
     fn test_include_only_with_nonexistent() {
         let session = mock_session();
         let tools = mock_tools();
-        let mut ctx = TurnContext::new(&session, tools);
+        let mut ctx = StepContext::new(&session, tools);
 
         ctx.include_only(&["read_file", "nonexistent"]);
 
@@ -906,7 +916,7 @@ mod tests {
     #[test]
     fn test_block_without_tool_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         // No tool context, block should not panic
         ctx.block("test");
@@ -917,7 +927,7 @@ mod tests {
     #[test]
     fn test_pending_without_tool_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let interaction = Interaction::new("id", "confirm")
             .with_message("test");
@@ -929,7 +939,7 @@ mod tests {
     #[test]
     fn test_confirm_without_pending() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "test", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -943,7 +953,7 @@ mod tests {
     #[test]
     fn test_tool_args_without_tool() {
         let session = mock_session();
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
         assert!(ctx.tool_args().is_none());
     }
@@ -951,7 +961,7 @@ mod tests {
     #[test]
     fn test_tool_id_without_tool() {
         let session = mock_session();
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
         assert!(ctx.tool_id().is_none());
     }
@@ -959,15 +969,15 @@ mod tests {
     #[test]
     fn test_tool_result_without_tool() {
         let session = mock_session();
-        let ctx = TurnContext::new(&session, vec![]);
+        let ctx = StepContext::new(&session, vec![]);
 
         assert!(ctx.tool_result().is_none());
     }
 
     #[test]
-    fn test_turn_result_with_tool_calls() {
+    fn test_step_result_with_tool_calls() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Calling tools".to_string(),
@@ -975,13 +985,13 @@ mod tests {
         });
 
         // With tool calls, should continue
-        assert_eq!(ctx.result(), TurnResult::Continue);
+        assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
-    fn test_turn_result_empty_text_no_tools() {
+    fn test_step_result_empty_text_no_tools() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.response = Some(StreamResult {
             text: String::new(),
@@ -989,13 +999,13 @@ mod tests {
         });
 
         // Empty text, no tool calls -> Continue (not Complete)
-        assert_eq!(ctx.result(), TurnResult::Continue);
+        assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
     fn test_data_overwrite() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.set("key", 1i32);
         assert_eq!(ctx.get::<i32>("key"), Some(1));
@@ -1007,7 +1017,7 @@ mod tests {
     #[test]
     fn test_remove_nonexistent_key() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         let removed = ctx.remove("nonexistent");
         assert!(removed.is_none());
@@ -1040,7 +1050,7 @@ mod tests {
     #[test]
     fn test_set_clear_session_context() {
         let session = mock_session();
-        let mut ctx = TurnContext::new(&session, vec![]);
+        let mut ctx = StepContext::new(&session, vec![]);
 
         ctx.session("Context 1");
         ctx.session("Context 2");

@@ -1359,14 +1359,14 @@ impl AgentPlugin for InteractionResponsePlugin {
         "ag_ui_interaction_response"
     }
 
-    async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         // Only act in BeforeToolExecute phase
         if phase != Phase::BeforeToolExecute {
             return;
         }
 
         // Check if there's a tool context
-        let Some(tool) = turn.tool.as_ref() else {
+        let Some(tool) = step.tool.as_ref() else {
             return;
         };
 
@@ -1385,7 +1385,7 @@ impl AgentPlugin for InteractionResponsePlugin {
 
         if is_frontend_denied || is_permission_denied {
             // Interaction was denied - block the tool
-            turn.block("User denied the action".to_string());
+            step.block("User denied the action".to_string());
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
             // This allows the tool to execute normally
@@ -1449,7 +1449,7 @@ impl From<String> for RequestError {
 // AG-UI Frontend Tool Plugin
 // ============================================================================
 
-use crate::phase::{Phase, TurnContext};
+use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -1509,13 +1509,13 @@ impl AgentPlugin for FrontendToolPlugin {
         "ag_ui_frontend_tool"
     }
 
-    async fn on_phase(&self, phase: Phase, turn: &mut TurnContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
 
         // Get tool info
-        let Some(tool) = turn.tool.as_ref() else {
+        let Some(tool) = step.tool.as_ref() else {
             return;
         };
 
@@ -1525,7 +1525,7 @@ impl AgentPlugin for FrontendToolPlugin {
         }
 
         // Don't create pending if tool is already blocked (e.g., by PermissionPlugin)
-        if turn.tool_blocked() {
+        if step.tool_blocked() {
             return;
         }
 
@@ -1534,7 +1534,7 @@ impl AgentPlugin for FrontendToolPlugin {
         let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
             .with_parameters(tool.args.clone());
 
-        turn.pending(interaction);
+        step.pending(interaction);
     }
 }
 
@@ -1582,6 +1582,7 @@ use std::sync::Arc;
 ///     tools,
 ///     "thread_123".to_string(),
 ///     "run_456".to_string(),
+///     None,
 /// );
 ///
 /// // Convert to SSE and send to client
@@ -1597,18 +1598,20 @@ pub fn run_agent_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
+    parent_run_id: Option<String>,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     Box::pin(stream! {
         // Create context
         let mut ctx = AGUIContext::new(thread_id.clone(), run_id.clone());
 
         // Emit RUN_STARTED
-        yield AGUIEvent::run_started(&thread_id, &run_id, None);
+        yield AGUIEvent::run_started(&thread_id, &run_id, parent_run_id.clone());
 
         // Run the agent loop
         let mut inner_stream = run_loop_stream(client, config, session, tools);
         let mut final_response = String::new();
         let mut has_pending = false;
+        let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
             // Track final response, errors, and pending state
@@ -1629,13 +1632,16 @@ pub fn run_agent_stream(
             // Convert and emit AG-UI events
             let ag_ui_events = event.to_ag_ui_events(&mut ctx);
             for ag_event in ag_ui_events {
+                if matches!(ag_event, AGUIEvent::RunFinished { .. }) {
+                    emitted_run_finished = true;
+                }
                 yield ag_event;
             }
         }
 
         // Emit RUN_FINISHED only if not pending
         // When pending, client must respond and start a new run
-        if !has_pending {
+        if !has_pending && !emitted_run_finished {
             let result = if final_response.is_empty() {
                 None
             } else {
@@ -1663,9 +1669,10 @@ pub fn run_agent_stream_sse(
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
+    parent_run_id: Option<String>,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     Box::pin(stream! {
-        let mut inner = run_agent_stream(client, config, session, tools, thread_id, run_id);
+        let mut inner = run_agent_stream(client, config, session, tools, thread_id, run_id, parent_run_id);
         while let Some(event) = inner.next().await {
             if let Ok(json) = serde_json::to_string(&event) {
                 yield format!("data: {}\n\n", json);
@@ -1739,6 +1746,7 @@ pub fn run_agent_stream_with_request(
         tools,
         request.thread_id,
         request.run_id,
+        request.parent_run_id,
     )
 }
 
@@ -1782,6 +1790,30 @@ mod tests {
         let event = AGUIEvent::run_started("thread_1", "run_1", Some("parent_1".to_string()));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""parentRunId":"parent_1""#));
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_stream_with_request_propagates_parent_run_id() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("test-session");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+        let mut request = RunAgentRequest::new("thread_1", "run_1");
+        request.parent_run_id = Some("parent_123".to_string());
+
+        let mut stream = run_agent_stream_with_request(client, config, session, tools, request);
+        let first_event = stream.next().await.expect("first event");
+
+        if let AGUIEvent::RunStarted { parent_run_id, .. } = first_event {
+            assert_eq!(parent_run_id.as_deref(), Some("parent_123"));
+        } else {
+            panic!("Expected RunStarted event");
+        }
     }
 
     #[test]
@@ -2172,30 +2204,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_turn_done() {
+    fn test_ag_ui_adapter_step_end() {
         use crate::stream::AgentEvent;
-        use crate::ToolCall;
 
         let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
 
-        // Turn done without tool calls (just text)
-        let event1 = AgentEvent::TurnDone {
-            text: "Hello".to_string(),
-            tool_calls: vec![],
-        };
-        let outputs1 = adapter.convert(&event1);
-        // Should emit TEXT_MESSAGE_END if text was streaming
-        // But since we didn't start text streaming, it might be empty
-        assert!(outputs1.is_empty() || outputs1.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
-
-        // Turn done with tool calls
-        let event2 = AgentEvent::TurnDone {
-            text: "".to_string(),
-            tool_calls: vec![ToolCall::new("call_1", "search", json!({"q": "test"}))],
-        };
-        let outputs2 = adapter.convert(&event2);
-        // Empty because tool calls are handled separately via ToolCallStart/Delta/Done
-        assert!(outputs2.is_empty());
+        let outputs = adapter.convert(&AgentEvent::StepEnd);
+        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::StepFinished { .. })));
     }
 
     #[test]
@@ -2344,11 +2359,8 @@ mod tests {
         });
         all_events.extend(events);
 
-        // Step 2: Turn done (triggers tool call)
-        let events = adapter.convert(&AgentEvent::TurnDone {
-            text: "Let me search for that...".to_string(),
-            tool_calls: vec![crate::ToolCall::new("call_1", "search", json!({"q": "rust"}))],
-        });
+        // Step 2: Step end (LLM finished)
+        let events = adapter.convert(&AgentEvent::StepEnd);
         all_events.extend(events);
 
         // Step 3: Tool call start
@@ -2759,20 +2771,17 @@ mod tests {
     }
 
     #[test]
-    fn test_scenario_multi_turn_conversation() {
+    fn test_scenario_multi_step_conversation() {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
         let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
         let mut total_events = 0;
 
-        // Turn 1: Text response
-        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Turn 1".to_string() });
+        // Step 1: Text response
+        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Step 1".to_string() });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::TurnDone {
-            text: "Turn 1".to_string(),
-            tool_calls: vec![crate::ToolCall::new("c1", "tool", json!({}))],
-        });
+        let events = adapter.convert(&AgentEvent::StepEnd);
         total_events += events.len();
 
         // Tool execution
@@ -2787,10 +2796,10 @@ mod tests {
         });
         total_events += events.len();
 
-        // Turn 2: Final response
-        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Turn 2".to_string() });
+        // Step 2: Final response
+        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Step 2".to_string() });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::Done { response: "Turn 2".to_string() });
+        let events = adapter.convert(&AgentEvent::Done { response: "Step 2".to_string() });
         total_events += events.len();
 
         // Should have multiple events
@@ -3888,7 +3897,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with frontend tool
         let mut tools = HashSet::new();
@@ -3897,17 +3906,17 @@ mod tests {
 
         // Set up tool context for frontend tool
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should set pending
-        assert!(turn.tool_pending());
-        assert!(!turn.tool_blocked());
+        assert!(step.tool_pending());
+        assert!(!step.tool_blocked());
 
         // Check interaction was created correctly
-        let interaction = turn.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
+        let interaction = step.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
         assert_eq!(interaction.id, "call_1");
         assert_eq!(interaction.action, "tool:copyToClipboard");
         assert_eq!(interaction.parameters["text"], "hello");
@@ -3920,7 +3929,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with frontend tool (not including "search")
         let mut tools = HashSet::new();
@@ -3929,14 +3938,14 @@ mod tests {
 
         // Set up tool context for backend tool
         let call = ToolCall::new("call_1", "search", json!({"query": "rust"}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should NOT set pending
-        assert!(!turn.tool_pending());
-        assert!(!turn.tool_blocked());
+        assert!(!step.tool_pending());
+        assert!(!step.tool_blocked());
     }
 
     #[tokio::test]
@@ -3946,27 +3955,27 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let mut tools = HashSet::new();
         tools.insert("copyToClipboard".to_string());
         let plugin = FrontendToolPlugin::new(tools);
 
         let call = ToolCall::new("call_1", "copyToClipboard", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Test various phases - none should set pending
         for phase in [
             Phase::SessionStart,
-            Phase::TurnStart,
+            Phase::StepStart,
             Phase::BeforeInference,
             Phase::AfterInference,
             Phase::AfterToolExecute,
-            Phase::TurnEnd,
+            Phase::StepEnd,
             Phase::SessionEnd,
         ] {
-            plugin.on_phase(phase, &mut turn).await;
-            assert!(!turn.tool_pending(), "Phase {:?} should not set pending", phase);
+            plugin.on_phase(phase, &mut step).await;
+            assert!(!step.tool_pending(), "Phase {:?} should not set pending", phase);
         }
     }
 
@@ -3986,21 +3995,21 @@ mod tests {
 
         // 2. Simulate tool call to frontend tool
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_123", "copyToClipboard", json!({
             "text": "Hello, World!",
             "format": "plain"
         }));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // 3. Plugin intercepts in BeforeToolExecute
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_pending());
+        assert!(step.tool_pending());
 
         // 4. Get the interaction
-        let interaction = turn.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+        let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
 
         // 5. Convert to AG-UI events
         let events = interaction.to_ag_ui_events();
@@ -4057,38 +4066,38 @@ mod tests {
 
         // Test backend tool - should not be pending
         {
-            let mut turn = TurnContext::new(&session, vec![]);
+            let mut step = StepContext::new(&session, vec![]);
             let call = ToolCall::new("c1", "search", json!({}));
-            turn.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-            assert!(!turn.tool_pending(), "Backend tool 'search' should not be pending");
+            step.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            assert!(!step.tool_pending(), "Backend tool 'search' should not be pending");
         }
 
         // Test another backend tool
         {
-            let mut turn = TurnContext::new(&session, vec![]);
+            let mut step = StepContext::new(&session, vec![]);
             let call = ToolCall::new("c2", "read_file", json!({}));
-            turn.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-            assert!(!turn.tool_pending(), "Backend tool 'read_file' should not be pending");
+            step.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            assert!(!step.tool_pending(), "Backend tool 'read_file' should not be pending");
         }
 
         // Test frontend tool - should be pending
         {
-            let mut turn = TurnContext::new(&session, vec![]);
+            let mut step = StepContext::new(&session, vec![]);
             let call = ToolCall::new("c3", "copyToClipboard", json!({}));
-            turn.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-            assert!(turn.tool_pending(), "Frontend tool 'copyToClipboard' should be pending");
+            step.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            assert!(step.tool_pending(), "Frontend tool 'copyToClipboard' should be pending");
         }
 
         // Test another frontend tool
         {
-            let mut turn = TurnContext::new(&session, vec![]);
+            let mut step = StepContext::new(&session, vec![]);
             let call = ToolCall::new("c4", "showNotification", json!({}));
-            turn.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-            assert!(turn.tool_pending(), "Frontend tool 'showNotification' should be pending");
+            step.tool = Some(ToolContext::new(&call));
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            assert!(step.tool_pending(), "Frontend tool 'showNotification' should be pending");
         }
     }
 
@@ -4103,18 +4112,18 @@ mod tests {
         let session = Session::new("test");
 
         // Simulate a blocked frontend tool (e.g., blocked by PermissionPlugin)
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new("c1", "copyToClipboard", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Block the tool first
-        turn.block("Tool denied by permission");
+        step.block("Tool denied by permission");
 
         // FrontendToolPlugin should not create pending for blocked tool
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(turn.tool_blocked(), "Tool should remain blocked");
-        assert!(!turn.tool_pending(), "Blocked tool should not be set to pending");
+        assert!(step.tool_blocked(), "Tool should remain blocked");
+        assert!(!step.tool_pending(), "Blocked tool should not be set to pending");
     }
 
     #[tokio::test]
@@ -4131,12 +4140,12 @@ mod tests {
         let permission_plugin = PermissionPlugin;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new("c1", "frontend_action", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Set permission to Deny
-        turn.set(
+        step.set(
             "permissions",
             json!({
                 "default_behavior": "allow",
@@ -4145,13 +4154,13 @@ mod tests {
         );
 
         // Run PermissionPlugin first (simulating plugin order)
-        permission_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-        assert!(turn.tool_blocked(), "PermissionPlugin should block denied tool");
+        permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        assert!(step.tool_blocked(), "PermissionPlugin should block denied tool");
 
         // Run FrontendToolPlugin second
-        frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
-        assert!(turn.tool_blocked(), "Tool should still be blocked");
-        assert!(!turn.tool_pending(), "FrontendToolPlugin should not set pending for blocked tool");
+        frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        assert!(step.tool_blocked(), "Tool should still be blocked");
+        assert!(!step.tool_pending(), "FrontendToolPlugin should not set pending for blocked tool");
     }
 
     // ========================================================================
@@ -4211,7 +4220,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with denied permission interaction
         let plugin = InteractionResponsePlugin::new(
@@ -4221,14 +4230,14 @@ mod tests {
 
         // Set up tool context for the tool
         let call = ToolCall::new("call_1", "write_file", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should block the tool
-        assert!(turn.tool_blocked());
-        assert!(!turn.tool_pending());
+        assert!(step.tool_blocked());
+        assert!(!step.tool_pending());
     }
 
     #[tokio::test]
@@ -4238,7 +4247,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with approved permission interaction
         let plugin = InteractionResponsePlugin::new(
@@ -4248,14 +4257,14 @@ mod tests {
 
         // Set up tool context for the tool
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should NOT block or set pending
-        assert!(!turn.tool_blocked());
-        assert!(!turn.tool_pending());
+        assert!(!step.tool_blocked());
+        assert!(!step.tool_pending());
     }
 
     #[tokio::test]
@@ -4265,7 +4274,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // FrontendToolPlugin uses the tool call ID as interaction ID
         let plugin = InteractionResponsePlugin::new(
@@ -4275,13 +4284,13 @@ mod tests {
 
         // Set up tool context with matching call ID
         let call = ToolCall::new("call_copy_1", "copyToClipboard", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut turn).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should NOT block (approved by matching call ID)
-        assert!(!turn.tool_blocked());
+        assert!(!step.tool_blocked());
     }
 
     #[tokio::test]
@@ -4291,7 +4300,7 @@ mod tests {
         use crate::types::ToolCall;
 
         let session = Session::new("test");
-        let mut turn = TurnContext::new(&session, vec![]);
+        let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with denied interaction
         let plugin = InteractionResponsePlugin::new(
@@ -4300,20 +4309,20 @@ mod tests {
         );
 
         let call = ToolCall::new("call_1", "test", json!({}));
-        turn.tool = Some(ToolContext::new(&call));
+        step.tool = Some(ToolContext::new(&call));
 
         // Test other phases - should not block
         for phase in [
             Phase::SessionStart,
-            Phase::TurnStart,
+            Phase::StepStart,
             Phase::BeforeInference,
             Phase::AfterInference,
             Phase::AfterToolExecute,
-            Phase::TurnEnd,
+            Phase::StepEnd,
             Phase::SessionEnd,
         ] {
-            plugin.on_phase(phase, &mut turn).await;
-            assert!(!turn.tool_blocked(), "Phase {:?} should not block", phase);
+            plugin.on_phase(phase, &mut step).await;
+            assert!(!step.tool_blocked(), "Phase {:?} should not block", phase);
         }
     }
 
