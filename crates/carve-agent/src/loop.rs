@@ -165,12 +165,38 @@ async fn emit_phase(phase: Phase, step: &mut StepContext<'_>, plugins: &[Arc<dyn
     }
 }
 
-/// Initialize plugin data in StepContext.
-fn init_plugin_data(step: &mut StepContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+/// Build initial plugin data map.
+fn initial_plugin_data(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
+    let mut data = HashMap::new();
     for plugin in plugins {
         if let Some((key, value)) = plugin.initial_data() {
-            step.set(key, value);
+            data.insert(key.to_string(), value);
         }
+    }
+    data
+}
+
+/// Runtime plugin data shared across phase contexts.
+#[derive(Debug, Clone, Default)]
+struct PluginRuntimeData {
+    data: HashMap<String, Value>,
+}
+
+impl PluginRuntimeData {
+    fn new(plugins: &[Arc<dyn AgentPlugin>]) -> Self {
+        Self {
+            data: initial_plugin_data(plugins),
+        }
+    }
+
+    fn new_step_context<'a>(&self, session: &'a Session, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+        let mut step = StepContext::new(session, tools);
+        step.set_data_map(self.data.clone());
+        step
+    }
+
+    fn sync_from_step(&mut self, step: &StepContext<'_>) {
+        self.data = step.data_snapshot();
     }
 }
 
@@ -217,11 +243,11 @@ pub async fn run_step(
     // Get tool descriptors
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
+    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
     // Create StepContext - use scoped blocks to manage borrows
     let (messages, filtered_tools, skip_inference) = {
-        let mut step = StepContext::new(&session, tool_descriptors.clone());
-        init_plugin_data(&mut step, &config.plugins);
+        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
         // Phase 1: StepStart
         emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
@@ -236,6 +262,7 @@ pub async fn run_step(
         let skip = step.skip_inference;
         let msgs = step.messages.clone();
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+        plugin_data.sync_from_step(&step);
 
         (msgs, tools_filter, skip)
     };
@@ -281,10 +308,10 @@ pub async fn run_step(
 
     // Phase 3: AfterInference (with new context)
     {
-        let mut step = StepContext::new(&session, tool_descriptors.clone());
-        init_plugin_data(&mut step, &config.plugins);
+        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
         step.response = Some(result.clone());
         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+        plugin_data.sync_from_step(&step);
     }
 
     // Add assistant message
@@ -296,9 +323,9 @@ pub async fn run_step(
 
     // Phase 6: StepEnd (with new context)
     {
-        let mut step = StepContext::new(&session, tool_descriptors);
-        init_plugin_data(&mut step, &config.plugins);
+        let mut step = plugin_data.new_step_context(&session, tool_descriptors);
         emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+        plugin_data.sync_from_step(&step);
     }
 
     Ok((session, result))
@@ -335,14 +362,14 @@ pub async fn execute_tools_with_config(
     // Get tool descriptors
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
+    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
     // Execute each tool with phase hooks
     let mut executions = Vec::new();
 
     for call in &result.tool_calls {
         // Create StepContext for this tool
-        let mut step = StepContext::new(&session, tool_descriptors.clone());
-        init_plugin_data(&mut step, &config.plugins);
+        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
         step.tool = Some(ToolContext::new(call));
 
         // Phase 4: BeforeToolExecute
@@ -377,6 +404,7 @@ pub async fn execute_tools_with_config(
 
         // Phase 5: AfterToolExecute
         emit_phase(Phase::AfterToolExecute, &mut step, &config.plugins).await;
+        plugin_data.sync_from_step(&step);
 
         executions.push((execution, step.system_reminders.clone()));
     }
@@ -433,6 +461,7 @@ pub async fn execute_tools_with_plugins(
     // Get tool descriptors
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
+    let plugin_data = initial_plugin_data(plugins);
 
     // Execute tools
     let results = if parallel {
@@ -442,6 +471,7 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
+            plugin_data.clone(),
             None,
         )
         .await
@@ -452,6 +482,7 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
+            plugin_data.clone(),
             None,
         )
         .await
@@ -486,6 +517,7 @@ async fn execute_tools_parallel_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> Vec<ToolExecutionResult> {
     use futures::future::join_all;
@@ -496,6 +528,7 @@ async fn execute_tools_parallel_with_phases(
         let call = call.clone();
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
+        let plugin_data = plugin_data.clone();
         let activity_manager = activity_manager.clone();
 
         async move {
@@ -505,6 +538,7 @@ async fn execute_tools_parallel_with_phases(
                 &state,
                 &tool_descriptors,
                 &plugins,
+                plugin_data,
                 activity_manager,
             )
             .await
@@ -521,6 +555,7 @@ async fn execute_tools_sequential_with_phases(
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    mut plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> Vec<ToolExecutionResult> {
     use carve_state::apply_patch;
@@ -537,6 +572,7 @@ async fn execute_tools_sequential_with_phases(
                 &state,
                 tool_descriptors,
                 plugins,
+                plugin_data.clone(),
                 activity_manager.clone(),
             )
             .await;
@@ -548,6 +584,7 @@ async fn execute_tools_sequential_with_phases(
             }
         }
 
+        plugin_data = result.plugin_data.clone();
         results.push(result);
     }
 
@@ -562,6 +599,8 @@ pub struct ToolExecutionResult {
     pub reminders: Vec<String>,
     /// Pending interaction if tool is waiting for user action.
     pub pending_interaction: Option<crate::state_types::Interaction>,
+    /// Plugin data snapshot after this tool execution.
+    pub plugin_data: HashMap<String, Value>,
 }
 
 /// Execute a single tool with phase hooks.
@@ -571,6 +610,7 @@ async fn execute_single_tool_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
+    plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
 ) -> ToolExecutionResult {
     // Create a minimal session for StepContext
@@ -578,7 +618,7 @@ async fn execute_single_tool_with_phases(
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_session, tool_descriptors.to_vec());
-    init_plugin_data(&mut step, plugins);
+    step.set_data_map(plugin_data);
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
@@ -665,6 +705,7 @@ async fn execute_single_tool_with_phases(
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
+        plugin_data: step.data_snapshot(),
     }
 }
 
@@ -679,17 +720,18 @@ pub async fn run_loop(
 ) -> Result<(Session, String), AgentLoopError> {
     let mut rounds = 0;
     let mut last_text;
+    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
     // Get tool descriptors for SessionStart
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
 
     // Create StepContext for session lifecycle
-    let mut session_step = StepContext::new(&session, tool_descriptors.clone());
-    init_plugin_data(&mut session_step, &config.plugins);
+    let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
     // Phase: SessionStart
     emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
+    plugin_data.sync_from_step(&session_step);
 
     loop {
         // Run one step
@@ -713,8 +755,7 @@ pub async fn run_loop(
     }
 
     // Phase: SessionEnd
-    let mut end_step = StepContext::new(&session, tool_descriptors);
-    init_plugin_data(&mut end_step, &config.plugins);
+    let mut end_step = plugin_data.new_step_context(&session, tool_descriptors);
     emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
 
     Ok((session, last_text))
@@ -730,27 +771,27 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
-        let mut session = session;
-        let mut rounds = 0;
+    let mut session = session;
+    let mut rounds = 0;
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-        // Get tool descriptors
-        let tool_descriptors: Vec<ToolDescriptor> =
-            tools.values().map(|t| t.descriptor().clone()).collect();
+    // Get tool descriptors
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
         // Phase: SessionStart (use scoped block to manage borrow)
         {
-            let mut session_step = StepContext::new(&session, tool_descriptors.clone());
-            init_plugin_data(&mut session_step, &config.plugins);
+            let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
             emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
+            plugin_data.sync_from_step(&session_step);
         }
 
         loop {
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let (messages, filtered_tools, skip_inference) = {
-                let mut step = StepContext::new(&session, tool_descriptors.clone());
-                init_plugin_data(&mut step, &config.plugins);
+                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
                 emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
                 emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
@@ -760,6 +801,7 @@ pub fn run_loop_stream(
                 let skip = step.skip_inference;
                 let msgs = step.messages.clone();
                 let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+                plugin_data.sync_from_step(&step);
 
                 (msgs, tools_filter, skip)
             };
@@ -826,10 +868,10 @@ pub fn run_loop_stream(
 
             // Phase: AfterInference (with new context)
             {
-                let mut step = StepContext::new(&session, tool_descriptors.clone());
-                init_plugin_data(&mut step, &config.plugins);
+                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 step.response = Some(result.clone());
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                plugin_data.sync_from_step(&step);
             }
 
             // Step boundary: finished LLM call
@@ -844,17 +886,17 @@ pub fn run_loop_stream(
 
             // Phase: StepEnd (with new context)
             {
-                let mut step = StepContext::new(&session, tool_descriptors.clone());
-                init_plugin_data(&mut step, &config.plugins);
+                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+                plugin_data.sync_from_step(&step);
             }
 
             // Check if we need to execute tools
             if !result.needs_tools() {
                 // Phase: SessionEnd
-                let mut end_step = StepContext::new(&session, tool_descriptors.clone());
-                init_plugin_data(&mut end_step, &config.plugins);
+                let mut end_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
+                plugin_data.sync_from_step(&end_step);
 
                 yield AgentEvent::Done { response: result.text };
                 return;
@@ -877,6 +919,7 @@ pub fn run_loop_stream(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
+                        plugin_data.data.clone(),
                         Some(activity_manager.clone()),
                     ))
                 } else {
@@ -886,6 +929,7 @@ pub fn run_loop_stream(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
+                        plugin_data.data.clone(),
                         Some(activity_manager.clone()),
                     ))
                 };
@@ -910,6 +954,12 @@ pub fn run_loop_stream(
 
             while let Ok(event) = activity_rx.try_recv() {
                 yield event;
+            }
+
+            if !config.parallel_tools {
+                if let Some(last) = results.last() {
+                    plugin_data.data = last.plugin_data.clone();
+                }
             }
 
             // Check if any tool has pending interaction
@@ -1242,6 +1292,7 @@ mod tests {
             &state,
             &descriptors,
             &plugins,
+            HashMap::new(),
             Some(activity_manager),
         ));
 
@@ -1598,8 +1649,8 @@ mod tests {
         let session = Session::new("test");
         let mut step = StepContext::new(&session, vec![]);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
-
-        init_plugin_data(&mut step, &plugins);
+        let runtime_data = PluginRuntimeData::new(&plugins);
+        step.set_data_map(runtime_data.data);
 
         let config: Option<serde_json::Map<String, Value>> = step.get("plugin_config");
         assert!(config.is_some());
@@ -1639,11 +1690,58 @@ mod tests {
             &state,
             &tool_descriptors,
             &plugins,
+            initial_plugin_data(&plugins),
             None,
         )
         .await;
 
         assert!(result.execution.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_data_persists_across_phase_contexts() {
+        struct LifecyclePlugin;
+
+        #[async_trait]
+        impl AgentPlugin for LifecyclePlugin {
+            fn id(&self) -> &str {
+                "lifecycle"
+            }
+
+            fn initial_data(&self) -> Option<(&'static str, Value)> {
+                Some(("seed", json!(1)))
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                match phase {
+                    Phase::SessionStart => {
+                        step.set("seed", 2);
+                    }
+                    Phase::StepStart => {
+                        if step.get::<i64>("seed") == Some(2) {
+                            step.system("seed_visible");
+                        } else {
+                            step.system("seed_missing");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let session = Session::new("test");
+        let tools = vec![];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(LifecyclePlugin)];
+        let mut plugin_data = PluginRuntimeData::new(&plugins);
+
+        let mut session_step = plugin_data.new_step_context(&session, tools.clone());
+        emit_phase(Phase::SessionStart, &mut session_step, &plugins).await;
+        plugin_data.sync_from_step(&session_step);
+
+        let mut step = plugin_data.new_step_context(&session, tools);
+        emit_phase(Phase::StepStart, &mut step, &plugins).await;
+
+        assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
     }
 
     // ============================================================================
