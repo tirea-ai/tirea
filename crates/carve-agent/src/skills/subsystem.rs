@@ -163,7 +163,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
-        fs::write(root.join("s1").join("SKILL.md"), "Body").unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
 
         let sys = SkillSubsystem::from_root(root);
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
@@ -177,7 +181,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
-        fs::write(root.join("s1").join("SKILL.md"), "Body").unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
 
         let sys = SkillSubsystem::from_root(root);
         let tools = sys.tools();
@@ -192,7 +200,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
-        fs::write(root.join("s1").join("SKILL.md"), "Body").unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
 
         let sys = SkillSubsystem::from_root(root);
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
@@ -234,7 +246,7 @@ mod tests {
             f,
             "{}",
             r#"---
-name: DOCX Processing
+name: docx
 description: DOCX guidance
 ---
 Use docx-js for new documents.

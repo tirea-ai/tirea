@@ -13,7 +13,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     fs::create_dir_all(root.join("docx")).unwrap();
     fs::write(
         root.join("docx").join("SKILL.md"),
-        "---\nname: DOCX Processing\ndescription: docx\n---\nUse docx-js.\n",
+        "---\nname: docx\ndescription: docx\n---\nUse docx-js.\n",
     )
     .unwrap();
 
@@ -107,7 +107,11 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     let td = TempDir::new().unwrap();
     let root = td.path().join("skills");
     fs::create_dir_all(root.join("docx")).unwrap();
-    fs::write(root.join("docx").join("SKILL.md"), "Body").unwrap();
+    fs::write(
+        root.join("docx").join("SKILL.md"),
+        "---\nname: docx\ndescription: docx\n---\nBody\n",
+    )
+    .unwrap();
 
     let skills = SkillSubsystem::from_root(root);
     let plugin = skills.plugin();

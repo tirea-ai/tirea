@@ -68,7 +68,7 @@ mod tests {
         fs::create_dir_all(root.join("s1")).unwrap();
         fs::write(
             root.join("s1").join("SKILL.md"),
-            "---\nname: Skill One\n---\nDo X\n",
+            "---\nname: s1\ndescription: ok\n---\nDo X\n",
         )
         .unwrap();
 

@@ -58,7 +58,8 @@ impl Tool for SkillActivateTool {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
-        let doc = parse_skill_md(&raw);
+        let doc = parse_skill_md(&raw)
+            .map_err(|e| ToolError::ExecutionFailed(format!("invalid SKILL.md: {e}")))?;
         let instructions = doc.body;
 
         let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
@@ -69,8 +70,18 @@ impl Tool for SkillActivateTool {
         state.instructions_insert(meta.id.clone(), instructions);
 
         // Apply allowed-tools to the existing permission model (no scope).
-        for t in doc.frontmatter.allowed_tools {
-            ctx.allow_tool(t);
+        // Spec format: a space-delimited string. Tokens may include parameters, e.g. "Bash(git:*)".
+        // For the current permission model we best-effort map each token to a tool id by stripping
+        // optional "(...)" suffix.
+        let mut applied_tool_ids: Vec<String> = Vec::new();
+        if let Some(s) = doc.frontmatter.allowed_tools.as_deref() {
+            for token in s.split_whitespace() {
+                let tool_id = token.split('(').next().unwrap_or(token).to_string();
+                if !tool_id.is_empty() {
+                    ctx.allow_tool(tool_id.clone());
+                    applied_tool_ids.push(tool_id);
+                }
+            }
         }
 
         Ok(ToolResult::success(
@@ -79,7 +90,7 @@ impl Tool for SkillActivateTool {
                 "activated": true,
                 "skill_id": meta.id,
                 "name": meta.name,
-                "allowed_tools_applied": meta.allowed_tools,
+                "allowed_tools_applied": applied_tool_ids,
             }),
         ))
     }

@@ -7,6 +7,30 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 
+fn render_warnings_only(
+    warnings: &[crate::skills::registry::SkillRegistryWarning],
+    max_chars: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str("<skills_warnings>\n");
+    for w in warnings.iter().take(16) {
+        let p = SkillDiscoveryPlugin::escape_text(&w.path.to_string_lossy());
+        let r = SkillDiscoveryPlugin::escape_text(&w.reason);
+        out.push_str(&format!(
+            "<warning><path>{}</path><reason>{}</reason></warning>\n",
+            p, r
+        ));
+        if out.len() >= max_chars {
+            break;
+        }
+    }
+    out.push_str("</skills_warnings>");
+    if out.len() > max_chars {
+        out.truncate(max_chars);
+    }
+    out.trim_end().to_string()
+}
+
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
 /// This is intentionally non-persistent: the catalog is rebuilt from `SkillRegistry` per step.
@@ -43,7 +67,12 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(&self, _active: &HashSet<String>) -> String {
         let mut metas = self.registry.list();
         if metas.is_empty() {
-            return String::new();
+            // Still surface registry warnings if any skills were skipped.
+            let warnings = self.registry.warnings();
+            if warnings.is_empty() {
+                return String::new();
+            }
+            return render_warnings_only(&warnings, self.max_chars);
         }
 
         // Keep ordering stable.
@@ -94,6 +123,23 @@ impl SkillDiscoveryPlugin {
         out.push_str("References are not auto-loaded: use \"load_skill_reference\" with {\"skill\": \"<id>\", \"path\": \"references/<file>\"}.\n");
         out.push_str("To run skill scripts: use \"skill_script\" with {\"skill\": \"<id>\", \"script\": \"scripts/<file>\", \"args\": [..]}.\n");
         out.push_str("</skills_usage>");
+
+        // Add diagnostics for skipped skills (spec violations).
+        let warnings = self.registry.warnings();
+        if !warnings.is_empty() && out.len() < self.max_chars {
+            out.push('\n');
+            out.push_str("<skills_warnings>\n");
+            // Keep this bounded to avoid bloating prompts.
+            for w in warnings.into_iter().take(16) {
+                let p = Self::escape_text(&w.path.to_string_lossy());
+                let r = Self::escape_text(&w.reason);
+                out.push_str(&format!("<warning><path>{}</path><reason>{}</reason></warning>\n", p, r));
+                if out.len() >= self.max_chars {
+                    break;
+                }
+            }
+            out.push_str("</skills_warnings>");
+        }
 
         if out.len() > self.max_chars {
             out.truncate(self.max_chars);
@@ -151,20 +197,24 @@ mod tests {
     fn make_registry() -> Arc<SkillRegistry> {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
-        fs::create_dir_all(root.join("a")).unwrap();
-        fs::create_dir_all(root.join("b")).unwrap();
-        let mut fa = fs::File::create(root.join("a").join("SKILL.md")).unwrap();
+        fs::create_dir_all(root.join("a-skill")).unwrap();
+        fs::create_dir_all(root.join("b-skill")).unwrap();
+        let mut fa = fs::File::create(root.join("a-skill").join("SKILL.md")).unwrap();
         writeln!(
             fa,
             "{}",
             r#"---
-name: A & "<tag>"
-description: Desc
+name: a-skill
+description: Desc & "<tag>"
 ---
 Body"#
         )
         .unwrap();
-        fs::write(root.join("b").join("SKILL.md"), "Body").unwrap();
+        fs::write(
+            root.join("b-skill").join("SKILL.md"),
+            "---\nname: b-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
 
         // Keep tempdir alive by leaking it: this is test-only and acceptable.
         std::mem::forget(td);
@@ -207,7 +257,7 @@ Body"#
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         // Does not include active annotations; active skills are handled by runtime plugin injection.
-        assert!(s.contains("<name>a</name>"));
+        assert!(s.contains("<name>a-skill</name>"));
     }
 
     #[tokio::test]
@@ -228,8 +278,13 @@ Body"#
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         for i in 0..5 {
-            fs::create_dir_all(root.join(format!("s{i}"))).unwrap();
-            fs::write(root.join(format!("s{i}")).join("SKILL.md"), "Body").unwrap();
+            let name = format!("s{i}");
+            fs::create_dir_all(root.join(&name)).unwrap();
+            fs::write(
+                root.join(&name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: ok\n---\nBody\n"),
+            )
+            .unwrap();
         }
         let reg = Arc::new(SkillRegistry::from_root(root));
         let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
@@ -250,7 +305,7 @@ Body"#
         fs::create_dir_all(root.join("s")).unwrap();
         fs::write(
             root.join("s").join("SKILL.md"),
-            "---\ndescription: A very long description\n---\nBody",
+            "---\nname: s\ndescription: A very long description\n---\nBody",
         )
         .unwrap();
         let reg = Arc::new(SkillRegistry::from_root(root));
@@ -261,4 +316,6 @@ Body"#
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
     }
+
+    // warnings-only rendering is exercised indirectly via empty registries with warnings.
 }

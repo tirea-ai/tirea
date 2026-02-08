@@ -27,10 +27,9 @@ fn make_skill_tree() -> (TempDir, Arc<SkillRegistry>) {
         f,
         "{}",
         r#"---
-name: DOCX Processing
+name: docx
 description: DOCX processing guidance
-allowed-tools:
-  - read_file
+allowed-tools: read_file
 ---
 # DOCX Processing
 
@@ -191,7 +190,7 @@ async fn test_load_reference_rejects_escape() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_resolves_by_name_case_insensitive() {
+async fn test_skill_activation_requires_exact_skill_name() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
@@ -199,11 +198,11 @@ async fn test_skill_activation_resolves_by_name_case_insensitive() {
     let (_session, result) = apply_tool(
         session,
         &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx processing"})),
+        ToolCall::new("call_1", "skill", json!({"skill": "DOCX"})),
     )
     .await;
 
-    assert!(result.is_success());
+    assert!(result.is_error());
 }
 
 #[tokio::test]

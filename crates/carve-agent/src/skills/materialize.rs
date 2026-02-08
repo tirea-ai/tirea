@@ -30,7 +30,7 @@ pub(crate) fn load_reference_material(
     relative_path: &str,
 ) -> Result<LoadedReference, SkillMaterializeError> {
     let rel = normalize_relative_path(relative_path)?;
-    require_prefix(&rel, "references")?;
+    require_one_level_under(&rel, "references")?;
     let full = resolve_under_root(skill_root, &rel)?;
 
     let bytes = std::fs::read(&full).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
@@ -63,7 +63,7 @@ pub(crate) async fn run_script_material(
     args: &[String],
 ) -> Result<ScriptResult, SkillMaterializeError> {
     let rel = normalize_relative_path(script_path)?;
-    require_prefix(&rel, "scripts")?;
+    require_one_level_under(&rel, "scripts")?;
     let full = resolve_under_root(skill_root, &rel)?;
 
     let (program, mut cmd_args) = runtime_for_script(&full)?;
@@ -152,7 +152,10 @@ fn normalize_relative_path(p: &str) -> Result<PathBuf, SkillMaterializeError> {
     Ok(out)
 }
 
-fn require_prefix(rel: &Path, required_first_component: &str) -> Result<(), SkillMaterializeError> {
+fn require_one_level_under(
+    rel: &Path,
+    required_first_component: &str,
+) -> Result<(), SkillMaterializeError> {
     let first = rel
         .components()
         .next()
@@ -161,6 +164,13 @@ fn require_prefix(rel: &Path, required_first_component: &str) -> Result<(), Skil
     if first != required_first_component {
         return Err(SkillMaterializeError::UnsupportedPath(
             required_first_component.to_string(),
+        ));
+    }
+    // Spec guidance: keep file references one level deep from SKILL.md.
+    // Enforce `references/<file>` and `scripts/<file>`.
+    if rel.components().count() != 2 {
+        return Err(SkillMaterializeError::InvalidPath(
+            "expected one-level path".to_string(),
         ));
     }
     Ok(())
@@ -212,6 +222,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("expected under references"));
+    }
+
+    #[test]
+    fn load_reference_rejects_nested_paths() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("docx").join("references").join("nested")).unwrap();
+        fs::write(
+            td.path()
+                .join("docx")
+                .join("references")
+                .join("nested")
+                .join("a.md"),
+            "hello",
+        )
+        .unwrap();
+
+        let err = load_reference_material(
+            "docx",
+            &td.path().join("docx"),
+            "references/nested/a.md",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("expected one-level path"));
     }
 
     #[tokio::test]
