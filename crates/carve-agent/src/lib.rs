@@ -123,7 +123,7 @@ pub use activity::ActivityHub;
 
 // Skills exports
 pub use skills::{
-    LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillRegistry,
+    LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
 };
 

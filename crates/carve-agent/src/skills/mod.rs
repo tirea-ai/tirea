@@ -5,6 +5,7 @@
 //! - Tools: activate skill, load reference, run script
 //! - `SkillRuntimePlugin`: inject activated skill context before inference
 
+mod combined_plugin;
 mod discovery_plugin;
 mod materialize;
 mod registry;
@@ -13,6 +14,7 @@ mod skill_md;
 mod state;
 mod tools;
 
+pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use registry::{SkillMeta, SkillRegistry};
 pub use runtime_plugin::SkillRuntimePlugin;

@@ -9,7 +9,7 @@ use serde_json::Value;
 ///
 /// This plugin reads skill state from the session document and adds it as system context
 /// during `BeforeInference`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SkillRuntimePlugin;
 
 impl SkillRuntimePlugin {
