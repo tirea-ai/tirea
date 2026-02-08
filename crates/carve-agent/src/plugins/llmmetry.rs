@@ -268,9 +268,9 @@ impl AgentPlugin for LLMMetryPlugin {
                     "gen_ai.response.id" = tracing::field::Empty,
                     "gen_ai.usage.input_tokens" = tracing::field::Empty,
                     "gen_ai.usage.output_tokens" = tracing::field::Empty,
+                    "gen_ai.response.finish_reasons" = tracing::field::Empty,
                     "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
                     "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
-                    "gen_ai.client.operation.duration_ms" = tracing::field::Empty,
                     "error.type" = tracing::field::Empty,
                 );
                 step.tracing_span = Some(span.clone());
@@ -313,13 +313,23 @@ impl AgentPlugin for LLMMetryPlugin {
 
                 // Record fields onto the tracing span and drop it (closing the OTel span).
                 if let Some(tracing_span) = self.inference_tracing_span.lock().unwrap().take() {
-                    tracing_span.record("gen_ai.usage.input_tokens", span.input_tokens.unwrap_or(0));
-                    tracing_span.record("gen_ai.usage.output_tokens", span.output_tokens.unwrap_or(0));
+                    if let Some(v) = span.input_tokens {
+                        tracing_span.record("gen_ai.usage.input_tokens", v);
+                    }
+                    if let Some(v) = span.output_tokens {
+                        tracing_span.record("gen_ai.usage.output_tokens", v);
+                    }
                     if let Some(v) = span.cache_read_input_tokens {
                         tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
                     }
                     if let Some(v) = span.cache_creation_input_tokens {
                         tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
+                    }
+                    if !span.finish_reasons.is_empty() {
+                        tracing_span.record(
+                            "gen_ai.response.finish_reasons",
+                            format!("{:?}", span.finish_reasons).as_str(),
+                        );
                     }
                     if let Some(ref v) = span.response_model {
                         tracing_span.record("gen_ai.response.model", v.as_str());
@@ -332,7 +342,6 @@ impl AgentPlugin for LLMMetryPlugin {
                         tracing_span.record("otel.status_code", "ERROR");
                         tracing_span.record("otel.status_description", v.as_str());
                     }
-                    tracing_span.record("gen_ai.client.operation.duration_ms", span.duration_ms);
                     drop(tracing_span);
                 }
 
@@ -363,7 +372,6 @@ impl AgentPlugin for LLMMetryPlugin {
                     "gen_ai.tool.name" = %tool_name,
                     "gen_ai.tool.call.id" = %call_id,
                     "error.type" = tracing::field::Empty,
-                    "tool.duration_ms" = tracing::field::Empty,
                 );
                 step.tracing_span = Some(span.clone());
                 *self.tool_tracing_span.lock().unwrap() = Some(span);
@@ -412,7 +420,6 @@ impl AgentPlugin for LLMMetryPlugin {
                         tracing_span.record("otel.status_code", "ERROR");
                         tracing_span.record("otel.status_description", v.as_str());
                     }
-                    tracing_span.record("tool.duration_ms", span.duration_ms);
                     drop(tracing_span);
                 }
 
@@ -1037,9 +1044,10 @@ mod tests {
                 find_attribute(span, "gen_ai.usage.output_tokens"),
                 Some(&opentelemetry::Value::I64(50))
             );
+            // Duration is captured by OTel span timestamps, not as a custom attribute
             assert!(
-                find_attribute(span, "gen_ai.client.operation.duration_ms").is_some(),
-                "expected duration_ms attribute"
+                find_attribute(span, "gen_ai.client.operation.duration_ms").is_none(),
+                "duration should not be a custom attribute (OTel captures it via span timestamps)"
             );
         }
 
@@ -1706,6 +1714,87 @@ mod tests {
             assert_eq!(
                 find_attribute(span, "gen_ai.usage.output_tokens"),
                 Some(&opentelemetry::Value::I64(50))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_no_usage_omits_token_attributes() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hi".into(),
+                tool_calls: vec![],
+                usage: None,
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            // When usage is None, token attributes should not be recorded
+            // (Empty fields are not exported as OTel attributes)
+            assert!(
+                find_attribute(span, "gen_ai.usage.input_tokens").is_none(),
+                "input_tokens should be absent when usage is unavailable"
+            );
+            assert!(
+                find_attribute(span, "gen_ai.usage.output_tokens").is_none(),
+                "output_tokens should be absent when usage is unavailable"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_cache_tokens_only_when_present() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let session = mock_session();
+
+            // Test with cache tokens present
+            {
+                let mut step = StepContext::new(&session, vec![]);
+                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                step.response = Some(StreamResult {
+                    text: "hi".into(),
+                    tool_calls: vec![],
+                    usage: Some(usage_with_cache(100, 50, 150, 30)),
+                });
+                plugin.on_phase(Phase::AfterInference, &mut step).await;
+            }
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            assert_eq!(
+                find_attribute(span, "gen_ai.usage.cache_read.input_tokens"),
+                Some(&opentelemetry::Value::I64(30)),
+                "cache_read tokens should be recorded when present"
+            );
+            // cache_creation not set in test fixture
+            assert!(
+                find_attribute(span, "gen_ai.usage.cache_creation.input_tokens").is_none(),
+                "cache_creation tokens should be absent when not provided"
             );
         }
     }
