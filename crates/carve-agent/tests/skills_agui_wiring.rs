@@ -39,6 +39,10 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
         name: "skill".to_string(),
         arguments: json!({"skill": "docx"}),
     };
+    let delta = AgentEvent::ToolCallDelta {
+        id: "call_1".to_string(),
+        args_delta: "{\"skill\":\"docx\"}".to_string(),
+    };
     let done = AgentEvent::ToolCallDone {
         id: "call_1".to_string(),
         result: exec.result.clone(),
@@ -47,11 +51,32 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
 
     let mut events = Vec::new();
     events.extend(start.to_ag_ui_events(&mut agui_ctx));
+    events.extend(delta.to_ag_ui_events(&mut agui_ctx));
     events.extend(ready.to_ag_ui_events(&mut agui_ctx));
     events.extend(done.to_ag_ui_events(&mut agui_ctx));
 
     assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
     assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+
+    let args_event = events
+        .iter()
+        .find_map(|e| {
+            if let AGUIEvent::ToolCallArgs {
+                tool_call_id,
+                delta,
+                ..
+            } = e
+            {
+                Some((tool_call_id.clone(), delta.clone()))
+            } else {
+                None
+            }
+        })
+        .expect("ToolCallArgs emitted");
+    assert_eq!(args_event.0, "call_1");
+    assert!(args_event.1.contains("\"skill\""));
+    assert!(args_event.1.contains("\"docx\""));
 
     let result_event = events
         .iter()
@@ -94,4 +119,3 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     assert_eq!(step.system_context.len(), 1);
     assert!(step.system_context[0].contains("<available_skills>"));
 }
-
