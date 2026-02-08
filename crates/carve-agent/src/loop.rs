@@ -38,17 +38,17 @@
 //! SessionEnd (once)
 //! ```
 
+use crate::activity::ActivityHub;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, execute_single_tool, ToolExecution};
-use crate::activity::ActivityHub;
-use crate::phase::{Phase, ToolContext, StepContext};
+use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
-use carve_state::ActivityManager;
 use async_stream::stream;
+use carve_state::ActivityManager;
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -92,7 +92,10 @@ impl std::fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentConfig")
             .field("model", &self.model)
-            .field("system_prompt", &format!("[{} chars]", self.system_prompt.len()))
+            .field(
+                "system_prompt",
+                &format!("[{} chars]", self.system_prompt.len()),
+            )
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
             .field("chat_options", &self.chat_options)
@@ -189,7 +192,11 @@ impl PluginRuntimeData {
         }
     }
 
-    fn new_step_context<'a>(&self, session: &'a Session, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+    fn new_step_context<'a>(
+        &self,
+        session: &'a Session,
+        tools: Vec<ToolDescriptor>,
+    ) -> StepContext<'a> {
         let mut step = StepContext::new(session, tools);
         step.set_data_map(self.data.clone());
         step
@@ -318,7 +325,10 @@ pub async fn run_step(
     let session = if result.tool_calls.is_empty() {
         session.with_message(assistant_message(&result.text))
     } else {
-        session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
+        session.with_message(assistant_tool_calls(
+            &result.text,
+            result.tool_calls.clone(),
+        ))
     };
 
     // Phase 6: StepEnd (with new context)
@@ -410,7 +420,12 @@ pub async fn execute_tools_with_config(
     }
 
     // Collect patches and tool response messages
-    let patches = collect_patches(&executions.iter().map(|(e, _)| e.clone()).collect::<Vec<_>>());
+    let patches = collect_patches(
+        &executions
+            .iter()
+            .map(|(e, _)| e.clone())
+            .collect::<Vec<_>>(),
+    );
     let tool_messages: Vec<Message> = executions
         .iter()
         .flat_map(|(e, reminders)| {
@@ -489,7 +504,12 @@ pub async fn execute_tools_with_plugins(
     };
 
     // Collect patches and tool response messages
-    let patches = collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
+    let patches = collect_patches(
+        &results
+            .iter()
+            .map(|r| r.execution.clone())
+            .collect::<Vec<_>>(),
+    );
     let tool_messages: Vec<Message> = results
         .iter()
         .flat_map(|r| {
@@ -565,17 +585,16 @@ async fn execute_tools_sequential_with_phases(
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let result =
-            execute_single_tool_with_phases(
-                tool.as_deref(),
-                call,
-                &state,
-                tool_descriptors,
-                plugins,
-                plugin_data.clone(),
-                activity_manager.clone(),
-            )
-            .await;
+        let result = execute_single_tool_with_phases(
+            tool.as_deref(),
+            call,
+            &state,
+            tool_descriptors,
+            plugins,
+            plugin_data.clone(),
+            activity_manager.clone(),
+        )
+        .await;
 
         // Apply patch to state for next tool
         if let Some(ref patch) = result.execution.patch {
@@ -669,11 +688,7 @@ async fn execute_single_tool_with_phases(
             format!("tool:{}", call.name),
             activity_manager,
         );
-        let result = match tool
-            .unwrap()
-            .execute(call.arguments.clone(), &ctx)
-            .await
-        {
+        let result = match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
             Ok(r) => r,
             Err(e) => ToolResult::error(&call.name, e.to_string()),
         };
@@ -1027,10 +1042,7 @@ pub fn run_loop_stream(
 #[derive(Debug)]
 pub enum RoundResult {
     /// LLM responded with text, no tools needed.
-    Done {
-        session: Session,
-        response: String,
-    },
+    Done { session: Session, response: String },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
         session: Session,
@@ -1120,9 +1132,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::ActivityHub;
     use crate::phase::Phase;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
-    use crate::activity::ActivityHub;
     use async_trait::async_trait;
     use carve_state::{ActivityManager, Context};
     use carve_state_derive::State;
@@ -1145,14 +1157,13 @@ mod tests {
     #[async_trait]
     impl Tool for EchoTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("echo", "Echo", "Echo the input")
-                .with_parameters(json!({
-                    "type": "object",
-                    "properties": {
-                        "message": { "type": "string" }
-                    },
-                    "required": ["message"]
-                }))
+            ToolDescriptor::new("echo", "Echo", "Echo the input").with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            }))
         }
 
         async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -1162,6 +1173,8 @@ mod tests {
     }
 
     struct ActivityGateTool {
+        id: String,
+        stream_id: String,
         ready: Arc<Notify>,
         proceed: Arc<Notify>,
     }
@@ -1169,17 +1182,17 @@ mod tests {
     #[async_trait]
     impl Tool for ActivityGateTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("activity_gate", "Activity Gate", "Emits activity updates")
+            ToolDescriptor::new(&self.id, "Activity Gate", "Emits activity updates")
         }
 
         async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-            let activity = ctx.activity("stream_gate", "progress");
+            let activity = ctx.activity(self.stream_id.clone(), "progress");
             let progress = activity.state::<ActivityProgressState>("");
             progress.set_progress(0.1);
             self.ready.notify_one();
             self.proceed.notified().await;
             progress.set_progress(1.0);
-            Ok(ToolResult::success("activity_gate", json!({ "ok": true })))
+            Ok(ToolResult::success(&self.id, json!({ "ok": true })))
         }
     }
 
@@ -1240,7 +1253,9 @@ mod tests {
             };
             let tools = HashMap::new();
 
-            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true)
+                .await
+                .unwrap();
             assert_eq!(session.message_count(), 0);
         });
     }
@@ -1260,7 +1275,9 @@ mod tests {
             };
             let tools = tool_map([EchoTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
@@ -1277,6 +1294,8 @@ mod tests {
         let ready = Arc::new(Notify::new());
         let proceed = Arc::new(Notify::new());
         let tool = ActivityGateTool {
+            id: "activity_gate".to_string(),
+            stream_id: "stream_gate".to_string(),
             ready: ready.clone(),
             proceed: proceed.clone(),
         };
@@ -1317,18 +1336,108 @@ mod tests {
         assert!(result.execution.result.is_success());
     }
 
+    #[tokio::test]
+    async fn test_parallel_tools_emit_activity_before_completion() {
+        use crate::stream::AgentEvent;
+        use std::collections::HashSet;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(tx));
+
+        let ready_a = Arc::new(Notify::new());
+        let proceed_a = Arc::new(Notify::new());
+        let tool_a = ActivityGateTool {
+            id: "activity_gate_a".to_string(),
+            stream_id: "stream_gate_a".to_string(),
+            ready: ready_a.clone(),
+            proceed: proceed_a.clone(),
+        };
+
+        let ready_b = Arc::new(Notify::new());
+        let proceed_b = Arc::new(Notify::new());
+        let tool_b = ActivityGateTool {
+            id: "activity_gate_b".to_string(),
+            stream_id: "stream_gate_b".to_string(),
+            ready: ready_b.clone(),
+            proceed: proceed_b.clone(),
+        };
+
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert(tool_a.id.clone(), Arc::new(tool_a));
+        tools.insert(tool_b.id.clone(), Arc::new(tool_b));
+
+        let calls = vec![
+            crate::types::ToolCall::new("call_a", "activity_gate_a", json!({})),
+            crate::types::ToolCall::new("call_b", "activity_gate_b", json!({})),
+        ];
+        let tool_descriptors: Vec<ToolDescriptor> =
+            tools.values().map(|t| t.descriptor().clone()).collect();
+        let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
+        let state = json!({});
+
+        // Spawn the tool execution so it actually starts running while we await activity events.
+        let tools_for_task = tools.clone();
+        let calls_for_task = calls.clone();
+        let tool_descriptors_for_task = tool_descriptors.clone();
+        let plugins_for_task = plugins.clone();
+        let state_for_task = state.clone();
+        let handle = tokio::spawn(async move {
+            execute_tools_parallel_with_phases(
+                &tools_for_task,
+                &calls_for_task,
+                &state_for_task,
+                &tool_descriptors_for_task,
+                &plugins_for_task,
+                HashMap::new(),
+                Some(activity_manager),
+            )
+            .await
+        });
+
+        let ((), ()) = tokio::join!(ready_a.notified(), ready_b.notified());
+
+        // Both tools have emitted their first activity update; observe both snapshots
+        // before unblocking them.
+        let mut seen: HashSet<String> = HashSet::new();
+        while seen.len() < 2 {
+            match rx.recv().await.expect("activity event") {
+                AgentEvent::ActivitySnapshot {
+                    message_id,
+                    content,
+                    ..
+                } => {
+                    assert_eq!(content["progress"], 0.1);
+                    seen.insert(message_id);
+                }
+                other => panic!("Expected ActivitySnapshot, got {:?}", other),
+            }
+        }
+        assert!(seen.contains("stream_gate_a"));
+        assert!(seen.contains("stream_gate_b"));
+
+        proceed_a.notify_one();
+        proceed_b.notify_one();
+
+        let results = handle.await.expect("task join");
+        assert_eq!(results.len(), 2);
+        for r in results {
+            assert!(r.execution.result.is_success());
+        }
+    }
+
     struct CounterTool;
 
     #[async_trait]
     impl Tool for CounterTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("counter", "Counter", "Increment a counter")
-                .with_parameters(json!({
+            ToolDescriptor::new("counter", "Counter", "Increment a counter").with_parameters(
+                json!({
                     "type": "object",
                     "properties": {
                         "amount": { "type": "integer" }
                     }
-                }))
+                }),
+            )
         }
 
         async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -1340,7 +1449,10 @@ mod tests {
 
             state.set_counter(new_value);
 
-            Ok(ToolResult::success("counter", json!({ "new_value": new_value })))
+            Ok(ToolResult::success(
+                "counter",
+                json!({ "new_value": new_value }),
+            ))
         }
     }
 
@@ -1359,7 +1471,9 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.patch_count(), 1);
@@ -1404,7 +1518,9 @@ mod tests {
         }
 
         async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-            Err(ToolError::ExecutionFailed("Intentional failure".to_string()))
+            Err(ToolError::ExecutionFailed(
+                "Intentional failure".to_string(),
+            ))
         }
     }
 
@@ -1419,7 +1535,9 @@ mod tests {
             };
             let tools = tool_map([FailingTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
@@ -1507,14 +1625,16 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPhasePlugin)];
 
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
             assert!(
                 msg.content.contains("blocked") || msg.content.contains("Error"),
-                "Expected blocked/error in message, got: {}", msg.content
+                "Expected blocked/error in message, got: {}",
+                msg.content
             );
         });
     }
@@ -1550,13 +1670,16 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ReminderPhasePlugin)];
 
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+                .await
+                .unwrap();
 
             // Should have tool response + reminder message
             assert_eq!(session.message_count(), 2);
             assert!(session.messages[1].content.contains("system-reminder"));
-            assert!(session.messages[1].content.contains("Tool execution completed"));
+            assert!(session.messages[1]
+                .content
+                .contains("Tool execution completed"));
         });
     }
 
@@ -1672,7 +1795,8 @@ mod tests {
             }
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-                if phase == Phase::BeforeToolExecute && step.get::<bool>("allow_exec") != Some(true) {
+                if phase == Phase::BeforeToolExecute && step.get::<bool>("allow_exec") != Some(true)
+                {
                     step.block("missing plugin initial data");
                 }
             }
@@ -1750,8 +1874,7 @@ mod tests {
 
     #[test]
     fn test_agent_config_debug() {
-        let config = AgentConfig::new("gpt-4")
-            .with_system_prompt("You are helpful.");
+        let config = AgentConfig::new("gpt-4").with_system_prompt("You are helpful.");
 
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("AgentConfig"));
@@ -1779,10 +1902,7 @@ mod tests {
             async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
         }
 
-        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
-            Arc::new(DummyPlugin),
-            Arc::new(DummyPlugin),
-        ];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
         let config = AgentConfig::new("gpt-4").with_plugins(plugins);
         assert_eq!(config.plugins.len(), 2);
     }
@@ -1800,8 +1920,7 @@ mod tests {
                 if step.tool_id() == Some("echo") {
                     use crate::state_types::Interaction;
                     step.pending(
-                        Interaction::new("confirm_1", "confirm")
-                            .with_message("Execute echo?"),
+                        Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),
                     );
                 }
             }
@@ -1824,15 +1943,19 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
 
-            let session =
-                execute_tools_with_plugins(session, &result, &tools, true, &plugins).await.unwrap();
+            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
             // Pending tool should return pending status
             assert!(
-                msg.content.contains("pending") || msg.content.contains("Pending") || msg.content.contains("Waiting"),
-                "Expected pending in message, got: {}", msg.content
+                msg.content.contains("pending")
+                    || msg.content.contains("Pending")
+                    || msg.content.contains("Waiting"),
+                "Expected pending in message, got: {}",
+                msg.content
             );
         });
     }
@@ -1859,13 +1982,16 @@ mod tests {
             };
             let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-            let session = execute_tools_simple(session, &result, &tools, true).await.unwrap();
+            let session = execute_tools_simple(session, &result, &tools, true)
+                .await
+                .unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
             assert!(
                 msg.content.contains("not found") || msg.content.contains("Error"),
-                "Expected 'not found' error in message, got: {}", msg.content
+                "Expected 'not found' error in message, got: {}",
+                msg.content
             );
         });
     }
@@ -1971,7 +2097,9 @@ mod tests {
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
             assert!(
-                msg.content.contains("pending") || msg.content.contains("Pending") || msg.content.contains("Waiting"),
+                msg.content.contains("pending")
+                    || msg.content.contains("Pending")
+                    || msg.content.contains("Waiting"),
                 "Expected pending in message, got: {}",
                 msg.content
             );

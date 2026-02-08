@@ -61,13 +61,14 @@ impl StreamCollector {
                 let call_id = tool_chunk.tool_call.call_id.clone();
 
                 // Get or create partial tool call
-                let partial = self.tool_calls.entry(call_id.clone()).or_insert_with(|| {
-                    PartialToolCall {
-                        id: call_id.clone(),
-                        name: String::new(),
-                        arguments: String::new(),
-                    }
-                });
+                let partial =
+                    self.tool_calls
+                        .entry(call_id.clone())
+                        .or_insert_with(|| PartialToolCall {
+                            id: call_id.clone(),
+                            name: String::new(),
+                            arguments: String::new(),
+                        });
 
                 // Update name if provided (non-empty)
                 if !tool_chunk.tool_call.fn_name.is_empty() && partial.name.is_empty() {
@@ -293,8 +294,16 @@ impl AgentEvent {
             AgentEvent::ToolCallDelta { id, args_delta } => {
                 vec![UIStreamEvent::tool_input_delta(id, args_delta)]
             }
-            AgentEvent::ToolCallReady { id, name, arguments } => {
-                vec![UIStreamEvent::tool_input_available(id, name, arguments.clone())]
+            AgentEvent::ToolCallReady {
+                id,
+                name,
+                arguments,
+            } => {
+                vec![UIStreamEvent::tool_input_available(
+                    id,
+                    name,
+                    arguments.clone(),
+                )]
             }
             AgentEvent::ToolCallDone { id, result, .. } => {
                 vec![UIStreamEvent::tool_output_available(id, result.to_json())]
@@ -312,10 +321,16 @@ impl AgentEvent {
                 vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
             }
             AgentEvent::StateDelta { delta } => {
-                vec![UIStreamEvent::data("state-delta", Value::Array(delta.clone()))]
+                vec![UIStreamEvent::data(
+                    "state-delta",
+                    Value::Array(delta.clone()),
+                )]
             }
             AgentEvent::MessagesSnapshot { messages } => {
-                vec![UIStreamEvent::data("messages-snapshot", Value::Array(messages.clone()))]
+                vec![UIStreamEvent::data(
+                    "messages-snapshot",
+                    Value::Array(messages.clone()),
+                )]
             }
 
             // Activity events - use custom data events for AI SDK
@@ -373,10 +388,22 @@ impl AgentEvent {
     pub fn to_ag_ui_events(&self, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
         match self {
             // Lifecycle events
-            AgentEvent::RunStart { thread_id, run_id, parent_run_id } => {
-                vec![AGUIEvent::run_started(thread_id, run_id, parent_run_id.clone())]
+            AgentEvent::RunStart {
+                thread_id,
+                run_id,
+                parent_run_id,
+            } => {
+                vec![AGUIEvent::run_started(
+                    thread_id,
+                    run_id,
+                    parent_run_id.clone(),
+                )]
             }
-            AgentEvent::RunFinish { thread_id, run_id, result } => {
+            AgentEvent::RunFinish {
+                thread_id,
+                run_id,
+                result,
+            } => {
                 let mut events = vec![];
                 // End text stream if active
                 if ctx.end_text() {
@@ -404,7 +431,11 @@ impl AgentEvent {
                 if ctx.end_text() {
                     events.push(AGUIEvent::text_message_end(&ctx.message_id));
                 }
-                events.push(AGUIEvent::tool_call_start(id, name, Some(ctx.message_id.clone())));
+                events.push(AGUIEvent::tool_call_start(
+                    id,
+                    name,
+                    Some(ctx.message_id.clone()),
+                ));
                 events
             }
             AgentEvent::ToolCallDelta { id, args_delta } => {
@@ -588,7 +619,9 @@ mod tests {
     #[test]
     fn test_agent_event_variants() {
         // Test TextDelta
-        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
+        let event = AgentEvent::TextDelta {
+            delta: "Hello".to_string(),
+        };
         match event {
             AgentEvent::TextDelta { delta } => assert_eq!(delta, "Hello"),
             _ => panic!("Expected TextDelta"),
@@ -677,7 +710,9 @@ mod tests {
         }
 
         // Test Error
-        let event = AgentEvent::Error { message: "Something went wrong".to_string() };
+        let event = AgentEvent::Error {
+            message: "Something went wrong".to_string(),
+        };
         if let AgentEvent::Error { message } = event {
             assert!(message.contains("wrong"));
         }
@@ -704,7 +739,8 @@ mod tests {
     #[test]
     fn test_stream_result_text_only() {
         let result = StreamResult {
-            text: "This is a long response without any tool calls. It just contains text.".to_string(),
+            text: "This is a long response without any tool calls. It just contains text."
+                .to_string(),
             tool_calls: vec![],
         };
 
@@ -771,7 +807,9 @@ mod tests {
 
     #[test]
     fn test_agent_event_debug() {
-        let event = AgentEvent::Error { message: "error message".to_string() };
+        let event = AgentEvent::Error {
+            message: "error message".to_string(),
+        };
         let debug_str = format!("{:?}", event);
         assert!(debug_str.contains("Error"));
         assert!(debug_str.contains("error message"));
@@ -1073,7 +1111,9 @@ mod tests {
 
     #[test]
     fn test_agent_event_to_ui_events_text_delta() {
-        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
+        let event = AgentEvent::TextDelta {
+            delta: "Hello".to_string(),
+        };
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
@@ -1164,7 +1204,9 @@ mod tests {
 
     #[test]
     fn test_agent_event_to_ui_events_error() {
-        let event = AgentEvent::Error { message: "Something went wrong".to_string() };
+        let event = AgentEvent::Error {
+            message: "Something went wrong".to_string(),
+        };
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
@@ -1198,6 +1240,47 @@ mod tests {
         let ui_events = event.to_ui_events("txt_0");
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""replace":true"#));
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_activity_snapshot_payload_fields() {
+        let event = AgentEvent::ActivitySnapshot {
+            message_id: "activity_payload".to_string(),
+            activity_type: "progress".to_string(),
+            content: json!({"progress": 0.7}),
+            replace: Some(true),
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        match &ui_events[0] {
+            UIStreamEvent::Data { data, .. } => {
+                assert_eq!(data["messageId"], "activity_payload");
+                assert_eq!(data["activityType"], "progress");
+                assert_eq!(data["content"]["progress"], 0.7);
+                assert_eq!(data["replace"], true);
+            }
+            _ => panic!("Expected data event"),
+        }
+    }
+
+    #[test]
+    fn test_agent_event_to_ui_events_activity_delta_payload_fields() {
+        let event = AgentEvent::ActivityDelta {
+            message_id: "activity_delta_payload".to_string(),
+            activity_type: "progress".to_string(),
+            patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.9})],
+        };
+        let ui_events = event.to_ui_events("txt_0");
+        assert_eq!(ui_events.len(), 1);
+        match &ui_events[0] {
+            UIStreamEvent::Data { data, .. } => {
+                assert_eq!(data["messageId"], "activity_delta_payload");
+                assert_eq!(data["activityType"], "progress");
+                assert!(data.get("replace").is_none());
+                assert_eq!(data["patch"][0]["path"], "/progress");
+            }
+            _ => panic!("Expected data event"),
+        }
     }
 
     #[test]
@@ -1284,7 +1367,12 @@ mod tests {
             name: "search".to_string(),
             arguments: json!({"query": "rust programming"}),
         };
-        if let AgentEvent::ToolCallReady { id, name, arguments } = event {
+        if let AgentEvent::ToolCallReady {
+            id,
+            name,
+            arguments,
+        } = event
+        {
             assert_eq!(id, "call_1");
             assert_eq!(name, "search");
             assert_eq!(arguments["query"], "rust programming");
@@ -1319,7 +1407,9 @@ mod tests {
 
     #[test]
     fn test_agent_event_serialization() {
-        let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
+        let event = AgentEvent::TextDelta {
+            delta: "Hello".to_string(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("text_delta"));
         assert!(json.contains("Hello"));
@@ -1355,7 +1445,13 @@ mod tests {
 
         let json = r#"{"event_type":"activity_snapshot","message_id":"activity_1","activity_type":"progress","content":{"progress":0.3},"replace":true}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
-        if let AgentEvent::ActivitySnapshot { message_id, activity_type, content, replace } = event {
+        if let AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } = event
+        {
             assert_eq!(message_id, "activity_1");
             assert_eq!(activity_type, "progress");
             assert_eq!(content["progress"], 0.3);
@@ -1374,8 +1470,12 @@ mod tests {
         // Simulate a complete streaming flow and convert to UI events
         let events = vec![
             AgentEvent::StepStart,
-            AgentEvent::TextDelta { delta: "Let me ".to_string() },
-            AgentEvent::TextDelta { delta: "search.".to_string() },
+            AgentEvent::TextDelta {
+                delta: "Let me ".to_string(),
+            },
+            AgentEvent::TextDelta {
+                delta: "search.".to_string(),
+            },
             AgentEvent::ToolCallStart {
                 id: "call_1".to_string(),
                 name: "search".to_string(),
@@ -1411,14 +1511,30 @@ mod tests {
             .collect();
 
         // Verify UI events contain expected types
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::StartStep)));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::TextDelta { .. })));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputStart { .. })));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputDelta { .. })));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputAvailable { .. })));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::ToolOutputAvailable { .. })));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::FinishStep)));
-        assert!(all_ui_events.iter().any(|e| matches!(e, UIStreamEvent::Finish)));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::StartStep)));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::TextDelta { .. })));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputStart { .. })));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputDelta { .. })));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputAvailable { .. })));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolOutputAvailable { .. })));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::FinishStep)));
+        assert!(all_ui_events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::Finish)));
     }
 
     // ========================================================================
@@ -1432,7 +1548,9 @@ mod tests {
         };
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
-        assert!(matches!(&ui_events[0], UIStreamEvent::Error { error_text } if error_text == "Connection timeout"));
+        assert!(
+            matches!(&ui_events[0], UIStreamEvent::Error { error_text } if error_text == "Connection timeout")
+        );
     }
 
     #[test]
@@ -1442,7 +1560,9 @@ mod tests {
         };
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
-        assert!(matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason == "User cancelled"));
+        assert!(
+            matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason == "User cancelled")
+        );
     }
 
     #[test]
@@ -1479,7 +1599,10 @@ mod tests {
 
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
-        assert!(matches!(ui_events[0], UIStreamEvent::ToolOutputAvailable { .. }));
+        assert!(matches!(
+            ui_events[0],
+            UIStreamEvent::ToolOutputAvailable { .. }
+        ));
     }
 
     #[test]
@@ -1512,8 +1635,7 @@ mod tests {
 
     #[test]
     fn test_agent_event_pending_to_ui_events() {
-        let interaction = Interaction::new("perm_1", "confirm")
-            .with_message("Allow action?");
+        let interaction = Interaction::new("perm_1", "confirm").with_message("Allow action?");
 
         let event = AgentEvent::Pending { interaction };
         let ui_events = event.to_ui_events("txt_0");

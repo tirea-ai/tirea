@@ -80,8 +80,8 @@
 //! storage.save(&session).await?;
 //! ```
 
-pub mod ag_ui;
 pub mod activity;
+pub mod ag_ui;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -90,6 +90,7 @@ pub mod plugin;
 pub mod plugins;
 pub mod prelude;
 pub mod session;
+pub mod skills;
 pub mod state_types;
 pub mod storage;
 pub mod stream;
@@ -120,6 +121,11 @@ pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
 // Activity exports
 pub use activity::ActivityHub;
 
+// Skills exports
+pub use skills::{
+    LoadSkillReferenceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool,
+};
+
 // UI Stream exports (AI SDK v6 compatible)
 pub use ui_stream::{
     AiSdkAdapter, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
@@ -134,8 +140,7 @@ pub use ag_ui::{
 
 // Execute exports
 pub use execute::{
-    collect_patches, execute_single_tool,
-    execute_tools_parallel, execute_tools_sequential,
+    collect_patches, execute_single_tool, execute_tools_parallel, execute_tools_sequential,
     ToolExecution,
 };
 
@@ -156,7 +161,7 @@ pub use r#loop::{
 pub use plugin::AgentPlugin;
 
 // Phase exports
-pub use phase::{Phase, ToolContext, StepContext, StepOutcome};
+pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types exports
 pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
@@ -164,9 +169,12 @@ pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
 // Plugins and extension traits
 pub use plugins::{
     // Extension traits
-    PermissionContextExt, ReminderContextExt,
-    // State types
-    PermissionState, ReminderState,
+    PermissionContextExt,
     // Built-in plugins
-    PermissionPlugin, ReminderPlugin,
+    PermissionPlugin,
+    // State types
+    PermissionState,
+    ReminderContextExt,
+    ReminderPlugin,
+    ReminderState,
 };
