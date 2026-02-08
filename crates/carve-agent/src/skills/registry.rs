@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMeta {
@@ -126,6 +127,17 @@ impl SkillRegistry {
         }
 
         warnings.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Emit warnings once per indexing pass (no prompt injection).
+        for w in &warnings {
+            warn!(
+                target: "skills",
+                path = %w.path.to_string_lossy(),
+                reason = %w.reason,
+                "Skipped skill"
+            );
+        }
+
         *self.index.write().unwrap() = Some(Index {
             metas,
             by_id,
@@ -278,6 +290,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn registry_discovers_skills_and_parses_frontmatter() {
@@ -307,6 +320,14 @@ Body"#
 
     #[test]
     fn registry_skips_invalid_skills_and_reports_warnings() {
+        let buf: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let make_writer = TestWriter(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(make_writer)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("good-skill")).unwrap();
@@ -330,5 +351,34 @@ Body"#
         assert!(!warnings.is_empty());
         assert!(warnings.iter().any(|w| w.reason.contains("directory name")));
         assert!(warnings.iter().any(|w| w.reason.contains("missing SKILL.md")));
+
+        // Ensure warnings were logged (not injected).
+        let logged = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        assert!(logged.contains("Skipped skill"));
+        assert!(logged.contains("missing SKILL.md"));
+    }
+
+    #[derive(Clone)]
+    struct TestWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for TestWriter {
+        type Writer = TestWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            TestWriterGuard(self.0.clone())
+        }
+    }
+
+    struct TestWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for TestWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }

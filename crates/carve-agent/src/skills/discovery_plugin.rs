@@ -7,30 +7,6 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-fn render_warnings_only(
-    warnings: &[crate::skills::registry::SkillRegistryWarning],
-    max_chars: usize,
-) -> String {
-    let mut out = String::new();
-    out.push_str("<skills_warnings>\n");
-    for w in warnings.iter().take(16) {
-        let p = SkillDiscoveryPlugin::escape_text(&w.path.to_string_lossy());
-        let r = SkillDiscoveryPlugin::escape_text(&w.reason);
-        out.push_str(&format!(
-            "<warning><path>{}</path><reason>{}</reason></warning>\n",
-            p, r
-        ));
-        if out.len() >= max_chars {
-            break;
-        }
-    }
-    out.push_str("</skills_warnings>");
-    if out.len() > max_chars {
-        out.truncate(max_chars);
-    }
-    out.trim_end().to_string()
-}
-
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
 /// This is intentionally non-persistent: the catalog is rebuilt from `SkillRegistry` per step.
@@ -67,12 +43,7 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(&self, _active: &HashSet<String>) -> String {
         let mut metas = self.registry.list();
         if metas.is_empty() {
-            // Still surface registry warnings if any skills were skipped.
-            let warnings = self.registry.warnings();
-            if warnings.is_empty() {
-                return String::new();
-            }
-            return render_warnings_only(&warnings, self.max_chars);
+            return String::new();
         }
 
         // Keep ordering stable.
@@ -123,23 +94,6 @@ impl SkillDiscoveryPlugin {
         out.push_str("References are not auto-loaded: use \"load_skill_reference\" with {\"skill\": \"<id>\", \"path\": \"references/<file>\"}.\n");
         out.push_str("To run skill scripts: use \"skill_script\" with {\"skill\": \"<id>\", \"script\": \"scripts/<file>\", \"args\": [..]}.\n");
         out.push_str("</skills_usage>");
-
-        // Add diagnostics for skipped skills (spec violations).
-        let warnings = self.registry.warnings();
-        if !warnings.is_empty() && out.len() < self.max_chars {
-            out.push('\n');
-            out.push_str("<skills_warnings>\n");
-            // Keep this bounded to avoid bloating prompts.
-            for w in warnings.into_iter().take(16) {
-                let p = Self::escape_text(&w.path.to_string_lossy());
-                let r = Self::escape_text(&w.reason);
-                out.push_str(&format!("<warning><path>{}</path><reason>{}</reason></warning>\n", p, r));
-                if out.len() >= self.max_chars {
-                    break;
-                }
-            }
-            out.push_str("</skills_warnings>");
-        }
 
         if out.len() > self.max_chars {
             out.truncate(self.max_chars);
@@ -317,5 +271,5 @@ Body"#
         assert!(s.len() <= 256);
     }
 
-    // warnings-only rendering is exercised indirectly via empty registries with warnings.
+    // Registry warnings are logged during discovery; they are intentionally not injected into prompts.
 }
