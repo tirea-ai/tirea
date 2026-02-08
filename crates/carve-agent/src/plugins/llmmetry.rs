@@ -15,64 +15,57 @@ use std::time::Instant;
 // Span types (OTel GenAI aligned)
 // =============================================================================
 
-/// Breakdown of input (prompt) token usage.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct InputTokensDetails {
-    /// Tokens read from cache (Anthropic: `cache_read_input_tokens`).
-    pub cached_tokens: Option<i32>,
-    /// Tokens used to create cache entries (Anthropic: `cache_creation_input_tokens`).
-    pub cache_creation_tokens: Option<i32>,
-    /// Audio input tokens.
-    pub audio_tokens: Option<i32>,
-}
-
-/// Breakdown of output (completion) token usage.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OutputTokensDetails {
-    /// Tokens spent on chain-of-thought reasoning.
-    pub reasoning_tokens: Option<i32>,
-    /// Audio output tokens.
-    pub audio_tokens: Option<i32>,
-    /// Accepted speculative/predicted tokens.
-    pub accepted_prediction_tokens: Option<i32>,
-    /// Rejected speculative/predicted tokens.
-    pub rejected_prediction_tokens: Option<i32>,
-}
-
 /// A single LLM inference span.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenAISpan {
     /// Model identifier (e.g. "gpt-4o-mini"). OTel: `gen_ai.request.model`.
     pub model: String,
-    /// Provider/system (e.g. "openai"). OTel: `gen_ai.system`.
-    pub system: String,
+    /// Provider name (e.g. "openai"). OTel: `gen_ai.provider.name`.
+    pub provider: String,
     /// Operation name (e.g. "chat"). OTel: `gen_ai.operation.name`.
     pub operation: String,
+    /// Response model (may differ from request model). OTel: `gen_ai.response.model`.
+    pub response_model: Option<String>,
+    /// Response ID. OTel: `gen_ai.response.id`.
+    pub response_id: Option<String>,
+    /// Finish reasons. OTel: `gen_ai.response.finish_reasons`.
+    pub finish_reasons: Vec<String>,
+    /// Error type if the inference failed. OTel: `error.type`.
+    pub error_type: Option<String>,
     /// Input (prompt) tokens. OTel: `gen_ai.usage.input_tokens`.
     pub input_tokens: Option<i32>,
     /// Output (completion) tokens. OTel: `gen_ai.usage.output_tokens`.
     pub output_tokens: Option<i32>,
-    /// Total tokens.
+    /// Total tokens (non-OTel convenience).
     pub total_tokens: Option<i32>,
+    /// Cache-read input tokens. OTel: `gen_ai.usage.cache_read.input_tokens`.
+    pub cache_read_input_tokens: Option<i32>,
+    /// Cache-creation input tokens. OTel: `gen_ai.usage.cache_creation.input_tokens`.
+    pub cache_creation_input_tokens: Option<i32>,
     /// Wall-clock duration in milliseconds. OTel: `gen_ai.client.operation.duration`.
     pub duration_ms: u64,
-    /// Input token breakdown.
-    pub input_tokens_details: Option<InputTokensDetails>,
-    /// Output token breakdown.
-    pub output_tokens_details: Option<OutputTokensDetails>,
 }
 
 /// A single tool execution span.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpan {
-    /// Tool name.
+    /// Tool name. OTel: `gen_ai.tool.name`.
     pub name: String,
-    /// Whether the tool succeeded.
-    pub success: bool,
-    /// Error type when `success` is false. OTel: `error.type`.
+    /// Operation name (always "execute_tool"). OTel: `gen_ai.operation.name`.
+    pub operation: String,
+    /// Tool call ID. OTel: `gen_ai.tool.call.id`.
+    pub call_id: String,
+    /// Error type when the tool failed. OTel: `error.type`.
     pub error_type: Option<String>,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
+}
+
+impl ToolSpan {
+    /// Whether the tool execution succeeded (no error).
+    pub fn is_success(&self) -> bool {
+        self.error_type.is_none()
+    }
 }
 
 /// Aggregated metrics for an agent session.
@@ -123,7 +116,7 @@ impl AgentMetrics {
 
     /// Number of failed tool executions.
     pub fn tool_failures(&self) -> usize {
-        self.tools.iter().filter(|t| !t.success).count()
+        self.tools.iter().filter(|t| !t.is_success()).count()
     }
 }
 
@@ -193,7 +186,7 @@ impl MetricsSink for InMemorySink {
 /// let sink = InMemorySink::new();
 /// let plugin = LLMMetryPlugin::new(sink.clone())
 ///     .with_model("gpt-4o-mini")
-///     .with_system("openai");
+///     .with_provider("openai");
 /// let config = AgentDefinition::new("gpt-4o-mini")
 ///     .with_plugin(Arc::new(plugin));
 /// // ... run agent ...
@@ -210,8 +203,8 @@ pub struct LLMMetryPlugin {
     tool_start: Mutex<Option<Instant>>,
     /// Model name captured from AgentDefinition (set externally or from data).
     model: Mutex<String>,
-    /// Provider/system identifier (e.g. "openai", "anthropic").
-    system: Mutex<String>,
+    /// Provider name (e.g. "openai", "anthropic"). OTel: `gen_ai.provider.name`.
+    provider: Mutex<String>,
     /// Operation name (defaults to "chat").
     operation: String,
 }
@@ -225,7 +218,7 @@ impl LLMMetryPlugin {
             inference_start: Mutex::new(None),
             tool_start: Mutex::new(None),
             model: Mutex::new(String::new()),
-            system: Mutex::new(String::new()),
+            provider: Mutex::new(String::new()),
             operation: "chat".to_string(),
         }
     }
@@ -235,8 +228,8 @@ impl LLMMetryPlugin {
         self
     }
 
-    pub fn with_system(self, system: impl Into<String>) -> Self {
-        *self.system.lock().unwrap() = system.into();
+    pub fn with_provider(self, provider: impl Into<String>) -> Self {
+        *self.provider.lock().unwrap() = provider.into();
         self
     }
 }
@@ -266,30 +259,39 @@ impl AgentPlugin for LLMMetryPlugin {
 
                 let usage = step.response.as_ref().and_then(|r| r.usage.as_ref());
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
-                let input_tokens_details = extract_input_details(usage);
-                let output_tokens_details = extract_output_details(usage);
+                let (cache_read_input_tokens, cache_creation_input_tokens) =
+                    extract_cache_tokens(usage);
 
                 let model = self.model.lock().unwrap().clone();
-                let system = self.system.lock().unwrap().clone();
+                let provider = self.provider.lock().unwrap().clone();
                 let span = GenAISpan {
                     model,
-                    system,
+                    provider,
                     operation: self.operation.clone(),
+                    response_model: None,
+                    response_id: None,
+                    finish_reasons: Vec::new(),
+                    error_type: None,
                     input_tokens,
                     output_tokens,
                     total_tokens,
+                    cache_read_input_tokens,
+                    cache_creation_input_tokens,
                     duration_ms,
-                    input_tokens_details,
-                    output_tokens_details,
                 };
 
                 tracing::info!(
-                    gen_ai.system = %span.system,
-                    gen_ai.request.model = %span.model,
+                    gen_ai.provider.name = %span.provider,
                     gen_ai.operation.name = %span.operation,
+                    gen_ai.request.model = %span.model,
+                    gen_ai.response.model = ?span.response_model,
+                    gen_ai.response.id = ?span.response_id,
                     gen_ai.usage.input_tokens = ?span.input_tokens,
                     gen_ai.usage.output_tokens = ?span.output_tokens,
+                    gen_ai.usage.cache_read.input_tokens = ?span.cache_read_input_tokens,
+                    gen_ai.usage.cache_creation.input_tokens = ?span.cache_creation_input_tokens,
                     gen_ai.client.operation.duration_ms = span.duration_ms,
+                    error.r#type = ?span.error_type,
                     "gen_ai.inference.complete"
                 );
 
@@ -308,7 +310,7 @@ impl AgentPlugin for LLMMetryPlugin {
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
 
-                let (name, success, error_type) = if let Some(ref tc) = step.tool {
+                let (name, call_id, error_type) = if let Some(ref tc) = step.tool {
                     let ok = tc
                         .result
                         .as_ref()
@@ -321,21 +323,23 @@ impl AgentPlugin for LLMMetryPlugin {
                     } else {
                         None
                     };
-                    (tc.name.clone(), ok, err)
+                    (tc.name.clone(), tc.id.clone(), err)
                 } else {
-                    ("unknown".to_string(), false, None)
+                    ("unknown".to_string(), String::new(), None)
                 };
 
                 let span = ToolSpan {
                     name,
-                    success,
+                    operation: "execute_tool".to_string(),
+                    call_id,
                     error_type,
                     duration_ms,
                 };
 
                 tracing::info!(
-                    tool.name = %span.name,
-                    tool.success = span.success,
+                    gen_ai.operation.name = %span.operation,
+                    gen_ai.tool.name = %span.name,
+                    gen_ai.tool.call.id = %span.call_id,
                     error.r#type = ?span.error_type,
                     tool.duration_ms = span.duration_ms,
                     "gen_ai.tool.complete"
@@ -369,23 +373,11 @@ fn extract_token_counts(usage: Option<&Usage>) -> (Option<i32>, Option<i32>, Opt
     }
 }
 
-fn extract_input_details(usage: Option<&Usage>) -> Option<InputTokensDetails> {
-    let d = usage?.prompt_tokens_details.as_ref()?;
-    Some(InputTokensDetails {
-        cached_tokens: d.cached_tokens,
-        cache_creation_tokens: d.cache_creation_tokens,
-        audio_tokens: d.audio_tokens,
-    })
-}
-
-fn extract_output_details(usage: Option<&Usage>) -> Option<OutputTokensDetails> {
-    let d = usage?.completion_tokens_details.as_ref()?;
-    Some(OutputTokensDetails {
-        reasoning_tokens: d.reasoning_tokens,
-        audio_tokens: d.audio_tokens,
-        accepted_prediction_tokens: d.accepted_prediction_tokens,
-        rejected_prediction_tokens: d.rejected_prediction_tokens,
-    })
+fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
+    match usage.and_then(|u| u.prompt_tokens_details.as_ref()) {
+        Some(d) => (d.cached_tokens, d.cache_creation_tokens),
+        None => (None, None),
+    }
 }
 
 // =============================================================================
@@ -400,7 +392,7 @@ mod tests {
     use crate::stream::StreamResult;
     use crate::traits::tool::ToolResult;
     use crate::types::ToolCall;
-    use genai::chat::{CompletionTokensDetails, PromptTokensDetails};
+    use genai::chat::PromptTokensDetails;
     use serde_json::json;
 
     fn mock_session() -> Session {
@@ -417,13 +409,7 @@ mod tests {
         }
     }
 
-    fn usage_with_details(
-        prompt: i32,
-        completion: i32,
-        total: i32,
-        cached: i32,
-        reasoning: i32,
-    ) -> Usage {
+    fn usage_with_cache(prompt: i32, completion: i32, total: i32, cached: i32) -> Usage {
         Usage {
             prompt_tokens: Some(prompt),
             prompt_tokens_details: Some(PromptTokensDetails {
@@ -432,14 +418,51 @@ mod tests {
                 audio_tokens: None,
             }),
             completion_tokens: Some(completion),
-            completion_tokens_details: Some(CompletionTokensDetails {
-                reasoning_tokens: Some(reasoning),
-                audio_tokens: None,
-                accepted_prediction_tokens: None,
-                rejected_prediction_tokens: None,
-            }),
+            completion_tokens_details: None,
             total_tokens: Some(total),
         }
+    }
+
+    fn make_span(model: &str, provider: &str) -> GenAISpan {
+        GenAISpan {
+            model: model.into(),
+            provider: provider.into(),
+            operation: "chat".into(),
+            response_model: None,
+            response_id: None,
+            finish_reasons: Vec::new(),
+            error_type: None,
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            total_tokens: Some(30),
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+            duration_ms: 100,
+        }
+    }
+
+    fn make_tool_span(name: &str, call_id: &str) -> ToolSpan {
+        ToolSpan {
+            name: name.into(),
+            operation: "execute_tool".into(),
+            call_id: call_id.into(),
+            error_type: None,
+            duration_ms: 10,
+        }
+    }
+
+    // ---- ToolSpan::is_success ----
+
+    #[test]
+    fn test_tool_span_is_success() {
+        let span = make_tool_span("search", "c1");
+        assert!(span.is_success());
+
+        let span = ToolSpan {
+            error_type: Some("permission denied".into()),
+            ..make_tool_span("write", "c2")
+        };
+        assert!(!span.is_success());
     }
 
     // ---- AgentMetrics ----
@@ -459,41 +482,20 @@ mod tests {
     fn test_agent_metrics_aggregation() {
         let m = AgentMetrics {
             inferences: vec![
+                make_span("m", "openai"),
                 GenAISpan {
-                    model: "m".into(),
-                    system: "openai".into(),
-                    operation: "chat".into(),
-                    input_tokens: Some(10),
-                    output_tokens: Some(20),
-                    total_tokens: Some(30),
-                    duration_ms: 100,
-                    input_tokens_details: None,
-                    output_tokens_details: None,
-                },
-                GenAISpan {
-                    model: "m".into(),
-                    system: "openai".into(),
-                    operation: "chat".into(),
                     input_tokens: Some(5),
                     output_tokens: None,
                     total_tokens: Some(8),
                     duration_ms: 50,
-                    input_tokens_details: None,
-                    output_tokens_details: None,
+                    ..make_span("m", "openai")
                 },
             ],
             tools: vec![
+                make_tool_span("a", "c1"),
                 ToolSpan {
-                    name: "a".into(),
-                    success: true,
-                    error_type: None,
-                    duration_ms: 10,
-                },
-                ToolSpan {
-                    name: "b".into(),
-                    success: false,
                     error_type: Some("permission denied".into()),
-                    duration_ms: 20,
+                    ..make_tool_span("b", "c2")
                 },
             ],
             session_duration_ms: 500,
@@ -511,24 +513,8 @@ mod tests {
     #[test]
     fn test_in_memory_sink_collects() {
         let sink = InMemorySink::new();
-        let span = GenAISpan {
-            model: "test".into(),
-            system: "openai".into(),
-            operation: "chat".into(),
-            input_tokens: Some(10),
-            output_tokens: Some(20),
-            total_tokens: Some(30),
-            duration_ms: 100,
-            input_tokens_details: None,
-            output_tokens_details: None,
-        };
-        sink.on_inference(&span);
-        sink.on_tool(&ToolSpan {
-            name: "t".into(),
-            success: true,
-            error_type: None,
-            duration_ms: 5,
-        });
+        sink.on_inference(&make_span("test", "openai"));
+        sink.on_tool(&make_tool_span("t", "c1"));
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
         assert_eq!(m.tool_count(), 1);
@@ -552,7 +538,7 @@ mod tests {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
-            .with_system("openai");
+            .with_provider("openai");
 
         let session = mock_session();
         let mut step = StepContext::new(&session, vec![]);
@@ -572,16 +558,17 @@ mod tests {
         assert_eq!(m.total_input_tokens(), 100);
         assert_eq!(m.total_output_tokens(), 50);
         assert_eq!(m.inferences[0].model, "gpt-4");
-        assert_eq!(m.inferences[0].system, "openai");
+        assert_eq!(m.inferences[0].provider, "openai");
         assert_eq!(m.inferences[0].operation, "chat");
+        assert!(m.inferences[0].cache_read_input_tokens.is_none());
     }
 
     #[tokio::test]
-    async fn test_plugin_captures_inference_with_details() {
+    async fn test_plugin_captures_inference_with_cache() {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
-            .with_system("openai");
+            .with_provider("openai");
 
         let session = mock_session();
         let mut step = StepContext::new(&session, vec![]);
@@ -591,18 +578,15 @@ mod tests {
         step.response = Some(StreamResult {
             text: "hello".into(),
             tool_calls: vec![],
-            usage: Some(usage_with_details(100, 50, 150, 30, 10)),
+            usage: Some(usage_with_cache(100, 50, 150, 30)),
         });
 
         plugin.on_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
         let span = &m.inferences[0];
-        let input_d = span.input_tokens_details.as_ref().unwrap();
-        assert_eq!(input_d.cached_tokens, Some(30));
-        assert!(input_d.cache_creation_tokens.is_none());
-        let output_d = span.output_tokens_details.as_ref().unwrap();
-        assert_eq!(output_d.reasoning_tokens, Some(10));
+        assert_eq!(span.cache_read_input_tokens, Some(30));
+        assert!(span.cache_creation_input_tokens.is_none());
     }
 
     #[tokio::test]
@@ -629,8 +613,10 @@ mod tests {
 
         let m = sink.metrics();
         assert_eq!(m.tool_count(), 1);
-        assert!(m.tools[0].success);
+        assert!(m.tools[0].is_success());
         assert_eq!(m.tools[0].name, "search");
+        assert_eq!(m.tools[0].call_id, "c1");
+        assert_eq!(m.tools[0].operation, "execute_tool");
         assert!(m.tools[0].error_type.is_none());
     }
 
@@ -657,7 +643,7 @@ mod tests {
             .await;
 
         let m = sink.metrics();
-        assert!(!m.tools[0].success);
+        assert!(!m.tools[0].is_success());
         assert_eq!(m.tools[0].error_type.as_deref(), Some("permission denied"));
     }
 
@@ -698,8 +684,7 @@ mod tests {
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
         assert!(m.inferences[0].input_tokens.is_none());
-        assert!(m.inferences[0].input_tokens_details.is_none());
-        assert!(m.inferences[0].output_tokens_details.is_none());
+        assert!(m.inferences[0].cache_read_input_tokens.is_none());
     }
 
     #[tokio::test]
@@ -728,35 +713,21 @@ mod tests {
 
     #[test]
     fn test_genai_span_serialization() {
-        let span = GenAISpan {
-            model: "gpt-4".into(),
-            system: "openai".into(),
-            operation: "chat".into(),
-            input_tokens: Some(100),
-            output_tokens: Some(50),
-            total_tokens: Some(150),
-            duration_ms: 200,
-            input_tokens_details: None,
-            output_tokens_details: None,
-        };
+        let span = make_span("gpt-4", "openai");
         let json = serde_json::to_value(&span).unwrap();
         assert_eq!(json["model"], "gpt-4");
-        assert_eq!(json["input_tokens"], 100);
-        assert_eq!(json["system"], "openai");
+        assert_eq!(json["input_tokens"], 10);
+        assert_eq!(json["provider"], "openai");
         assert_eq!(json["operation"], "chat");
     }
 
     #[test]
     fn test_tool_span_serialization() {
-        let span = ToolSpan {
-            name: "search".into(),
-            success: true,
-            error_type: None,
-            duration_ms: 42,
-        };
+        let span = make_tool_span("search", "c1");
         let json = serde_json::to_value(&span).unwrap();
         assert_eq!(json["name"], "search");
-        assert!(json["success"].as_bool().unwrap());
+        assert_eq!(json["call_id"], "c1");
+        assert_eq!(json["operation"], "execute_tool");
     }
 
     #[test]
@@ -785,28 +756,18 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_input_details() {
-        let u = usage_with_details(100, 50, 150, 30, 10);
-        let d = extract_input_details(Some(&u)).unwrap();
-        assert_eq!(d.cached_tokens, Some(30));
-        assert!(d.cache_creation_tokens.is_none());
+    fn test_extract_cache_tokens() {
+        let u = usage_with_cache(100, 50, 150, 30);
+        let (read, creation) = extract_cache_tokens(Some(&u));
+        assert_eq!(read, Some(30));
+        assert!(creation.is_none());
     }
 
     #[test]
-    fn test_extract_output_details() {
-        let u = usage_with_details(100, 50, 150, 30, 10);
-        let d = extract_output_details(Some(&u)).unwrap();
-        assert_eq!(d.reasoning_tokens, Some(10));
-        assert!(d.audio_tokens.is_none());
-    }
-
-    #[test]
-    fn test_extract_details_none() {
-        assert!(extract_input_details(None).is_none());
-        assert!(extract_output_details(None).is_none());
+    fn test_extract_cache_tokens_none() {
+        assert_eq!(extract_cache_tokens(None), (None, None));
         let u = usage(10, 20, 30);
-        assert!(extract_input_details(Some(&u)).is_none());
-        assert!(extract_output_details(Some(&u)).is_none());
+        assert_eq!(extract_cache_tokens(Some(&u)), (None, None));
     }
 
     #[test]
@@ -814,27 +775,5 @@ mod tests {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink);
         assert_eq!(plugin.id(), "llmmetry");
-    }
-
-    #[test]
-    fn test_token_details_serialization() {
-        let input = InputTokensDetails {
-            cached_tokens: Some(50),
-            cache_creation_tokens: Some(10),
-            audio_tokens: None,
-        };
-        let json = serde_json::to_value(&input).unwrap();
-        assert_eq!(json["cached_tokens"], 50);
-        assert_eq!(json["cache_creation_tokens"], 10);
-
-        let output = OutputTokensDetails {
-            reasoning_tokens: Some(20),
-            audio_tokens: None,
-            accepted_prediction_tokens: Some(5),
-            rejected_prediction_tokens: None,
-        };
-        let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["reasoning_tokens"], 20);
-        assert_eq!(json["accepted_prediction_tokens"], 5);
     }
 }
