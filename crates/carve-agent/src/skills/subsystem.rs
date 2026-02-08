@@ -20,6 +20,26 @@ pub enum SkillSubsystemError {
 /// Callers should prefer this over manually instantiating the tools/plugins so:
 /// - tool ids stay consistent
 /// - plugin ordering is stable (discovery first, runtime second)
+///
+/// # Example
+///
+/// ```no_run
+/// use carve_agent::{AgentConfig, SkillSubsystem, Tool};
+/// use std::collections::HashMap;
+/// use std::sync::Arc;
+///
+/// // 1) Build the subsystem from your skills root directory.
+/// let skills = SkillSubsystem::from_root("skills");
+///
+/// // 2) Register tools (skill activation + reference/script utilities).
+/// let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+/// skills.extend_tools(&mut tools).unwrap();
+///
+/// // 3) Register the combined plugin: discovery catalog + runtime injection.
+/// let config = AgentConfig::new("gpt-4o-mini").with_plugin(skills.plugin());
+/// # let _ = config;
+/// # let _ = tools;
+/// ```
 #[derive(Debug, Clone)]
 pub struct SkillSubsystem {
     registry: Arc<SkillRegistry>,
@@ -69,6 +89,19 @@ impl SkillSubsystem {
     /// Add skills tools to an existing tool map.
     ///
     /// Returns an error if any tool id is already present.
+    ///
+    /// ```no_run
+    /// use carve_agent::{SkillSubsystem, Tool};
+    /// use std::collections::HashMap;
+    /// use std::sync::Arc;
+    ///
+    /// let skills = SkillSubsystem::from_root("skills");
+    ///
+    /// // Conflict example: `tools()` already contains the skill tool ids.
+    /// let mut tools: HashMap<String, Arc<dyn Tool>> = skills.tools();
+    /// let err = skills.extend_tools(&mut tools).unwrap_err();
+    /// assert!(err.to_string().contains("tool id already registered"));
+    /// ```
     pub fn extend_tools(
         &self,
         tools: &mut HashMap<String, Arc<dyn Tool>>,

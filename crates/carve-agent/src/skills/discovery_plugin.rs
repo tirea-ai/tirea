@@ -209,4 +209,56 @@ Body"#
         // Does not include active annotations; active skills are handled by runtime plugin injection.
         assert!(s.contains("<name>a</name>"));
     }
+
+    #[tokio::test]
+    async fn does_not_inject_when_registry_empty() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+        let reg = Arc::new(SkillRegistry::from_root(root));
+        let p = SkillDiscoveryPlugin::new(reg);
+        let session = Session::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        assert!(step.system_context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn truncates_by_entry_limit_and_emits_note() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        for i in 0..5 {
+            fs::create_dir_all(root.join(format!("s{i}"))).unwrap();
+            fs::write(root.join(format!("s{i}")).join("SKILL.md"), "Body").unwrap();
+        }
+        let reg = Arc::new(SkillRegistry::from_root(root));
+        let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
+        let session = Session::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        let s = &step.system_context[0];
+        assert!(s.contains("<available_skills>"));
+        assert!(s.contains("truncated"));
+        // Only 2 entries should be present.
+        assert_eq!(s.matches("<skill>").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn truncates_by_char_limit() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s")).unwrap();
+        fs::write(
+            root.join("s").join("SKILL.md"),
+            "---\ndescription: A very long description\n---\nBody",
+        )
+        .unwrap();
+        let reg = Arc::new(SkillRegistry::from_root(root));
+        let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
+        let session = Session::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        let s = &step.system_context[0];
+        assert!(s.len() <= 256);
+    }
 }

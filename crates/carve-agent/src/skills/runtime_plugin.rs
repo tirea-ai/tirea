@@ -146,4 +146,37 @@ mod tests {
         assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("Do X"));
     }
+
+    #[tokio::test]
+    async fn plugin_sorts_references_and_scripts_by_path() {
+        let session = Session::with_initial_state(
+            "s",
+            json!({
+                "skills": {
+                    "active": ["a"],
+                    "instructions": {"a": "Do X"},
+                    "references": {
+                        "a:references/b.md": {"skill":"a","path":"references/b.md","sha256":"x","truncated":false,"content":"B","bytes":1},
+                        "a:references/a.md": {"skill":"a","path":"references/a.md","sha256":"y","truncated":false,"content":"A","bytes":1}
+                    },
+                    "scripts": {
+                        "a:scripts/z.sh": {"skill":"a","script":"scripts/z.sh","sha256":"1","truncated_stdout":false,"truncated_stderr":false,"exit_code":0,"stdout":"Z","stderr":""},
+                        "a:scripts/a.sh": {"skill":"a","script":"scripts/a.sh","sha256":"2","truncated_stdout":false,"truncated_stderr":false,"exit_code":0,"stdout":"A","stderr":""}
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let p = SkillRuntimePlugin::new();
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        let s = &step.system_context[0];
+
+        let idx_ref_a = s.find("path=\"references/a.md\"").unwrap();
+        let idx_ref_b = s.find("path=\"references/b.md\"").unwrap();
+        assert!(idx_ref_a < idx_ref_b);
+
+        let idx_script_a = s.find("script=\"scripts/a.sh\"").unwrap();
+        let idx_script_z = s.find("script=\"scripts/z.sh\"").unwrap();
+        assert!(idx_script_a < idx_script_z);
+    }
 }
