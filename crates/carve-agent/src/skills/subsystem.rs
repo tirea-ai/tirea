@@ -96,9 +96,15 @@ impl SkillSubsystem {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use crate::execute::execute_single_tool;
+    use crate::phase::{Phase, StepContext};
+    use crate::session::Session;
+    use crate::types::{Message, ToolCall};
+    use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
+    use std::io::Write;
     use tempfile::TempDir;
 
     #[derive(Debug)]
@@ -131,5 +137,99 @@ mod tests {
         tools.insert("skill".to_string(), Arc::new(DummyTool));
         let err = sys.extend_tools(&mut tools).unwrap_err();
         assert!(err.to_string().contains("tool id already registered"));
+    }
+
+    #[test]
+    fn subsystem_tools_returns_expected_ids() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::write(root.join("s1").join("SKILL.md"), "Body").unwrap();
+
+        let sys = SkillSubsystem::from_root(root);
+        let tools = sys.tools();
+        assert!(tools.contains_key("skill"));
+        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("skill_script"));
+        assert_eq!(tools.len(), 3);
+    }
+
+    #[test]
+    fn subsystem_extend_tools_inserts_tools_into_existing_map() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::write(root.join("s1").join("SKILL.md"), "Body").unwrap();
+
+        let sys = SkillSubsystem::from_root(root);
+        let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
+        tools.insert("other".to_string(), Arc::new(DummyOtherTool));
+        sys.extend_tools(&mut tools).unwrap();
+        assert!(tools.contains_key("other"));
+        assert!(tools.contains_key("skill"));
+        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("skill_script"));
+        assert_eq!(tools.len(), 4);
+    }
+
+    #[derive(Debug)]
+    struct DummyOtherTool;
+
+    #[async_trait]
+    impl Tool for DummyOtherTool {
+        fn descriptor(&self) -> crate::traits::tool::ToolDescriptor {
+            crate::traits::tool::ToolDescriptor::new("other", "x", "x").with_parameters(json!({}))
+        }
+
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &carve_state::Context<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("other", json!({})))
+        }
+    }
+
+    #[tokio::test]
+    async fn subsystem_plugin_injects_catalog_and_activated_skill() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("docx").join("references")).unwrap();
+
+        let mut f = fs::File::create(root.join("docx").join("SKILL.md")).unwrap();
+        writeln!(
+            f,
+            "{}",
+            r#"---
+name: DOCX Processing
+description: DOCX guidance
+---
+Use docx-js for new documents.
+"#
+        )
+        .unwrap();
+
+        let sys = SkillSubsystem::from_root(root);
+        let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
+        sys.extend_tools(&mut tools).unwrap();
+
+        // Activate the skill via the registered "skill" tool.
+        let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+        let state = session.rebuild_state().unwrap();
+        let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
+        let activate_tool = tools.get("skill").unwrap().as_ref();
+        let exec = execute_single_tool(Some(activate_tool), &call, &state).await;
+        assert!(exec.result.is_success());
+        let session = session.with_patch(exec.patch.unwrap());
+
+        // Run the subsystem plugin and verify both discovery and runtime injections exist.
+        let plugin = sys.plugin();
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        assert_eq!(step.system_context.len(), 2);
+        assert!(step.system_context[0].contains("<available_skills>"));
+        assert!(step.system_context[1].contains("<skill id=\"docx\">"));
+        assert!(step.system_context[1].contains("Use docx-js for new documents."));
     }
 }
