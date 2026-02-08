@@ -14,7 +14,7 @@ use crate::traits::tool::ToolResult;
 use crate::types::ToolCall;
 use crate::ui_stream::UIStreamEvent;
 use carve_state::TrackedPatch;
-use genai::chat::ChatStreamEvent;
+use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -35,6 +35,7 @@ pub struct StreamCollector {
     text: String,
     tool_calls: HashMap<String, PartialToolCall>,
     current_tool_id: Option<String>,
+    usage: Option<Usage>,
 }
 
 impl StreamCollector {
@@ -106,6 +107,8 @@ impl StreamCollector {
                         );
                     }
                 }
+                // Capture token usage
+                self.usage = end.captured_usage;
                 None
             }
             _ => None,
@@ -126,6 +129,7 @@ impl StreamCollector {
         StreamResult {
             text: self.text,
             tool_calls,
+            usage: self.usage,
         }
     }
 
@@ -159,6 +163,8 @@ pub struct StreamResult {
     pub text: String,
     /// Collected tool calls.
     pub tool_calls: Vec<ToolCall>,
+    /// Token usage from the LLM response.
+    pub usage: Option<Usage>,
 }
 
 impl StreamResult {
@@ -226,6 +232,20 @@ pub enum AgentEvent {
     StepStart,
     /// Step completed.
     StepEnd,
+
+    // ========================================================================
+    // LLM Telemetry Events
+    // ========================================================================
+    /// LLM inference completed with token usage data.
+    InferenceComplete {
+        /// Model used for this inference.
+        model: String,
+        /// Token usage (if available from the provider).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        /// Duration of the LLM call in milliseconds.
+        duration_ms: u64,
+    },
 
     // ========================================================================
     // State Events (AG-UI compatible)
@@ -379,6 +399,7 @@ impl AgentEvent {
             AgentEvent::Error { message } => {
                 vec![UIStreamEvent::error(message)]
             }
+            AgentEvent::InferenceComplete { .. } => vec![],
         }
     }
 
@@ -527,6 +548,7 @@ impl AgentEvent {
             AgentEvent::Error { message } => {
                 vec![AGUIEvent::run_error(message, None)]
             }
+            AgentEvent::InferenceComplete { .. } => vec![],
         }
     }
 }
@@ -573,12 +595,14 @@ mod tests {
         let result = StreamResult {
             text: "Hello".to_string(),
             tool_calls: vec![],
+            usage: None,
         };
         assert!(!result.needs_tools());
 
         let result_with_tools = StreamResult {
             text: String::new(),
             tool_calls: vec![ToolCall::new("id", "name", serde_json::json!({}))],
+            usage: None,
         };
         assert!(result_with_tools.needs_tools());
     }
@@ -727,6 +751,7 @@ mod tests {
                 ToolCall::new("call_2", "calculate", json!({"expr": "1+1"})),
                 ToolCall::new("call_3", "format", json!({"text": "hello"})),
             ],
+            usage: None,
         };
 
         assert!(result.needs_tools());
@@ -742,6 +767,7 @@ mod tests {
             text: "This is a long response without any tool calls. It just contains text."
                 .to_string(),
             tool_calls: vec![],
+            usage: None,
         };
 
         assert!(!result.needs_tools());
@@ -820,6 +846,7 @@ mod tests {
         let result = StreamResult {
             text: "Hello".to_string(),
             tool_calls: vec![ToolCall::new("1", "test", json!({}))],
+            usage: None,
         };
 
         let cloned = result.clone();

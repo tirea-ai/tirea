@@ -81,6 +81,7 @@
 //! ```
 
 pub mod activity;
+pub mod agent;
 pub mod ag_ui;
 pub mod convert;
 pub mod execute;
@@ -151,11 +152,14 @@ pub use convert::{
     tool_response, user_message,
 };
 
+// Agent exports
+pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentTool};
+
 // Loop exports
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
-    AgentLoopError, RoundResult,
+    AgentDefinition, AgentLoopError, RoundResult,
 };
 
 // Plugin exports
@@ -172,10 +176,16 @@ pub use plugins::{
     // Extension traits
     PermissionContextExt,
     // Built-in plugins
+    AgentMetrics,
+    GenAISpan,
+    InMemorySink,
+    LLMMetryPlugin,
+    MetricsSink,
     PermissionPlugin,
     // State types
     PermissionState,
     ReminderContextExt,
     ReminderPlugin,
     ReminderState,
+    ToolSpan,
 };
