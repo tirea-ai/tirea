@@ -32,6 +32,7 @@
 //! }
 //! ```
 
+pub mod llmmetry;
 mod permission;
 mod reminder;
 
@@ -44,5 +45,9 @@ pub use permission::{PermissionState, PERMISSION_STATE_PATH};
 pub use reminder::{ReminderState, REMINDER_STATE_PATH};
 
 // Re-export plugins
+pub use llmmetry::{
+    AgentMetrics, GenAISpan, InMemorySink, InputTokensDetails, LLMMetryPlugin, MetricsSink,
+    OutputTokensDetails, ToolSpan,
+};
 pub use permission::PermissionPlugin;
 pub use reminder::ReminderPlugin;
