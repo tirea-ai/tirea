@@ -930,4 +930,136 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink);
         assert_eq!(plugin.id(), "llmmetry");
     }
+
+    // ---- OTel export compatibility tests ----
+
+    mod otel_export {
+        use super::*;
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
+        use tracing_opentelemetry::OpenTelemetryLayer;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        fn setup_otel_test() -> (
+            tracing::subscriber::DefaultGuard,
+            InMemorySpanExporter,
+            SdkTracerProvider,
+        ) {
+            let exporter = InMemorySpanExporter::default();
+            let provider = SdkTracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            let tracer = provider.tracer("test");
+            let otel_layer = OpenTelemetryLayer::new(tracer);
+            let subscriber = tracing_subscriber::registry::Registry::default().with(otel_layer);
+            let guard = tracing::subscriber::set_default(subscriber);
+            (guard, exporter, provider)
+        }
+
+        fn find_attribute<'a>(
+            span: &'a SpanData,
+            key: &str,
+        ) -> Option<&'a opentelemetry::Value> {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| &kv.value)
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_inference_span() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("test-model")
+                .with_provider("test-provider");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hello".into(),
+                tool_calls: vec![],
+                usage: Some(usage(100, 50, 150)),
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.chat")
+                .expect("expected gen_ai.chat span in OTel export");
+
+            assert_eq!(
+                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                "test-provider"
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                "chat"
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.request.model").unwrap().as_str(),
+                "test-model"
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.usage.input_tokens"),
+                Some(&opentelemetry::Value::I64(100))
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.usage.output_tokens"),
+                Some(&opentelemetry::Value::I64(50))
+            );
+            assert!(
+                find_attribute(span, "gen_ai.client.operation.duration_ms").is_some(),
+                "expected duration_ms attribute"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_tool_span() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink);
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "search", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::success("search", json!({"found": true})));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.execute_tool")
+                .expect("expected gen_ai.execute_tool span in OTel export");
+
+            assert_eq!(
+                find_attribute(span, "gen_ai.tool.name").unwrap().as_str(),
+                "search"
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.tool.call.id").unwrap().as_str(),
+                "tc1"
+            );
+            assert_eq!(
+                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                "execute_tool"
+            );
+        }
+    }
 }

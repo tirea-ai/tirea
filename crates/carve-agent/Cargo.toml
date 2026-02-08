@@ -26,6 +26,9 @@ tokio-util = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
+tracing-opentelemetry = "0.29"
 
 [[example]]
 name = "live_deepseek"
