@@ -1088,6 +1088,240 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn test_otel_export_tool_parent_child_propagation() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink);
+
+            let parent = tracing::info_span!("parent_tool_op");
+            let _parent_guard = parent.enter();
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "search", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+
+            assert!(
+                step.tracing_span.is_some(),
+                "BeforeToolExecute should set tracing_span on StepContext"
+            );
+
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::success("search", json!({"found": true})));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            drop(_parent_guard);
+            drop(parent);
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+
+            let parent_span = exported
+                .iter()
+                .find(|s| s.name == "parent_tool_op")
+                .expect("expected parent_tool_op span");
+            let child_span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.execute_tool")
+                .expect("expected gen_ai.execute_tool span");
+
+            assert_eq!(
+                child_span.span_context.trace_id(),
+                parent_span.span_context.trace_id(),
+                "gen_ai.execute_tool should share parent's trace_id"
+            );
+            assert_eq!(
+                child_span.parent_span_id,
+                parent_span.span_context.span_id(),
+                "gen_ai.execute_tool should have parent's span_id as parent_span_id"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_no_parent_context() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            // No parent span entered — should be a root span
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hi".into(),
+                tool_calls: vec![],
+                usage: None,
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+
+            let span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.chat")
+                .expect("expected gen_ai.chat span");
+
+            // Root span should have invalid parent_span_id
+            assert_eq!(
+                span.parent_span_id,
+                opentelemetry::trace::SpanId::INVALID,
+                "root span should have no parent"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_tracing_span_cleared_after_phases() {
+            let (_guard, _exporter, _provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let session = mock_session();
+
+            // Test inference: tracing_span should be None after AfterInference
+            {
+                let mut step = StepContext::new(&session, vec![]);
+                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                assert!(step.tracing_span.is_some());
+                step.response = Some(StreamResult {
+                    text: "hi".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                });
+                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                assert!(
+                    step.tracing_span.is_none(),
+                    "AfterInference should clear tracing_span"
+                );
+            }
+
+            // Test tool: tracing_span should be None after AfterToolExecute
+            {
+                let mut step = StepContext::new(&session, vec![]);
+                let call = ToolCall::new("c1", "test", json!({}));
+                step.tool = Some(PhaseToolContext::new(&call));
+                plugin
+                    .on_phase(Phase::BeforeToolExecute, &mut step)
+                    .await;
+                assert!(step.tracing_span.is_some());
+                step.tool.as_mut().unwrap().result =
+                    Some(ToolResult::success("test", json!({})));
+                plugin
+                    .on_phase(Phase::AfterToolExecute, &mut step)
+                    .await;
+                assert!(
+                    step.tracing_span.is_none(),
+                    "AfterToolExecute should clear tracing_span"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_inference_and_tool_are_siblings() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let parent = tracing::info_span!("agent_step");
+            let _parent_guard = parent.enter();
+
+            let session = mock_session();
+
+            // Inference phase
+            {
+                let mut step = StepContext::new(&session, vec![]);
+                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                step.response = Some(StreamResult {
+                    text: "calling tool".into(),
+                    tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
+                    usage: Some(usage(10, 5, 15)),
+                });
+                plugin.on_phase(Phase::AfterInference, &mut step).await;
+            }
+
+            // Tool phase
+            {
+                let mut step = StepContext::new(&session, vec![]);
+                let call = ToolCall::new("c1", "search", json!({}));
+                step.tool = Some(PhaseToolContext::new(&call));
+                plugin
+                    .on_phase(Phase::BeforeToolExecute, &mut step)
+                    .await;
+                step.tool.as_mut().unwrap().result =
+                    Some(ToolResult::success("search", json!({})));
+                plugin
+                    .on_phase(Phase::AfterToolExecute, &mut step)
+                    .await;
+            }
+
+            drop(_parent_guard);
+            drop(parent);
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+
+            let parent_span = exported
+                .iter()
+                .find(|s| s.name == "agent_step")
+                .expect("expected agent_step span");
+            let inference_span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.chat")
+                .expect("expected gen_ai.chat span");
+            let tool_span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.execute_tool")
+                .expect("expected gen_ai.execute_tool span");
+
+            // Both should share the same trace
+            assert_eq!(
+                inference_span.span_context.trace_id(),
+                parent_span.span_context.trace_id(),
+            );
+            assert_eq!(
+                tool_span.span_context.trace_id(),
+                parent_span.span_context.trace_id(),
+            );
+
+            // Both should be children of the parent (siblings, not nested)
+            assert_eq!(
+                inference_span.parent_span_id,
+                parent_span.span_context.span_id(),
+                "inference span should be child of agent_step"
+            );
+            assert_eq!(
+                tool_span.parent_span_id,
+                parent_span.span_context.span_id(),
+                "tool span should be child of agent_step"
+            );
+
+            // They should be distinct spans
+            assert_ne!(
+                inference_span.span_context.span_id(),
+                tool_span.span_context.span_id(),
+                "inference and tool should be distinct sibling spans"
+            );
+        }
+
+        #[tokio::test]
         async fn test_otel_export_tool_span() {
             let (_guard, exporter, provider) = setup_otel_test();
 
