@@ -10943,11 +10943,11 @@ mod llmmetry_tracing {
 
         let spans = captured.lock().unwrap();
         let new_spans: Vec<_> = spans[baseline..].to_vec();
-        let chat_span = new_spans.iter().find(|s| s.name == "gen_ai.chat");
-        assert!(chat_span.is_some(), "gen_ai.chat span should be created");
+        let chat_span = new_spans.iter().find(|s| s.name == "gen_ai");
+        assert!(chat_span.is_some(), "gen_ai span (inference) should be created");
         assert!(
             chat_span.unwrap().was_closed,
-            "gen_ai.chat span should be closed after AfterInference"
+            "gen_ai span (inference) should be closed after AfterInference"
         );
 
         // Verify metrics sink still works alongside tracing
@@ -10983,14 +10983,14 @@ mod llmmetry_tracing {
 
         let spans = captured.lock().unwrap();
         let new_spans: Vec<_> = spans[baseline..].to_vec();
-        let tool_span = new_spans.iter().find(|s| s.name == "gen_ai.execute_tool");
+        let tool_span = new_spans.iter().find(|s| s.name == "gen_ai");
         assert!(
             tool_span.is_some(),
-            "gen_ai.execute_tool span should be created"
+            "gen_ai span (tool) should be created"
         );
         assert!(
             tool_span.unwrap().was_closed,
-            "gen_ai.execute_tool span should be closed after AfterToolExecute"
+            "gen_ai span (tool) should be closed after AfterToolExecute"
         );
 
         let m = sink.metrics();
@@ -11040,14 +11040,10 @@ mod llmmetry_tracing {
 
         let spans = captured.lock().unwrap();
         let new_spans: Vec<_> = spans[baseline..].to_vec();
-        let chat_count = new_spans.iter().filter(|s| s.name == "gen_ai.chat").count();
-        let tool_count = new_spans
-            .iter()
-            .filter(|s| s.name == "gen_ai.execute_tool")
-            .count();
+        let gen_ai_count = new_spans.iter().filter(|s| s.name == "gen_ai").count();
+        // Should have at least 2 gen_ai spans (1 inference + 1 tool)
         // Use >= because concurrent tests may contribute spans to the global collector
-        assert!(chat_count >= 1, "should have at least 1 inference span");
-        assert!(tool_count >= 1, "should have at least 1 tool span");
+        assert!(gen_ai_count >= 2, "should have at least 2 gen_ai spans (inference + tool)");
         assert!(
             new_spans.iter().all(|s| s.was_closed),
             "all spans should be closed"

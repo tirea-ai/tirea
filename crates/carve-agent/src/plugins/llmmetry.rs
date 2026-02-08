@@ -255,7 +255,12 @@ impl AgentPlugin for LLMMetryPlugin {
                 *self.inference_start.lock().unwrap() = Some(Instant::now());
                 let model = self.model.lock().unwrap().clone();
                 let provider = self.provider.lock().unwrap().clone();
-                let span = tracing::info_span!("gen_ai.chat",
+                let span_name = format!("{} {}", self.operation, model);
+                let span = tracing::info_span!("gen_ai",
+                    "otel.name" = %span_name,
+                    "otel.kind" = "client",
+                    "otel.status_code" = tracing::field::Empty,
+                    "otel.status_description" = tracing::field::Empty,
                     "gen_ai.provider.name" = %provider,
                     "gen_ai.operation.name" = %self.operation,
                     "gen_ai.request.model" = %model,
@@ -324,6 +329,8 @@ impl AgentPlugin for LLMMetryPlugin {
                     }
                     if let Some(ref v) = span.error_type {
                         tracing_span.record("error.type", v.as_str());
+                        tracing_span.record("otel.status_code", "ERROR");
+                        tracing_span.record("otel.status_description", v.as_str());
                     }
                     tracing_span.record("gen_ai.client.operation.duration_ms", span.duration_ms);
                     drop(tracing_span);
@@ -344,7 +351,14 @@ impl AgentPlugin for LLMMetryPlugin {
                     .as_ref()
                     .map(|t| t.id.clone())
                     .unwrap_or_default();
-                let span = tracing::info_span!("gen_ai.execute_tool",
+                let provider = self.provider.lock().unwrap().clone();
+                let span_name = format!("execute_tool {}", tool_name);
+                let span = tracing::info_span!("gen_ai",
+                    "otel.name" = %span_name,
+                    "otel.kind" = "internal",
+                    "otel.status_code" = tracing::field::Empty,
+                    "otel.status_description" = tracing::field::Empty,
+                    "gen_ai.provider.name" = %provider,
                     "gen_ai.operation.name" = "execute_tool",
                     "gen_ai.tool.name" = %tool_name,
                     "gen_ai.tool.call.id" = %call_id,
@@ -395,6 +409,8 @@ impl AgentPlugin for LLMMetryPlugin {
                 if let Some(tracing_span) = self.tool_tracing_span.lock().unwrap().take() {
                     if let Some(ref v) = span.error_type {
                         tracing_span.record("error.type", v.as_str());
+                        tracing_span.record("otel.status_code", "ERROR");
+                        tracing_span.record("otel.status_description", v.as_str());
                     }
                     tracing_span.record("tool.duration_ms", span.duration_ms);
                     drop(tracing_span);
@@ -894,8 +910,8 @@ mod tests {
         plugin.on_phase(Phase::AfterInference, &mut step).await;
 
         let spans = captured.lock().unwrap();
-        let inference_span = spans.iter().find(|s| s.name == "gen_ai.chat");
-        assert!(inference_span.is_some(), "expected gen_ai.chat span");
+        let inference_span = spans.iter().find(|s| s.name == "gen_ai");
+        assert!(inference_span.is_some(), "expected gen_ai span (inference)");
         assert!(inference_span.unwrap().was_closed, "span should be closed");
     }
 
@@ -927,8 +943,8 @@ mod tests {
             .await;
 
         let spans = captured.lock().unwrap();
-        let tool_span = spans.iter().find(|s| s.name == "gen_ai.execute_tool");
-        assert!(tool_span.is_some(), "expected gen_ai.execute_tool span");
+        let tool_span = spans.iter().find(|s| s.name == "gen_ai");
+        assert!(tool_span.is_some(), "expected gen_ai span (tool)");
         assert!(tool_span.unwrap().was_closed, "span should be closed");
     }
 
@@ -998,8 +1014,8 @@ mod tests {
             let exported = exporter.get_finished_spans().unwrap();
             let span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.chat")
-                .expect("expected gen_ai.chat span in OTel export");
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span in OTel export");
 
             assert_eq!(
                 find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
@@ -1070,20 +1086,20 @@ mod tests {
                 .expect("expected parent_operation span");
             let child_span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.chat")
-                .expect("expected gen_ai.chat span");
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
 
             // The child span should share the same trace_id as the parent
             assert_eq!(
                 child_span.span_context.trace_id(),
                 parent_span.span_context.trace_id(),
-                "gen_ai.chat span should share parent's trace_id"
+                "chat span should share parent's trace_id"
             );
             // The child span's parent_span_id should be the parent's span_id
             assert_eq!(
                 child_span.parent_span_id,
                 parent_span.span_context.span_id(),
-                "gen_ai.chat span should have parent's span_id as parent_span_id"
+                "chat span should have parent's span_id as parent_span_id"
             );
         }
 
@@ -1130,18 +1146,18 @@ mod tests {
                 .expect("expected parent_tool_op span");
             let child_span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.execute_tool")
-                .expect("expected gen_ai.execute_tool span");
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
 
             assert_eq!(
                 child_span.span_context.trace_id(),
                 parent_span.span_context.trace_id(),
-                "gen_ai.execute_tool should share parent's trace_id"
+                "execute_tool span should share parent's trace_id"
             );
             assert_eq!(
                 child_span.parent_span_id,
                 parent_span.span_context.span_id(),
-                "gen_ai.execute_tool should have parent's span_id as parent_span_id"
+                "execute_tool span should have parent's span_id as parent_span_id"
             );
         }
 
@@ -1171,8 +1187,8 @@ mod tests {
 
             let span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.chat")
-                .expect("expected gen_ai.chat span");
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
 
             // Root span should have invalid parent_span_id
             assert_eq!(
@@ -1284,12 +1300,12 @@ mod tests {
                 .expect("expected agent_step span");
             let inference_span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.chat")
-                .expect("expected gen_ai.chat span");
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
             let tool_span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.execute_tool")
-                .expect("expected gen_ai.execute_tool span");
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
 
             // Both should share the same trace
             assert_eq!(
@@ -1347,8 +1363,8 @@ mod tests {
             let exported = exporter.get_finished_spans().unwrap();
             let span = exported
                 .iter()
-                .find(|s| s.name == "gen_ai.execute_tool")
-                .expect("expected gen_ai.execute_tool span in OTel export");
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span in OTel export");
 
             assert_eq!(
                 find_attribute(span, "gen_ai.tool.name").unwrap().as_str(),
@@ -1361,6 +1377,335 @@ mod tests {
             assert_eq!(
                 find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
                 "execute_tool"
+            );
+        }
+
+        // ==================================================================
+        // OTel GenAI Semantic Conventions compliance tests
+        // ==================================================================
+
+        #[tokio::test]
+        async fn test_otel_semconv_inference_span_name_format() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("gpt-4o")
+                .with_provider("openai");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hi".into(),
+                tool_calls: vec![],
+                usage: None,
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            // Spec: span name = "{gen_ai.operation.name} {gen_ai.request.model}"
+            assert_eq!(
+                span.name.as_ref(),
+                "chat gpt-4o",
+                "span name should follow OTel GenAI format: '{{operation}} {{model}}'"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_tool_span_name_format() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink).with_provider("openai");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "web_search", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::success("web_search", json!({})));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
+
+            // Spec: span name = "execute_tool {gen_ai.tool.name}"
+            assert_eq!(
+                span.name.as_ref(),
+                "execute_tool web_search",
+                "span name should follow OTel GenAI format: 'execute_tool {{tool_name}}'"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_inference_span_kind_client() {
+            use opentelemetry::trace::SpanKind;
+
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hi".into(),
+                tool_calls: vec![],
+                usage: None,
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            // Spec: chat spans should be SpanKind::Client
+            assert_eq!(
+                span.span_kind,
+                SpanKind::Client,
+                "inference span should have SpanKind::Client per OTel GenAI spec"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_tool_span_kind_internal() {
+            use opentelemetry::trace::SpanKind;
+
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink).with_provider("p");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "search", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::success("search", json!({})));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
+
+            // Spec: tool spans should be SpanKind::Internal
+            assert_eq!(
+                span.span_kind,
+                SpanKind::Internal,
+                "tool span should have SpanKind::Internal per OTel GenAI spec"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_tool_span_has_provider() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_provider("anthropic");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "search", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::success("search", json!({})));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
+
+            // Spec: gen_ai.provider.name is required on all GenAI spans
+            assert_eq!(
+                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                "anthropic",
+                "tool span must include gen_ai.provider.name per OTel GenAI spec"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_error_sets_status_code() {
+            use opentelemetry::trace::Status;
+
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink).with_provider("p");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            let call = ToolCall::new("tc1", "write", json!({}));
+            step.tool = Some(PhaseToolContext::new(&call));
+
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step)
+                .await;
+            step.tool.as_mut().unwrap().result =
+                Some(ToolResult::error("write", "permission denied"));
+            plugin
+                .on_phase(Phase::AfterToolExecute, &mut step)
+                .await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("execute_tool "))
+                .expect("expected execute_tool span");
+
+            // Spec: error.type should be set
+            assert_eq!(
+                find_attribute(span, "error.type").unwrap().as_str(),
+                "permission denied"
+            );
+
+            // Spec: OTel status should be Error on failure
+            assert!(
+                matches!(span.status, Status::Error { .. }),
+                "failed tool span should have OTel Status::Error, got {:?}",
+                span.status
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_success_no_error_status() {
+            use opentelemetry::trace::Status;
+
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("m")
+                .with_provider("p");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "ok".into(),
+                tool_calls: vec![],
+                usage: Some(usage(10, 5, 15)),
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            // Spec: successful spans should NOT have Error status
+            assert!(
+                !matches!(span.status, Status::Error { .. }),
+                "successful span should not have Error status"
+            );
+            assert!(
+                find_attribute(span, "error.type").is_none(),
+                "successful span should not have error.type attribute"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_semconv_required_attributes_present() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("claude-3")
+                .with_provider("anthropic");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.response = Some(StreamResult {
+                text: "hi".into(),
+                tool_calls: vec![],
+                usage: Some(usage(100, 50, 150)),
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span");
+
+            // Required: gen_ai.operation.name
+            assert_eq!(
+                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                "chat"
+            );
+            // Required: gen_ai.provider.name
+            assert_eq!(
+                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                "anthropic"
+            );
+            // Conditionally required: gen_ai.request.model
+            assert_eq!(
+                find_attribute(span, "gen_ai.request.model").unwrap().as_str(),
+                "claude-3"
+            );
+            // Recommended: gen_ai.usage.input_tokens
+            assert_eq!(
+                find_attribute(span, "gen_ai.usage.input_tokens"),
+                Some(&opentelemetry::Value::I64(100))
+            );
+            // Recommended: gen_ai.usage.output_tokens
+            assert_eq!(
+                find_attribute(span, "gen_ai.usage.output_tokens"),
+                Some(&opentelemetry::Value::I64(50))
             );
         }
     }
