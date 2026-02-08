@@ -143,6 +143,10 @@ pub struct StepContext<'a> {
     /// Skip LLM inference.
     pub skip_inference: bool,
 
+    // === Tracing ===
+    /// OTel tracing span for the current operation (set by LLMMetryPlugin).
+    pub tracing_span: Option<tracing::Span>,
+
     // === Plugin Data ===
     /// Plugin data storage.
     data: HashMap<String, Value>,
@@ -161,6 +165,7 @@ impl<'a> StepContext<'a> {
             tool: None,
             response: None,
             skip_inference: false,
+            tracing_span: None,
             data: HashMap::new(),
         }
     }
@@ -174,6 +179,7 @@ impl<'a> StepContext<'a> {
         self.tool = None;
         self.response = None;
         self.skip_inference = false;
+        self.tracing_span = None;
     }
 
     // =========================================================================
@@ -747,6 +753,7 @@ mod tests {
         ctx.response = Some(StreamResult {
             text: "Done!".to_string(),
             tool_calls: vec![],
+            usage: None,
         });
 
         assert_eq!(ctx.result(), StepOutcome::Complete);
@@ -982,6 +989,7 @@ mod tests {
         ctx.response = Some(StreamResult {
             text: "Calling tools".to_string(),
             tool_calls: vec![ToolCall::new("call_1", "test", json!({}))],
+            usage: None,
         });
 
         // With tool calls, should continue
@@ -996,6 +1004,7 @@ mod tests {
         ctx.response = Some(StreamResult {
             text: String::new(),
             tool_calls: vec![],
+            usage: None,
         });
 
         // Empty text, no tool calls -> Continue (not Complete)

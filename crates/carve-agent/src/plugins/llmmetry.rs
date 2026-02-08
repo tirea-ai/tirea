@@ -268,9 +268,13 @@ impl AgentPlugin for LLMMetryPlugin {
                     "gen_ai.client.operation.duration_ms" = tracing::field::Empty,
                     "error.type" = tracing::field::Empty,
                 );
+                step.tracing_span = Some(span.clone());
                 *self.inference_tracing_span.lock().unwrap() = Some(span);
             }
             Phase::AfterInference => {
+                // Clear the step's reference so the span can fully close
+                step.tracing_span.take();
+
                 let duration_ms = self
                     .inference_start
                     .lock()
@@ -347,9 +351,13 @@ impl AgentPlugin for LLMMetryPlugin {
                     "error.type" = tracing::field::Empty,
                     "tool.duration_ms" = tracing::field::Empty,
                 );
+                step.tracing_span = Some(span.clone());
                 *self.tool_tracing_span.lock().unwrap() = Some(span);
             }
             Phase::AfterToolExecute => {
+                // Clear the step's reference so the span can fully close
+                step.tracing_span.take();
+
                 let duration_ms = self
                     .tool_start
                     .lock()
@@ -1016,6 +1024,66 @@ mod tests {
             assert!(
                 find_attribute(span, "gen_ai.client.operation.duration_ms").is_some(),
                 "expected duration_ms attribute"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_parent_child_propagation() {
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("test-model")
+                .with_provider("test-provider");
+
+            // Create and enter a parent span
+            let parent = tracing::info_span!("parent_operation");
+            let _parent_guard = parent.enter();
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+            // Verify tracing_span is set on step context
+            assert!(
+                step.tracing_span.is_some(),
+                "BeforeInference should set tracing_span on StepContext"
+            );
+
+            step.response = Some(StreamResult {
+                text: "hello".into(),
+                tool_calls: vec![],
+                usage: Some(usage(100, 50, 150)),
+            });
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            drop(_parent_guard);
+            drop(parent);
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+
+            let parent_span = exported
+                .iter()
+                .find(|s| s.name == "parent_operation")
+                .expect("expected parent_operation span");
+            let child_span = exported
+                .iter()
+                .find(|s| s.name == "gen_ai.chat")
+                .expect("expected gen_ai.chat span");
+
+            // The child span should share the same trace_id as the parent
+            assert_eq!(
+                child_span.span_context.trace_id(),
+                parent_span.span_context.trace_id(),
+                "gen_ai.chat span should share parent's trace_id"
+            );
+            // The child span's parent_span_id should be the parent's span_id
+            assert_eq!(
+                child_span.parent_span_id,
+                parent_span.span_context.span_id(),
+                "gen_ai.chat span should have parent's span_id as parent_span_id"
             );
         }
 

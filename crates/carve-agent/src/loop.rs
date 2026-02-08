@@ -57,10 +57,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::Instrument;
 
-/// Configuration for the agent loop.
+/// Definition for the agent loop configuration.
 #[derive(Clone)]
-pub struct AgentConfig {
+pub struct AgentDefinition {
+    /// Unique identifier for this agent.
+    pub id: String,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
     pub model: String,
     /// System prompt for the LLM.
@@ -73,24 +76,35 @@ pub struct AgentConfig {
     pub chat_options: Option<ChatOptions>,
     /// Plugins to run during the agent loop.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
+    /// Tool whitelist (None = all tools available).
+    pub allowed_tools: Option<Vec<String>>,
+    /// Tool blacklist.
+    pub excluded_tools: Option<Vec<String>>,
 }
 
-impl Default for AgentConfig {
+/// Backwards-compatible alias.
+pub type AgentConfig = AgentDefinition;
+
+impl Default for AgentDefinition {
     fn default() -> Self {
         Self {
+            id: "default".to_string(),
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
-            chat_options: None,
+            chat_options: Some(ChatOptions::default().with_capture_usage(true)),
             plugins: Vec::new(),
+            allowed_tools: None,
+            excluded_tools: None,
         }
     }
 }
 
-impl std::fmt::Debug for AgentConfig {
+impl std::fmt::Debug for AgentDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentConfig")
+        f.debug_struct("AgentDefinition")
+            .field("id", &self.id)
             .field("model", &self.model)
             .field(
                 "system_prompt",
@@ -100,14 +114,26 @@ impl std::fmt::Debug for AgentConfig {
             .field("parallel_tools", &self.parallel_tools)
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
+            .field("allowed_tools", &self.allowed_tools)
+            .field("excluded_tools", &self.excluded_tools)
             .finish()
     }
 }
 
-impl AgentConfig {
-    /// Create a new config with the specified model.
+impl AgentDefinition {
+    /// Create a new definition with id and model.
+    /// Create a new definition with id and model.
     pub fn new(model: impl Into<String>) -> Self {
         Self {
+            model: model.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a new definition with explicit id and model.
+    pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
             model: model.into(),
             ..Default::default()
         }
@@ -152,6 +178,20 @@ impl AgentConfig {
     #[must_use]
     pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
         self.plugins.push(plugin);
+        self
+    }
+
+    /// Set allowed tools whitelist.
+    #[must_use]
+    pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
+        self.allowed_tools = Some(tools);
+        self
+    }
+
+    /// Set excluded tools blacklist.
+    #[must_use]
+    pub fn with_excluded_tools(mut self, tools: Vec<String>) -> Self {
+        self.excluded_tools = Some(tools);
         self
     }
 
@@ -247,13 +287,28 @@ pub async fn run_step(
     session: Session,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, StreamResult), AgentLoopError> {
-    // Get tool descriptors
-    let tool_descriptors: Vec<ToolDescriptor> =
-        tools.values().map(|t| t.descriptor().clone()).collect();
+    // Get tool descriptors, applying definition-level filtering
+    let tool_descriptors: Vec<ToolDescriptor> = tools
+        .values()
+        .map(|t| t.descriptor().clone())
+        .filter(|td| {
+            if let Some(ref allowed) = config.allowed_tools {
+                if !allowed.contains(&td.id) {
+                    return false;
+                }
+            }
+            if let Some(ref excluded) = config.excluded_tools {
+                if excluded.contains(&td.id) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
     // Create StepContext - use scoped blocks to manage borrows
-    let (messages, filtered_tools, skip_inference) = {
+    let (messages, filtered_tools, skip_inference, tracing_span) = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
         // Phase 1: StepStart
@@ -269,9 +324,10 @@ pub async fn run_step(
         let skip = step.skip_inference;
         let msgs = step.messages.clone();
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+        let tracing_span = step.tracing_span.take();
         plugin_data.sync_from_step(&step);
 
-        (msgs, tools_filter, skip)
+        (msgs, tools_filter, skip, tracing_span)
     };
 
     // Skip inference if requested
@@ -281,6 +337,7 @@ pub async fn run_step(
             StreamResult {
                 text: String::new(),
                 tool_calls: vec![],
+                usage: None,
             },
         ));
     }
@@ -293,11 +350,16 @@ pub async fn run_step(
         .collect();
     let request = build_request(&messages, &filtered_tool_refs);
 
-    // Call LLM
-    let response = client
-        .exec_chat(&config.model, request, config.chat_options.as_ref())
-        .await
-        .map_err(|e| AgentLoopError::LlmError(e.to_string()))?;
+    // Call LLM (instrumented with tracing span for context propagation)
+    let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
+    let response = async {
+        client
+            .exec_chat(&config.model, request, config.chat_options.as_ref())
+            .await
+    }
+    .instrument(inference_span)
+    .await
+    .map_err(|e| AgentLoopError::LlmError(e.to_string()))?;
 
     // Extract text and tool calls from response
     let text = response
@@ -311,7 +373,7 @@ pub async fn run_step(
         .map(|tc| crate::types::ToolCall::new(&tc.call_id, &tc.fn_name, tc.fn_arguments.clone()))
         .collect();
 
-    let result = StreamResult { text, tool_calls };
+    let result = StreamResult { text, tool_calls, usage: None };
 
     // Phase 3: AfterInference (with new context)
     {
@@ -681,17 +743,22 @@ async fn execute_single_tool_with_phases(
             None,
         )
     } else {
-        // Execute the tool with context
+        // Execute the tool with context (instrumented with tracing span)
+        let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
         let ctx = carve_state::Context::new_with_activity_manager(
             state,
             &call.id,
             format!("tool:{}", call.name),
             activity_manager,
         );
-        let result = match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
-            Ok(r) => r,
-            Err(e) => ToolResult::error(&call.name, e.to_string()),
-        };
+        let result = async {
+            match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
+                Ok(r) => r,
+                Err(e) => ToolResult::error(&call.name, e.to_string()),
+            }
+        }
+        .instrument(tool_span)
+        .await;
 
         let patch = ctx.take_patch();
         let patch = if patch.patch().is_empty() {
@@ -791,9 +858,24 @@ pub fn run_loop_stream(
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-    // Get tool descriptors
-    let tool_descriptors: Vec<ToolDescriptor> =
-        tools.values().map(|t| t.descriptor().clone()).collect();
+    // Get tool descriptors, applying definition-level filtering
+    let tool_descriptors: Vec<ToolDescriptor> = tools
+        .values()
+        .map(|t| t.descriptor().clone())
+        .filter(|td| {
+            if let Some(ref allowed) = config.allowed_tools {
+                if !allowed.contains(&td.id) {
+                    return false;
+                }
+            }
+            if let Some(ref excluded) = config.excluded_tools {
+                if excluded.contains(&td.id) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
         // Phase: SessionStart (use scoped block to manage borrow)
@@ -805,7 +887,7 @@ pub fn run_loop_stream(
 
         loop {
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
-            let (messages, filtered_tools, skip_inference) = {
+            let (messages, filtered_tools, skip_inference, tracing_span) = {
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
                 emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
@@ -816,9 +898,10 @@ pub fn run_loop_stream(
                 let skip = step.skip_inference;
                 let msgs = step.messages.clone();
                 let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+                let tracing_span = step.tracing_span.take();
                 plugin_data.sync_from_step(&step);
 
-                (msgs, tools_filter, skip)
+                (msgs, tools_filter, skip, tracing_span)
             };
 
             // Skip inference if requested
@@ -838,10 +921,15 @@ pub fn run_loop_stream(
             // Step boundary: starting LLM call
             yield AgentEvent::StepStart;
 
-            // Stream LLM response
-            let stream_result = client
-                .exec_chat_stream(&config.model, request, config.chat_options.as_ref())
-                .await;
+            // Stream LLM response (instrumented with tracing span)
+            let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
+            let stream_result = async {
+                client
+                    .exec_chat_stream(&config.model, request, config.chat_options.as_ref())
+                    .await
+            }
+            .instrument(inference_span)
+            .await;
 
             let chat_stream_response = match stream_result {
                 Ok(s) => s,
@@ -852,6 +940,7 @@ pub fn run_loop_stream(
             };
 
             // Collect streaming response
+            let inference_start = std::time::Instant::now();
             let mut collector = StreamCollector::new();
             let mut chat_stream = chat_stream_response.stream;
 
@@ -880,6 +969,13 @@ pub fn run_loop_stream(
             }
 
             let result = collector.finish();
+            let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
+
+            yield AgentEvent::InferenceComplete {
+                model: config.model.clone(),
+                usage: result.usage.clone(),
+                duration_ms: inference_duration_ms,
+            };
 
             // Phase: AfterInference (with new context)
             {
@@ -1250,6 +1346,7 @@ mod tests {
             let result = StreamResult {
                 text: "Hello".to_string(),
                 tool_calls: vec![],
+                usage: None,
             };
             let tools = HashMap::new();
 
@@ -1272,6 +1369,7 @@ mod tests {
                     "echo",
                     json!({"message": "hello"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
 
@@ -1468,6 +1566,7 @@ mod tests {
                     "counter",
                     json!({"amount": 5}),
                 )],
+                usage: None,
             };
             let tools = tool_map([CounterTool]);
 
@@ -1532,6 +1631,7 @@ mod tests {
             let result = StreamResult {
                 text: "Calling failing tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new("call_1", "failing", json!({}))],
+                usage: None,
             };
             let tools = tool_map([FailingTool]);
 
@@ -1621,6 +1721,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPhasePlugin)];
@@ -1666,6 +1767,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ReminderPhasePlugin)];
@@ -1877,7 +1979,7 @@ mod tests {
         let config = AgentConfig::new("gpt-4").with_system_prompt("You are helpful.");
 
         let debug_str = format!("{:?}", config);
-        assert!(debug_str.contains("AgentConfig"));
+        assert!(debug_str.contains("AgentDefinition"));
         assert!(debug_str.contains("gpt-4"));
         // Check that system_prompt is shown as length indicator
         assert!(debug_str.contains("chars]"));
@@ -1939,6 +2041,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
@@ -1979,6 +2082,7 @@ mod tests {
                     "unknown_tool",
                     json!({}),
                 )],
+                usage: None,
             };
             let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
@@ -2004,6 +2108,7 @@ mod tests {
             let result = StreamResult {
                 text: "No tools".to_string(),
                 tool_calls: vec![],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
@@ -2029,6 +2134,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
@@ -2054,6 +2160,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4")
@@ -2085,6 +2192,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4")
@@ -2118,6 +2226,7 @@ mod tests {
                     "echo",
                     json!({"message": "test"}),
                 )],
+                usage: None,
             };
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4")
