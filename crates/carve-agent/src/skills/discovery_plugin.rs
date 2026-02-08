@@ -32,17 +32,15 @@ impl SkillDiscoveryPlugin {
         self
     }
 
-    fn escape_attr(s: &str) -> String {
-        // Minimal XML-ish escaping for attribute values.
-        // This is not a full XML serializer; it's just enough to avoid breaking tags.
+    fn escape_text(s: &str) -> String {
+        // Minimal XML-ish escaping for text nodes.
+        // (We intentionally avoid emitting attributes to keep the prompt closer to agentskills examples.)
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;")
     }
 
-    fn render_catalog(&self, active: &HashSet<String>) -> String {
+    fn render_catalog(&self, _active: &HashSet<String>) -> String {
         let mut metas = self.registry.list();
         if metas.is_empty() {
             return String::new();
@@ -53,23 +51,28 @@ impl SkillDiscoveryPlugin {
 
         let total = metas.len();
         let mut out = String::new();
-        out.push_str("<skills_catalog>\n");
+        out.push_str("<available_skills>\n");
 
         let mut shown = 0usize;
         for m in metas.into_iter().take(self.max_entries) {
-            let active_flag = active.contains(&m.id);
-            let id = Self::escape_attr(&m.id);
-            let name = Self::escape_attr(&m.name);
-            let description = Self::escape_attr(&m.description);
-
-            out.push_str(&format!(
-                "<skill_meta id=\"{}\" name=\"{}\" active=\"{}\">",
-                id, name, active_flag
-            ));
-            if !description.is_empty() {
-                out.push_str(&description);
+            let id = Self::escape_text(&m.id);
+            let mut desc = m.description.clone();
+            if m.name != m.id && !m.name.trim().is_empty() {
+                if desc.trim().is_empty() {
+                    desc = m.name.clone();
+                } else {
+                    desc = format!("{}: {}", m.name.trim(), desc.trim());
+                }
             }
-            out.push_str("</skill_meta>\n");
+            let desc = Self::escape_text(&desc);
+
+            out.push_str("<skill>\n");
+            out.push_str(&format!("<name>{}</name>\n", id));
+            if !desc.trim().is_empty() {
+                out.push_str(&format!("<description>{}</description>\n", desc));
+            }
+            // Tool-based integration: omit <location> to keep tokens low.
+            out.push_str("</skill>\n");
             shown += 1;
 
             if out.len() >= self.max_chars {
@@ -77,14 +80,15 @@ impl SkillDiscoveryPlugin {
             }
         }
 
+        out.push_str("</available_skills>\n");
+
         if shown < total {
             out.push_str(&format!(
-                "<skills_truncated total=\"{}\" shown=\"{}\" />\n",
+                "Note: available_skills truncated (total={}, shown={}).\n",
                 total, shown
             ));
         }
 
-        out.push_str("</skills_catalog>\n");
         out.push_str("<skills_usage>\n");
         out.push_str("If a listed skill is relevant, call tool \"skill\" with {\"skill\": \"<id or name>\"} before answering.\n");
         out.push_str("References are not auto-loaded: use \"load_skill_reference\" with {\"skill\": \"<id>\", \"path\": \"references/<file>\"}.\n");
@@ -176,11 +180,10 @@ Body"#
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
-        assert!(s.contains("<skills_catalog>"));
+        assert!(s.contains("<available_skills>"));
         assert!(s.contains("<skills_usage>"));
         // Escaping is applied.
         assert!(s.contains("&amp;"));
-        assert!(s.contains("&quot;"));
         assert!(s.contains("&lt;"));
         assert!(s.contains("&gt;"));
     }
@@ -203,8 +206,7 @@ Body"#
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
-        assert!(s.contains("id=\"a\""));
-        assert!(s.contains("active=\"true\""));
+        // Does not include active annotations; active skills are handled by runtime plugin injection.
+        assert!(s.contains("<name>a</name>"));
     }
 }
-
