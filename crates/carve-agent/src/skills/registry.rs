@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tracing::warn;
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMeta {
@@ -181,13 +182,14 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
         if !ft.is_dir() {
             continue;
         }
-        let dir_name = match path.file_name().and_then(|s| s.to_str()) {
+        let dir_name_raw = match path.file_name().and_then(|s| s.to_str()) {
             Some(s) => s.to_string(),
             None => continue,
         };
-        if dir_name.starts_with('.') {
+        if dir_name_raw.starts_with('.') {
             continue;
         }
+        let dir_name = normalize_name(&dir_name_raw);
         if let Err(reason) = validate_dir_name(&dir_name) {
             warnings.push(SkillRegistryWarning {
                 path: path.clone(),
@@ -257,30 +259,37 @@ fn meta_from_skill_md_path(
     })
 }
 
+fn normalize_name(s: &str) -> String {
+    s.trim().nfkc().collect::<String>()
+}
+
 fn validate_dir_name(dir_name: &str) -> Result<(), String> {
     // Name validation is enforced by `parse_skill_md` too, but we validate directory
     // names early to produce clearer diagnostics (and to avoid reading SKILL.md).
-    // See agentskills spec: lowercase kebab-case and length limit.
+    // See agentskills spec: i18n letters/digits/hyphens, lowercase, length limit.
+    if dir_name.is_empty() {
+        return Err("directory name must be non-empty".to_string());
+    }
     if dir_name.chars().count() > 64 {
         return Err("directory name must be <= 64 characters".to_string());
     }
-    let mut prev_hyphen = false;
-    for (i, ch) in dir_name.chars().enumerate() {
-        let is_hyphen = ch == '-';
-        let is_ok = ch.is_ascii_lowercase() || ch.is_ascii_digit() || is_hyphen;
-        if !is_ok {
-            return Err("directory name must be lowercase kebab-case ([a-z0-9-])".to_string());
-        }
-        if i == 0 && is_hyphen {
-            return Err("directory name must not start with '-'".to_string());
-        }
-        if prev_hyphen && is_hyphen {
-            return Err("directory name must not contain consecutive '-'".to_string());
-        }
-        prev_hyphen = is_hyphen;
+    if dir_name != dir_name.to_lowercase() {
+        return Err("directory name must be lowercase".to_string());
+    }
+    if dir_name.starts_with('-') {
+        return Err("directory name must not start with '-'".to_string());
     }
     if dir_name.ends_with('-') {
         return Err("directory name must not end with '-'".to_string());
+    }
+    if dir_name.contains("--") {
+        return Err("directory name must not contain consecutive '-'".to_string());
+    }
+    if !dir_name.chars().all(|c| c.is_alphanumeric() || c == '-') {
+        return Err(
+            "directory name contains invalid characters (only letters, digits, and '-' are allowed)"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -356,6 +365,124 @@ Body"#
         let logged = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
         assert!(logged.contains("Skipped skill"));
         assert!(logged.contains("missing SKILL.md"));
+    }
+
+    #[test]
+    fn registry_skips_name_mismatch() {
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join("good-skill")).unwrap();
+        fs::write(
+            skills_root.join("good-skill").join("SKILL.md"),
+            "---\nname: other-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = SkillRegistry::from_root(&skills_root);
+        assert!(reg.list().is_empty());
+        let warnings = reg.warnings();
+        assert!(warnings
+            .iter()
+            .any(|w| w.reason.contains("does not match directory")));
+    }
+
+    #[test]
+    fn registry_does_not_recurse_into_nested_dirs() {
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join("good-skill").join("nested")).unwrap();
+        fs::write(
+            skills_root.join("good-skill").join("SKILL.md"),
+            "---\nname: good-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            skills_root
+                .join("good-skill")
+                .join("nested")
+                .join("SKILL.md"),
+            "---\nname: nested-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = SkillRegistry::from_root(&skills_root);
+        let list = reg.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "good-skill");
+        assert!(reg.get("nested-skill").is_none());
+    }
+
+    #[test]
+    fn registry_skips_hidden_dirs_and_root_files() {
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join(".hidden")).unwrap();
+        fs::write(
+            skills_root.join(".hidden").join("SKILL.md"),
+            "---\nname: hidden\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            skills_root.join("not-a-skill"),
+            "---\nname: not-a-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = SkillRegistry::from_root(&skills_root);
+        assert!(reg.list().is_empty());
+    }
+
+    #[test]
+    fn registry_allows_i18n_directory_names() {
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join("技能")).unwrap();
+        fs::write(
+            skills_root.join("技能").join("SKILL.md"),
+            "---\nname: 技能\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = SkillRegistry::from_root(&skills_root);
+        let list = reg.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "技能");
+        assert_eq!(list[0].name, "技能");
+    }
+
+    #[test]
+    fn registry_logs_warnings_once_per_indexing_pass() {
+        let buf: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let make_writer = TestWriter(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(make_writer)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join("BadSkill")).unwrap();
+        fs::write(
+            skills_root.join("BadSkill").join("SKILL.md"),
+            "---\nname: badskill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = SkillRegistry::from_root(&skills_root);
+        let _ = reg.list();
+        let _ = reg.list();
+
+        let logged1 = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let first_count = logged1.matches("Skipped skill").count();
+        assert!(first_count >= 1);
+
+        buf.lock().unwrap().clear();
+        reg.refresh();
+        let _ = reg.list();
+        let logged2 = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let second_count = logged2.matches("Skipped skill").count();
+        assert!(second_count >= 1);
     }
 
     #[derive(Clone)]

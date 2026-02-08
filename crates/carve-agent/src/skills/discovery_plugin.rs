@@ -228,6 +228,58 @@ Body"#
     }
 
     #[tokio::test]
+    async fn does_not_inject_when_all_skills_invalid() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("BadSkill")).unwrap();
+        fs::write(
+            root.join("BadSkill").join("SKILL.md"),
+            "---\nname: badskill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = Arc::new(SkillRegistry::from_root(root));
+        assert!(reg.list().is_empty());
+
+        let p = SkillDiscoveryPlugin::new(reg);
+        let session = Session::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        assert!(step.system_context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn injects_only_valid_skills_and_never_warnings() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("good-skill")).unwrap();
+        fs::create_dir_all(root.join("BadSkill")).unwrap();
+        fs::write(
+            root.join("good-skill").join("SKILL.md"),
+            "---\nname: good-skill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("BadSkill").join("SKILL.md"),
+            "---\nname: badskill\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let reg = Arc::new(SkillRegistry::from_root(root));
+        let p = SkillDiscoveryPlugin::new(reg);
+        let session = Session::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+
+        assert_eq!(step.system_context.len(), 1);
+        let s = &step.system_context[0];
+        assert!(s.contains("<name>good-skill</name>"));
+        assert!(!s.contains("BadSkill"));
+        assert!(!s.contains("skills_warnings"));
+        assert!(!s.contains("Skipped skill"));
+    }
+
+    #[tokio::test]
     async fn truncates_by_entry_limit_and_emits_note() {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
