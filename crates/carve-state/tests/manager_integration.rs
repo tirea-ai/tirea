@@ -66,7 +66,10 @@ async fn test_manager_commit_multiple() {
 
     // Apply multiple patches sequentially
     for i in 1..=5 {
-        let patch = make_patch(vec![Op::set(path!("value"), json!(i))], &format!("step_{}", i));
+        let patch = make_patch(
+            vec![Op::set(path!("value"), json!(i))],
+            &format!("step_{}", i),
+        );
         manager.commit(patch).await.unwrap();
     }
 
@@ -465,17 +468,26 @@ async fn test_manager_tracks_patch_source() {
     let manager = StateManager::new(json!({}));
 
     manager
-        .commit(make_patch(vec![Op::set(path!("a"), json!(1))], "tool:create"))
+        .commit(make_patch(
+            vec![Op::set(path!("a"), json!(1))],
+            "tool:create",
+        ))
         .await
         .unwrap();
 
     manager
-        .commit(make_patch(vec![Op::set(path!("b"), json!(2))], "tool:update"))
+        .commit(make_patch(
+            vec![Op::set(path!("b"), json!(2))],
+            "tool:update",
+        ))
         .await
         .unwrap();
 
     manager
-        .commit(make_patch(vec![Op::set(path!("c"), json!(3))], "system:auto"))
+        .commit(make_patch(
+            vec![Op::set(path!("c"), json!(3))],
+            "system:auto",
+        ))
         .await
         .unwrap();
 

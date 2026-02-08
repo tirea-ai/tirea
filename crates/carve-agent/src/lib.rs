@@ -81,8 +81,8 @@
 //! ```
 
 pub mod activity;
-pub mod agent;
 pub mod ag_ui;
+pub mod agent;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -173,14 +173,14 @@ pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
 
 // Plugins and extension traits
 pub use plugins::{
-    // Extension traits
-    PermissionContextExt,
     // Built-in plugins
     AgentMetrics,
     GenAISpan,
     InMemorySink,
     LLMMetryPlugin,
     MetricsSink,
+    // Extension traits
+    PermissionContextExt,
     PermissionPlugin,
     // State types
     PermissionState,

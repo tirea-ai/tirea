@@ -402,10 +402,7 @@ mod tests {
 
         let canonical = patch.canonicalize();
         assert_eq!(canonical.len(), 1);
-        assert_eq!(
-            canonical.ops()[0],
-            Op::set(path!("name"), json!("Charlie"))
-        );
+        assert_eq!(canonical.ops()[0], Op::set(path!("name"), json!("Charlie")));
     }
 
     #[test]
@@ -482,8 +479,8 @@ mod tests {
         // order of the remaining operations. b was at index 1, a's last occurrence
         // was at index 2, so the output order is b -> a.
         let patch = Patch::new()
-            .with_op(Op::set(path!("a"), json!(1)))   // index 0 - REMOVED (not last for "a")
-            .with_op(Op::set(path!("b"), json!(2)))   // index 1 - KEPT (last for "b")
+            .with_op(Op::set(path!("a"), json!(1))) // index 0 - REMOVED (not last for "a")
+            .with_op(Op::set(path!("b"), json!(2))) // index 1 - KEPT (last for "b")
             .with_op(Op::set(path!("a"), json!(10))); // index 2 - KEPT (last for "a")
 
         let canonical = patch.canonicalize();
@@ -521,7 +518,10 @@ mod tests {
         assert_eq!(canonical.len(), 3);
         assert_eq!(canonical.ops()[0], Op::set(path!("user"), json!({})));
         assert_eq!(canonical.ops()[1], Op::append(path!("items"), json!(1)));
-        assert_eq!(canonical.ops()[2], Op::set(path!("user", "name"), json!("Alice")));
+        assert_eq!(
+            canonical.ops()[2],
+            Op::set(path!("user", "name"), json!("Alice"))
+        );
     }
 
     #[test]
@@ -612,9 +612,9 @@ mod tests {
 
         // Test with various initial docs
         let docs = vec![
-            json!({}),               // x doesn't exist
-            json!({"x": 100}),       // x has different value
-            json!({"x": null}),      // x is null
+            json!({}),          // x doesn't exist
+            json!({"x": 100}),  // x has different value
+            json!({"x": null}), // x is null
         ];
 
         for doc in docs {
@@ -633,7 +633,12 @@ mod tests {
 
         // Canonical should be just: set(x, 2)
         // The final Set should have covered both previous Set and Increment
-        assert_eq!(canonical.len(), 1, "Expected 1 op after canonicalization, got: {:?}", canonical.ops());
+        assert_eq!(
+            canonical.len(),
+            1,
+            "Expected 1 op after canonicalization, got: {:?}",
+            canonical.ops()
+        );
 
         // Verify it's a Set operation for path "x" with value 2
         match &canonical.ops()[0] {

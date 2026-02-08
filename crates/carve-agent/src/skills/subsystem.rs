@@ -128,12 +128,12 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::execute::execute_single_tool;
     use crate::phase::{Phase, StepContext};
     use crate::session::Session;
-    use crate::types::{Message, ToolCall};
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+    use crate::types::{Message, ToolCall};
+    use async_trait::async_trait;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;

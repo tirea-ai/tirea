@@ -216,10 +216,9 @@ mod tests {
     #[test]
     fn test_session_snapshot() {
         let state = json!({"counter": 0});
-        let session = Session::with_initial_state("test-1", state)
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
+        let session = Session::with_initial_state("test-1", state).with_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+        ));
 
         assert_eq!(session.patch_count(), 1);
 
@@ -245,8 +244,7 @@ mod tests {
 
     #[test]
     fn test_session_serialization() {
-        let session = Session::new("test-1")
-            .with_message(Message::user("Hello"));
+        let session = Session::new("test-1").with_message(Message::user("Hello"));
 
         let json = serde_json::to_string(&session).unwrap();
         let restored: Session = serde_json::from_str(&json).unwrap();

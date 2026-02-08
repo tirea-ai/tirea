@@ -36,7 +36,10 @@ impl<'a> PatchSink<'a> {
     ///
     /// The hook is invoked after each operation is collected.
     #[doc(hidden)]
-    pub fn new_with_hook(ops: &'a Mutex<Vec<Op>>, hook: Arc<dyn Fn(&Op) + Send + Sync + 'a>) -> Self {
+    pub fn new_with_hook(
+        ops: &'a Mutex<Vec<Op>>,
+        hook: Arc<dyn Fn(&Op) + Send + Sync + 'a>,
+    ) -> Self {
         Self {
             ops,
             on_collect: Some(hook),

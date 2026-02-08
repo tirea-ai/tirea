@@ -290,7 +290,10 @@ fn test_context_vec_operations() {
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
 
-    assert_eq!(new_doc["todos"]["items"], json!(["Task 1", "Task 2", "Task 3"]));
+    assert_eq!(
+        new_doc["todos"]["items"],
+        json!(["Task 1", "Task 2", "Task 3"])
+    );
     assert_eq!(new_doc["todos"]["completed"], json!([false, false, false]));
     assert_eq!(new_doc["todos"]["count"], 3);
 }
@@ -344,7 +347,10 @@ fn test_context_nested_state_read() {
 
     let profile = account.profile();
     assert_eq!(profile.bio().unwrap(), "Hello world");
-    assert_eq!(profile.avatar_url().unwrap(), Some("https://example.com/avatar.png".to_string()));
+    assert_eq!(
+        profile.avatar_url().unwrap(),
+        Some("https://example.com/avatar.png".to_string())
+    );
 }
 
 #[test]
@@ -363,14 +369,19 @@ fn test_context_nested_state_write() {
     let account = ctx.state::<AccountState>("account");
     account.set_username("alice_updated");
     account.profile().set_bio("New bio");
-    account.profile().set_avatar_url(Some("https://example.com/new.png".to_string()));
+    account
+        .profile()
+        .set_avatar_url(Some("https://example.com/new.png".to_string()));
 
     let tracked = ctx.take_patch();
     let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
 
     assert_eq!(new_doc["account"]["username"], "alice_updated");
     assert_eq!(new_doc["account"]["profile"]["bio"], "New bio");
-    assert_eq!(new_doc["account"]["profile"]["avatar_url"], "https://example.com/new.png");
+    assert_eq!(
+        new_doc["account"]["profile"]["avatar_url"],
+        "https://example.com/new.png"
+    );
 }
 
 // ============================================================================
@@ -491,7 +502,10 @@ fn test_context_complex_workflow() {
 
     let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
     assert_eq!(new_doc["tool_calls"]["call_abc"]["value"], 1);
-    assert_eq!(new_doc["tool_calls"]["call_abc"]["label"], "Step 1 complete");
+    assert_eq!(
+        new_doc["tool_calls"]["call_abc"]["label"],
+        "Step 1 complete"
+    );
     assert_eq!(new_doc["results"]["items"], json!(["Result 1"]));
     assert_eq!(new_doc["results"]["count"], 1);
 }

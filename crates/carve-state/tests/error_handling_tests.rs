@@ -3,7 +3,9 @@
 //! These tests verify that meaningful error messages are produced
 //! when operations fail.
 
-use carve_state::{apply_patch, path, CarveError, Context, Op, Patch, PatchSink, Path, State as StateTrait};
+use carve_state::{
+    apply_patch, path, CarveError, Context, Op, Patch, PatchSink, Path, State as StateTrait,
+};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -76,7 +78,10 @@ fn test_error_path_not_found_nested() {
         }
     });
 
-    let patch = Patch::new().with_op(Op::set(path!("level1", "level2", "level3", "value"), json!(1)));
+    let patch = Patch::new().with_op(Op::set(
+        path!("level1", "level2", "level3", "value"),
+        json!(1),
+    ));
 
     // This should work - creates intermediate paths
     let result = apply_patch(&doc, &patch);

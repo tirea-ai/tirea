@@ -189,7 +189,10 @@ async fn test_manager_sequential_writes() {
 
     // Sequential writes should be deterministic
     for i in 1..=100 {
-        let patch = make_patch(vec![Op::set(path!("count"), json!(i))], &format!("write_{}", i));
+        let patch = make_patch(
+            vec![Op::set(path!("count"), json!(i))],
+            &format!("write_{}", i),
+        );
         manager.commit(patch).await.unwrap();
     }
 
@@ -335,7 +338,12 @@ async fn test_stress_batch_apply() {
 
     // Create a large batch
     let patches: Vec<_> = (0..100)
-        .map(|i| make_patch(vec![Op::set(path!(format!("key_{}", i)), json!(i))], &format!("p{}", i)))
+        .map(|i| {
+            make_patch(
+                vec![Op::set(path!(format!("key_{}", i)), json!(i))],
+                &format!("p{}", i),
+            )
+        })
         .collect();
 
     let result = manager.commit_batch(patches).await.unwrap();

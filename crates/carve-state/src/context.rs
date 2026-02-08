@@ -142,7 +142,11 @@ impl<'a> Context<'a> {
     ///
     /// The activity context uses its own state snapshot and emits activity updates
     /// immediately via the activity manager (if configured).
-    pub fn activity(&self, stream_id: impl Into<String>, activity_type: impl Into<String>) -> ActivityContext {
+    pub fn activity(
+        &self,
+        stream_id: impl Into<String>,
+        activity_type: impl Into<String>,
+    ) -> ActivityContext {
         let stream_id = stream_id.into();
         let activity_type = activity_type.into();
         let snapshot = self
@@ -151,7 +155,12 @@ impl<'a> Context<'a> {
             .map(|manager| manager.snapshot(&stream_id))
             .unwrap_or_else(|| Value::Object(Default::default()));
 
-        ActivityContext::new(snapshot, stream_id, activity_type, self.activity_manager.clone())
+        ActivityContext::new(
+            snapshot,
+            stream_id,
+            activity_type,
+            self.activity_manager.clone(),
+        )
     }
 
     /// Extract all collected operations as a tracked patch.

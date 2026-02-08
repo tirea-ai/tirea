@@ -219,10 +219,7 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
     (metas, warnings)
 }
 
-fn meta_from_skill_md_path(
-    dir_name: &str,
-    skill_md: &Path,
-) -> Result<SkillMeta, String> {
+fn meta_from_skill_md_path(dir_name: &str, skill_md: &Path) -> Result<SkillMeta, String> {
     let root_dir = skill_md
         .parent()
         .ok_or_else(|| "invalid skill path".to_string())?
@@ -359,7 +356,9 @@ Body"#
         let warnings = reg.warnings();
         assert!(!warnings.is_empty());
         assert!(warnings.iter().any(|w| w.reason.contains("directory name")));
-        assert!(warnings.iter().any(|w| w.reason.contains("missing SKILL.md")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.reason.contains("missing SKILL.md")));
 
         // Ensure warnings were logged (not injected).
         let logged = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();

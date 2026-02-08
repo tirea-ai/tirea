@@ -50,4 +50,3 @@ pub fn extract_map_types(ty: &syn::Type) -> (syn::Type, syn::Type) {
         syn::parse_quote!(::serde_json::Value),
     )
 }
-

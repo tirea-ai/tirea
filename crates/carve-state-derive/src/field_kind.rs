@@ -148,10 +148,8 @@ fn extract_two_generic_args(args: &PathArguments) -> Option<(&Type, &Type)> {
         PathArguments::AngleBracketed(ab) => {
             if ab.args.len() == 2 {
                 let mut iter = ab.args.iter();
-                if let (
-                    Some(GenericArgument::Type(key)),
-                    Some(GenericArgument::Type(value)),
-                ) = (iter.next(), iter.next())
+                if let (Some(GenericArgument::Type(key)), Some(GenericArgument::Type(value))) =
+                    (iter.next(), iter.next())
                 {
                     return Some((key, value));
                 }

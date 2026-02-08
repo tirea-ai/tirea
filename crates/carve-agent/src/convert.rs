@@ -85,7 +85,8 @@ pub fn assistant_tool_calls(content: impl Into<String>, calls: Vec<ToolCall>) ->
 
 /// Create a tool response message from ToolResult.
 pub fn tool_response(call_id: impl Into<String>, result: &ToolResult) -> Message {
-    let content = serde_json::to_string(result).unwrap_or_else(|_| result.message.clone().unwrap_or_default());
+    let content = serde_json::to_string(result)
+        .unwrap_or_else(|_| result.message.clone().unwrap_or_default());
     Message::tool(call_id, content)
 }
 
@@ -100,13 +101,14 @@ mod tests {
     #[async_trait::async_trait]
     impl Tool for MockTool {
         fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("mock", "Mock Tool", "A mock tool for testing")
-                .with_parameters(json!({
+            ToolDescriptor::new("mock", "Mock Tool", "A mock tool for testing").with_parameters(
+                json!({
                     "type": "object",
                     "properties": {
                         "input": { "type": "string" }
                     }
-                }))
+                }),
+            )
         }
 
         async fn execute(
@@ -126,7 +128,10 @@ mod tests {
         let genai_tool = to_genai_tool(&desc);
 
         assert_eq!(genai_tool.name, "calc");
-        assert_eq!(genai_tool.description.as_deref(), Some("Calculate expressions"));
+        assert_eq!(
+            genai_tool.description.as_deref(),
+            Some("Calculate expressions")
+        );
     }
 
     #[test]
@@ -135,7 +140,10 @@ mod tests {
         let chat_msg = to_chat_message(&msg);
 
         // ChatMessage doesn't expose role directly, but we can verify it was created
-        assert!(format!("{:?}", chat_msg).contains("User") || format!("{:?}", chat_msg).to_lowercase().contains("user"));
+        assert!(
+            format!("{:?}", chat_msg).contains("User")
+                || format!("{:?}", chat_msg).to_lowercase().contains("user")
+        );
     }
 
     #[test]
@@ -223,8 +231,11 @@ mod tests {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("tool1", "Tool 1", "First tool")
             }
-            async fn execute(&self, _: serde_json::Value, _: &carve_state::Context<'_>)
-                -> Result<ToolResult, crate::traits::tool::ToolError> {
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, crate::traits::tool::ToolError> {
                 Ok(ToolResult::success("tool1", json!({})))
             }
         }
@@ -234,8 +245,11 @@ mod tests {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("tool2", "Tool 2", "Second tool")
             }
-            async fn execute(&self, _: serde_json::Value, _: &carve_state::Context<'_>)
-                -> Result<ToolResult, crate::traits::tool::ToolError> {
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, crate::traits::tool::ToolError> {
                 Ok(ToolResult::success("tool2", json!({})))
             }
         }
@@ -245,8 +259,11 @@ mod tests {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("tool3", "Tool 3", "Third tool")
             }
-            async fn execute(&self, _: serde_json::Value, _: &carve_state::Context<'_>)
-                -> Result<ToolResult, crate::traits::tool::ToolError> {
+            async fn execute(
+                &self,
+                _: serde_json::Value,
+                _: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, crate::traits::tool::ToolError> {
                 Ok(ToolResult::success("tool3", json!({})))
             }
         }
@@ -262,7 +279,9 @@ mod tests {
 
     #[test]
     fn test_to_chat_message_with_special_characters() {
-        let msg = Message::user("Hello! How are you?\n\nI have a question about \"quotes\" and 'apostrophes'.");
+        let msg = Message::user(
+            "Hello! How are you?\n\nI have a question about \"quotes\" and 'apostrophes'.",
+        );
         let _chat_msg = to_chat_message(&msg);
         // Should not panic with special characters
     }
@@ -323,8 +342,8 @@ mod tests {
 
     #[test]
     fn test_to_genai_tool_with_complex_schema() {
-        let desc = ToolDescriptor::new("api", "API Call", "Make API requests")
-            .with_parameters(json!({
+        let desc =
+            ToolDescriptor::new("api", "API Call", "Make API requests").with_parameters(json!({
                 "type": "object",
                 "properties": {
                     "method": {
@@ -398,16 +417,19 @@ mod tests {
 
     #[test]
     fn test_tool_response_with_complex_data() {
-        let result = ToolResult::success("api", json!({
-            "status": 200,
-            "headers": {"Content-Type": "application/json"},
-            "body": {
-                "users": [
-                    {"id": 1, "name": "Alice"},
-                    {"id": 2, "name": "Bob"}
-                ]
-            }
-        }));
+        let result = ToolResult::success(
+            "api",
+            json!({
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                    "users": [
+                        {"id": 1, "name": "Alice"},
+                        {"id": 2, "name": "Bob"}
+                    ]
+                }
+            }),
+        );
 
         let msg = tool_response("call_api", &result);
         assert!(msg.content.contains("users") || msg.content.contains("Alice"));

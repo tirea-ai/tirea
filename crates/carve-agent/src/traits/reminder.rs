@@ -3,8 +3,8 @@
 //! System reminders generate messages based on state to remind
 //! the agent about important information.
 
-use carve_state::Context;
 use async_trait::async_trait;
+use carve_state::Context;
 
 /// System reminder for generating reminder messages.
 ///

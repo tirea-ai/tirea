@@ -780,9 +780,15 @@ mod tests {
         let delta = UIStreamEvent::reasoning_delta("r_1", "thinking...");
         let end = UIStreamEvent::reasoning_end("r_1");
 
-        assert!(serde_json::to_string(&start).unwrap().contains(r#""type":"reasoning-start""#));
-        assert!(serde_json::to_string(&delta).unwrap().contains(r#""type":"reasoning-delta""#));
-        assert!(serde_json::to_string(&end).unwrap().contains(r#""type":"reasoning-end""#));
+        assert!(serde_json::to_string(&start)
+            .unwrap()
+            .contains(r#""type":"reasoning-start""#));
+        assert!(serde_json::to_string(&delta)
+            .unwrap()
+            .contains(r#""type":"reasoning-delta""#));
+        assert!(serde_json::to_string(&end)
+            .unwrap()
+            .contains(r#""type":"reasoning-end""#));
     }
 
     #[test]
@@ -805,7 +811,8 @@ mod tests {
 
     #[test]
     fn test_tool_input_available_serialization() {
-        let event = UIStreamEvent::tool_input_available("call_1", "search", json!({"query": "rust"}));
+        let event =
+            UIStreamEvent::tool_input_available("call_1", "search", json!({"query": "rust"}));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool-input-available""#));
         assert!(json.contains(r#""toolCallId":"call_1""#));
@@ -815,7 +822,8 @@ mod tests {
 
     #[test]
     fn test_tool_output_available_serialization() {
-        let event = UIStreamEvent::tool_output_available("call_1", json!({"result": "found 3 items"}));
+        let event =
+            UIStreamEvent::tool_output_available("call_1", json!({"result": "found 3 items"}));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"tool-output-available""#));
         assert!(json.contains(r#""toolCallId":"call_1""#));
@@ -827,13 +835,18 @@ mod tests {
         let start = UIStreamEvent::start_step();
         let finish = UIStreamEvent::finish_step();
 
-        assert!(serde_json::to_string(&start).unwrap().contains(r#""type":"start-step""#));
-        assert!(serde_json::to_string(&finish).unwrap().contains(r#""type":"finish-step""#));
+        assert!(serde_json::to_string(&start)
+            .unwrap()
+            .contains(r#""type":"start-step""#));
+        assert!(serde_json::to_string(&finish)
+            .unwrap()
+            .contains(r#""type":"finish-step""#));
     }
 
     #[test]
     fn test_source_url_serialization() {
-        let event = UIStreamEvent::source_url("src_1", "https://example.com", Some("Example".to_string()));
+        let event =
+            UIStreamEvent::source_url("src_1", "https://example.com", Some("Example".to_string()));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"source-url""#));
         assert!(json.contains(r#""sourceId":"src_1""#));
@@ -917,7 +930,12 @@ mod tests {
     fn test_tool_input_available_deserialization() {
         let json = r#"{"type":"tool-input-available","toolCallId":"call_1","toolName":"search","input":{"query":"rust"}}"#;
         let event: UIStreamEvent = serde_json::from_str(json).unwrap();
-        if let UIStreamEvent::ToolInputAvailable { tool_call_id, tool_name, input } = event {
+        if let UIStreamEvent::ToolInputAvailable {
+            tool_call_id,
+            tool_name,
+            input,
+        } = event
+        {
             assert_eq!(tool_call_id, "call_1");
             assert_eq!(tool_name, "search");
             assert_eq!(input["query"], "rust");
@@ -1093,10 +1111,18 @@ mod tests {
         ];
 
         // Verify tool events are present
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputDelta { .. })));
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::ToolInputAvailable { .. })));
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::ToolOutputAvailable { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolInputAvailable { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::ToolOutputAvailable { .. })));
     }
 
     #[test]
@@ -1120,8 +1146,14 @@ mod tests {
         ];
 
         // Count step events
-        let start_step_count = events.iter().filter(|e| matches!(e, UIStreamEvent::StartStep)).count();
-        let finish_step_count = events.iter().filter(|e| matches!(e, UIStreamEvent::FinishStep)).count();
+        let start_step_count = events
+            .iter()
+            .filter(|e| matches!(e, UIStreamEvent::StartStep))
+            .count();
+        let finish_step_count = events
+            .iter()
+            .filter(|e| matches!(e, UIStreamEvent::FinishStep))
+            .count();
         assert_eq!(start_step_count, 2);
         assert_eq!(finish_step_count, 2);
     }
@@ -1135,7 +1167,9 @@ mod tests {
             UIStreamEvent::error("Connection lost"),
         ];
 
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::Error { error_text } if error_text == "Connection lost")));
+        assert!(events.iter().any(
+            |e| matches!(e, UIStreamEvent::Error { error_text } if error_text == "Connection lost")
+        ));
     }
 
     #[test]
@@ -1147,7 +1181,9 @@ mod tests {
             UIStreamEvent::abort("User cancelled"),
         ];
 
-        assert!(events.iter().any(|e| matches!(e, UIStreamEvent::Abort { reason } if reason == "User cancelled")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, UIStreamEvent::Abort { reason } if reason == "User cancelled")));
     }
 
     #[test]
@@ -1165,8 +1201,14 @@ mod tests {
         ];
 
         // Verify reasoning events come before text events
-        let reasoning_end_idx = events.iter().position(|e| matches!(e, UIStreamEvent::ReasoningEnd { .. })).unwrap();
-        let text_start_idx = events.iter().position(|e| matches!(e, UIStreamEvent::TextStart { .. })).unwrap();
+        let reasoning_end_idx = events
+            .iter()
+            .position(|e| matches!(e, UIStreamEvent::ReasoningEnd { .. }))
+            .unwrap();
+        let text_start_idx = events
+            .iter()
+            .position(|e| matches!(e, UIStreamEvent::TextStart { .. }))
+            .unwrap();
         assert!(reasoning_end_idx < text_start_idx);
     }
 
@@ -1271,23 +1313,47 @@ mod tests {
 
     #[test]
     fn test_ui_role_serialization() {
-        assert_eq!(serde_json::to_string(&UIRole::System).unwrap(), r#""system""#);
+        assert_eq!(
+            serde_json::to_string(&UIRole::System).unwrap(),
+            r#""system""#
+        );
         assert_eq!(serde_json::to_string(&UIRole::User).unwrap(), r#""user""#);
-        assert_eq!(serde_json::to_string(&UIRole::Assistant).unwrap(), r#""assistant""#);
+        assert_eq!(
+            serde_json::to_string(&UIRole::Assistant).unwrap(),
+            r#""assistant""#
+        );
     }
 
     #[test]
     fn test_stream_state_serialization() {
-        assert_eq!(serde_json::to_string(&StreamState::Streaming).unwrap(), r#""streaming""#);
-        assert_eq!(serde_json::to_string(&StreamState::Done).unwrap(), r#""done""#);
+        assert_eq!(
+            serde_json::to_string(&StreamState::Streaming).unwrap(),
+            r#""streaming""#
+        );
+        assert_eq!(
+            serde_json::to_string(&StreamState::Done).unwrap(),
+            r#""done""#
+        );
     }
 
     #[test]
     fn test_tool_state_serialization() {
-        assert_eq!(serde_json::to_string(&ToolState::InputStreaming).unwrap(), r#""input-streaming""#);
-        assert_eq!(serde_json::to_string(&ToolState::InputAvailable).unwrap(), r#""input-available""#);
-        assert_eq!(serde_json::to_string(&ToolState::OutputAvailable).unwrap(), r#""output-available""#);
-        assert_eq!(serde_json::to_string(&ToolState::OutputError).unwrap(), r#""output-error""#);
+        assert_eq!(
+            serde_json::to_string(&ToolState::InputStreaming).unwrap(),
+            r#""input-streaming""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolState::InputAvailable).unwrap(),
+            r#""input-available""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolState::OutputAvailable).unwrap(),
+            r#""output-available""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ToolState::OutputError).unwrap(),
+            r#""output-error""#
+        );
     }
 
     #[test]
@@ -1310,7 +1376,11 @@ mod tests {
 
     #[test]
     fn test_file_event_with_filename() {
-        let event = UIStreamEvent::file("https://example.com/doc.pdf", "application/pdf", Some("document.pdf".to_string()));
+        let event = UIStreamEvent::file(
+            "https://example.com/doc.pdf",
+            "application/pdf",
+            Some("document.pdf".to_string()),
+        );
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""filename":"document.pdf""#));
     }

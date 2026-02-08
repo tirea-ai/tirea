@@ -141,8 +141,8 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::tool::ToolDescriptor;
     use crate::session::Session;
+    use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
     use std::fs;
     use std::io::Write;

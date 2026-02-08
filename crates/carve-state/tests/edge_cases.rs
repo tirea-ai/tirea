@@ -88,7 +88,10 @@ fn test_append_to_non_array_error() {
     let doc = json!({"x": 1});
     let patch = Patch::new().with_op(Op::append(path!("x"), json!(2)));
     let result = apply_patch(&doc, &patch);
-    assert!(matches!(result, Err(CarveError::AppendRequiresArray { .. })));
+    assert!(matches!(
+        result,
+        Err(CarveError::AppendRequiresArray { .. })
+    ));
 }
 
 #[test]
@@ -114,7 +117,10 @@ fn test_merge_with_non_object_error() {
     let doc = json!({"x": 1});
     let patch = Patch::new().with_op(Op::merge_object(path!("x"), json!({"y": 2})));
     let result = apply_patch(&doc, &patch);
-    assert!(matches!(result, Err(CarveError::MergeRequiresObject { .. })));
+    assert!(matches!(
+        result,
+        Err(CarveError::MergeRequiresObject { .. })
+    ));
 }
 
 #[test]

@@ -254,8 +254,7 @@ mod tests {
             if let Some(tool_id) = step.tool_id() {
                 if self.confirm_tools.contains(&tool_id.to_string()) && !step.tool_pending() {
                     step.pending(
-                        Interaction::new("confirm", "confirm")
-                            .with_message("Execute this tool?"),
+                        Interaction::new("confirm", "confirm").with_message("Execute this tool?"),
                     );
                 }
             }

@@ -8,8 +8,8 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError,
-    Context, FileStorage, Message, Session, Storage, Tool, ToolDescriptor, ToolError, ToolResult,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
+    FileStorage, Message, Session, Storage, Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_state_derive::State;
 use futures::StreamExt;
@@ -25,17 +25,21 @@ struct CalculatorTool;
 #[async_trait]
 impl Tool for CalculatorTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("calculator", "Calculator", "Perform arithmetic calculations")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "The arithmetic expression to evaluate (e.g., '2 + 3 * 4')"
-                    }
-                },
-                "required": ["expression"]
-            }))
+        ToolDescriptor::new(
+            "calculator",
+            "Calculator",
+            "Perform arithmetic calculations",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "The arithmetic expression to evaluate (e.g., '2 + 3 * 4')"
+                }
+            },
+            "required": ["expression"]
+        }))
     }
 
     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -46,7 +50,10 @@ impl Tool for CalculatorTool {
         // Simple evaluation (for demo - real impl would use a proper parser)
         let result = eval_simple_expr(expr);
 
-        Ok(ToolResult::success("calculator", json!({ "result": result, "expression": expr })))
+        Ok(ToolResult::success(
+            "calculator",
+            json!({ "result": result, "expression": expr }),
+        ))
     }
 }
 
@@ -100,17 +107,21 @@ struct WeatherTool;
 #[async_trait]
 impl Tool for WeatherTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("get_weather", "Get Weather", "Get current weather for a city")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "city": {
-                        "type": "string",
-                        "description": "City name"
-                    }
-                },
-                "required": ["city"]
-            }))
+        ToolDescriptor::new(
+            "get_weather",
+            "Get Weather",
+            "Get current weather for a city",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "City name"
+                }
+            },
+            "required": ["city"]
+        }))
     }
 
     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -187,8 +198,8 @@ struct InfiniteLoopTool;
 #[async_trait]
 impl Tool for InfiniteLoopTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("check_status", "Check Status", "Check system status")
-            .with_parameters(json!({
+        ToolDescriptor::new("check_status", "Check Status", "Check system status").with_parameters(
+            json!({
                 "type": "object",
                 "properties": {
                     "component": {
@@ -197,7 +208,8 @@ impl Tool for InfiniteLoopTool {
                     }
                 },
                 "required": ["component"]
-            }))
+            }),
+        )
     }
 
     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -262,9 +274,9 @@ impl Tool for CounterTool {
                 let amount = args["value"].as_i64().unwrap_or(1);
                 current - amount
             }
-            "set" => args["value"]
-                .as_i64()
-                .ok_or_else(|| ToolError::InvalidArguments("Missing 'value' for set".to_string()))?,
+            "set" => args["value"].as_i64().ok_or_else(|| {
+                ToolError::InvalidArguments("Missing 'value' for set".to_string())
+            })?,
             _ => {
                 return Err(ToolError::InvalidArguments(format!(
                     "Unknown action: {}",
@@ -389,9 +401,7 @@ async fn test_calculator(
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
-    println!(
-        "User: Please calculate 15 * 7 + 23 using the calculator tool."
-    );
+    println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
     println!("Assistant: {}", response);
     println!("Messages in session: {}", session.message_count());
     println!("Patches in session: {}", session.patch_count());
@@ -462,7 +472,10 @@ async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::err
 
     // Rebuild state to see final counter value
     let final_state = session.rebuild_state()?;
-    println!("Final state: {}", serde_json::to_string_pretty(&final_state)?);
+    println!(
+        "Final state: {}",
+        serde_json::to_string_pretty(&final_state)?
+    );
 
     Ok(())
 }
@@ -472,7 +485,9 @@ async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error
 
     // Run 1: Introduce a topic
     let mut session = Session::new("test-multi-run")
-        .with_message(Message::system("You are a helpful assistant. Keep your answers brief."))
+        .with_message(Message::system(
+            "You are a helpful assistant. Keep your answers brief.",
+        ))
         .with_message(Message::user("My name is Alice. Remember it."));
 
     let (new_session, response) =
@@ -499,10 +514,9 @@ async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error
     // Run 3: Another follow-up
     session = session.with_message(Message::user("Say my name backwards."));
 
-    let (session, response) =
-        run_loop(client, &config, session, &std::collections::HashMap::new())
-            .await
-            .map_err(|e| format!("LLM error: {}", e))?;
+    let (session, response) = run_loop(client, &config, session, &std::collections::HashMap::new())
+        .await
+        .map_err(|e| format!("LLM error: {}", e))?;
 
     println!("Run 3 - User: Say my name backwards.");
     println!("Run 3 - Assistant: {}", response);
@@ -582,12 +596,18 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     println!("\nSession summary:");
     println!("  Total messages: {}", session.message_count());
     println!("  Total patches: {}", session.patch_count());
-    println!("  Final counter: {} (expected: 12 = 10 + 5 - 3)", final_counter);
+    println!(
+        "  Final counter: {} (expected: 12 = 10 + 5 - 3)",
+        final_counter
+    );
 
     if final_counter == 12 {
         println!("✅ Multi-run with tools working correctly!");
     } else {
-        println!("⚠️ Final counter value unexpected (got {}, expected 12)", final_counter);
+        println!(
+            "⚠️ Final counter value unexpected (got {}, expected 12)",
+            final_counter
+        );
     }
 
     Ok(())
@@ -614,7 +634,9 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool. Keep responses brief.",
         ))
-        .with_message(Message::user("My favorite number is 42. Remember it. Also, what is the counter?"));
+        .with_message(Message::user(
+            "My favorite number is 42. Remember it. Also, what is the counter?",
+        ));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
         .await
@@ -625,7 +647,9 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     println!("Assistant: {}", response);
 
     // Add another step
-    session = session.with_message(Message::user("Increment the counter by my favorite number."));
+    session = session.with_message(Message::user(
+        "Increment the counter by my favorite number.",
+    ));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
         .await
@@ -668,7 +692,9 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     // Continue conversation with loaded session
     let mut session = loaded_session;
-    session = session.with_message(Message::user("What was my favorite number? And what is the counter now?"));
+    session = session.with_message(Message::user(
+        "What was my favorite number? And what is the counter now?",
+    ));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
         .await
@@ -699,7 +725,10 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     // Final state check
     let final_state = session.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
-    println!("\nFinal state: counter = {} (expected: 142 = 100 + 42)", final_counter);
+    println!(
+        "\nFinal state: counter = {} (expected: 142 = 100 + 42)",
+        final_counter
+    );
 
     if final_counter == 142 {
         println!("✅ Session persistence and restore working correctly!");
@@ -764,9 +793,15 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
     println!("  Tools in single message: {}", tools_in_single_message);
 
     if tools_in_single_message >= 2 {
-        println!("✅ Parallel tool calls working! LLM called {} tools at once.", tools_in_single_message);
+        println!(
+            "✅ Parallel tool calls working! LLM called {} tools at once.",
+            tools_in_single_message
+        );
     } else if tool_call_count >= 2 {
-        println!("⚠️ Tools were called sequentially ({} total calls)", tool_call_count);
+        println!(
+            "⚠️ Tools were called sequentially ({} total calls)",
+            tool_call_count
+        );
     } else {
         println!("⚠️ Expected at least 2 tool calls");
     }
@@ -787,7 +822,9 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
             "You are a system monitor. Use the check_status tool to check all components. \
              Keep checking until all components report 'ok'. Always follow the tool's suggestions.",
         ))
-        .with_message(Message::user("Check the status of the 'api' component completely."));
+        .with_message(Message::user(
+            "Check the status of the 'api' component completely.",
+        ));
 
     let result = run_loop(client, &config, session, &tools).await;
 
@@ -807,13 +844,22 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
             println!("Tool calls made: {}", tool_calls);
 
             if tool_calls <= max_rounds as usize {
-                println!("✅ Max rounds limit respected (stopped at {} rounds)", tool_calls);
+                println!(
+                    "✅ Max rounds limit respected (stopped at {} rounds)",
+                    tool_calls
+                );
             } else {
-                println!("⚠️ Made {} tool calls, expected <= {}", tool_calls, max_rounds);
+                println!(
+                    "⚠️ Made {} tool calls, expected <= {}",
+                    tool_calls, max_rounds
+                );
             }
         }
         Err(AgentLoopError::MaxRoundsExceeded(rounds)) => {
-            println!("✅ MaxRoundsExceeded error thrown after {} rounds (expected!)", rounds);
+            println!(
+                "✅ MaxRoundsExceeded error thrown after {} rounds (expected!)",
+                rounds
+            );
         }
         Err(e) => {
             println!("Unexpected error: {}", e);
@@ -837,7 +883,9 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
             "You are a helpful assistant. Use the unreliable_api tool to process queries. \
              If the tool fails, try again. The API may need multiple attempts.",
         ))
-        .with_message(Message::user("Please use the API to process the query 'hello world'."));
+        .with_message(Message::user(
+            "Please use the API to process the query 'hello world'.",
+        ));
 
     let (session, response) = run_loop(client, &config, session, &tools)
         .await
@@ -862,7 +910,8 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     println!("  Total tool calls: {}", tool_calls);
     println!("  Error responses: {}", error_messages);
 
-    if response.to_lowercase().contains("success") || response.to_lowercase().contains("processed") {
+    if response.to_lowercase().contains("success") || response.to_lowercase().contains("processed")
+    {
         println!("✅ LLM recovered from tool failures and completed the task!");
     } else if error_messages > 0 {
         println!("⚠️ Tool failed but LLM handled it gracefully");
@@ -883,8 +932,12 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
     let mut session = Session::with_initial_state("test-snapshot", json!({ "counter": 0 }))
-        .with_message(Message::system("You are a helpful assistant. Use the counter tool."))
-        .with_message(Message::user("Increment the counter 3 times by 10 each time."));
+        .with_message(Message::system(
+            "You are a helpful assistant. Use the counter tool.",
+        ))
+        .with_message(Message::user(
+            "Increment the counter 3 times by 10 each time.",
+        ));
 
     let (new_session, response) = run_loop(client, &config, session, &tools)
         .await
@@ -940,7 +993,9 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
     // Build session with multiple state changes
     println!("[Building state history]");
     let mut session = Session::with_initial_state("test-replay", json!({ "counter": 0 }))
-        .with_message(Message::system("You are a helpful assistant. Use the counter tool."));
+        .with_message(Message::system(
+            "You are a helpful assistant. Use the counter tool.",
+        ));
 
     // Run 1: Set counter to 10
     session = session.with_message(Message::user("Set the counter to 10."));
@@ -951,7 +1006,10 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_1 = session.rebuild_state()?;
     let patches_after_1 = session.patch_count();
-    println!("After run 1: counter = {}, patches = {}", state_after_1["counter"], patches_after_1);
+    println!(
+        "After run 1: counter = {}, patches = {}",
+        state_after_1["counter"], patches_after_1
+    );
 
     // Run 2: Add 20
     session = session.with_message(Message::user("Now add 20 to the counter."));
@@ -962,7 +1020,10 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_2 = session.rebuild_state()?;
     let patches_after_2 = session.patch_count();
-    println!("After run 2: counter = {}, patches = {}", state_after_2["counter"], patches_after_2);
+    println!(
+        "After run 2: counter = {}, patches = {}",
+        state_after_2["counter"], patches_after_2
+    );
 
     // Run 3: Add 30
     session = session.with_message(Message::user("Add 30 more."));
@@ -973,7 +1034,10 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     let state_after_3 = session.rebuild_state()?;
     let patches_after_3 = session.patch_count();
-    println!("After run 3: counter = {}, patches = {}", state_after_3["counter"], patches_after_3);
+    println!(
+        "After run 3: counter = {}, patches = {}",
+        state_after_3["counter"], patches_after_3
+    );
 
     // Now replay to earlier states
     println!("\n[Replaying to earlier states]");
@@ -983,14 +1047,20 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
         // Replay through each patch point
         for i in 0..total_patches {
             let replayed_state = session.replay_to(i)?;
-            println!("  State at patch {}: counter = {}", i, replayed_state["counter"]);
+            println!(
+                "  State at patch {}: counter = {}",
+                i, replayed_state["counter"]
+            );
         }
 
         // Show final state for comparison
         let final_state = session.rebuild_state()?;
         println!("  Final state: counter = {}", final_state["counter"]);
 
-        println!("\n✅ State replay working! Can access {} historical state points.", total_patches);
+        println!(
+            "\n✅ State replay working! Can access {} historical state points.",
+            total_patches
+        );
     } else {
         println!("⚠️ No patches recorded (LLM may not have used the tool)");
     }
@@ -1006,18 +1076,31 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let start_time = std::time::Instant::now();
 
     // Create a session with many messages
-    let mut session = Session::new("test-long-conv")
-        .with_message(Message::system("You are a helpful assistant. Keep answers brief."));
+    let mut session = Session::new("test-long-conv").with_message(Message::system(
+        "You are a helpful assistant. Keep answers brief.",
+    ));
 
     // Add 20 runs of conversation history
     for i in 1..=20 {
         session = session
-            .with_message(Message::user(format!("Message {} from user. Remember the number {}.", i, i * 10)))
-            .with_message(Message::assistant(format!("I understand, message {}. The number is {}.", i, i * 10)));
+            .with_message(Message::user(format!(
+                "Message {} from user. Remember the number {}.",
+                i,
+                i * 10
+            )))
+            .with_message(Message::assistant(format!(
+                "I understand, message {}. The number is {}.",
+                i,
+                i * 10
+            )));
     }
 
     let build_time = start_time.elapsed();
-    println!("  Built {} messages in {:?}", session.message_count(), build_time);
+    println!(
+        "  Built {} messages in {:?}",
+        session.message_count(),
+        build_time
+    );
 
     // Now send a new message that requires remembering context
     session = session.with_message(Message::user(

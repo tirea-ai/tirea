@@ -46,7 +46,7 @@ pub use crate::types::{Message, Role, ToolCall};
 pub use crate::plugin::AgentPlugin;
 
 // Phase types for plugins
-pub use crate::phase::{Phase, ToolContext, StepContext, StepOutcome};
+pub use crate::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
 pub use crate::state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};

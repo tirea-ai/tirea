@@ -5,7 +5,7 @@
 
 use crate::{
     error::{value_type_name, CarveError, CarveResult},
-    Op, Number, Patch, Path, Seg,
+    Number, Op, Patch, Path, Seg,
 };
 use serde_json::{Map, Value};
 
@@ -114,7 +114,12 @@ fn apply_set(doc: &mut Value, path: &Path, value: Value) -> CarveResult<()> {
 }
 
 /// Recursively set a value at a path, creating intermediate objects as needed.
-fn set_at_path(current: &mut Value, segments: &[Seg], value: Value, full_path: &Path) -> CarveResult<()> {
+fn set_at_path(
+    current: &mut Value,
+    segments: &[Seg],
+    value: Value,
+    full_path: &Path,
+) -> CarveResult<()> {
     match segments {
         [] => {
             *current = value;
@@ -326,7 +331,11 @@ fn apply_insert(doc: &mut Value, path: &Path, index: usize, value: Value) -> Car
     match target {
         Value::Array(arr) => {
             if index > arr.len() {
-                return Err(CarveError::index_out_of_bounds(path.clone(), index, arr.len()));
+                return Err(CarveError::index_out_of_bounds(
+                    path.clone(),
+                    index,
+                    arr.len(),
+                ));
             }
             arr.insert(index, value);
             Ok(())

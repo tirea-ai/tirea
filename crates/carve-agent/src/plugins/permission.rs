@@ -185,12 +185,10 @@ impl AgentPlugin for PermissionPlugin {
             ToolPermissionBehavior::Ask => {
                 // Create a pending interaction for confirmation
                 if !step.tool_pending() {
-                    let interaction = Interaction::new(
-                        format!("permission_{}", tool_id),
-                        "confirm",
-                    )
-                    .with_message(format!("Allow tool '{}' to execute?", tool_id))
-                    .with_parameters(json!({ "tool_id": tool_id }));
+                    let interaction =
+                        Interaction::new(format!("permission_{}", tool_id), "confirm")
+                            .with_message(format!("Allow tool '{}' to execute?", tool_id))
+                            .with_parameters(json!({ "tool_id": tool_id }));
 
                     step.pending(interaction);
                 }
@@ -214,12 +212,17 @@ mod tests {
     #[test]
     fn test_permission_state_serialization() {
         let mut state = PermissionState::default();
-        state.tools.insert("read".to_string(), ToolPermissionBehavior::Allow);
+        state
+            .tools
+            .insert("read".to_string(), ToolPermissionBehavior::Allow);
 
         let json = serde_json::to_string(&state).unwrap();
         let parsed: PermissionState = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed.tools.get("read"), Some(&ToolPermissionBehavior::Allow));
+        assert_eq!(
+            parsed.tools.get("read"),
+            Some(&ToolPermissionBehavior::Allow)
+        );
     }
 
     #[test]
@@ -281,7 +284,10 @@ mod tests {
         let ctx = Context::new(&doc, "call_1", "test");
 
         // Tool not in tools map should return default
-        assert_eq!(ctx.get_permission("unknown_tool"), ToolPermissionBehavior::Deny);
+        assert_eq!(
+            ctx.get_permission("unknown_tool"),
+            ToolPermissionBehavior::Deny
+        );
     }
 
     #[test]
@@ -294,8 +300,14 @@ mod tests {
         });
         let ctx = Context::new(&doc, "call_1", "test");
 
-        assert_eq!(ctx.get_permission("special_tool"), ToolPermissionBehavior::Allow);
-        assert_eq!(ctx.get_permission("other_tool"), ToolPermissionBehavior::Deny);
+        assert_eq!(
+            ctx.get_permission("special_tool"),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
+            ctx.get_permission("other_tool"),
+            ToolPermissionBehavior::Deny
+        );
     }
 
     #[test]

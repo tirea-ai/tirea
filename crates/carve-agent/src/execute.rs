@@ -67,7 +67,6 @@ pub async fn execute_single_tool(
     }
 }
 
-
 /// Execute multiple tool calls in parallel.
 ///
 /// All tools receive the same state snapshot (they don't see each other's changes).
@@ -142,10 +141,7 @@ pub async fn execute_tools_sequential(
 
 /// Collect patches from executions.
 pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
-    executions
-        .iter()
-        .filter_map(|e| e.patch.clone())
-        .collect()
+    executions.iter().filter_map(|e| e.patch.clone()).collect()
 }
 
 #[cfg(test)]
@@ -163,11 +159,7 @@ mod tests {
             ToolDescriptor::new("echo", "Echo", "Echo the input")
         }
 
-        async fn execute(
-            &self,
-            args: Value,
-            _ctx: &Context<'_>,
-        ) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
         }
     }
@@ -180,11 +172,7 @@ mod tests {
             ToolDescriptor::new("counter", "Counter", "Increment a counter")
         }
 
-        async fn execute(
-            &self,
-            _args: Value,
-            _ctx: &Context<'_>,
-        ) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
             // In real usage, state would be accessed via ctx.state::<T>()
             // For this test, we just return success
             Ok(ToolResult::success("counter", json!({"incremented": true})))
@@ -245,7 +233,9 @@ mod tests {
             ToolExecution {
                 call: ToolCall::new("1", "a", json!({})),
                 result: ToolResult::success("a", json!({})),
-                patch: Some(TrackedPatch::new(Patch::new().with_op(Op::set(path!("a"), json!(1))))),
+                patch: Some(TrackedPatch::new(
+                    Patch::new().with_op(Op::set(path!("a"), json!(1))),
+                )),
             },
             ToolExecution {
                 call: ToolCall::new("2", "b", json!({})),
@@ -255,7 +245,9 @@ mod tests {
             ToolExecution {
                 call: ToolCall::new("3", "c", json!({})),
                 result: ToolResult::success("c", json!({})),
-                patch: Some(TrackedPatch::new(Patch::new().with_op(Op::set(path!("c"), json!(3))))),
+                patch: Some(TrackedPatch::new(
+                    Patch::new().with_op(Op::set(path!("c"), json!(3))),
+                )),
             },
         ];
 
@@ -293,8 +285,14 @@ mod tests {
                 ToolDescriptor::new("failing", "Failing", "Always fails")
             }
 
-            async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-                Err(ToolError::ExecutionFailed("Intentional failure".to_string()))
+            async fn execute(
+                &self,
+                _args: Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Err(ToolError::ExecutionFailed(
+                    "Intentional failure".to_string(),
+                ))
             }
         }
 
@@ -305,6 +303,11 @@ mod tests {
         let exec = execute_single_tool(Some(&tool), &call, &state).await;
 
         assert!(exec.result.is_error());
-        assert!(exec.result.message.as_ref().unwrap().contains("Intentional failure"));
+        assert!(exec
+            .result
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("Intentional failure"));
     }
 }

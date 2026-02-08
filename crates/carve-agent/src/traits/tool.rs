@@ -2,8 +2,8 @@
 //!
 //! Tools execute actions and can modify state through the Context.
 
-use carve_state::Context;
 use async_trait::async_trait;
+use carve_state::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -387,8 +387,11 @@ mod tests {
 
     #[test]
     fn test_tool_result_success_with_message() {
-        let result =
-            ToolResult::success_with_message("my_tool", json!({"done": true}), "Operation complete");
+        let result = ToolResult::success_with_message(
+            "my_tool",
+            json!({"done": true}),
+            "Operation complete",
+        );
         assert_eq!(result.tool_name, "my_tool");
         assert_eq!(result.status, ToolStatus::Success);
         assert_eq!(result.data, json!({"done": true}));
@@ -443,8 +446,8 @@ mod tests {
 
     #[test]
     fn test_tool_result_serialization() {
-        let result = ToolResult::success("my_tool", json!({"key": "value"}))
-            .with_metadata("extra", "data");
+        let result =
+            ToolResult::success("my_tool", json!({"key": "value"})).with_metadata("extra", "data");
 
         let json = serde_json::to_string(&result).unwrap();
         let parsed: ToolResult = serde_json::from_str(&json).unwrap();
@@ -496,7 +499,8 @@ mod tests {
             },
             "required": ["path"]
         });
-        let desc = ToolDescriptor::new("read_file", "Read File", "Read").with_parameters(schema.clone());
+        let desc =
+            ToolDescriptor::new("read_file", "Read File", "Read").with_parameters(schema.clone());
         assert_eq!(desc.parameters, schema);
     }
 

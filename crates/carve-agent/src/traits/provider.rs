@@ -3,8 +3,8 @@
 //! Context providers inject dynamic content into the agent's context
 //! based on the current state.
 
-use carve_state::Context;
 use async_trait::async_trait;
+use carve_state::Context;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.

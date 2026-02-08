@@ -228,12 +228,9 @@ mod tests {
         )
         .unwrap();
 
-        let mat = load_reference_material(
-            "docx",
-            &td.path().join("docx"),
-            "references/nested/a.md",
-        )
-        .expect("nested references are allowed");
+        let mat =
+            load_reference_material("docx", &td.path().join("docx"), "references/nested/a.md")
+                .expect("nested references are allowed");
         assert_eq!(mat.path, "references/nested/a.md");
         assert_eq!(mat.content.trim(), "hello");
     }

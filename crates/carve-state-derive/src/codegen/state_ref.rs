@@ -15,7 +15,11 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
     let ref_name = format_ident!("{}Ref", struct_name);
     let vis = &input.vis;
 
-    let fields: Vec<_> = input.fields().into_iter().filter(|f| f.is_included()).collect();
+    let fields: Vec<_> = input
+        .fields()
+        .into_iter()
+        .filter(|f| f.is_included())
+        .collect();
 
     let read_methods = generate_read_methods(&fields)?;
     let write_methods = generate_write_methods(&fields)?;
@@ -168,8 +172,9 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
         }
         FieldKind::Vec(_) | FieldKind::Map { .. } => {
             if let Some(default) = &field.default {
-                let expr: syn::Expr = syn::parse_str(default)
-                    .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
+                let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
+                    syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))
+                })?;
                 quote! {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
@@ -198,8 +203,9 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
         }
         FieldKind::Primitive => {
             if let Some(default) = &field.default {
-                let expr: syn::Expr = syn::parse_str(default)
-                    .map_err(|e| syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e)))?;
+                let expr: syn::Expr = syn::parse_str(default).map_err(|e| {
+                    syn::Error::new_spanned(field_ty, format!("invalid default expression: {}", e))
+                })?;
                 quote! {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {

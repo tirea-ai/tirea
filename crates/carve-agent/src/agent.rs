@@ -301,7 +301,10 @@ impl Tool for SubAgentTool {
             match self.agent.resume(id, prompt).await {
                 Ok(s) => s,
                 Err(e) => {
-                    return Ok(ToolResult::error(&self.name, format!("Resume error: {}", e)));
+                    return Ok(ToolResult::error(
+                        &self.name,
+                        format!("Resume error: {}", e),
+                    ));
                 }
             }
         } else {
@@ -370,8 +373,7 @@ mod tests {
         tools.insert("b".into(), Arc::new(DummyTool("b")));
         tools.insert("c".into(), Arc::new(DummyTool("c")));
 
-        let def = AgentDefinition::default()
-            .with_allowed_tools(vec!["a".into(), "b".into()]);
+        let def = AgentDefinition::default().with_allowed_tools(vec!["a".into(), "b".into()]);
         let filtered = filter_tools(&tools, &def);
         assert_eq!(filtered.len(), 2);
         assert!(filtered.contains_key("a"));
@@ -385,8 +387,7 @@ mod tests {
         tools.insert("a".into(), Arc::new(DummyTool("a")));
         tools.insert("b".into(), Arc::new(DummyTool("b")));
 
-        let def = AgentDefinition::default()
-            .with_excluded_tools(vec!["b".into()]);
+        let def = AgentDefinition::default().with_excluded_tools(vec!["b".into()]);
         let filtered = filter_tools(&tools, &def);
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains_key("a"));
@@ -428,8 +429,8 @@ mod tests {
             .with_tool(DummyTool("a"))
             .with_tool(DummyTool("b"));
 
-        let sub_def = AgentDefinition::with_id("sub", "gpt-4o-mini")
-            .with_allowed_tools(vec!["a".into()]);
+        let sub_def =
+            AgentDefinition::with_id("sub", "gpt-4o-mini").with_allowed_tools(vec!["a".into()]);
         let sub = agent.subagent(sub_def);
 
         assert_eq!(sub.tools.len(), 1);
@@ -554,8 +555,7 @@ mod tests {
 
     #[test]
     fn test_agent_definition_clone() {
-        let def = AgentDefinition::with_id("orig", "gpt-4")
-            .with_allowed_tools(vec!["a".into()]);
+        let def = AgentDefinition::with_id("orig", "gpt-4").with_allowed_tools(vec!["a".into()]);
         let cloned = def.clone();
         assert_eq!(cloned.id, "orig");
         assert_eq!(cloned.allowed_tools, Some(vec!["a".into()]));
@@ -568,8 +568,7 @@ mod tests {
     #[test]
     fn test_filter_tools_empty_tools() {
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        let def = AgentDefinition::default()
-            .with_allowed_tools(vec!["a".into()]);
+        let def = AgentDefinition::default().with_allowed_tools(vec!["a".into()]);
         let filtered = filter_tools(&tools, &def);
         assert!(filtered.is_empty());
     }
@@ -593,8 +592,8 @@ mod tests {
     #[test]
     fn test_filter_tools_allowed_nonexistent_tool() {
         let tools = make_tools(&["a"]);
-        let def = AgentDefinition::default()
-            .with_allowed_tools(vec!["a".into(), "nonexistent".into()]);
+        let def =
+            AgentDefinition::default().with_allowed_tools(vec!["a".into(), "nonexistent".into()]);
         let filtered = filter_tools(&tools, &def);
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains_key("a"));
@@ -603,8 +602,7 @@ mod tests {
     #[test]
     fn test_filter_tools_excluded_nonexistent_tool() {
         let tools = make_tools(&["a", "b"]);
-        let def = AgentDefinition::default()
-            .with_excluded_tools(vec!["nonexistent".into()]);
+        let def = AgentDefinition::default().with_excluded_tools(vec!["nonexistent".into()]);
         let filtered = filter_tools(&tools, &def);
         assert_eq!(filtered.len(), 2);
     }
@@ -612,8 +610,7 @@ mod tests {
     #[test]
     fn test_filter_tools_exclude_all() {
         let tools = make_tools(&["a", "b"]);
-        let def = AgentDefinition::default()
-            .with_excluded_tools(vec!["a".into(), "b".into()]);
+        let def = AgentDefinition::default().with_excluded_tools(vec!["a".into(), "b".into()]);
         let filtered = filter_tools(&tools, &def);
         assert!(filtered.is_empty());
     }
@@ -668,8 +665,7 @@ mod tests {
     #[test]
     fn test_agent_with_storage() {
         let storage: Arc<dyn Storage> = Arc::new(crate::storage::MemoryStorage::new());
-        let agent =
-            Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage);
+        let agent = Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage);
         assert!(agent.storage.is_some());
     }
 
@@ -752,8 +748,7 @@ mod tests {
 
         // Sub-sub agent further restricts
         let sub2 = sub1.subagent(
-            AgentDefinition::with_id("sub2", "gpt-4o-mini")
-                .with_allowed_tools(vec!["a".into()]),
+            AgentDefinition::with_id("sub2", "gpt-4o-mini").with_allowed_tools(vec!["a".into()]),
         );
         assert_eq!(sub2.tools.len(), 1);
         assert!(sub2.tools.contains_key("a"));
@@ -787,9 +782,7 @@ mod tests {
         let handle = SubAgentHandle {
             agent_id: "a".into(),
             session_id: "s".into(),
-            join: tokio::spawn(async {
-                Err(AgentLoopError::MaxRoundsExceeded(5))
-            }),
+            join: tokio::spawn(async { Err(AgentLoopError::MaxRoundsExceeded(5)) }),
             cancel: CancellationToken::new(),
         };
 
@@ -927,8 +920,7 @@ mod tests {
     #[tokio::test]
     async fn test_resume_with_nonexistent_session() {
         let storage: Arc<dyn Storage> = Arc::new(crate::storage::MemoryStorage::new());
-        let agent = Agent::new(AgentDefinition::default(), Client::default())
-            .with_storage(storage);
+        let agent = Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage);
         match agent.resume("nonexistent", "continue").await {
             Err(StorageError::NotFound(id)) => {
                 assert_eq!(id, "nonexistent");
@@ -946,8 +938,8 @@ mod tests {
         storage.save(&session).await.unwrap();
 
         let storage_arc: Arc<dyn Storage> = storage;
-        let agent = Agent::new(AgentDefinition::default(), Client::default())
-            .with_storage(storage_arc);
+        let agent =
+            Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage_arc);
 
         // resume returns a stream (will fail on LLM call, but that's ok - we just test it loads)
         let result = agent.resume("saved-session", "follow up").await;
@@ -1013,8 +1005,7 @@ mod tests {
     fn test_agent_definition_allowed_tools_type_alias_compat() {
         // Verify AgentConfig type alias works
         use crate::r#loop::AgentConfig;
-        let config: AgentConfig = AgentConfig::new("gpt-4")
-            .with_allowed_tools(vec!["a".into()]);
+        let config: AgentConfig = AgentConfig::new("gpt-4").with_allowed_tools(vec!["a".into()]);
         assert_eq!(config.allowed_tools, Some(vec!["a".into()]));
     }
 
@@ -1100,10 +1091,7 @@ mod tests {
         let mut events = Vec::new();
         let mut stream = stream;
         while let Some(event) = stream.next().await {
-            let is_terminal = matches!(
-                event,
-                AgentEvent::Done { .. } | AgentEvent::Error { .. }
-            );
+            let is_terminal = matches!(event, AgentEvent::Done { .. } | AgentEvent::Error { .. });
             events.push(event);
             if is_terminal {
                 break;
@@ -1124,8 +1112,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c", "d"]);
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(Client::default(), def, session, tools);
         let _events = collect_events(stream).await;
@@ -1145,8 +1132,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c"]);
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(Client::default(), def, session, tools);
         let _events = collect_events(stream).await;
@@ -1166,8 +1152,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c", "d"]);
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(Client::default(), def, session, tools);
         let _events = collect_events(stream).await;
@@ -1185,8 +1170,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["x", "y", "z"]);
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(Client::default(), def, session, tools);
         let _events = collect_events(stream).await;
@@ -1210,8 +1194,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c"]);
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hi"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
 
         // run_step will skip inference → return empty result
         let result = run_step(&Client::default(), &def, session, &tools).await;
@@ -1289,8 +1272,7 @@ mod tests {
 
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let agent = Agent::new(def, Client::default())
-            .with_storage(storage as Arc<dyn Storage>);
+        let agent = Agent::new(def, Client::default()).with_storage(storage as Arc<dyn Storage>);
         let tool = SubAgentTool::new(agent, "helper", "Helps");
 
         let state = json!({});
@@ -1316,8 +1298,8 @@ mod tests {
         let storage = Arc::new(crate::storage::MemoryStorage::new());
         let def = AgentDefinition::with_id("saver", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let agent = Agent::new(def, Client::default())
-            .with_storage(storage.clone() as Arc<dyn Storage>);
+        let agent =
+            Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn Storage>);
 
         let handle = agent.spawn("save this");
         let session_id = handle.session_id().to_string();
@@ -1401,8 +1383,7 @@ mod tests {
             .with_tool(DummyTool("a"))
             .with_tool(DummyTool("b"));
 
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
         let events = collect_events(agent.run(session)).await;
 
@@ -1428,8 +1409,7 @@ mod tests {
         let mut agent = Agent::new(def, Client::default());
         agent.tools = make_tools(&["a", "b", "c"]);
 
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hello"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
         let _events = collect_events(agent.run(session)).await;
 
         // Agent.run() applies filter_tools on its tools map, then run_loop_stream
@@ -1502,8 +1482,7 @@ mod tests {
     async fn test_run_subagent_stream_ends_with_done_not_error() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let agent = Agent::new(def, Client::default())
-            .with_tool(DummyTool("a"));
+        let agent = Agent::new(def, Client::default()).with_tool(DummyTool("a"));
 
         let stream = agent.run_subagent("do task", None);
         let events = collect_events(stream).await;
@@ -1529,8 +1508,7 @@ mod tests {
         let mut agent = Agent::new(def, Client::default());
         agent.tools = make_tools(&["safe", "dangerous"]);
 
-        let session =
-            Session::new("test").with_message(crate::types::Message::user("hi"));
+        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
         let _events = collect_events(agent.run(session)).await;
 
         let snapshots = recorded.lock().unwrap();

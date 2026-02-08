@@ -150,23 +150,21 @@ mod tests {
 
     #[test]
     fn test_interaction_with_message() {
-        let interaction = Interaction::new("int_1", "confirm")
-            .with_message("Are you sure?");
+        let interaction = Interaction::new("int_1", "confirm").with_message("Are you sure?");
         assert_eq!(interaction.message, "Are you sure?");
     }
 
     #[test]
     fn test_interaction_with_parameters() {
-        let interaction = Interaction::new("int_1", "input")
-            .with_parameters(json!({ "default": "Enter name" }));
+        let interaction =
+            Interaction::new("int_1", "input").with_parameters(json!({ "default": "Enter name" }));
         assert_eq!(interaction.parameters["default"], "Enter name");
     }
 
     #[test]
     fn test_interaction_with_response_schema() {
         let schema = json!({ "type": "boolean" });
-        let interaction = Interaction::new("int_1", "confirm")
-            .with_response_schema(schema.clone());
+        let interaction = Interaction::new("int_1", "confirm").with_response_schema(schema.clone());
         assert_eq!(interaction.response_schema, Some(schema));
     }
 

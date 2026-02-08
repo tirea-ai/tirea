@@ -1598,15 +1598,7 @@ pub fn run_agent_stream(
     thread_id: String,
     run_id: String,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
-    run_agent_stream_with_parent(
-        client,
-        config,
-        session,
-        tools,
-        thread_id,
-        run_id,
-        None,
-    )
+    run_agent_stream_with_parent(client, config, session, tools, thread_id, run_id, None)
 }
 
 /// Run the agent loop and return a stream of AG-UI events with an explicit parent run ID.
@@ -1689,15 +1681,7 @@ pub fn run_agent_stream_sse(
     thread_id: String,
     run_id: String,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    run_agent_stream_sse_with_parent(
-        client,
-        config,
-        session,
-        tools,
-        thread_id,
-        run_id,
-        None,
-    )
+    run_agent_stream_sse_with_parent(client, config, session, tools, thread_id, run_id, None)
 }
 
 /// Run the agent loop and return SSE strings with an explicit parent run ID.
@@ -1893,12 +1877,8 @@ mod tests {
 
     #[test]
     fn test_run_started_with_input() {
-        let event = AGUIEvent::run_started_with_input(
-            "thread_1",
-            "run_1",
-            None,
-            json!({"messages": []}),
-        );
+        let event =
+            AGUIEvent::run_started_with_input("thread_1", "run_1", None, json!({"messages": []}));
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""input""#));
     }
@@ -2059,7 +2039,10 @@ mod tests {
 
     #[test]
     fn test_raw_event_serialization() {
-        let event = AGUIEvent::raw(json!({"custom": "data"}), Some("external_system".to_string()));
+        let event = AGUIEvent::raw(
+            json!({"custom": "data"}),
+            Some("external_system".to_string()),
+        );
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"RAW""#));
         assert!(json.contains(r#""source":"external_system""#));
@@ -2185,7 +2168,9 @@ mod tests {
             response: "Hello World".to_string(),
         };
         let outputs3 = adapter.convert(&event3);
-        assert!(outputs3.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+        assert!(outputs3
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
     }
 
     #[test]
@@ -2285,7 +2270,9 @@ mod tests {
         let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
 
         let outputs = adapter.convert(&AgentEvent::StepEnd);
-        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::StepFinished { .. })));
+        assert!(outputs
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::StepFinished { .. })));
     }
 
     #[test]
@@ -2300,7 +2287,10 @@ mod tests {
         let sse_lines = adapter.to_sse(&event);
 
         for line in &sse_lines {
-            assert!(line.starts_with("data: "), "SSE line should start with 'data: '");
+            assert!(
+                line.starts_with("data: "),
+                "SSE line should start with 'data: '"
+            );
             assert!(line.ends_with("\n\n"), "SSE line should end with '\\n\\n'");
         }
     }
@@ -2317,7 +2307,10 @@ mod tests {
         let ndjson_lines = adapter.to_ndjson(&event);
 
         for line in &ndjson_lines {
-            assert!(!line.starts_with("data:"), "NDJSON should not have 'data:' prefix");
+            assert!(
+                !line.starts_with("data:"),
+                "NDJSON should not have 'data:' prefix"
+            );
             assert!(line.ends_with("\n"), "NDJSON line should end with '\\n'");
             assert!(!line.ends_with("\n\n"), "NDJSON should have single newline");
         }
@@ -2330,7 +2323,10 @@ mod tests {
         // run_started
         let event = adapter.run_started(None);
         assert!(matches!(event, AGUIEvent::RunStarted { .. }));
-        if let AGUIEvent::RunStarted { thread_id, run_id, .. } = &event {
+        if let AGUIEvent::RunStarted {
+            thread_id, run_id, ..
+        } = &event
+        {
             assert_eq!(thread_id, "thread_1");
             assert_eq!(run_id, "run_123");
         }
@@ -2392,7 +2388,9 @@ mod tests {
             result: Some(json!({"answer": 42})),
         };
         let outputs = adapter.convert(&event);
-        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        assert!(outputs
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
     }
 
     #[test]
@@ -2484,15 +2482,29 @@ mod tests {
         assert!(!all_events.is_empty());
 
         // Should have text message events
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
 
         // Should have tool call events
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
-        assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+        assert!(all_events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
     }
 
     // ========================================================================
@@ -2584,8 +2596,7 @@ mod tests {
 
     #[test]
     fn test_run_agent_request_with_state() {
-        let request = RunAgentRequest::new("t", "r")
-            .with_state(json!({"counter": 0}));
+        let request = RunAgentRequest::new("t", "r").with_state(json!({"counter": 0}));
         assert_eq!(request.state, Some(json!({"counter": 0})));
     }
 
@@ -2596,8 +2607,7 @@ mod tests {
             AGUIMessage::user("Hello"),
             AGUIMessage::assistant("Hi!"),
         ];
-        let request = RunAgentRequest::new("t", "r")
-            .with_messages(messages);
+        let request = RunAgentRequest::new("t", "r").with_messages(messages);
         assert_eq!(request.messages.len(), 3);
     }
 
@@ -2613,8 +2623,8 @@ mod tests {
 
     #[test]
     fn test_run_agent_request_last_user_message_none() {
-        let request = RunAgentRequest::new("t", "r")
-            .with_message(AGUIMessage::assistant("No user message"));
+        let request =
+            RunAgentRequest::new("t", "r").with_message(AGUIMessage::assistant("No user message"));
 
         assert_eq!(request.last_user_message(), None);
     }
@@ -2690,13 +2700,12 @@ mod tests {
 
     #[test]
     fn test_ag_ui_tool_def_serialization() {
-        let tool = AGUIToolDef::backend("search", "Search the web")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string"}
-                }
-            }));
+        let tool = AGUIToolDef::backend("search", "Search the web").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"}
+            }
+        }));
 
         let json = serde_json::to_string(&tool).unwrap();
         assert!(json.contains(r#""name":"search""#));
@@ -2758,10 +2767,22 @@ mod tests {
         }));
 
         // Should have: START, CONTENT, CONTENT, END, RUN_FINISHED
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
-        assert_eq!(events.iter().filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. })).count(), 2);
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. }))
+                .count(),
+            2
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
     }
 
     #[test]
@@ -2793,10 +2814,18 @@ mod tests {
         }));
 
         // Should have tool call events
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
-        assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
     }
 
     #[test]
@@ -2854,15 +2883,24 @@ mod tests {
         let mut total_events = 0;
 
         // Step 1: Text response
-        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Step 1".to_string() });
+        let events = adapter.convert(&AgentEvent::TextDelta {
+            delta: "Step 1".to_string(),
+        });
         total_events += events.len();
         let events = adapter.convert(&AgentEvent::StepEnd);
         total_events += events.len();
 
         // Tool execution
-        let events = adapter.convert(&AgentEvent::ToolCallStart { id: "c1".to_string(), name: "tool".to_string() });
+        let events = adapter.convert(&AgentEvent::ToolCallStart {
+            id: "c1".to_string(),
+            name: "tool".to_string(),
+        });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::ToolCallReady { id: "c1".to_string(), name: "tool".to_string(), arguments: json!({}) });
+        let events = adapter.convert(&AgentEvent::ToolCallReady {
+            id: "c1".to_string(),
+            name: "tool".to_string(),
+            arguments: json!({}),
+        });
         total_events += events.len();
         let events = adapter.convert(&AgentEvent::ToolCallDone {
             id: "c1".to_string(),
@@ -2872,9 +2910,13 @@ mod tests {
         total_events += events.len();
 
         // Step 2: Final response
-        let events = adapter.convert(&AgentEvent::TextDelta { delta: "Step 2".to_string() });
+        let events = adapter.convert(&AgentEvent::TextDelta {
+            delta: "Step 2".to_string(),
+        });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::Done { response: "Step 2".to_string() });
+        let events = adapter.convert(&AgentEvent::Done {
+            response: "Step 2".to_string(),
+        });
         total_events += events.len();
 
         // Should have multiple events
@@ -3043,7 +3085,8 @@ mod tests {
         }));
 
         // All should emit TOOL_CALL_START
-        let starts: Vec<_> = events.iter()
+        let starts: Vec<_> = events
+            .iter()
             .filter(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
             .collect();
         assert_eq!(starts.len(), 3);
@@ -3070,7 +3113,8 @@ mod tests {
             patch: None,
         }));
 
-        let ends: Vec<_> = events.iter()
+        let ends: Vec<_> = events
+            .iter()
             .filter(|e| matches!(e, AGUIEvent::ToolCallEnd { .. }))
             .collect();
         assert_eq!(ends.len(), 2);
@@ -3155,8 +3199,7 @@ mod tests {
             }
         });
 
-        let request = RunAgentRequest::new("t", "r")
-            .with_state(nested_state.clone());
+        let request = RunAgentRequest::new("t", "r").with_state(nested_state.clone());
 
         // Serialize and deserialize
         let json = serde_json::to_string(&request).unwrap();
@@ -3168,8 +3211,8 @@ mod tests {
     #[test]
     fn test_request_with_large_messages() {
         let large_content = "x".repeat(100_000);
-        let request = RunAgentRequest::new("t", "r")
-            .with_message(AGUIMessage::user(&large_content));
+        let request =
+            RunAgentRequest::new("t", "r").with_message(AGUIMessage::user(&large_content));
 
         assert_eq!(request.messages[0].content.len(), 100_000);
 
@@ -3230,7 +3273,7 @@ mod tests {
             assert!(line.starts_with("data: "));
             assert!(line.ends_with("\n\n"));
             // The JSON inside should have escaped newlines
-            let json_part = &line[6..line.len()-2];
+            let json_part = &line[6..line.len() - 2];
             assert!(serde_json::from_str::<serde_json::Value>(json_part).is_ok());
         }
     }
@@ -3444,7 +3487,10 @@ mod tests {
 
     #[test]
     fn test_tool_execution_location_default() {
-        assert_eq!(ToolExecutionLocation::default(), ToolExecutionLocation::Backend);
+        assert_eq!(
+            ToolExecutionLocation::default(),
+            ToolExecutionLocation::Backend
+        );
     }
 
     #[test]
@@ -3469,15 +3515,14 @@ mod tests {
 
     #[test]
     fn test_ag_ui_tool_def_with_parameters() {
-        let tool = AGUIToolDef::frontend("showDialog", "Show a dialog")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "message": {"type": "string"}
-                },
-                "required": ["title"]
-            }));
+        let tool = AGUIToolDef::frontend("showDialog", "Show a dialog").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "message": {"type": "string"}
+            },
+            "required": ["title"]
+        }));
 
         assert!(tool.is_frontend());
         let params = tool.parameters.unwrap();
@@ -3527,7 +3572,10 @@ mod tests {
             .with_tool(AGUIToolDef::backend("search", "Search"))
             .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
             .with_tool(AGUIToolDef::backend("read_file", "Read file"))
-            .with_tool(AGUIToolDef::frontend("showNotification", "Show notification"));
+            .with_tool(AGUIToolDef::frontend(
+                "showNotification",
+                "Show notification",
+            ));
 
         let frontend = request.frontend_tools();
         let backend = request.backend_tools();
@@ -3643,11 +3691,12 @@ mod tests {
 
     #[test]
     fn test_interaction_response_extract_json() {
-        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-            .with_message(AGUIMessage::tool(
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+            AGUIMessage::tool(
                 r#"{"approved":true,"reason":"User clicked Allow"}"#,
                 "confirm_1",
-            ));
+            ),
+        );
 
         let response = request.get_interaction_response("confirm_1").unwrap();
         assert!(response.result["approved"].as_bool().unwrap());
@@ -3692,7 +3741,9 @@ mod tests {
 
     #[test]
     fn test_is_interaction_approved_string_variants() {
-        let approved_strings = vec!["true", "yes", "approved", "allow", "confirm", "ok", "accept"];
+        let approved_strings = vec![
+            "true", "yes", "approved", "allow", "confirm", "ok", "accept",
+        ];
 
         for s in approved_strings {
             let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -3801,11 +3852,12 @@ mod tests {
     #[test]
     fn test_interaction_response_with_frontend_tool_result() {
         // Simulate frontend tool execution result
-        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-            .with_message(AGUIMessage::tool(
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+            AGUIMessage::tool(
                 r#"{"success":true,"copied_text":"Hello World"}"#,
                 "tool:copyToClipboard_call_123",
-            ));
+            ),
+        );
 
         let response = request
             .get_interaction_response("tool:copyToClipboard_call_123")
@@ -3820,8 +3872,7 @@ mod tests {
 
     #[test]
     fn test_interaction_to_ag_ui_events_basic() {
-        let interaction = Interaction::new("int_1", "confirm")
-            .with_message("Allow action?");
+        let interaction = Interaction::new("int_1", "confirm").with_message("Allow action?");
 
         let events = interaction.to_ag_ui_events();
 
@@ -3829,7 +3880,11 @@ mod tests {
 
         // First event: ToolCallStart
         match &events[0] {
-            AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } => {
+            AGUIEvent::ToolCallStart {
+                tool_call_id,
+                tool_call_name,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "int_1");
                 assert_eq!(tool_call_name, "confirm");
             }
@@ -3838,7 +3893,11 @@ mod tests {
 
         // Second event: ToolCallArgs
         match &events[1] {
-            AGUIEvent::ToolCallArgs { tool_call_id, delta, .. } => {
+            AGUIEvent::ToolCallArgs {
+                tool_call_id,
+                delta,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "int_1");
                 let args: Value = serde_json::from_str(delta).unwrap();
                 assert_eq!(args["id"], "int_1");
@@ -3991,7 +4050,13 @@ mod tests {
         assert!(!step.tool_blocked());
 
         // Check interaction was created correctly
-        let interaction = step.tool.as_ref().unwrap().pending_interaction.as_ref().unwrap();
+        let interaction = step
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .as_ref()
+            .unwrap();
         assert_eq!(interaction.id, "call_1");
         assert_eq!(interaction.action, "tool:copyToClipboard");
         assert_eq!(interaction.parameters["text"], "hello");
@@ -4050,7 +4115,11 @@ mod tests {
             Phase::SessionEnd,
         ] {
             plugin.on_phase(phase, &mut step).await;
-            assert!(!step.tool_pending(), "Phase {:?} should not set pending", phase);
+            assert!(
+                !step.tool_pending(),
+                "Phase {:?} should not set pending",
+                phase
+            );
         }
     }
 
@@ -4064,7 +4133,10 @@ mod tests {
         // 1. Setup: Create plugin from request
         let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
             .with_tool(AGUIToolDef::backend("search", "Search the web"))
-            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+            .with_tool(AGUIToolDef::frontend(
+                "copyToClipboard",
+                "Copy to clipboard",
+            ));
 
         let plugin = FrontendToolPlugin::from_request(&request);
 
@@ -4072,10 +4144,14 @@ mod tests {
         let session = Session::new("test");
         let mut step = StepContext::new(&session, vec![]);
 
-        let call = ToolCall::new("call_123", "copyToClipboard", json!({
-            "text": "Hello, World!",
-            "format": "plain"
-        }));
+        let call = ToolCall::new(
+            "call_123",
+            "copyToClipboard",
+            json!({
+                "text": "Hello, World!",
+                "format": "plain"
+            }),
+        );
         step.tool = Some(ToolContext::new(&call));
 
         // 3. Plugin intercepts in BeforeToolExecute
@@ -4084,7 +4160,13 @@ mod tests {
         assert!(step.tool_pending());
 
         // 4. Get the interaction
-        let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+        let interaction = step
+            .tool
+            .as_ref()
+            .unwrap()
+            .pending_interaction
+            .clone()
+            .unwrap();
 
         // 5. Convert to AG-UI events
         let events = interaction.to_ag_ui_events();
@@ -4094,7 +4176,11 @@ mod tests {
 
         // ToolCallStart
         match &events[0] {
-            AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } => {
+            AGUIEvent::ToolCallStart {
+                tool_call_id,
+                tool_call_name,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "call_123");
                 assert_eq!(tool_call_name, "tool:copyToClipboard");
             }
@@ -4103,7 +4189,11 @@ mod tests {
 
         // ToolCallArgs
         match &events[1] {
-            AGUIEvent::ToolCallArgs { tool_call_id, delta, .. } => {
+            AGUIEvent::ToolCallArgs {
+                tool_call_id,
+                delta,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "call_123");
                 let args: Value = serde_json::from_str(delta).unwrap();
                 assert_eq!(args["id"], "call_123");
@@ -4145,7 +4235,10 @@ mod tests {
             let call = ToolCall::new("c1", "search", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-            assert!(!step.tool_pending(), "Backend tool 'search' should not be pending");
+            assert!(
+                !step.tool_pending(),
+                "Backend tool 'search' should not be pending"
+            );
         }
 
         // Test another backend tool
@@ -4154,7 +4247,10 @@ mod tests {
             let call = ToolCall::new("c2", "read_file", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-            assert!(!step.tool_pending(), "Backend tool 'read_file' should not be pending");
+            assert!(
+                !step.tool_pending(),
+                "Backend tool 'read_file' should not be pending"
+            );
         }
 
         // Test frontend tool - should be pending
@@ -4163,7 +4259,10 @@ mod tests {
             let call = ToolCall::new("c3", "copyToClipboard", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-            assert!(step.tool_pending(), "Frontend tool 'copyToClipboard' should be pending");
+            assert!(
+                step.tool_pending(),
+                "Frontend tool 'copyToClipboard' should be pending"
+            );
         }
 
         // Test another frontend tool
@@ -4172,7 +4271,10 @@ mod tests {
             let call = ToolCall::new("c4", "showNotification", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-            assert!(step.tool_pending(), "Frontend tool 'showNotification' should be pending");
+            assert!(
+                step.tool_pending(),
+                "Frontend tool 'showNotification' should be pending"
+            );
         }
     }
 
@@ -4182,7 +4284,8 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let frontend_tools: HashSet<String> = ["copyToClipboard"].iter().map(|s| s.to_string()).collect();
+        let frontend_tools: HashSet<String> =
+            ["copyToClipboard"].iter().map(|s| s.to_string()).collect();
         let plugin = FrontendToolPlugin::new(frontend_tools);
         let session = Session::new("test");
 
@@ -4198,7 +4301,10 @@ mod tests {
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_blocked(), "Tool should remain blocked");
-        assert!(!step.tool_pending(), "Blocked tool should not be set to pending");
+        assert!(
+            !step.tool_pending(),
+            "Blocked tool should not be set to pending"
+        );
     }
 
     #[tokio::test]
@@ -4210,7 +4316,8 @@ mod tests {
         use serde_json::json;
 
         // Setup: frontend tool with PermissionPlugin set to Deny
-        let frontend_tools: HashSet<String> = ["frontend_action"].iter().map(|s| s.to_string()).collect();
+        let frontend_tools: HashSet<String> =
+            ["frontend_action"].iter().map(|s| s.to_string()).collect();
         let frontend_plugin = FrontendToolPlugin::new(frontend_tools);
         let permission_plugin = PermissionPlugin;
 
@@ -4229,13 +4336,23 @@ mod tests {
         );
 
         // Run PermissionPlugin first (simulating plugin order)
-        permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-        assert!(step.tool_blocked(), "PermissionPlugin should block denied tool");
+        permission_plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .await;
+        assert!(
+            step.tool_blocked(),
+            "PermissionPlugin should block denied tool"
+        );
 
         // Run FrontendToolPlugin second
-        frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        frontend_plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .await;
         assert!(step.tool_blocked(), "Tool should still be blocked");
-        assert!(!step.tool_pending(), "FrontendToolPlugin should not set pending for blocked tool");
+        assert!(
+            !step.tool_pending(),
+            "FrontendToolPlugin should not set pending for blocked tool"
+        );
     }
 
     // ========================================================================
@@ -4298,10 +4415,8 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with denied permission interaction
-        let plugin = InteractionResponsePlugin::new(
-            vec![],
-            vec!["permission_write_file".to_string()],
-        );
+        let plugin =
+            InteractionResponsePlugin::new(vec![], vec!["permission_write_file".to_string()]);
 
         // Set up tool context for the tool
         let call = ToolCall::new("call_1", "write_file", json!({}));
@@ -4325,10 +4440,8 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with approved permission interaction
-        let plugin = InteractionResponsePlugin::new(
-            vec!["permission_read_file".to_string()],
-            vec![],
-        );
+        let plugin =
+            InteractionResponsePlugin::new(vec!["permission_read_file".to_string()], vec![]);
 
         // Set up tool context for the tool
         let call = ToolCall::new("call_1", "read_file", json!({}));
@@ -4352,10 +4465,7 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         // FrontendToolPlugin uses the tool call ID as interaction ID
-        let plugin = InteractionResponsePlugin::new(
-            vec!["call_copy_1".to_string()],
-            vec![],
-        );
+        let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
 
         // Set up tool context with matching call ID
         let call = ToolCall::new("call_copy_1", "copyToClipboard", json!({}));
@@ -4378,10 +4488,7 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with denied interaction
-        let plugin = InteractionResponsePlugin::new(
-            vec![],
-            vec!["permission_test".to_string()],
-        );
+        let plugin = InteractionResponsePlugin::new(vec![], vec!["permission_test".to_string()]);
 
         let call = ToolCall::new("call_1", "test", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -4744,13 +4851,12 @@ mod tests {
 
     #[test]
     fn test_aguitooldef_serialization_roundtrip() {
-        let tool = AGUIToolDef::backend("test_tool", "A test tool")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" }
-                }
-            }));
+        let tool = AGUIToolDef::backend("test_tool", "A test tool").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" }
+            }
+        }));
 
         let json = serde_json::to_string(&tool).unwrap();
         let parsed: AGUIToolDef = serde_json::from_str(&json).unwrap();
@@ -4770,8 +4876,8 @@ mod tests {
             "required": ["filename"]
         });
 
-        let tool = AGUIToolDef::backend("write_file", "Write to file")
-            .with_parameters(schema.clone());
+        let tool =
+            AGUIToolDef::backend("write_file", "Write to file").with_parameters(schema.clone());
 
         assert_eq!(tool.parameters, Some(schema));
     }
@@ -4869,9 +4975,9 @@ mod tests {
     #[test]
     fn test_interaction_response_all_approved_string_variants() {
         let approved_strings = vec![
-            "true", "yes", "approved", "allow", "confirm", "ok", "accept",
-            "TRUE", "YES", "APPROVED", "ALLOW", "CONFIRM", "OK", "ACCEPT",
-            "True", "Yes", "Approved", "Allow", "Confirm", "Ok", "Accept",
+            "true", "yes", "approved", "allow", "confirm", "ok", "accept", "TRUE", "YES",
+            "APPROVED", "ALLOW", "CONFIRM", "OK", "ACCEPT", "True", "Yes", "Approved", "Allow",
+            "Confirm", "Ok", "Accept",
         ];
 
         for s in approved_strings {
@@ -4892,9 +4998,9 @@ mod tests {
     #[test]
     fn test_interaction_response_all_denied_string_variants() {
         let denied_strings = vec![
-            "false", "no", "denied", "deny", "reject", "cancel", "abort",
-            "FALSE", "NO", "DENIED", "DENY", "REJECT", "CANCEL", "ABORT",
-            "False", "No", "Denied", "Deny", "Reject", "Cancel", "Abort",
+            "false", "no", "denied", "deny", "reject", "cancel", "abort", "FALSE", "NO", "DENIED",
+            "DENY", "REJECT", "CANCEL", "ABORT", "False", "No", "Denied", "Deny", "Reject",
+            "Cancel", "Abort",
         ];
 
         for s in denied_strings {
@@ -4924,7 +5030,9 @@ mod tests {
     #[test]
     fn test_interaction_response_object_with_approved_field() {
         assert!(InteractionResponse::is_approved(&json!({"approved": true})));
-        assert!(!InteractionResponse::is_approved(&json!({"approved": false})));
+        assert!(!InteractionResponse::is_approved(
+            &json!({"approved": false})
+        ));
 
         assert!(InteractionResponse::is_denied(&json!({"approved": false})));
         assert!(!InteractionResponse::is_denied(&json!({"approved": true})));
@@ -4933,7 +5041,9 @@ mod tests {
     #[test]
     fn test_interaction_response_object_with_allowed_field() {
         assert!(InteractionResponse::is_approved(&json!({"allowed": true})));
-        assert!(!InteractionResponse::is_approved(&json!({"allowed": false})));
+        assert!(!InteractionResponse::is_approved(
+            &json!({"allowed": false})
+        ));
     }
 
     #[test]

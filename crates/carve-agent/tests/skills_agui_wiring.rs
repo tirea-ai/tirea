@@ -55,9 +55,15 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     events.extend(ready.to_ag_ui_events(&mut agui_ctx));
     events.extend(done.to_ag_ui_events(&mut agui_ctx));
 
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
 
     let args_event = events
         .iter()
@@ -118,8 +124,11 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
 
     // Even without activation, discovery should inject available_skills.
     let session = Session::with_initial_state("s", json!({}));
-    let mut step = carve_agent::StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
-    plugin.on_phase(carve_agent::Phase::BeforeInference, &mut step).await;
+    let mut step =
+        carve_agent::StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+    plugin
+        .on_phase(carve_agent::Phase::BeforeInference, &mut step)
+        .await;
     assert_eq!(step.system_context.len(), 1);
     assert!(step.system_context[0].contains("<available_skills>"));
 }

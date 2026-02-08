@@ -111,7 +111,10 @@ impl StateManager {
     ///
     /// Patches are applied in order. If any patch fails, the operation
     /// stops and returns an error (partial application may have occurred).
-    pub async fn commit_batch(&self, patches: Vec<TrackedPatch>) -> Result<ApplyResult, StateError> {
+    pub async fn commit_batch(
+        &self,
+        patches: Vec<TrackedPatch>,
+    ) -> Result<ApplyResult, StateError> {
         if patches.is_empty() {
             return Ok(ApplyResult {
                 patches_applied: 0,
@@ -452,7 +455,10 @@ mod tests {
         // Add 5 patches
         for i in 1..=5 {
             manager
-                .commit(make_patch(vec![Op::set(path!("count"), json!(i))], &format!("s{}", i)))
+                .commit(make_patch(
+                    vec![Op::set(path!("count"), json!(i))],
+                    &format!("s{}", i),
+                ))
                 .await
                 .unwrap();
         }

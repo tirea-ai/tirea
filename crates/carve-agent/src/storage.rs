@@ -69,8 +69,8 @@ impl Storage for FileStorage {
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
-        let session: Session =
-            serde_json::from_str(&content).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let session: Session = serde_json::from_str(&content)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         Ok(Some(session))
     }
@@ -383,11 +383,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let session = Session::with_initial_state("complex-session", json!({
-            "user": {"name": "Alice", "age": 30},
-            "items": [1, 2, 3],
-            "active": true
-        }))
+        let session = Session::with_initial_state(
+            "complex-session",
+            json!({
+                "user": {"name": "Alice", "age": 30},
+                "items": [1, 2, 3],
+                "active": true
+            }),
+        )
         .with_message(Message::user("Hello"))
         .with_message(Message::assistant("Hi there!"))
         .with_patch(TrackedPatch::new(

@@ -7,9 +7,9 @@
 
 use crate::session::Session;
 use crate::state_types::Interaction;
+use crate::stream::StreamResult;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
 use crate::types::{Message, ToolCall};
-use crate::stream::StreamResult;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -607,8 +607,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm")
-            .with_message("Allow write?");
+        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
         ctx.pending(interaction);
 
         assert!(ctx.tool_pending());
@@ -623,8 +622,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm")
-            .with_message("Allow write?");
+        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow write?");
         ctx.pending(interaction);
         ctx.confirm();
 
@@ -735,8 +733,7 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        let interaction = Interaction::new("confirm_1", "confirm")
-            .with_message("Allow?");
+        let interaction = Interaction::new("confirm_1", "confirm").with_message("Allow?");
         ctx.pending(interaction.clone());
 
         match ctx.result() {
@@ -936,8 +933,7 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        let interaction = Interaction::new("id", "confirm")
-            .with_message("test");
+        let interaction = Interaction::new("id", "confirm").with_message("test");
         ctx.pending(interaction);
 
         assert!(!ctx.tool_pending()); // tool_pending returns false when no tool
@@ -1049,11 +1045,13 @@ mod tests {
 
         assert!(tool_ctx.pending_interaction.is_none());
 
-        let interaction = Interaction::new("confirm_1", "confirm")
-            .with_message("Test?");
+        let interaction = Interaction::new("confirm_1", "confirm").with_message("Test?");
         tool_ctx.pending_interaction = Some(interaction.clone());
 
-        assert_eq!(tool_ctx.pending_interaction.as_ref().unwrap().id, "confirm_1");
+        assert_eq!(
+            tool_ctx.pending_interaction.as_ref().unwrap().id,
+            "confirm_1"
+        );
     }
 
     #[test]
