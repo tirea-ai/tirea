@@ -124,7 +124,7 @@ pub use activity::ActivityHub;
 // Skills exports
 pub use skills::{
     LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
-    SkillRuntimePlugin, SkillScriptTool,
+    SkillRuntimePlugin, SkillScriptTool, SkillSubsystem, SkillSubsystemError,
 };
 
 // UI Stream exports (AI SDK v6 compatible)

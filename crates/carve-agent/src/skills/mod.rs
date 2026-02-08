@@ -12,10 +12,12 @@ mod registry;
 mod runtime_plugin;
 mod skill_md;
 mod state;
+mod subsystem;
 mod tools;
 
 pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use registry::{SkillMeta, SkillRegistry};
 pub use runtime_plugin::SkillRuntimePlugin;
+pub use subsystem::{SkillSubsystem, SkillSubsystemError};
 pub use tools::{LoadSkillReferenceTool, SkillActivateTool, SkillScriptTool};
