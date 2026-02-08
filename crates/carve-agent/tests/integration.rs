@@ -610,6 +610,7 @@ async fn test_session_with_tool_workflow() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
 
     // Add assistant message
@@ -636,6 +637,7 @@ async fn test_session_with_tool_workflow() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
 
     let session = session.with_message(carve_agent::assistant_tool_calls(
@@ -825,6 +827,7 @@ async fn test_parallel_tool_execution_order() {
             carve_agent::ToolCall::new("call_2", "add_task", json!({"item": "second"})),
             carve_agent::ToolCall::new("call_3", "add_task", json!({"item": "third"})),
         ],
+        usage: None,
     };
 
     let tools = tool_map([AddTaskTool]);
@@ -1502,6 +1505,7 @@ fn test_stream_result_from_partial_response() {
     let result = StreamResult {
         text: "Partial...".to_string(),
         tool_calls: vec![],
+        usage: None,
     };
 
     assert!(!result.needs_tools());
@@ -1843,6 +1847,7 @@ fn test_stream_result_needs_tools_variants() {
     let result_no_tools = StreamResult {
         text: "Just text".to_string(),
         tool_calls: vec![],
+        usage: None,
     };
     assert!(!result_no_tools.needs_tools());
 
@@ -1850,6 +1855,7 @@ fn test_stream_result_needs_tools_variants() {
     let result_with_tools = StreamResult {
         text: "".to_string(),
         tool_calls: vec![carve_agent::ToolCall::new("id", "name", json!({}))],
+        usage: None,
     };
     assert!(result_with_tools.needs_tools());
 
@@ -1860,6 +1866,7 @@ fn test_stream_result_needs_tools_variants() {
             carve_agent::ToolCall::new("id1", "search", json!({})),
             carve_agent::ToolCall::new("id2", "calculate", json!({})),
         ],
+        usage: None,
     };
     assert!(result_both.needs_tools());
 }
@@ -1872,6 +1879,7 @@ async fn test_execute_tools_empty_result() {
     let result = StreamResult {
         text: "No tools needed".to_string(),
         tool_calls: vec![],
+        usage: None,
     };
 
     let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
@@ -2334,6 +2342,7 @@ async fn test_parallel_execution_patch_conflict() {
             carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
             carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
         ],
+        usage: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -2372,6 +2381,7 @@ async fn test_parallel_execution_different_fields() {
             carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter_b"})),
             carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter_c"})),
         ],
+        usage: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -2676,6 +2686,7 @@ async fn test_e2e_tool_execution_flow() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
 
     // 3. Add assistant message with tool calls
@@ -2720,6 +2731,7 @@ async fn test_e2e_parallel_tool_calls() {
             carve_agent::ToolCall::new("call_1", "increment", json!({"path": "counter"})),
             carve_agent::ToolCall::new("call_2", "add_task", json!({"item": "New task"})),
         ],
+        usage: None,
     };
 
     let session = session.with_message(carve_agent::assistant_tool_calls(
@@ -2760,6 +2772,7 @@ async fn test_e2e_multi_step_with_state() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     session = session.with_message(carve_agent::assistant_tool_calls(&response1.text, response1.tool_calls.clone()));
     session = loop_execute_tools(session, &response1, &tools, true).await.unwrap();
@@ -2774,6 +2787,7 @@ async fn test_e2e_multi_step_with_state() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     session = session.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
     session = loop_execute_tools(session, &response2, &tools, true).await.unwrap();
@@ -2788,6 +2802,7 @@ async fn test_e2e_multi_step_with_state() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     session = session.with_message(carve_agent::assistant_tool_calls(&response3.text, response3.tool_calls.clone()));
     session = loop_execute_tools(session, &response3, &tools, true).await.unwrap();
@@ -2812,6 +2827,7 @@ async fn test_e2e_tool_failure_handling() {
             "nonexistent_tool",
             json!({}),
         )],
+        usage: None,
     };
 
     let session = session.with_message(carve_agent::assistant_tool_calls(
@@ -2850,6 +2866,7 @@ async fn test_e2e_session_persistence_restore() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     session = session.with_message(carve_agent::assistant_tool_calls(&response.text, response.tool_calls.clone()));
     session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
@@ -2876,6 +2893,7 @@ async fn test_e2e_session_persistence_restore() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     loaded = loaded.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
     loaded = loop_execute_tools(loaded, &response2, &tools, true).await.unwrap();
@@ -2901,6 +2919,7 @@ async fn test_e2e_snapshot_and_continue() {
                 "increment",
                 json!({"path": "counter"}),
             )],
+            usage: None,
         };
         session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
     }
@@ -2922,6 +2941,7 @@ async fn test_e2e_snapshot_and_continue() {
             "increment",
             json!({"path": "counter"}),
         )],
+        usage: None,
     };
     let session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
 
@@ -2946,6 +2966,7 @@ async fn test_e2e_state_replay() {
                 "increment",
                 json!({"path": "counter"}),
             )],
+            usage: None,
         };
         session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
     }
@@ -2998,6 +3019,7 @@ async fn test_e2e_sequential_tool_execution() {
             carve_agent::ToolCall::new("call_2", "increment", json!({"path": "counter"})),
             carve_agent::ToolCall::new("call_3", "increment", json!({"path": "counter"})),
         ],
+        usage: None,
     };
 
     let tools = tool_map([IncrementTool]);
@@ -3327,6 +3349,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
             "dangerous_action",
             json!({}),
         )],
+        usage: None,
     };
 
     let session = session.with_message(carve_agent::assistant_tool_calls(
@@ -3424,6 +3447,7 @@ fn test_stream_result_with_empty_tool_calls() {
     let result = StreamResult {
         text: "Hello".to_string(),
         tool_calls: vec![],
+        usage: None,
     };
 
     assert!(!result.needs_tools());
@@ -3542,6 +3566,7 @@ async fn test_concurrent_tool_executions_isolated() {
                     "increment",
                     json!({"path": "counter"}),
                 )],
+                usage: None,
             };
 
             let tools = tool_map([IncrementTool]);
@@ -3742,6 +3767,7 @@ async fn test_e2e_empty_user_message() {
     let llm_response = StreamResult {
         text: "I notice you sent an empty message. How can I help you?".to_string(),
         tool_calls: vec![],
+        usage: None,
     };
 
     let session = session.with_message(Message::assistant(&llm_response.text));
@@ -10798,5 +10824,238 @@ fn test_interaction_to_ag_ui_events() {
     if let AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } = &events[0] {
         assert_eq!(tool_call_id, "int_1");
         assert_eq!(tool_call_name, "confirm_delete");
+    }
+}
+
+// ============================================================================
+// LLMMetryPlugin tracing span integration tests
+// ============================================================================
+
+mod llmmetry_tracing {
+    use carve_agent::{
+        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, Session, StepContext, StreamResult,
+        ToolCall, ToolContext, ToolResult,
+    };
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::LookupSpan;
+
+    #[derive(Debug, Clone)]
+    struct CapturedSpan {
+        id: u64,
+        name: String,
+        was_closed: bool,
+    }
+
+    struct SpanCaptureLayer {
+        captured: Arc<Mutex<Vec<CapturedSpan>>>,
+    }
+
+    impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S>
+        for SpanCaptureLayer
+    {
+        fn on_new_span(
+            &self,
+            _attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if let Some(span_ref) = ctx.span(id) {
+                self.captured.lock().unwrap().push(CapturedSpan {
+                    id: id.into_u64(),
+                    name: span_ref.name().to_string(),
+                    was_closed: false,
+                });
+            }
+        }
+
+        fn on_close(
+            &self,
+            id: tracing::span::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let raw_id = id.into_u64();
+            if ctx.span(&id).is_some() {
+                let mut captured = self.captured.lock().unwrap();
+                if let Some(entry) = captured.iter_mut().find(|c| c.id == raw_id) {
+                    entry.was_closed = true;
+                }
+            }
+        }
+    }
+
+    fn setup_tracing() -> Arc<Mutex<Vec<CapturedSpan>>> {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let layer = SpanCaptureLayer {
+            captured: captured.clone(),
+        };
+        let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+        tracing::subscriber::set_global_default(subscriber).ok();
+        captured
+    }
+
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    static CAPTURED: std::sync::OnceLock<Arc<Mutex<Vec<CapturedSpan>>>> =
+        std::sync::OnceLock::new();
+
+    fn global_captured() -> Arc<Mutex<Vec<CapturedSpan>>> {
+        INIT.call_once(|| {
+            let c = setup_tracing();
+            CAPTURED.set(c).ok();
+        });
+        CAPTURED.get().unwrap().clone()
+    }
+
+    fn usage(prompt: i32, completion: i32, total: i32) -> genai::chat::Usage {
+        genai::chat::Usage {
+            prompt_tokens: Some(prompt),
+            prompt_tokens_details: None,
+            completion_tokens: Some(completion),
+            completion_tokens_details: None,
+            total_tokens: Some(total),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_inference_tracing_span_lifecycle() {
+        let captured = global_captured();
+        let baseline = captured.lock().unwrap().len();
+
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone())
+            .with_model("test-model")
+            .with_provider("test-provider");
+
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        step.response = Some(StreamResult {
+            text: "hello".into(),
+            tool_calls: vec![],
+            usage: Some(usage(100, 50, 150)),
+        });
+
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+        let spans = captured.lock().unwrap();
+        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let chat_span = new_spans.iter().find(|s| s.name == "gen_ai.chat");
+        assert!(chat_span.is_some(), "gen_ai.chat span should be created");
+        assert!(
+            chat_span.unwrap().was_closed,
+            "gen_ai.chat span should be closed after AfterInference"
+        );
+
+        // Verify metrics sink still works alongside tracing
+        let m = sink.metrics();
+        assert_eq!(m.inference_count(), 1);
+        assert_eq!(m.total_input_tokens(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_tool_tracing_span_lifecycle() {
+        let captured = global_captured();
+        let baseline = captured.lock().unwrap().len();
+
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone());
+
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("tc1", "search", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .await;
+
+        step.tool.as_mut().unwrap().result =
+            Some(ToolResult::success("search", json!({"found": true})));
+
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step)
+            .await;
+
+        let spans = captured.lock().unwrap();
+        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let tool_span = new_spans.iter().find(|s| s.name == "gen_ai.execute_tool");
+        assert!(
+            tool_span.is_some(),
+            "gen_ai.execute_tool span should be created"
+        );
+        assert!(
+            tool_span.unwrap().was_closed,
+            "gen_ai.execute_tool span should be closed after AfterToolExecute"
+        );
+
+        let m = sink.metrics();
+        assert_eq!(m.tool_count(), 1);
+        assert!(m.tools[0].is_success());
+    }
+
+    #[tokio::test]
+    async fn test_full_session_with_tracing_spans() {
+        let captured = global_captured();
+        let baseline = captured.lock().unwrap().len();
+
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone())
+            .with_model("gpt-4")
+            .with_provider("openai");
+
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+
+        // Session start
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        // Inference
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        step.response = Some(StreamResult {
+            text: "use search tool".into(),
+            tool_calls: vec![],
+            usage: Some(usage(50, 25, 75)),
+        });
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+        // Tool execution
+        let call = ToolCall::new("c1", "search", json!({"q": "test"}));
+        step.tool = Some(ToolContext::new(&call));
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .await;
+        step.tool.as_mut().unwrap().result =
+            Some(ToolResult::success("search", json!({"results": []})));
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step)
+            .await;
+
+        // Session end
+        plugin.on_phase(Phase::SessionEnd, &mut step).await;
+
+        let spans = captured.lock().unwrap();
+        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let chat_count = new_spans.iter().filter(|s| s.name == "gen_ai.chat").count();
+        let tool_count = new_spans
+            .iter()
+            .filter(|s| s.name == "gen_ai.execute_tool")
+            .count();
+        // Use >= because concurrent tests may contribute spans to the global collector
+        assert!(chat_count >= 1, "should have at least 1 inference span");
+        assert!(tool_count >= 1, "should have at least 1 tool span");
+        assert!(
+            new_spans.iter().all(|s| s.was_closed),
+            "all spans should be closed"
+        );
+
+        // The per-plugin metrics sink is not shared, so exact counts are reliable
+        let m = sink.metrics();
+        assert_eq!(m.inference_count(), 1);
+        assert_eq!(m.tool_count(), 1);
     }
 }
