@@ -44,14 +44,18 @@ struct IncrementTool;
 #[async_trait]
 impl Tool for IncrementTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("increment", "Increment Counter", "Increments a counter by 1")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Counter path"}
-                },
-                "required": ["path"]
-            }))
+        ToolDescriptor::new(
+            "increment",
+            "Increment Counter",
+            "Increments a counter by 1",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Counter path"}
+            },
+            "required": ["path"]
+        }))
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -88,7 +92,10 @@ impl Tool for AddTaskTool {
         tasks.items_push(item);
         tasks.set_count(current_count + 1);
 
-        Ok(ToolResult::success("add_task", json!({"count": current_count + 1})))
+        Ok(ToolResult::success(
+            "add_task",
+            json!({"count": current_count + 1}),
+        ))
     }
 }
 
@@ -101,9 +108,7 @@ impl Tool for UpdateCallStateTool {
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let label = args["label"]
-            .as_str()
-            .unwrap_or("updated");
+        let label = args["label"].as_str().unwrap_or("updated");
 
         // Use call_state() for per-call state
         let call_state = ctx.call_state::<CounterState>();
@@ -252,10 +257,7 @@ async fn test_tool_with_call_state() {
         let snapshot = manager.snapshot().await;
         let ctx = Context::new(&snapshot, "call_abc", "tool:update_call");
 
-        let result = tool
-            .execute(json!({"label": "step1"}), &ctx)
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"label": "step1"}), &ctx).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 1);
@@ -268,10 +270,7 @@ async fn test_tool_with_call_state() {
         let snapshot = manager.snapshot().await;
         let ctx = Context::new(&snapshot, "call_abc", "tool:update_call");
 
-        let result = tool
-            .execute(json!({"label": "step2"}), &ctx)
-            .await
-            .unwrap();
+        let result = tool.execute(json!({"label": "step2"}), &ctx).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 2);
@@ -893,7 +892,11 @@ async fn test_concurrent_tool_execution_stress() {
     let success_count = results.iter().filter(|r| r.is_ok()).count();
 
     // Most should succeed (some may fail due to conflicts, which is expected)
-    assert!(success_count >= 40, "Expected at least 40 successful executions, got {}", success_count);
+    assert!(
+        success_count >= 40,
+        "Expected at least 40 successful executions, got {}",
+        success_count
+    );
 }
 
 #[tokio::test]
@@ -905,20 +908,22 @@ async fn test_concurrent_storage_operations() {
     // 100 concurrent save operations
     for i in 0..100 {
         let storage = Arc::clone(&storage);
-        let handle: tokio::task::JoinHandle<Result<(), carve_agent::StorageError>> = tokio::spawn(async move {
-            let session = Session::with_initial_state(
-                format!("concurrent-{}", i),
-                json!({"index": i}),
-            )
-            .with_message(Message::user(format!("Message {}", i)));
+        let handle: tokio::task::JoinHandle<Result<(), carve_agent::StorageError>> =
+            tokio::spawn(async move {
+                let session =
+                    Session::with_initial_state(format!("concurrent-{}", i), json!({"index": i}))
+                        .with_message(Message::user(format!("Message {}", i)));
 
-            storage.save(&session).await
-        });
+                storage.save(&session).await
+            });
         handles.push(handle);
     }
 
     let results: Vec<_> = futures::future::join_all(handles).await;
-    let success_count = results.iter().filter(|r| r.as_ref().map(|r| r.is_ok()).unwrap_or(false)).count();
+    let success_count = results
+        .iter()
+        .filter(|r| r.as_ref().map(|r| r.is_ok()).unwrap_or(false))
+        .count();
     assert_eq!(success_count, 100, "All saves should succeed");
 
     // Verify all sessions exist
@@ -941,9 +946,7 @@ async fn test_concurrent_session_rebuild() {
     let mut handles = vec![];
     for _ in 0..50 {
         let session = session.clone();
-        let handle = tokio::spawn(async move {
-            session.rebuild_state()
-        });
+        let handle = tokio::spawn(async move { session.rebuild_state() });
         handles.push(handle);
     }
 
@@ -1035,12 +1038,13 @@ async fn test_large_session_snapshot_performance() {
 
     // Add 200 patches with nested data
     for i in 0..200 {
-        session = session.with_patch(TrackedPatch::new(
-            Patch::new().with_op(Op::set(path!("data").key(format!("key_{}", i)), json!({
+        session = session.with_patch(TrackedPatch::new(Patch::new().with_op(Op::set(
+            path!("data").key(format!("key_{}", i)),
+            json!({
                 "index": i,
                 "nested": {"value": i * 2}
-            }))),
-        ));
+            }),
+        ))));
     }
 
     // Snapshot should collapse all patches
@@ -1049,7 +1053,11 @@ async fn test_large_session_snapshot_performance() {
     let duration = start.elapsed();
 
     assert_eq!(session.patch_count(), 0);
-    assert!(duration.as_millis() < 1000, "Snapshot took too long: {:?}", duration);
+    assert!(
+        duration.as_millis() < 1000,
+        "Snapshot took too long: {:?}",
+        duration
+    );
 
     // Verify data
     let keys_count = session.state["data"].as_object().unwrap().len();
@@ -1110,7 +1118,10 @@ async fn test_session_incremental_checkpoints() {
     for checkpoint in 1..=5 {
         // Do some work
         for _ in 0..10 {
-            session = session.with_message(Message::user(format!("Work item at checkpoint {}", checkpoint)));
+            session = session.with_message(Message::user(format!(
+                "Work item at checkpoint {}",
+                checkpoint
+            )));
         }
 
         session = session.with_patch(TrackedPatch::new(
@@ -1463,7 +1474,9 @@ fn test_stream_collector_interrupted_tool_call() {
         fn_arguments: json!({"expr": "1+1"}),
         thought_signatures: None,
     };
-    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tool_call2 }));
+    collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+        tool_call: tool_call2,
+    }));
 
     // Stream "interrupted" - finish without complete tool call
     let result = collector.finish();
@@ -1541,7 +1554,9 @@ impl Tool for NetworkErrorTool {
     }
 
     async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let count = self.fail_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let count = self
+            .fail_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         if count < self.max_failures {
             Err(ToolError::ExecutionFailed(format!(
@@ -1551,7 +1566,10 @@ impl Tool for NetworkErrorTool {
         } else {
             let counter = ctx.state::<CounterState>("counter");
             counter.set_value(1);
-            Ok(ToolResult::success("network_tool", json!({"success": true})))
+            Ok(ToolResult::success(
+                "network_tool",
+                json!({"success": true}),
+            ))
         }
     }
 }
@@ -1639,8 +1657,14 @@ async fn test_session_resilient_to_tool_errors() {
     assert_eq!(session.message_count(), 4);
 
     // Verify error messages are preserved
-    assert!(session.messages[1].content.contains("error") || session.messages[1].content.contains("Network"));
-    assert!(session.messages[3].content.contains("error") || session.messages[3].content.contains("Connection"));
+    assert!(
+        session.messages[1].content.contains("error")
+            || session.messages[1].content.contains("Network")
+    );
+    assert!(
+        session.messages[3].content.contains("error")
+            || session.messages[3].content.contains("Connection")
+    );
 }
 
 #[tokio::test]
@@ -1649,8 +1673,7 @@ async fn test_storage_error_recovery() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Save a valid session
-    let session = Session::new("valid-session")
-        .with_message(Message::user("Hello"));
+    let session = Session::new("valid-session").with_message(Message::user("Hello"));
     storage.save(&session).await.unwrap();
 
     // Try to load non-existent session
@@ -1668,8 +1691,7 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     let storage = Arc::new(MemoryStorage::new());
 
     // Save initial session
-    let session = Session::new("concurrent-test")
-        .with_message(Message::user("Initial"));
+    let session = Session::new("concurrent-test").with_message(Message::user("Initial"));
     storage.save(&session).await.unwrap();
 
     let mut handles = vec![];
@@ -1677,17 +1699,18 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     // 50 concurrent operations (mix of saves and loads)
     for i in 0..50 {
         let storage = Arc::clone(&storage);
-        let handle: tokio::task::JoinHandle<Result<Option<Session>, carve_agent::StorageError>> = tokio::spawn(async move {
-            if i % 3 == 0 {
-                // Load
-                storage.load("concurrent-test").await
-            } else {
-                // Save (potentially conflicting)
-                let session = Session::new("concurrent-test")
-                    .with_message(Message::user(format!("Update {}", i)));
-                storage.save(&session).await.map(|_| None)
-            }
-        });
+        let handle: tokio::task::JoinHandle<Result<Option<Session>, carve_agent::StorageError>> =
+            tokio::spawn(async move {
+                if i % 3 == 0 {
+                    // Load
+                    storage.load("concurrent-test").await
+                } else {
+                    // Save (potentially conflicting)
+                    let session = Session::new("concurrent-test")
+                        .with_message(Message::user(format!("Update {}", i)));
+                    storage.save(&session).await.map(|_| None)
+                }
+            });
         handles.push(handle);
     }
 
@@ -1704,7 +1727,8 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
 
 #[test]
 fn test_tool_result_success_with_message() {
-    let result = ToolResult::success_with_message("my_tool", json!({"data": 42}), "Operation completed");
+    let result =
+        ToolResult::success_with_message("my_tool", json!({"data": 42}), "Operation completed");
 
     assert!(result.is_success());
     assert!(!result.is_error());
@@ -1804,7 +1828,9 @@ async fn test_file_storage_corrupted_json() {
 
     // Write corrupted JSON file
     let corrupted_path = temp_dir.path().join("corrupted.json");
-    tokio::fs::write(&corrupted_path, "{ invalid json }").await.unwrap();
+    tokio::fs::write(&corrupted_path, "{ invalid json }")
+        .await
+        .unwrap();
 
     let storage = FileStorage::new(temp_dir.path());
 
@@ -1829,13 +1855,18 @@ fn test_tool_error_variants_display() {
     assert!(invalid_args.to_string().contains("Invalid arguments"));
 
     let not_found = ToolError::NotFound("unknown_tool".to_string());
-    assert!(not_found.to_string().contains("not found") || not_found.to_string().contains("Not found"));
+    assert!(
+        not_found.to_string().contains("not found") || not_found.to_string().contains("Not found")
+    );
 
     let exec_failed = ToolError::ExecutionFailed("Database connection timeout".to_string());
     assert!(exec_failed.to_string().contains("failed"));
 
     let permission_denied = ToolError::PermissionDenied("Admin access required".to_string());
-    assert!(permission_denied.to_string().contains("Permission denied") || permission_denied.to_string().contains("Admin"));
+    assert!(
+        permission_denied.to_string().contains("Permission denied")
+            || permission_denied.to_string().contains("Admin")
+    );
 
     let internal = ToolError::Internal("Unexpected state".to_string());
     assert!(internal.to_string().contains("Internal") || internal.to_string().contains("error"));
@@ -1897,7 +1928,9 @@ fn test_agent_event_all_variants() {
     use carve_agent::AgentEvent;
 
     // TextDelta
-    let text_delta = AgentEvent::TextDelta { delta: "Hello".to_string() };
+    let text_delta = AgentEvent::TextDelta {
+        delta: "Hello".to_string(),
+    };
     match text_delta {
         AgentEvent::TextDelta { delta } => assert_eq!(delta, "Hello"),
         _ => panic!("Wrong variant"),
@@ -1945,7 +1978,9 @@ fn test_agent_event_all_variants() {
     }
 
     // Error
-    let error = AgentEvent::Error { message: "Network timeout".to_string() };
+    let error = AgentEvent::Error {
+        message: "Network timeout".to_string(),
+    };
     match error {
         AgentEvent::Error { message } => assert!(message.contains("timeout")),
         _ => panic!("Wrong variant"),
@@ -2056,7 +2091,8 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     let hub = Arc::new(ActivityHub::new(tx));
     let snapshot = json!({});
 
-    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub.clone()));
+    let ctx =
+        Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub.clone()));
     let activity = ctx.activity("stream_2", "progress");
     let progress = activity.state::<ProgressState>("");
     progress.set_progress(0.9);
@@ -2092,8 +2128,12 @@ async fn test_activity_context_multiple_streams_emit_separately() {
 
     let (first_id, second_id) = match (first, second) {
         (
-            AgentEvent::ActivitySnapshot { message_id: id1, .. },
-            AgentEvent::ActivitySnapshot { message_id: id2, .. },
+            AgentEvent::ActivitySnapshot {
+                message_id: id1, ..
+            },
+            AgentEvent::ActivitySnapshot {
+                message_id: id2, ..
+            },
         ) => (id1, id2),
         _ => panic!("Expected ActivitySnapshot events"),
     };
@@ -2160,7 +2200,10 @@ async fn test_session_state_complex_operations() {
     let session = session
         .with_patch(TrackedPatch::new(
             Patch::new()
-                .with_op(Op::append(path!("users"), json!({"id": 1, "name": "Alice"})))
+                .with_op(Op::append(
+                    path!("users"),
+                    json!({"id": 1, "name": "Alice"}),
+                ))
                 .with_op(Op::increment(path!("counter"), 1)),
         ))
         .with_patch(TrackedPatch::new(
@@ -2184,19 +2227,30 @@ fn test_storage_error_variants() {
     use std::io::{Error as IoError, ErrorKind};
 
     // Test IO error variant
-    let io_error = StorageError::from(IoError::new(ErrorKind::PermissionDenied, "Permission denied"));
+    let io_error = StorageError::from(IoError::new(
+        ErrorKind::PermissionDenied,
+        "Permission denied",
+    ));
     let display = io_error.to_string();
     assert!(display.contains("IO error") || display.contains("Permission") || display.len() > 0);
 
     // Test Serialization error variant
     let serialization_error = StorageError::Serialization("Invalid JSON at line 5".to_string());
     let display = serialization_error.to_string();
-    assert!(display.contains("Serialization") || display.contains("JSON") || display.contains("Invalid"));
+    assert!(
+        display.contains("Serialization")
+            || display.contains("JSON")
+            || display.contains("Invalid")
+    );
 
     // Test NotFound error variant
     let not_found = StorageError::NotFound("session-123".to_string());
     let display = not_found.to_string();
-    assert!(display.contains("not found") || display.contains("session-123") || display.contains("Not found"));
+    assert!(
+        display.contains("not found")
+            || display.contains("session-123")
+            || display.contains("Not found")
+    );
 }
 
 // ============================================================================
@@ -2223,7 +2277,10 @@ impl Tool for NestedStateTool {
         let current = nested.value().unwrap_or(0);
         nested.set_value(current + 10);
 
-        Ok(ToolResult::success("nested_state", json!({"new_value": current + 10})))
+        Ok(ToolResult::success(
+            "nested_state",
+            json!({"new_value": current + 10}),
+        ))
     }
 }
 
@@ -2318,7 +2375,11 @@ async fn test_parallel_execution_state_isolation() {
     for (i, exec) in results.iter().enumerate() {
         assert!(exec.result.is_success(), "Tool {} should succeed", i);
         // Each tool saw initial value 10, incremented to 11
-        assert_eq!(exec.result.data["new_value"], 11, "Tool {} should see initial state", i);
+        assert_eq!(
+            exec.result.data["new_value"], 11,
+            "Tool {} should see initial state",
+            i
+        );
     }
 
     // All three patches should set counter.value to 11 (not 11, 12, 13)
@@ -2563,7 +2624,10 @@ impl Tool for ReadOnlyTool {
         let value = counter.value().unwrap_or(-1);
 
         // No modifications, so patch should be empty
-        Ok(ToolResult::success("read_only", json!({"current_value": value})))
+        Ok(ToolResult::success(
+            "read_only",
+            json!({"current_value": value}),
+        ))
     }
 }
 
@@ -2762,8 +2826,9 @@ async fn test_e2e_multi_step_with_state() {
     let tools = tool_map([IncrementTool]);
 
     // Step 1
-    let mut session = Session::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
-        .with_message(Message::user("Increment"));
+    let mut session =
+        Session::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
+            .with_message(Message::user("Increment"));
 
     let response1 = StreamResult {
         text: "Incrementing.".to_string(),
@@ -2774,8 +2839,13 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(&response1.text, response1.tool_calls.clone()));
-    session = loop_execute_tools(session, &response1, &tools, true).await.unwrap();
+    session = session.with_message(carve_agent::assistant_tool_calls(
+        &response1.text,
+        response1.tool_calls.clone(),
+    ));
+    session = loop_execute_tools(session, &response1, &tools, true)
+        .await
+        .unwrap();
     session = session.with_message(Message::assistant("Counter is now 1."));
 
     // Step 2
@@ -2789,8 +2859,13 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
-    session = loop_execute_tools(session, &response2, &tools, true).await.unwrap();
+    session = session.with_message(carve_agent::assistant_tool_calls(
+        &response2.text,
+        response2.tool_calls.clone(),
+    ));
+    session = loop_execute_tools(session, &response2, &tools, true)
+        .await
+        .unwrap();
     session = session.with_message(Message::assistant("Counter is now 2."));
 
     // Step 3
@@ -2804,8 +2879,13 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(&response3.text, response3.tool_calls.clone()));
-    session = loop_execute_tools(session, &response3, &tools, true).await.unwrap();
+    session = session.with_message(carve_agent::assistant_tool_calls(
+        &response3.text,
+        response3.tool_calls.clone(),
+    ));
+    session = loop_execute_tools(session, &response3, &tools, true)
+        .await
+        .unwrap();
 
     // Verify accumulated state
     let state = session.rebuild_state().unwrap();
@@ -2816,8 +2896,8 @@ async fn test_e2e_multi_step_with_state() {
 /// Simulate tool failure and error message
 #[tokio::test]
 async fn test_e2e_tool_failure_handling() {
-    let session = Session::new("e2e-failure")
-        .with_message(Message::user("Call a non-existent tool"));
+    let session =
+        Session::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
 
     // LLM calls a tool that doesn't exist
     let llm_response = StreamResult {
@@ -2836,8 +2916,7 @@ async fn test_e2e_tool_failure_handling() {
     ));
 
     // Execute with empty tool map
-    let tools: std::collections::HashMap<String, Arc<dyn Tool>> =
-        std::collections::HashMap::new();
+    let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
 
     let session = loop_execute_tools(session, &llm_response, &tools, true)
         .await
@@ -2856,8 +2935,11 @@ async fn test_e2e_session_persistence_restore() {
     let tools = tool_map([IncrementTool]);
 
     // Phase 1: Start conversation
-    let mut session = Session::with_initial_state("e2e-persist", json!({"counter": {"value": 10, "label": ""}}))
-        .with_message(Message::user("Increment by 5"));
+    let mut session = Session::with_initial_state(
+        "e2e-persist",
+        json!({"counter": {"value": 10, "label": ""}}),
+    )
+    .with_message(Message::user("Increment by 5"));
 
     let response = StreamResult {
         text: "Incrementing.".to_string(),
@@ -2868,8 +2950,13 @@ async fn test_e2e_session_persistence_restore() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(&response.text, response.tool_calls.clone()));
-    session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+    session = session.with_message(carve_agent::assistant_tool_calls(
+        &response.text,
+        response.tool_calls.clone(),
+    ));
+    session = loop_execute_tools(session, &response, &tools, true)
+        .await
+        .unwrap();
     session = session.with_message(Message::assistant("Done!"));
 
     // Save
@@ -2895,8 +2982,13 @@ async fn test_e2e_session_persistence_restore() {
         )],
         usage: None,
     };
-    loaded = loaded.with_message(carve_agent::assistant_tool_calls(&response2.text, response2.tool_calls.clone()));
-    loaded = loop_execute_tools(loaded, &response2, &tools, true).await.unwrap();
+    loaded = loaded.with_message(carve_agent::assistant_tool_calls(
+        &response2.text,
+        response2.tool_calls.clone(),
+    ));
+    loaded = loop_execute_tools(loaded, &response2, &tools, true)
+        .await
+        .unwrap();
 
     // Verify continued correctly
     let final_state = loaded.rebuild_state().unwrap();
@@ -2909,7 +3001,10 @@ async fn test_e2e_snapshot_and_continue() {
     let tools = tool_map([IncrementTool]);
 
     // Build up patches
-    let mut session = Session::with_initial_state("e2e-snapshot", json!({"counter": {"value": 0, "label": ""}}));
+    let mut session = Session::with_initial_state(
+        "e2e-snapshot",
+        json!({"counter": {"value": 0, "label": ""}}),
+    );
 
     for i in 0..5 {
         let response = StreamResult {
@@ -2921,7 +3016,9 @@ async fn test_e2e_snapshot_and_continue() {
             )],
             usage: None,
         };
-        session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+        session = loop_execute_tools(session, &response, &tools, true)
+            .await
+            .unwrap();
     }
 
     assert_eq!(session.patch_count(), 5);
@@ -2943,7 +3040,9 @@ async fn test_e2e_snapshot_and_continue() {
         )],
         usage: None,
     };
-    let session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+    let session = loop_execute_tools(session, &response, &tools, true)
+        .await
+        .unwrap();
 
     let final_state = session.rebuild_state().unwrap();
     assert_eq!(final_state["counter"]["value"], 6);
@@ -2955,7 +3054,8 @@ async fn test_e2e_snapshot_and_continue() {
 async fn test_e2e_state_replay() {
     let tools = tool_map([IncrementTool]);
 
-    let mut session = Session::with_initial_state("e2e-replay", json!({"counter": {"value": 0, "label": ""}}));
+    let mut session =
+        Session::with_initial_state("e2e-replay", json!({"counter": {"value": 0, "label": ""}}));
 
     // Create history: 0 -> 1 -> 2 -> 3 -> 4 -> 5
     for i in 0..5 {
@@ -2968,7 +3068,9 @@ async fn test_e2e_state_replay() {
             )],
             usage: None,
         };
-        session = loop_execute_tools(session, &response, &tools, true).await.unwrap();
+        session = loop_execute_tools(session, &response, &tools, true)
+            .await
+            .unwrap();
     }
 
     // Replay to each historical point
@@ -3050,7 +3152,12 @@ async fn test_execute_single_tool_not_found() {
     let result = execute_single_tool(None, &call, &state).await;
 
     assert!(result.result.is_error());
-    assert!(result.result.message.as_ref().unwrap().contains("not found"));
+    assert!(result
+        .result
+        .message
+        .as_ref()
+        .unwrap()
+        .contains("not found"));
     assert!(result.patch.is_none());
 }
 
@@ -3059,7 +3166,8 @@ async fn test_execute_single_tool_with_complex_state() {
     use carve_agent::execute_single_tool;
 
     let tool = IncrementTool;
-    let call = carve_agent::ToolCall::new("call_1", "increment", json!({"path": "data.counters.main"}));
+    let call =
+        carve_agent::ToolCall::new("call_1", "increment", json!({"path": "data.counters.main"}));
 
     // Complex nested state
     let state = json!({
@@ -3114,7 +3222,10 @@ async fn test_e2e_context_provider_integration() {
     // 3. Now a tool runs and sees the provider's changes
     let tool = IncrementTool;
     let ctx = Context::new(&new_snapshot, "tool_call", "tool:increment");
-    let result = tool.execute(json!({"path": "counter"}), &ctx).await.unwrap();
+    let result = tool
+        .execute(json!({"path": "counter"}), &ctx)
+        .await
+        .unwrap();
 
     assert!(result.is_success());
     // Counter was 15, now 16
@@ -3151,9 +3262,15 @@ async fn test_e2e_multiple_providers_priority() {
 
     #[async_trait]
     impl ContextProvider for HighPriorityProvider {
-        fn id(&self) -> &str { "high_priority" }
-        fn category(&self) -> ContextCategory { ContextCategory::Session }
-        fn priority(&self) -> u32 { 100 } // Higher priority
+        fn id(&self) -> &str {
+            "high_priority"
+        }
+        fn category(&self) -> ContextCategory {
+            ContextCategory::Session
+        }
+        fn priority(&self) -> u32 {
+            100
+        } // Higher priority
 
         async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
             vec!["High priority context".to_string()]
@@ -3162,9 +3279,15 @@ async fn test_e2e_multiple_providers_priority() {
 
     #[async_trait]
     impl ContextProvider for LowPriorityProvider {
-        fn id(&self) -> &str { "low_priority" }
-        fn category(&self) -> ContextCategory { ContextCategory::Session }
-        fn priority(&self) -> u32 { 10 } // Lower priority
+        fn id(&self) -> &str {
+            "low_priority"
+        }
+        fn category(&self) -> ContextCategory {
+            ContextCategory::Session
+        }
+        fn priority(&self) -> u32 {
+            10
+        } // Lower priority
 
         async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
             vec!["Low priority context".to_string()]
@@ -3196,9 +3319,15 @@ async fn test_e2e_conditional_context_provider() {
 
     #[async_trait]
     impl ContextProvider for ConditionalProvider {
-        fn id(&self) -> &str { "conditional" }
-        fn category(&self) -> ContextCategory { ContextCategory::ToolExecution }
-        fn priority(&self) -> u32 { 50 }
+        fn id(&self) -> &str {
+            "conditional"
+        }
+        fn category(&self) -> ContextCategory {
+            ContextCategory::ToolExecution
+        }
+        fn priority(&self) -> u32 {
+            50
+        }
 
         async fn provide(&self, ctx: &Context<'_>) -> Vec<String> {
             let counter = ctx.state::<CounterState>("counter");
@@ -3243,15 +3372,22 @@ struct ConfirmationTool;
 #[async_trait]
 impl Tool for ConfirmationTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("dangerous_action", "Dangerous Action", "Requires confirmation")
-            .with_confirmation(true)
+        ToolDescriptor::new(
+            "dangerous_action",
+            "Dangerous Action",
+            "Requires confirmation",
+        )
+        .with_confirmation(true)
     }
 
     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
         let confirmed = args["confirmed"].as_bool().unwrap_or(false);
 
         if confirmed {
-            Ok(ToolResult::success("dangerous_action", json!({"status": "executed"})))
+            Ok(ToolResult::success(
+                "dangerous_action",
+                json!({"status": "executed"}),
+            ))
         } else {
             Ok(ToolResult::pending(
                 "dangerous_action",
@@ -3312,7 +3448,10 @@ async fn test_e2e_tool_pending_status() {
     assert!(result.message.as_ref().unwrap().contains("confirmation"));
 
     // Second call with confirmation
-    let result = tool.execute(json!({"confirmed": true}), &ctx).await.unwrap();
+    let result = tool
+        .execute(json!({"confirmed": true}), &ctx)
+        .await
+        .unwrap();
 
     assert!(result.is_success());
     assert!(!result.is_pending());
@@ -3326,7 +3465,10 @@ async fn test_e2e_tool_warning_status() {
     let ctx = Context::new(&snapshot, "call_1", "tool:batch");
 
     // Process 10 items (80% success = 8 success, 2 failed)
-    let result = tool.execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx).await.unwrap();
+    let result = tool
+        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx)
+        .await
+        .unwrap();
 
     // Warning is still considered "success" but with a message
     assert!(result.is_success());
@@ -3338,8 +3480,7 @@ async fn test_e2e_tool_warning_status() {
 
 #[tokio::test]
 async fn test_e2e_pending_tool_in_session_flow() {
-    let session = Session::new("pending-test")
-        .with_message(Message::user("Delete all files"));
+    let session = Session::new("pending-test").with_message(Message::user("Delete all files"));
 
     // Simulate LLM calling dangerous action without confirmation
     let llm_response = StreamResult {
@@ -3474,7 +3615,8 @@ async fn test_concurrent_session_modifications() {
 
             // Add messages
             for j in 0..5 {
-                session = session.with_message(Message::user(format!("Msg {} from session {}", j, i)));
+                session =
+                    session.with_message(Message::user(format!("Msg {} from session {}", j, i)));
             }
 
             // Save
@@ -3508,8 +3650,7 @@ async fn test_concurrent_read_write_same_session() {
     let storage = Arc::new(MemoryStorage::new());
 
     // Create initial session
-    let session = Session::new("shared-session")
-        .with_message(Message::user("Initial message"));
+    let session = Session::new("shared-session").with_message(Message::user("Initial message"));
     storage.save(&session).await.unwrap();
 
     let mut handles = vec![];
@@ -3617,8 +3758,7 @@ async fn test_storage_overwrite_session() {
     let storage = MemoryStorage::new();
 
     // Create and save
-    let session1 = Session::new("overwrite-test")
-        .with_message(Message::user("First version"));
+    let session1 = Session::new("overwrite-test").with_message(Message::user("First version"));
     storage.save(&session1).await.unwrap();
 
     // Overwrite
@@ -3639,11 +3779,14 @@ async fn test_file_storage_special_characters_in_id() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Session ID with special characters (but filesystem-safe)
-    let session = Session::new("session_with-special.chars_123")
-        .with_message(Message::user("Test"));
+    let session =
+        Session::new("session_with-special.chars_123").with_message(Message::user("Test"));
 
     storage.save(&session).await.unwrap();
-    let loaded = storage.load("session_with-special.chars_123").await.unwrap();
+    let loaded = storage
+        .load("session_with-special.chars_123")
+        .await
+        .unwrap();
 
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().message_count(), 1);
@@ -3760,8 +3903,7 @@ fn test_session_with_all_message_types() {
 
 #[tokio::test]
 async fn test_e2e_empty_user_message() {
-    let session = Session::new("empty-msg-test")
-        .with_message(Message::user(""));
+    let session = Session::new("empty-msg-test").with_message(Message::user(""));
 
     // Simulate LLM response to empty message
     let llm_response = StreamResult {
@@ -3781,7 +3923,9 @@ async fn test_e2e_empty_user_message() {
 async fn test_e2e_system_prompt_in_session() {
     // Test that system prompt is preserved throughout conversation
     let session = Session::new("system-prompt-test")
-        .with_message(Message::system("You are a calculator. Only respond with numbers."))
+        .with_message(Message::system(
+            "You are a calculator. Only respond with numbers.",
+        ))
         .with_message(Message::user("What is 2+2?"))
         .with_message(Message::assistant("4"))
         .with_message(Message::user("And 3+3?"))
@@ -3901,7 +4045,11 @@ fn test_stream_collector_end_event_with_multiple_captured_tool_calls() {
     let result = collector.finish();
 
     assert_eq!(result.tool_calls.len(), 2);
-    let names: Vec<&str> = result.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+    let names: Vec<&str> = result
+        .tool_calls
+        .iter()
+        .map(|tc| tc.name.as_str())
+        .collect();
     assert!(names.contains(&"tool_a"));
     assert!(names.contains(&"tool_b"));
 }
@@ -4119,9 +4267,7 @@ fn test_scenario_custom_frontend_action_to_ag_ui() {
     assert_eq!(ag_ui_events.len(), 3);
 
     match &ag_ui_events[0] {
-        AGUIEvent::ToolCallStart {
-            tool_call_name, ..
-        } => {
+        AGUIEvent::ToolCallStart { tool_call_name, .. } => {
             assert_eq!(tool_call_name, "file_picker"); // Custom action name
         }
         _ => panic!("Expected ToolCallStart"),
@@ -4150,23 +4296,30 @@ fn test_scenario_text_interrupted_by_interaction() {
         delta: "I'll help you ".into(),
     };
     let events1 = text_event.to_ag_ui_events(&mut ctx);
-    assert!(events1.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(events1
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 
     // 2. More text
     let text_event2 = AgentEvent::TextDelta {
         delta: "with that file.".into(),
     };
     let events2 = text_event2.to_ag_ui_events(&mut ctx);
-    assert!(events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(events2
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
 
     // 3. Interaction interrupts (e.g., permission needed)
-    let interaction = Interaction::new("int_1", "confirm")
-        .with_message("Proceed with file operation?");
+    let interaction =
+        Interaction::new("int_1", "confirm").with_message("Proceed with file operation?");
     let pending_event = AgentEvent::Pending { interaction };
     let events3 = pending_event.to_ag_ui_events(&mut ctx);
 
     // Should end text stream before tool call
-    assert!(events3.len() >= 4, "Should have TextMessageEnd + 3 tool call events");
+    assert!(
+        events3.len() >= 4,
+        "Should have TextMessageEnd + 3 tool call events"
+    );
     assert!(
         matches!(events3[0], AGUIEvent::TextMessageEnd { .. }),
         "First event should be TextMessageEnd"
@@ -4216,7 +4369,7 @@ fn test_scenario_various_interaction_types() {
 // ============================================================================
 
 use carve_agent::ag_ui::{AGUIToolDef, FrontendToolPlugin, RunAgentRequest};
-use carve_agent::phase::{Phase, ToolContext, StepContext};
+use carve_agent::phase::{Phase, StepContext, ToolContext};
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::types::ToolCall;
 
@@ -4227,8 +4380,14 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
         .with_tool(AGUIToolDef::backend("search", "Search the web"))
         .with_tool(AGUIToolDef::backend("read_file", "Read a file"))
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard"))
-        .with_tool(AGUIToolDef::frontend("showNotification", "Show a notification"));
+        .with_tool(AGUIToolDef::frontend(
+            "copyToClipboard",
+            "Copy text to clipboard",
+        ))
+        .with_tool(AGUIToolDef::frontend(
+            "showNotification",
+            "Show a notification",
+        ));
 
     // 2. FrontendToolPlugin is created from request
     let plugin = FrontendToolPlugin::from_request(&request);
@@ -4438,12 +4597,12 @@ async fn test_scenario_frontend_tool_empty_args() {
 async fn test_scenario_frontend_tool_special_names() {
     // Various tool name formats that might appear
     let tool_names = vec![
-        "copy_to_clipboard",      // snake_case
-        "copyToClipboard",        // camelCase
-        "CopyToClipboard",        // PascalCase
-        "copy-to-clipboard",      // kebab-case
+        "copy_to_clipboard",       // snake_case
+        "copyToClipboard",         // camelCase
+        "CopyToClipboard",         // PascalCase
+        "copy-to-clipboard",       // kebab-case
         "namespace.copyClipboard", // dotted namespace
-        "ui::clipboard::copy",    // rust-style path (unusual but valid)
+        "ui::clipboard::copy",     // rust-style path (unusual but valid)
     ];
 
     for tool_name in tool_names {
@@ -4456,7 +4615,11 @@ async fn test_scenario_frontend_tool_special_names() {
 
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        assert!(step.tool_pending(), "Tool '{}' should be pending", tool_name);
+        assert!(
+            step.tool_pending(),
+            "Tool '{}' should be pending",
+            tool_name
+        );
 
         let interaction = step
             .tool
@@ -4512,8 +4675,8 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
 #[test]
 fn test_scenario_frontend_tool_wire_format() {
     // Create interaction as FrontendToolPlugin would
-    let interaction = Interaction::new("call_abc123", "tool:showNotification")
-        .with_parameters(json!({
+    let interaction =
+        Interaction::new("call_abc123", "tool:showNotification").with_parameters(json!({
             "title": "Success",
             "message": "Operation completed",
             "type": "info",
@@ -4687,7 +4850,6 @@ use carve_agent::plugins::PermissionPlugin;
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
-
     // Phase 1: Agent requests permission
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
@@ -4699,7 +4861,11 @@ async fn test_scenario_permission_approved_complete_flow() {
     );
 
     // Simulate tool call
-    let tool_call = ToolCall::new("call_write_file", "write_file", json!({"path": "/etc/config"}));
+    let tool_call = ToolCall::new(
+        "call_write_file",
+        "write_file",
+        json!({"path": "/etc/config"}),
+    );
     step.tool = Some(ToolContext::new(&tool_call));
 
     // PermissionPlugin creates pending interaction
@@ -4738,7 +4904,6 @@ async fn test_scenario_permission_approved_complete_flow() {
 /// Test scenario: Complete permission denial flow
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
-
     // Phase 1: Agent requests permission
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
@@ -4748,7 +4913,11 @@ async fn test_scenario_permission_denied_complete_flow() {
         json!({ "default_behavior": "ask", "tools": {} }),
     );
 
-    let tool_call = ToolCall::new("call_delete", "delete_file", json!({"path": "/important.txt"}));
+    let tool_call = ToolCall::new(
+        "call_delete",
+        "delete_file",
+        json!({"path": "/important.txt"}),
+    );
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
@@ -4781,8 +4950,9 @@ async fn test_scenario_permission_denied_complete_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
     // Phase 1: Agent calls frontend tool
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
+        AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
+    );
 
     let plugin = FrontendToolPlugin::from_request(&request);
 
@@ -4829,7 +4999,6 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 /// Test scenario: Multiple interactions in sequence
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
-
     let session = Session::new("test");
     let plugin = PermissionPlugin;
 
@@ -4906,7 +5075,10 @@ fn test_scenario_frontend_tool_complex_result() {
         .unwrap();
 
     assert!(response.result["success"].as_bool().unwrap());
-    assert_eq!(response.result["selected_files"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        response.result["selected_files"].as_array().unwrap().len(),
+        2
+    );
     assert_eq!(
         response.result["selected_files"][0]["path"],
         "/home/user/doc1.txt"
@@ -4918,8 +5090,8 @@ fn test_scenario_frontend_tool_complex_result() {
 #[test]
 fn test_scenario_permission_custom_response_format() {
     // Using object format with reason
-    let request1 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
+    let request1 =
+        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(AGUIMessage::tool(
             r#"{"approved":true,"reason":"User trusts this operation"}"#,
             "perm_1",
         ));
@@ -4927,11 +5099,9 @@ fn test_scenario_permission_custom_response_format() {
     assert!(request1.is_interaction_approved("perm_1"));
 
     // Using object format with denied flag
-    let request2 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
-            r#"{"denied":true,"reason":"User is cautious"}"#,
-            "perm_2",
-        ));
+    let request2 = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+        AGUIMessage::tool(r#"{"denied":true,"reason":"User is cautious"}"#, "perm_2"),
+    );
 
     assert!(request2.is_interaction_denied("perm_2"));
 
@@ -4960,8 +5130,8 @@ fn test_scenario_input_interaction_response() {
 /// Test scenario: Selection interaction response
 #[test]
 fn test_scenario_select_interaction_response() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
+    let request =
+        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(AGUIMessage::tool(
             r#"{"selected_index":2,"selected_value":"Option C"}"#,
             "select_option_1",
         ));
@@ -4977,7 +5147,9 @@ fn test_scenario_mixed_messages_with_interaction_response() {
     // Real-world scenario: conversation + tool responses
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("Please write to the file"))
-        .with_message(AGUIMessage::assistant("I'll write to the file, but need permission"))
+        .with_message(AGUIMessage::assistant(
+            "I'll write to the file, but need permission",
+        ))
         .with_message(AGUIMessage::tool("true", "perm_write_1"))
         .with_message(AGUIMessage::assistant("Done!"));
 
@@ -4999,13 +5171,17 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 
     // Create plugin with denied interaction
     let plugin = InteractionResponsePlugin::new(
-        vec![], // no approved
+        vec![],                                    // no approved
         vec!["permission_write_file".to_string()], // denied
     );
 
     // Simulate tool call with matching interaction ID format
     let mut step = StepContext::new(&session, vec![]);
-    let call = ToolCall::new("permission_write_file", "write_file", json!({"path": "/etc/config"}));
+    let call = ToolCall::new(
+        "permission_write_file",
+        "write_file",
+        json!({"path": "/etc/config"}),
+    );
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
@@ -5032,12 +5208,16 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     // Create plugin with approved interaction
     let plugin = InteractionResponsePlugin::new(
         vec!["permission_read_file".to_string()], // approved
-        vec![], // no denied
+        vec![],                                   // no denied
     );
 
     // Simulate tool call
     let mut step = StepContext::new(&session, vec![]);
-    let call = ToolCall::new("permission_read_file", "read_file", json!({"path": "/home/user/doc.txt"}));
+    let call = ToolCall::new(
+        "permission_read_file",
+        "read_file",
+        json!({"path": "/home/user/doc.txt"}),
+    );
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
@@ -5064,11 +5244,22 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     let call = ToolCall::new("call_exec", "execute_command", json!({"cmd": "ls"}));
     step1.tool = Some(ToolContext::new(&call));
 
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    permission_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .await;
     assert!(step1.tool_pending(), "Permission ask should create pending");
 
-    let interaction = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
-    assert!(interaction.id.starts_with("permission_"), "Interaction ID should start with permission_");
+    let interaction = step1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+    assert!(
+        interaction.id.starts_with("permission_"),
+        "Interaction ID should start with permission_"
+    );
 
     // Step 2: Client approves
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5086,17 +5277,27 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     step2.tool = Some(ToolContext::new(&call2));
 
     // InteractionResponsePlugin runs first
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
 
     // Tool should NOT be blocked (approved)
-    assert!(!step2.tool_blocked(), "Approved tool should not be blocked on resume");
+    assert!(
+        !step2.tool_blocked(),
+        "Approved tool should not be blocked on resume"
+    );
 
     // PermissionPlugin runs second - but InteractionResponsePlugin didn't set pending
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    permission_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
 
     // PermissionPlugin should still create pending (because permission wasn't updated to Allow)
     // This is expected - in a real flow, the permission would be updated to Allow after approval
-    assert!(step2.tool_pending() || !step2.tool_blocked(), "Tool should proceed");
+    assert!(
+        step2.tool_pending() || !step2.tool_blocked(),
+        "Tool should proceed"
+    );
 }
 
 /// Test scenario: FrontendToolPlugin and InteractionResponsePlugin coordination
@@ -5116,24 +5317,32 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
     step1.tool = Some(ToolContext::new(&call));
 
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    frontend_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .await;
     assert!(step1.tool_pending(), "Frontend tool should create pending");
 
-    let interaction = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
     assert_eq!(interaction.action, "tool:showDialog");
 
     // Step 2: Client executes and returns result
-    let response_request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_message(AGUIMessage::tool(
-            r#"{"success":true,"user_clicked":"OK"}"#,
-            &interaction.id,
-        ));
+    let response_request = RunAgentRequest::new("t1".to_string(), "r2".to_string()).with_message(
+        AGUIMessage::tool(r#"{"success":true,"user_clicked":"OK"}"#, &interaction.id),
+    );
 
     // Step 3: On resume, InteractionResponsePlugin processes the result
     let _response_plugin = InteractionResponsePlugin::from_request(&response_request);
 
     // The result is available (not blocked/denied)
-    let response = response_request.get_interaction_response(&interaction.id).unwrap();
+    let response = response_request
+        .get_interaction_response(&interaction.id)
+        .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["user_clicked"], "OK");
 }
@@ -5149,7 +5358,9 @@ fn test_scenario_agui_context_state_after_pending() {
     };
     let events1 = text_event.to_ag_ui_events(&mut ctx);
     // First text delta should produce TextMessageStart
-    assert!(events1.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(events1
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 
     // More text
     let text_event2 = AgentEvent::TextDelta {
@@ -5157,8 +5368,12 @@ fn test_scenario_agui_context_state_after_pending() {
     };
     let events2 = text_event2.to_ag_ui_events(&mut ctx);
     // Second text delta should produce only TextMessageContent (not Start)
-    assert!(events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
-    assert!(!events2.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(events2
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(!events2
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 
     // Pending interaction arrives
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
@@ -5183,7 +5398,9 @@ fn test_scenario_agui_context_state_after_pending() {
     };
     let events3 = text_event3.to_ag_ui_events(&mut ctx);
     // Should produce TextMessageStart again since previous stream was ended
-    assert!(events3.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(events3
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 }
 
 // ============================================================================
@@ -5206,7 +5423,10 @@ fn test_agui_stream_event_sequence_run_started_first() {
     assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
 
     // Last event must be RUN_FINISHED
-    assert!(matches!(&events[events.len() - 1], AGUIEvent::RunFinished { .. }));
+    assert!(matches!(
+        &events[events.len() - 1],
+        AGUIEvent::RunFinished { .. }
+    ));
 }
 
 /// Test: Text interrupted by tool call - TEXT_MESSAGE_END before TOOL_CALL_START
@@ -5215,10 +5435,14 @@ fn test_agui_stream_text_interrupted_by_tool_call() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text streaming
-    let text1 = AgentEvent::TextDelta { delta: "Let me ".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Let me ".into(),
+    };
     let _ = text1.to_ag_ui_events(&mut ctx);
 
-    let text2 = AgentEvent::TextDelta { delta: "search for that.".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "search for that.".into(),
+    };
     let _ = text2.to_ag_ui_events(&mut ctx);
 
     // Tool call starts - should end text stream first
@@ -5277,16 +5501,24 @@ fn test_agui_stream_tool_call_sequence() {
     let done_events = done.to_ag_ui_events(&mut ctx);
 
     // Verify sequence: Start events contain TOOL_CALL_START
-    assert!(start_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(start_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 
     // Args events contain TOOL_CALL_ARGS
-    assert!(args_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+    assert!(args_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
 
     // Ready events contain TOOL_CALL_END (end of argument streaming)
-    assert!(ready_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+    assert!(ready_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
 
     // Done events contain TOOL_CALL_RESULT
-    assert!(done_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+    assert!(done_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
 }
 
 /// Test: Error event ends stream without RUN_FINISHED
@@ -5304,10 +5536,14 @@ fn test_agui_stream_error_no_run_finished() {
     let error_events = error.to_ag_ui_events(&mut ctx);
 
     // Should emit RUN_ERROR
-    assert!(error_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. })));
+    assert!(error_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunError { .. })));
 
     // Should NOT have RUN_FINISHED in the error events
-    assert!(!error_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+    assert!(!error_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
 }
 
 /// Test: Pending event doesn't emit RUN_FINISHED
@@ -5316,16 +5552,19 @@ fn test_agui_stream_pending_no_run_finished() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Pending interaction
-    let interaction = Interaction::new("perm_1", "confirm")
-        .with_message("Allow tool execution?");
+    let interaction = Interaction::new("perm_1", "confirm").with_message("Allow tool execution?");
     let pending = AgentEvent::Pending { interaction };
     let pending_events = pending.to_ag_ui_events(&mut ctx);
 
     // Should have tool call events (for the interaction)
-    assert!(pending_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(pending_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 
     // Should NOT have RUN_FINISHED
-    assert!(!pending_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+    assert!(!pending_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
 }
 
 /// Test: SSE format validation
@@ -5340,7 +5579,11 @@ fn test_agui_sse_format() {
     assert!(sse.ends_with("\n\n"));
 
     // Validate JSON is parseable
-    let json_part = sse.strip_prefix("data: ").unwrap().strip_suffix("\n\n").unwrap();
+    let json_part = sse
+        .strip_prefix("data: ")
+        .unwrap()
+        .strip_suffix("\n\n")
+        .unwrap();
     let parsed: AGUIEvent = serde_json::from_str(json_part).unwrap();
     assert!(matches!(parsed, AGUIEvent::RunStarted { .. }));
 }
@@ -5368,7 +5611,8 @@ fn test_agui_sse_multiple_events() {
 
     for (i, line) in lines.iter().enumerate() {
         let json = line.strip_prefix("data: ").unwrap();
-        let _: AGUIEvent = serde_json::from_str(json).expect(&format!("Failed to parse event {}", i));
+        let _: AGUIEvent =
+            serde_json::from_str(json).expect(&format!("Failed to parse event {}", i));
     }
 }
 
@@ -5385,7 +5629,10 @@ async fn test_permission_flow_approval_e2e() {
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    step.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
 
     let tool_call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
     step.tool = Some(ToolContext::new(&tool_call));
@@ -5393,9 +5640,18 @@ async fn test_permission_flow_approval_e2e() {
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
     plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-    assert!(step.tool_pending(), "Tool should be pending after permission ask");
+    assert!(
+        step.tool_pending(),
+        "Tool should be pending after permission ask"
+    );
 
-    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
     assert!(interaction.id.starts_with("permission_"));
 
     // Phase 2: Convert to AG-UI events (client would receive these)
@@ -5415,10 +5671,16 @@ async fn test_permission_flow_approval_e2e() {
     // Phase 5: On resume, tool should NOT be blocked
     let mut step2 = StepContext::new(&session, vec![]);
     // Use the interaction ID as the tool call ID (as happens in resume)
-    let tool_call2 = ToolCall::new(&interaction.id, "write_file", json!({"path": "/etc/config"}));
+    let tool_call2 = ToolCall::new(
+        &interaction.id,
+        "write_file",
+        json!({"path": "/etc/config"}),
+    );
     step2.tool = Some(ToolContext::new(&tool_call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
     assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
 }
 
@@ -5431,7 +5693,10 @@ async fn test_permission_flow_denial_e2e() {
     // Phase 1: Agent requests permission
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    step.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
 
     let tool_call = ToolCall::new("call_delete", "delete_all", json!({}));
     step.tool = Some(ToolContext::new(&tool_call));
@@ -5440,7 +5705,13 @@ async fn test_permission_flow_denial_e2e() {
     plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
     assert!(step.tool_pending());
 
-    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
 
     // Phase 2: Client denies
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5455,11 +5726,16 @@ async fn test_permission_flow_denial_e2e() {
     let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
     step2.tool = Some(ToolContext::new(&tool_call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
     assert!(step2.tool_blocked(), "Denied tool should be blocked");
 
     let block_reason = step2.tool.as_ref().unwrap().block_reason.as_ref().unwrap();
-    assert!(block_reason.contains("denied"), "Block reason should mention denial");
+    assert!(
+        block_reason.contains("denied"),
+        "Block reason should mention denial"
+    );
 }
 
 /// Test: Multiple tools with mixed permissions
@@ -5471,21 +5747,39 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     // Tool 1: Will be approved
     let mut step1 = StepContext::new(&session, vec![]);
-    step1.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    step1.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
     let call1 = ToolCall::new("call_1", "read_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
     let plugin = PermissionPlugin;
     plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
-    let int1 = step1.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let int1 = step1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
 
     // Tool 2: Will be denied
     let mut step2 = StepContext::new(&session, vec![]);
-    step2.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    step2.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
     plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
-    let int2 = step2.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let int2 = step2
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
 
     // Client responds: approve first, deny second
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5498,14 +5792,18 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let mut resume1 = StepContext::new(&session, vec![]);
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
     resume1.tool = Some(ToolContext::new(&resume_call1));
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume1).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut resume1)
+        .await;
     assert!(!resume1.tool_blocked(), "First tool should not be blocked");
 
     // Verify second tool (denied)
     let mut resume2 = StepContext::new(&session, vec![]);
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
     resume2.tool = Some(ToolContext::new(&resume_call2));
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut resume2).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut resume2)
+        .await;
     assert!(resume2.tool_blocked(), "Second tool should be blocked");
 }
 
@@ -5518,21 +5816,32 @@ async fn test_permission_flow_multiple_tools_mixed() {
 async fn test_frontend_tool_flow_creates_pending() {
     use carve_agent::ag_ui::FrontendToolPlugin;
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
+        AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
+    );
 
     let plugin = FrontendToolPlugin::from_request(&request);
     let session = Session::new("test");
 
     let mut step = StepContext::new(&session, vec![]);
-    let call = ToolCall::new("call_copy", "copyToClipboard", json!({"text": "Hello World"}));
+    let call = ToolCall::new(
+        "call_copy",
+        "copyToClipboard",
+        json!({"text": "Hello World"}),
+    );
     step.tool = Some(ToolContext::new(&call));
 
     plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
     assert!(step.tool_pending(), "Frontend tool should be pending");
 
-    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
     assert_eq!(interaction.action, "tool:copyToClipboard");
     assert_eq!(interaction.id, "call_copy");
 }
@@ -5541,13 +5850,13 @@ async fn test_frontend_tool_flow_creates_pending() {
 #[test]
 fn test_frontend_tool_flow_result_from_client() {
     // Client returns result for frontend tool
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(
-            r#"{"success": true, "bytes_copied": 11}"#,
-            "call_copy",
-        ));
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+        AGUIMessage::tool(r#"{"success": true, "bytes_copied": 11}"#, "call_copy"),
+    );
 
-    let response = response_request.get_interaction_response("call_copy").unwrap();
+    let response = response_request
+        .get_interaction_response("call_copy")
+        .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["bytes_copied"], 11);
 }
@@ -5568,15 +5877,25 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let mut step_backend = StepContext::new(&session, vec![]);
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
     step_backend.tool = Some(ToolContext::new(&call_backend));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step_backend).await;
-    assert!(!step_backend.tool_pending(), "Backend tool should not be pending");
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step_backend)
+        .await;
+    assert!(
+        !step_backend.tool_pending(),
+        "Backend tool should not be pending"
+    );
 
     // Frontend tool - should be pending
     let mut step_frontend = StepContext::new(&session, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
     step_frontend.tool = Some(ToolContext::new(&call_frontend));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step_frontend).await;
-    assert!(step_frontend.tool_pending(), "Frontend tool should be pending");
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step_frontend)
+        .await;
+    assert!(
+        step_frontend.tool_pending(),
+        "Frontend tool should be pending"
+    );
 }
 
 /// Test: Frontend tool with complex nested result
@@ -5595,13 +5914,22 @@ fn test_frontend_tool_flow_complex_result() {
         }
     });
 
-    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_message(AGUIMessage::tool(&complex_result.to_string(), "file_picker_call"));
+    let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+        AGUIMessage::tool(&complex_result.to_string(), "file_picker_call"),
+    );
 
-    let response = response_request.get_interaction_response("file_picker_call").unwrap();
+    let response = response_request
+        .get_interaction_response("file_picker_call")
+        .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
-    assert_eq!(response.result["selected_files"].as_array().unwrap().len(), 2);
-    assert_eq!(response.result["selected_files"][0]["path"], "/home/user/doc1.txt");
+    assert_eq!(
+        response.result["selected_files"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        response.result["selected_files"][0]["path"],
+        "/home/user/doc1.txt"
+    );
     assert_eq!(response.result["metadata"]["user_action"], "confirm");
 }
 
@@ -5620,11 +5948,15 @@ fn test_state_event_snapshot_conversion() {
         "items": ["a", "b", "c"]
     });
 
-    let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+    let event = AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
-    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+    assert!(ag_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
 
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
         assert_eq!(snapshot["counter"], 42);
@@ -5642,11 +5974,15 @@ fn test_state_event_delta_conversion() {
         json!({"op": "add", "path": "/items/-", "value": "d"}),
     ];
 
-    let event = AgentEvent::StateDelta { delta: delta.clone() };
+    let event = AgentEvent::StateDelta {
+        delta: delta.clone(),
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
-    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+    assert!(ag_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
 
     if let AGUIEvent::StateDelta { delta: d, .. } = &ag_events[0] {
         assert_eq!(d.len(), 2);
@@ -5665,11 +6001,15 @@ fn test_state_event_messages_snapshot_conversion() {
         json!({"role": "assistant", "content": "Hi there!"}),
     ];
 
-    let event = AgentEvent::MessagesSnapshot { messages: messages.clone() };
+    let event = AgentEvent::MessagesSnapshot {
+        messages: messages.clone(),
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
-    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+    assert!(ag_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
 
     if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
         assert_eq!(m.len(), 2);
@@ -5698,10 +6038,15 @@ fn test_error_flow_tool_execution_failure() {
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     // Should have TOOL_CALL_RESULT with error
-    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+    assert!(ag_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
 
     // Result should contain error
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events
+        .iter()
+        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+    {
         assert!(content.contains("error") || content.contains("File not found"));
     }
 }
@@ -5814,7 +6159,12 @@ async fn test_resume_flow_multiple_responses() {
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
-        assert_eq!(step.tool_blocked(), should_block, "Tool {} block state incorrect", id);
+        assert_eq!(
+            step.tool_blocked(),
+            should_block,
+            "Tool {} block state incorrect",
+            id
+        );
     }
 }
 
@@ -5826,7 +6176,7 @@ async fn test_resume_flow_partial_responses() {
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("true", "perm_1"));
-        // perm_2 not responded to
+    // perm_2 not responded to
 
     let plugin = InteractionResponsePlugin::from_request(&request);
 
@@ -5862,7 +6212,10 @@ async fn test_plugin_interaction_frontend_and_response() {
 
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_tool(AGUIToolDef::frontend("showNotification", "Show notification"))
+        .with_tool(AGUIToolDef::frontend(
+            "showNotification",
+            "Show notification",
+        ))
         .with_message(AGUIMessage::tool("true", "call_prev"));
 
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
@@ -5875,8 +6228,12 @@ async fn test_plugin_interaction_frontend_and_response() {
     let call1 = ToolCall::new("call_new", "showNotification", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .await;
+    frontend_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .await;
 
     assert!(step1.tool_pending(), "Frontend tool should be pending");
     assert!(!step1.tool_blocked());
@@ -5886,8 +6243,12 @@ async fn test_plugin_interaction_frontend_and_response() {
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
 
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
+    frontend_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
 
     assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
 }
@@ -5911,11 +6272,15 @@ async fn test_plugin_interaction_execution_order() {
     step.tool = Some(ToolContext::new(&call));
 
     // Response plugin runs first - denies the tool
-    response_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .await;
     assert!(step.tool_blocked(), "Tool should be blocked by denial");
 
     // Frontend plugin runs second - should NOT override the block
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    frontend_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .await;
     assert!(step.tool_blocked(), "Tool should still be blocked");
     assert!(!step.tool_pending(), "Blocked tool should not be pending");
 }
@@ -5934,21 +6299,34 @@ async fn test_plugin_interaction_permission_and_frontend() {
 
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set("permissions", json!({ "default_behavior": "ask", "tools": {} }));
+    step.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
 
     let call = ToolCall::new("call_modify", "modifySettings", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
     // Permission plugin runs first - creates pending for "ask"
-    permission_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    permission_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .await;
     // Frontend plugin runs second
-    frontend_plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    frontend_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .await;
 
     // Tool should be pending (frontend takes precedence for frontend tools)
     assert!(step.tool_pending(), "Tool should be pending");
 
     // The interaction should be from frontend plugin (tool:modifySettings)
-    let interaction = step.tool.as_ref().unwrap().pending_interaction.clone().unwrap();
+    let interaction = step
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
     assert!(
         interaction.action.starts_with("tool:") || interaction.action == "confirm",
         "Interaction action should be from one of the plugins"
@@ -5976,7 +6354,10 @@ fn test_activity_snapshot_flow() {
     let mut content = HashMap::new();
     content.insert("progress".to_string(), json!(0.75));
     content.insert("status".to_string(), json!("processing"));
-    content.insert("current_item".to_string(), json!({"name": "file.txt", "size": 1024}));
+    content.insert(
+        "current_item".to_string(),
+        json!({"name": "file.txt", "size": 1024}),
+    );
 
     let event = AGUIEvent::activity_snapshot("activity_1", "file_processing", content, Some(false));
 
@@ -6020,7 +6401,8 @@ fn test_activity_streaming_complete_flow() {
     initial_content.insert("total_files".to_string(), json!(10));
     initial_content.insert("processed_files".to_string(), json!(0));
 
-    let snapshot = AGUIEvent::activity_snapshot("act_1", "batch_processing", initial_content, Some(false));
+    let snapshot =
+        AGUIEvent::activity_snapshot("act_1", "batch_processing", initial_content, Some(false));
 
     // Progress deltas
     let delta1 = AGUIEvent::activity_delta(
@@ -6129,18 +6511,18 @@ fn test_concurrent_tool_calls_event_ordering() {
 
     // Verify each tool has complete sequence
     for id in &tool_ids {
-        let has_start = all_events.iter().any(|e| {
-            matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == *id)
-        });
-        let has_args = all_events.iter().any(|e| {
-            matches!(e, AGUIEvent::ToolCallArgs { tool_call_id, .. } if tool_call_id == *id)
-        });
-        let has_end = all_events.iter().any(|e| {
-            matches!(e, AGUIEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == *id)
-        });
-        let has_result = all_events.iter().any(|e| {
-            matches!(e, AGUIEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == *id)
-        });
+        let has_start = all_events.iter().any(
+            |e| matches!(e, AGUIEvent::ToolCallStart { tool_call_id, .. } if tool_call_id == *id),
+        );
+        let has_args = all_events.iter().any(
+            |e| matches!(e, AGUIEvent::ToolCallArgs { tool_call_id, .. } if tool_call_id == *id),
+        );
+        let has_end = all_events.iter().any(
+            |e| matches!(e, AGUIEvent::ToolCallEnd { tool_call_id, .. } if tool_call_id == *id),
+        );
+        let has_result = all_events.iter().any(
+            |e| matches!(e, AGUIEvent::ToolCallResult { tool_call_id, .. } if tool_call_id == *id),
+        );
 
         assert!(has_start, "Tool {} missing START", id);
         assert!(has_args, "Tool {} missing ARGS", id);
@@ -6156,7 +6538,9 @@ fn test_interleaved_tools_and_text() {
     let mut all_events: Vec<AGUIEvent> = Vec::new();
 
     // Text starts
-    let text1 = AgentEvent::TextDelta { delta: "Let me search ".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Let me search ".into(),
+    };
     all_events.extend(text1.to_ag_ui_events(&mut ctx));
 
     // Tool starts (interrupts text)
@@ -6190,7 +6574,9 @@ fn test_interleaved_tools_and_text() {
     all_events.extend(tool_done.to_ag_ui_events(&mut ctx));
 
     // More text after tool
-    let text2 = AgentEvent::TextDelta { delta: "Found 5 results.".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "Found 5 results.".into(),
+    };
     all_events.extend(text2.to_ag_ui_events(&mut ctx));
 
     // Verify sequence: text → tool → text
@@ -6198,16 +6584,30 @@ fn test_interleaved_tools_and_text() {
     assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
 
     // Should have TEXT_MESSAGE_END before TOOL_CALL_START
-    let text_end_idx = all_events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
-    let tool_start_idx = all_events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
-    assert!(text_end_idx < tool_start_idx, "TEXT_MESSAGE_END should come before TOOL_CALL_START");
+    let text_end_idx = all_events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .unwrap();
+    let tool_start_idx = all_events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .unwrap();
+    assert!(
+        text_end_idx < tool_start_idx,
+        "TEXT_MESSAGE_END should come before TOOL_CALL_START"
+    );
 
     // Should have new TEXT_MESSAGE_START after tool
-    let text_starts: Vec<_> = all_events.iter()
+    let text_starts: Vec<_> = all_events
+        .iter()
         .enumerate()
         .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageStart { .. }))
         .collect();
-    assert_eq!(text_starts.len(), 2, "Should have 2 TEXT_MESSAGE_START events");
+    assert_eq!(
+        text_starts.len(),
+        2,
+        "Should have 2 TEXT_MESSAGE_START events"
+    );
 }
 
 // ============================================================================
@@ -6243,7 +6643,9 @@ fn test_reconnection_state_snapshot() {
         }
     });
 
-    let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+    let event = AgentEvent::StateSnapshot {
+        snapshot: state.clone(),
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
@@ -6266,7 +6668,9 @@ fn test_reconnection_messages_snapshot() {
         json!({"role": "tool", "tool_call_id": "call_1", "content": "{\"results\": 10}"}),
     ];
 
-    let event = AgentEvent::MessagesSnapshot { messages: messages.clone() };
+    let event = AgentEvent::MessagesSnapshot {
+        messages: messages.clone(),
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
@@ -6303,14 +6707,22 @@ fn test_full_reconnection_scenario() {
     reconnect_events.extend(state_event.to_ag_ui_events(&mut ctx));
 
     // 4. Continue with new content
-    let text = AgentEvent::TextDelta { delta: "Continuing from where we left off...".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Continuing from where we left off...".into(),
+    };
     reconnect_events.extend(text.to_ag_ui_events(&mut ctx));
 
     // Verify sequence
     assert!(matches!(&reconnect_events[0], AGUIEvent::RunStarted { .. }));
-    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
-    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
-    assert!(reconnect_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(reconnect_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::MessagesSnapshot { .. })));
+    assert!(reconnect_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+    assert!(reconnect_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 }
 
 // ============================================================================
@@ -6366,9 +6778,9 @@ async fn test_multiple_interaction_responses() {
 
     // Verify each tool gets correct treatment
     let test_cases = vec![
-        ("perm_read", false),  // approved, not blocked
-        ("perm_write", true),  // denied, blocked
-        ("perm_exec", false),  // approved, not blocked
+        ("perm_read", false), // approved, not blocked
+        ("perm_write", true), // denied, blocked
+        ("perm_exec", false), // approved, not blocked
     ];
 
     for (id, should_block) in test_cases {
@@ -6404,7 +6816,9 @@ fn test_tool_timeout_ag_ui_flow() {
         name: "slow_operation".into(),
     };
     let start_events = start.to_ag_ui_events(&mut ctx);
-    assert!(start_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(start_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 
     // Tool times out - simulated by returning timeout error
     let timeout_result = ToolResult::error("slow_operation", "Tool execution timed out after 30s");
@@ -6417,9 +6831,14 @@ fn test_tool_timeout_ag_ui_flow() {
     let done_events = done.to_ag_ui_events(&mut ctx);
 
     // Should still have TOOL_CALL_RESULT with error
-    assert!(done_events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+    assert!(done_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
 
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = done_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = done_events
+        .iter()
+        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+    {
         assert!(content.contains("timed out") || content.contains("error"));
     }
 }
@@ -6443,12 +6862,21 @@ fn test_rapid_text_delta_burst() {
     }
 
     // Should have exactly 1 TEXT_MESSAGE_START
-    let start_count = all_events.iter().filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. })).count();
+    let start_count = all_events
+        .iter()
+        .filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
+        .count();
     assert_eq!(start_count, 1, "Should have exactly 1 TEXT_MESSAGE_START");
 
     // Should have 100 TEXT_MESSAGE_CONTENT (one for each delta)
-    let content_count = all_events.iter().filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. })).count();
-    assert_eq!(content_count, 100, "Should have 100 TEXT_MESSAGE_CONTENT events");
+    let content_count = all_events
+        .iter()
+        .filter(|e| matches!(e, AGUIEvent::TextMessageContent { .. }))
+        .count();
+    assert_eq!(
+        content_count, 100,
+        "Should have 100 TEXT_MESSAGE_CONTENT events"
+    );
 
     // First event should be TEXT_MESSAGE_START
     assert!(matches!(&all_events[0], AGUIEvent::TextMessageStart { .. }));
@@ -6465,7 +6893,9 @@ fn test_state_event_ordering() {
     let mut all_events: Vec<AGUIEvent> = Vec::new();
 
     // Sequence: text → state snapshot → more text → state delta
-    let text1 = AgentEvent::TextDelta { delta: "Starting...".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Starting...".into(),
+    };
     all_events.extend(text1.to_ag_ui_events(&mut ctx));
 
     let snapshot = AgentEvent::StateSnapshot {
@@ -6473,7 +6903,9 @@ fn test_state_event_ordering() {
     };
     all_events.extend(snapshot.to_ag_ui_events(&mut ctx));
 
-    let text2 = AgentEvent::TextDelta { delta: " Processing...".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: " Processing...".into(),
+    };
     all_events.extend(text2.to_ag_ui_events(&mut ctx));
 
     let delta = AgentEvent::StateDelta {
@@ -6482,10 +6914,18 @@ fn test_state_event_ordering() {
     all_events.extend(delta.to_ag_ui_events(&mut ctx));
 
     // Verify presence of all event types
-    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
-    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
-    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
-    assert!(all_events.iter().any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
+    assert!(all_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(all_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(all_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::StateSnapshot { .. })));
+    assert!(all_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::StateDelta { .. })));
 }
 
 // ============================================================================
@@ -6498,17 +6938,31 @@ fn test_sequential_runs_in_session() {
     // Run 1
     let mut ctx1 = AGUIContext::new("t1".into(), "r1".into());
     let run1_start = AGUIEvent::run_started("t1", "r1", None);
-    let text1 = AgentEvent::TextDelta { delta: "First run response".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "First run response".into(),
+    };
     let text1_events = text1.to_ag_ui_events(&mut ctx1);
     // Run 2 (same thread, different run)
     let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
     let run2_start = AGUIEvent::run_started("t1", "r2", None);
-    let text2 = AgentEvent::TextDelta { delta: "Second run response".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "Second run response".into(),
+    };
     let text2_events = text2.to_ag_ui_events(&mut ctx2);
 
     // Verify runs are independent
-    if let AGUIEvent::RunStarted { thread_id: t1, run_id: r1, .. } = &run1_start {
-        if let AGUIEvent::RunStarted { thread_id: t2, run_id: r2, .. } = &run2_start {
+    if let AGUIEvent::RunStarted {
+        thread_id: t1,
+        run_id: r1,
+        ..
+    } = &run1_start
+    {
+        if let AGUIEvent::RunStarted {
+            thread_id: t2,
+            run_id: r2,
+            ..
+        } = &run2_start
+        {
             assert_eq!(t1, t2, "Same thread");
             assert_ne!(r1, r2, "Different runs");
         }
@@ -6613,10 +7067,13 @@ fn test_large_tool_result_payload() {
         }))
         .collect();
 
-    let result = ToolResult::success("search", json!({
-        "total": 1000,
-        "items": large_data
-    }));
+    let result = ToolResult::success(
+        "search",
+        json!({
+            "total": 1000,
+            "items": large_data
+        }),
+    );
 
     let event = AgentEvent::ToolCallDone {
         id: "call_large".into(),
@@ -6628,7 +7085,10 @@ fn test_large_tool_result_payload() {
     assert!(!ag_events.is_empty());
 
     // Verify the result can be serialized and parsed
-    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events.iter().find(|e| matches!(e, AGUIEvent::ToolCallResult { .. })) {
+    if let Some(AGUIEvent::ToolCallResult { content, .. }) = ag_events
+        .iter()
+        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+    {
         // Content should be valid JSON (it's a serialized ToolResult struct)
         let parsed: Value = serde_json::from_str(content).expect("Should be valid JSON");
         // The data is nested inside the ToolResult structure
@@ -6660,7 +7120,9 @@ fn test_large_state_snapshot() {
         }
     });
 
-    let event = AgentEvent::StateSnapshot { snapshot: large_state };
+    let event = AgentEvent::StateSnapshot {
+        snapshot: large_state,
+    };
     let ag_events = event.to_ag_ui_events(&mut ctx);
 
     assert!(!ag_events.is_empty());
@@ -6754,7 +7216,8 @@ fn test_tool_call_chunk_with_parent_message() {
 /// Protocol: parentRunId enables run branching/sub-agents
 #[test]
 fn test_run_started_with_parent_run_id() {
-    let event = AGUIEvent::run_started_with_input("t1", "r2", Some("r1".into()), json!({"query": "test"}));
+    let event =
+        AGUIEvent::run_started_with_input("t1", "r2", Some("r1".into()), json!({"query": "test"}));
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RUN_STARTED""#));
@@ -6775,7 +7238,10 @@ fn test_run_started_with_parent_run_id() {
 /// Protocol: Error code is optional for categorizing errors
 #[test]
 fn test_run_error_with_code() {
-    let event = AGUIEvent::run_error("Connection timeout".to_string(), Some("TIMEOUT".to_string()));
+    let event = AGUIEvent::run_error(
+        "Connection timeout".to_string(),
+        Some("TIMEOUT".to_string()),
+    );
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"RUN_ERROR""#));
@@ -6817,8 +7283,16 @@ fn test_step_events_matching_names() {
     let finish = AGUIEvent::step_finished("data_processing");
 
     // Verify matching step names
-    if let AGUIEvent::StepStarted { step_name: start_name, .. } = &start {
-        if let AGUIEvent::StepFinished { step_name: finish_name, .. } = &finish {
+    if let AGUIEvent::StepStarted {
+        step_name: start_name,
+        ..
+    } = &start
+    {
+        if let AGUIEvent::StepFinished {
+            step_name: finish_name,
+            ..
+        } = &finish
+        {
             assert_eq!(start_name, finish_name);
         }
     }
@@ -7080,7 +7554,10 @@ fn test_tool_call_start_with_parent_message_id() {
     assert!(json.contains(r#""parentMessageId":"msg_123""#));
 
     let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::ToolCallStart { parent_message_id, .. } = parsed {
+    if let AGUIEvent::ToolCallStart {
+        parent_message_id, ..
+    } = parsed
+    {
         assert_eq!(parent_message_id, Some("msg_123".to_string()));
     }
 }
@@ -7104,7 +7581,11 @@ fn test_tool_call_start_without_parent_message_id() {
 /// Protocol: TOOL_CALL_RESULT with messageId, toolCallId, content
 #[test]
 fn test_tool_call_result_structure() {
-    let event = AGUIEvent::tool_call_result("result_1", "call_1", r#"{"success": true, "data": "result"}"#);
+    let event = AGUIEvent::tool_call_result(
+        "result_1",
+        "call_1",
+        r#"{"success": true, "data": "result"}"#,
+    );
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""type":"TOOL_CALL_RESULT""#));
@@ -7113,7 +7594,13 @@ fn test_tool_call_result_structure() {
     assert!(json.contains(r#""content":"#));
 
     let parsed: AGUIEvent = serde_json::from_str(&json).unwrap();
-    if let AGUIEvent::ToolCallResult { message_id, tool_call_id, content, .. } = parsed {
+    if let AGUIEvent::ToolCallResult {
+        message_id,
+        tool_call_id,
+        content,
+        ..
+    } = parsed
+    {
         assert_eq!(message_id, "result_1");
         assert_eq!(tool_call_id, "call_1");
         assert!(content.contains("success"));
@@ -7128,7 +7615,11 @@ fn test_tool_call_result_error_content() {
         "tool_name": "write_file",
         "message": "Permission denied"
     });
-    let event = AGUIEvent::tool_call_result("result_err", "call_write", &serde_json::to_string(&error_result).unwrap());
+    let event = AGUIEvent::tool_call_result(
+        "result_err",
+        "call_write",
+        &serde_json::to_string(&error_result).unwrap(),
+    );
 
     let json = serde_json::to_string(&event).unwrap();
     assert!(json.contains(r#""toolCallId":"call_write""#));
@@ -7159,13 +7650,14 @@ fn test_text_message_all_roles() {
     ];
 
     for (role, expected) in roles {
-        let event = AGUIEvent::text_message_chunk(
-            Some("msg_1".into()),
-            Some(role),
-            Some("test".into()),
-        );
+        let event =
+            AGUIEvent::text_message_chunk(Some("msg_1".into()), Some(role), Some("test".into()));
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(&format!(r#""role":"{}""#, expected)), "Role {} not found in JSON", expected);
+        assert!(
+            json.contains(&format!(r#""role":"{}""#, expected)),
+            "Role {} not found in JSON",
+            expected
+        );
     }
 }
 
@@ -7312,10 +7804,18 @@ fn test_complete_tool_call_protocol_flow() {
     events.extend(done.to_ag_ui_events(&mut ctx));
 
     // Verify complete sequence
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
 }
 
 /// Test: State sync flow (snapshot then deltas)
@@ -7358,7 +7858,9 @@ fn test_mixed_content_protocol_flow() {
     let mut events: Vec<AGUIEvent> = Vec::new();
 
     // Text starts
-    let text1 = AgentEvent::TextDelta { delta: "Let me search".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Let me search".into(),
+    };
     events.extend(text1.to_ag_ui_events(&mut ctx));
 
     // Tool interrupts (should end text first)
@@ -7384,13 +7886,24 @@ fn test_mixed_content_protocol_flow() {
     events.extend(tool_done.to_ag_ui_events(&mut ctx));
 
     // Text resumes
-    let text2 = AgentEvent::TextDelta { delta: "Found 5 results".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "Found 5 results".into(),
+    };
     events.extend(text2.to_ag_ui_events(&mut ctx));
 
     // Verify TEXT_MESSAGE_END appears before TOOL_CALL_START
-    let text_end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
-    let tool_start_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
-    assert!(text_end_idx < tool_start_idx, "TEXT_MESSAGE_END must come before TOOL_CALL_START");
+    let text_end_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .unwrap();
+    let tool_start_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .unwrap();
+    assert!(
+        text_end_idx < tool_start_idx,
+        "TEXT_MESSAGE_END must come before TOOL_CALL_START"
+    );
 }
 
 // ============================================================================
@@ -7559,8 +8072,8 @@ fn test_run_agent_request_with_state() {
         "history": []
     });
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_state(initial_state.clone());
+    let request =
+        RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_state(initial_state.clone());
 
     assert_eq!(request.state, Some(initial_state));
 }
@@ -7659,8 +8172,7 @@ fn test_agui_tool_def_with_schema() {
         "required": ["query"]
     });
 
-    let tool = AGUIToolDef::backend("search", "Search")
-        .with_parameters(schema.clone());
+    let tool = AGUIToolDef::backend("search", "Search").with_parameters(schema.clone());
 
     assert_eq!(tool.parameters, Some(schema));
 }
@@ -7668,14 +8180,13 @@ fn test_agui_tool_def_with_schema() {
 /// Test: Tool serialization with all fields
 #[test]
 fn test_agui_tool_def_full_serialization() {
-    let tool = AGUIToolDef::frontend("readFile", "Read a file from disk")
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"}
-            },
-            "required": ["path"]
-        }));
+    let tool = AGUIToolDef::frontend("readFile", "Read a file from disk").with_parameters(json!({
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"}
+        },
+        "required": ["path"]
+    }));
 
     let json = serde_json::to_string(&tool).unwrap();
     assert!(json.contains(r#""name":"readFile""#));
@@ -7708,16 +8219,22 @@ fn test_event_sequence_canceled_run() {
     events.extend(start.to_ag_ui_events(&mut ctx));
 
     // Text streaming begins
-    let text = AgentEvent::TextDelta { delta: "Processing...".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Processing...".into(),
+    };
     events.extend(text.to_ag_ui_events(&mut ctx));
 
     // Run aborted (simulating cancel)
-    let abort = AgentEvent::Aborted { reason: "User canceled".into() };
+    let abort = AgentEvent::Aborted {
+        reason: "User canceled".into(),
+    };
     let abort_events = abort.to_ag_ui_events(&mut ctx);
     events.extend(abort_events);
 
     // Verify run started
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
     // Note: Aborted may or may not produce events depending on implementation
 }
 
@@ -7729,15 +8246,21 @@ fn test_error_interrupts_text_stream() {
     let mut events: Vec<AGUIEvent> = Vec::new();
 
     // Text starts
-    let text = AgentEvent::TextDelta { delta: "Starting...".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Starting...".into(),
+    };
     events.extend(text.to_ag_ui_events(&mut ctx));
 
     // Error occurs
-    let error = AgentEvent::Error { message: "API rate limit exceeded".into() };
+    let error = AgentEvent::Error {
+        message: "API rate limit exceeded".into(),
+    };
     events.extend(error.to_ag_ui_events(&mut ctx));
 
     // Should have TEXT_MESSAGE_START and possibly TEXT_MESSAGE_END before error
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
 }
 
 /// Test: Multiple text messages in sequence
@@ -7748,22 +8271,29 @@ fn test_multiple_text_messages() {
     let mut events: Vec<AGUIEvent> = Vec::new();
 
     // First message
-    let text1 = AgentEvent::TextDelta { delta: "First message".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "First message".into(),
+    };
     events.extend(text1.to_ag_ui_events(&mut ctx));
 
     // End first message by starting something else
-    let done1 = AgentEvent::Done { response: "First message".into() };
+    let done1 = AgentEvent::Done {
+        response: "First message".into(),
+    };
     events.extend(done1.to_ag_ui_events(&mut ctx));
 
     // Reset context for new message
     ctx = AGUIContext::new("t1".into(), "r2".into());
 
     // Second message
-    let text2 = AgentEvent::TextDelta { delta: "Second message".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "Second message".into(),
+    };
     events.extend(text2.to_ag_ui_events(&mut ctx));
 
     // Count TEXT_MESSAGE_START events
-    let start_count = events.iter()
+    let start_count = events
+        .iter()
         .filter(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
         .count();
     assert_eq!(start_count, 2, "Should have 2 TEXT_MESSAGE_START events");
@@ -7858,7 +8388,9 @@ fn test_tool_call_empty_args() {
     };
     let events = start.to_ag_ui_events(&mut ctx);
 
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 }
 
 /// Test: Tool call with nested JSON arguments
@@ -7877,7 +8409,8 @@ fn test_tool_call_complex_args() {
                     }
                 }
             }
-        })).unwrap(),
+        }))
+        .unwrap(),
     };
     let events = args.to_ag_ui_events(&mut ctx);
 
@@ -7900,7 +8433,9 @@ fn test_tool_result_with_warning_status() {
     };
     let events = done.to_ag_ui_events(&mut ctx);
 
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallResult { .. })));
 }
 
 /// Test: Tool result with pending status
@@ -8343,8 +8878,8 @@ fn test_with_timestamp_messages_snapshot() {
 fn test_with_timestamp_activity_snapshot() {
     use std::collections::HashMap;
     let ts = 1704067200000u64;
-    let event = AGUIEvent::activity_snapshot("act1", "progress", HashMap::new(), None)
-        .with_timestamp(ts);
+    let event =
+        AGUIEvent::activity_snapshot("act1", "progress", HashMap::new(), None).with_timestamp(ts);
 
     if let AGUIEvent::ActivitySnapshot { base, .. } = &event {
         assert_eq!(base.timestamp, Some(ts));
@@ -8668,21 +9203,33 @@ fn test_event_with_raw_event_passthrough() {
 /// Protocol: Server-Sent Events format per AG-UI spec
 #[test]
 fn test_sse_format_output() {
-    use carve_agent::AgUiAdapter;
     use carve_agent::stream::AgentEvent;
+    use carve_agent::AgUiAdapter;
 
     let mut adapter = AgUiAdapter::new("t1".into(), "r1".into());
-    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+    let event = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
 
     let sse_lines = adapter.to_sse(&event);
 
     // Each line should follow SSE format: data: {json}\n\n
     for line in &sse_lines {
-        assert!(line.starts_with("data: "), "SSE line should start with 'data: '");
-        assert!(line.ends_with("\n\n"), "SSE line should end with double newline");
+        assert!(
+            line.starts_with("data: "),
+            "SSE line should start with 'data: '"
+        );
+        assert!(
+            line.ends_with("\n\n"),
+            "SSE line should end with double newline"
+        );
 
         // Extract and validate JSON
-        let json_part = line.strip_prefix("data: ").unwrap().strip_suffix("\n\n").unwrap();
+        let json_part = line
+            .strip_prefix("data: ")
+            .unwrap()
+            .strip_suffix("\n\n")
+            .unwrap();
         let parsed: Result<AGUIEvent, _> = serde_json::from_str(json_part);
         assert!(parsed.is_ok(), "SSE data should be valid JSON");
     }
@@ -8692,18 +9239,23 @@ fn test_sse_format_output() {
 /// Protocol: Newline-delimited JSON format alternative
 #[test]
 fn test_ndjson_format_output() {
-    use carve_agent::AgUiAdapter;
     use carve_agent::stream::AgentEvent;
+    use carve_agent::AgUiAdapter;
 
     let mut adapter = AgUiAdapter::new("t1".into(), "r1".into());
-    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+    let event = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
 
     let ndjson_lines = adapter.to_ndjson(&event);
 
     // Each line should be JSON followed by single newline
     for line in &ndjson_lines {
         assert!(line.ends_with("\n"), "NDJSON line should end with newline");
-        assert!(!line.ends_with("\n\n"), "NDJSON should have single newline, not double");
+        assert!(
+            !line.ends_with("\n\n"),
+            "NDJSON should have single newline, not double"
+        );
 
         let json_part = line.strip_suffix("\n").unwrap();
         let parsed: Result<AGUIEvent, _> = serde_json::from_str(json_part);
@@ -8734,10 +9286,14 @@ fn test_run_started_is_first_event() {
     };
     events.extend(run_start.to_ag_ui_events(&mut ctx));
 
-    let text = AgentEvent::TextDelta { delta: "Hello".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
     events.extend(text.to_ag_ui_events(&mut ctx));
 
-    let done = AgentEvent::Done { response: "Hello".into() };
+    let done = AgentEvent::Done {
+        response: "Hello".into(),
+    };
     events.extend(done.to_ag_ui_events(&mut ctx));
 
     // First event must be RUN_STARTED
@@ -8783,10 +9339,14 @@ fn test_text_message_sequence_ordering() {
     let mut events: Vec<AGUIEvent> = Vec::new();
 
     // Generate a complete text message
-    let text1 = AgentEvent::TextDelta { delta: "Hello".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
     events.extend(text1.to_ag_ui_events(&mut ctx));
 
-    let text2 = AgentEvent::TextDelta { delta: " World".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: " World".into(),
+    };
     events.extend(text2.to_ag_ui_events(&mut ctx));
 
     // End text stream
@@ -8794,16 +9354,25 @@ fn test_text_message_sequence_ordering() {
     events.push(AGUIEvent::text_message_end(&ctx.message_id));
 
     // Find indices
-    let start_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageStart { .. }));
-    let content_indices: Vec<usize> = events.iter().enumerate()
+    let start_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::TextMessageStart { .. }));
+    let content_indices: Vec<usize> = events
+        .iter()
+        .enumerate()
         .filter(|(_, e)| matches!(e, AGUIEvent::TextMessageContent { .. }))
         .map(|(i, _)| i)
         .collect();
-    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }));
+    let end_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }));
 
     // Verify ordering
     assert!(start_idx.is_some(), "Should have TEXT_MESSAGE_START");
-    assert!(!content_indices.is_empty(), "Should have TEXT_MESSAGE_CONTENT");
+    assert!(
+        !content_indices.is_empty(),
+        "Should have TEXT_MESSAGE_CONTENT"
+    );
     assert!(end_idx.is_some(), "Should have TEXT_MESSAGE_END");
 
     let start = start_idx.unwrap();
@@ -8854,10 +9423,22 @@ fn test_tool_call_sequence_ordering() {
     events.extend(done.to_ag_ui_events(&mut ctx));
 
     // Find indices
-    let start_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
-    let args_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallArgs { .. })).unwrap();
-    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallEnd { .. })).unwrap();
-    let result_idx = events.iter().position(|e| matches!(e, AGUIEvent::ToolCallResult { .. })).unwrap();
+    let start_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .unwrap();
+    let args_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallArgs { .. }))
+        .unwrap();
+    let end_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallEnd { .. }))
+        .unwrap();
+    let result_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+        .unwrap();
 
     // Verify ordering: START < ARGS < END < RESULT
     assert!(start_idx < args_idx, "START must come before ARGS");
@@ -8888,15 +9469,23 @@ fn test_run_finished_or_error_mutually_exclusive() {
             run_id: "r1".into(),
             parent_run_id: None,
         },
-        AgentEvent::TextDelta { delta: "Hello".into() },
-        AgentEvent::Done { response: "Hello".into() },
+        AgentEvent::TextDelta {
+            delta: "Hello".into(),
+        },
+        AgentEvent::Done {
+            response: "Hello".into(),
+        },
     ]
     .iter()
     .flat_map(|e| e.to_ag_ui_events(&mut ctx))
     .collect();
 
-    let has_finished = success_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
-    let has_error = success_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. }));
+    let has_finished = success_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+    let has_error = success_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunError { .. }));
 
     // Done event emits RunFinished in AG-UI conversion
     assert!(has_finished, "Successful run should emit RUN_FINISHED");
@@ -8910,16 +9499,25 @@ fn test_run_finished_or_error_mutually_exclusive() {
             run_id: "r2".into(),
             parent_run_id: None,
         },
-        AgentEvent::Error { message: "API error".into() },
+        AgentEvent::Error {
+            message: "API error".into(),
+        },
     ]
     .iter()
     .flat_map(|e| e.to_ag_ui_events(&mut ctx2))
     .collect();
 
-    let has_finished2 = error_events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
-    let has_error2 = error_events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. }));
+    let has_finished2 = error_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+    let has_error2 = error_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunError { .. }));
 
-    assert!(!(has_finished2 && has_error2), "Run cannot have both RUN_FINISHED and RUN_ERROR");
+    assert!(
+        !(has_finished2 && has_error2),
+        "Run cannot have both RUN_FINISHED and RUN_ERROR"
+    );
 }
 
 /// Test: RUN_STARTED contains required fields
@@ -8929,7 +9527,10 @@ fn test_run_finished_or_error_mutually_exclusive() {
 fn test_run_started_required_fields() {
     let event = AGUIEvent::run_started("thread_123", "run_456", None);
 
-    if let AGUIEvent::RunStarted { thread_id, run_id, .. } = &event {
+    if let AGUIEvent::RunStarted {
+        thread_id, run_id, ..
+    } = &event
+    {
         assert!(!thread_id.is_empty(), "threadId is required");
         assert!(!run_id.is_empty(), "runId is required");
     } else {
@@ -8948,7 +9549,13 @@ fn test_run_started_required_fields() {
 fn test_run_finished_required_fields() {
     let event = AGUIEvent::run_finished("thread_123", "run_456", Some(json!({"answer": 42})));
 
-    if let AGUIEvent::RunFinished { thread_id, run_id, result, .. } = &event {
+    if let AGUIEvent::RunFinished {
+        thread_id,
+        run_id,
+        result,
+        ..
+    } = &event
+    {
         assert!(!thread_id.is_empty(), "threadId is required");
         assert!(!run_id.is_empty(), "runId is required");
         assert!(result.is_some(), "result should be present when provided");
@@ -9010,7 +9617,10 @@ fn test_step_finished_name_matches_started() {
         panic!("Expected StepFinished");
     };
 
-    assert_eq!(start_name, finish_name, "StepFinished.stepName must match StepStarted.stepName");
+    assert_eq!(
+        start_name, finish_name,
+        "StepFinished.stepName must match StepStarted.stepName"
+    );
 }
 
 /// Test: Nested steps follow LIFO ordering
@@ -9098,7 +9708,10 @@ fn test_text_content_message_id_references_start() {
         panic!("Expected TextMessageContent");
     };
 
-    assert_eq!(start_id, content_id, "TextMessageContent.messageId must match TextMessageStart");
+    assert_eq!(
+        start_id, content_id,
+        "TextMessageContent.messageId must match TextMessageStart"
+    );
 }
 
 /// Test: TEXT_MESSAGE_END messageId must match TEXT_MESSAGE_START
@@ -9123,7 +9736,10 @@ fn test_text_end_message_id_matches_start() {
         panic!("Expected TextMessageEnd");
     };
 
-    assert_eq!(start_id, end_id, "TextMessageEnd.messageId must match TextMessageStart");
+    assert_eq!(
+        start_id, end_id,
+        "TextMessageEnd.messageId must match TextMessageStart"
+    );
 }
 
 /// Test: Complete text message flow maintains consistent messageId
@@ -9133,10 +9749,14 @@ fn test_text_end_message_id_matches_start() {
 fn test_text_message_flow_consistent_message_id() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let text1 = AgentEvent::TextDelta { delta: "Hello ".into() };
+    let text1 = AgentEvent::TextDelta {
+        delta: "Hello ".into(),
+    };
     let events1 = text1.to_ag_ui_events(&mut ctx);
 
-    let text2 = AgentEvent::TextDelta { delta: "World".into() };
+    let text2 = AgentEvent::TextDelta {
+        delta: "World".into(),
+    };
     let events2 = text2.to_ag_ui_events(&mut ctx);
 
     // Collect all messageIds
@@ -9157,7 +9777,10 @@ fn test_text_message_flow_consistent_message_id() {
     if !message_ids.is_empty() {
         let first_id = &message_ids[0];
         for id in &message_ids {
-            assert_eq!(id, first_id, "All text message events should share the same messageId");
+            assert_eq!(
+                id, first_id,
+                "All text message events should share the same messageId"
+            );
         }
     }
 }
@@ -9188,7 +9811,11 @@ fn test_tool_args_concatenate_to_valid_json() {
     let concatenated: String = chunks.concat();
     let parsed: Result<Value, _> = serde_json::from_str(&concatenated);
 
-    assert!(parsed.is_ok(), "Concatenated chunks must form valid JSON: {:?}", parsed.err());
+    assert!(
+        parsed.is_ok(),
+        "Concatenated chunks must form valid JSON: {:?}",
+        parsed.err()
+    );
 
     let json = parsed.unwrap();
     assert_eq!(json["query"], "rust programming");
@@ -9217,7 +9844,10 @@ fn test_tool_result_references_valid_tool_call() {
         panic!("Expected ToolCallResult");
     };
 
-    assert_eq!(start_id, result_id, "ToolCallResult.toolCallId must match ToolCallStart");
+    assert_eq!(
+        start_id, result_id,
+        "ToolCallResult.toolCallId must match ToolCallStart"
+    );
 }
 
 /// Test: Tool call flow maintains consistent toolCallId
@@ -9244,7 +9874,10 @@ fn test_tool_call_flow_consistent_tool_call_id() {
             AGUIEvent::ToolCallResult { tool_call_id, .. } => tool_call_id,
             _ => continue,
         };
-        assert_eq!(event_id, tool_call_id, "All tool call events must share the same toolCallId");
+        assert_eq!(
+            event_id, tool_call_id,
+            "All tool call events must share the same toolCallId"
+        );
     }
 }
 
@@ -9293,7 +9926,10 @@ fn test_tool_message_requires_tool_call_id() {
     let msg = AGUIMessage::tool("result data", "call_123");
 
     assert_eq!(msg.role, MessageRole::Tool);
-    assert!(msg.tool_call_id.is_some(), "ToolMessage requires toolCallId");
+    assert!(
+        msg.tool_call_id.is_some(),
+        "ToolMessage requires toolCallId"
+    );
     assert_eq!(msg.tool_call_id.as_deref(), Some("call_123"));
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -9358,8 +9994,14 @@ fn test_state_snapshot_replaces_entire_state() {
     // Second snapshot should contain only new state, not merged with first
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &snapshot2 {
         assert_eq!(snapshot["counter"], 10);
-        assert!(snapshot.get("user").is_none(), "Old state should be replaced, not merged");
-        assert!(snapshot.get("items").is_some(), "New state should be present");
+        assert!(
+            snapshot.get("user").is_none(),
+            "Old state should be replaced, not merged"
+        );
+        assert!(
+            snapshot.get("items").is_some(),
+            "New state should be present"
+        );
     }
 }
 
@@ -9390,7 +10032,7 @@ fn test_state_delta_atomic_application() {
 fn test_state_delta_sequential_ordering() {
     // Operations that depend on order
     let delta = vec![
-        json!({"op": "add", "path": "/items", "value": []}),      // 1. Create array
+        json!({"op": "add", "path": "/items", "value": []}), // 1. Create array
         json!({"op": "add", "path": "/items/-", "value": "first"}), // 2. Add first item
         json!({"op": "add", "path": "/items/-", "value": "second"}), // 3. Add second item
     ];
@@ -9549,7 +10191,10 @@ fn test_activity_delta_message_id_matches_snapshot() {
         panic!("Expected ActivityDelta");
     };
 
-    assert_eq!(snapshot_id, delta_id, "ActivityDelta.messageId must match ActivitySnapshot");
+    assert_eq!(
+        snapshot_id, delta_id,
+        "ActivityDelta.messageId must match ActivitySnapshot"
+    );
 }
 
 // ============================================================================
@@ -9582,8 +10227,7 @@ fn test_tool_parameters_json_schema_validation() {
         "required": ["query"]
     });
 
-    let tool = AGUIToolDef::backend("search", "Search the web")
-        .with_parameters(schema.clone());
+    let tool = AGUIToolDef::backend("search", "Search the web").with_parameters(schema.clone());
 
     // Verify schema structure
     assert!(tool.parameters.is_some());
@@ -9607,8 +10251,7 @@ fn test_tool_required_references_valid_properties() {
         "required": ["path"]
     });
 
-    let tool = AGUIToolDef::backend("read_file", "Read a file")
-        .with_parameters(schema.clone());
+    let tool = AGUIToolDef::backend("read_file", "Read a file").with_parameters(schema.clone());
 
     let params = tool.parameters.unwrap();
     let required = params["required"].as_array().unwrap();
@@ -9669,7 +10312,15 @@ fn test_activity_message_role_not_forwarded() {
     // Only user/assistant/system/tool messages should be forwarded
     let forwarded_roles: Vec<&MessageRole> = messages
         .iter()
-        .filter(|m| matches!(m.role, MessageRole::User | MessageRole::Assistant | MessageRole::System | MessageRole::Tool))
+        .filter(|m| {
+            matches!(
+                m.role,
+                MessageRole::User
+                    | MessageRole::Assistant
+                    | MessageRole::System
+                    | MessageRole::Tool
+            )
+        })
         .map(|m| &m.role)
         .collect();
 
@@ -9752,7 +10403,13 @@ fn test_ag_ui_adapter_run_started() {
     let adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
     let event = adapter.run_started(None);
 
-    if let AGUIEvent::RunStarted { thread_id, run_id, parent_run_id, .. } = &event {
+    if let AGUIEvent::RunStarted {
+        thread_id,
+        run_id,
+        parent_run_id,
+        ..
+    } = &event
+    {
         assert_eq!(thread_id, "t1");
         assert_eq!(run_id, "r1");
         assert!(parent_run_id.is_none());
@@ -9788,7 +10445,13 @@ fn test_ag_ui_adapter_run_finished() {
     let adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
     let event = adapter.run_finished(Some(json!({"answer": 42})));
 
-    if let AGUIEvent::RunFinished { thread_id, run_id, result, .. } = &event {
+    if let AGUIEvent::RunFinished {
+        thread_id,
+        run_id,
+        result,
+        ..
+    } = &event
+    {
         assert_eq!(thread_id, "t1");
         assert_eq!(run_id, "r1");
         assert_eq!(result.as_ref().unwrap()["answer"], 42);
@@ -9820,17 +10483,21 @@ fn test_ag_ui_adapter_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_ag_ui_adapter_convert() {
-    use carve_agent::AgUiAdapter;
     use carve_agent::stream::AgentEvent;
+    use carve_agent::AgUiAdapter;
 
     let mut adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
-    let event = AgentEvent::TextDelta { delta: "Hello".into() };
+    let event = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
 
     let ag_events = adapter.convert(&event);
 
     // Should produce TextMessageStart + TextMessageContent
     assert!(ag_events.len() >= 1);
-    assert!(ag_events.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+    assert!(ag_events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
 }
 
 /// Test: AgUiAdapter to_json method
@@ -9838,8 +10505,8 @@ fn test_ag_ui_adapter_convert() {
 /// Reference: https://docs.ag-ui.com/introduction
 #[test]
 fn test_ag_ui_adapter_to_json() {
-    use carve_agent::AgUiAdapter;
     use carve_agent::stream::AgentEvent;
+    use carve_agent::AgUiAdapter;
 
     let mut adapter = AgUiAdapter::new("t1".to_string(), "r1".to_string());
     let event = AgentEvent::TextDelta { delta: "Hi".into() };
@@ -9874,8 +10541,7 @@ fn test_run_agent_request_with_messages_batch() {
         AGUIMessage::user("How are you?"),
     ];
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_messages(messages);
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_messages(messages);
 
     assert_eq!(request.messages.len(), 3);
     assert_eq!(request.messages[0].role, MessageRole::User);
@@ -9887,8 +10553,7 @@ fn test_run_agent_request_with_messages_batch() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_run_agent_request_with_model() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_model("gpt-4o");
+    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_model("gpt-4o");
 
     assert_eq!(request.model, Some("gpt-4o".to_string()));
 
@@ -9904,7 +10569,10 @@ fn test_run_agent_request_with_system_prompt() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_system_prompt("You are a coding assistant.");
 
-    assert_eq!(request.system_prompt, Some("You are a coding assistant.".to_string()));
+    assert_eq!(
+        request.system_prompt,
+        Some("You are a coding assistant.".to_string())
+    );
 }
 
 /// Test: RunAgentRequest.last_user_message
@@ -9954,7 +10622,9 @@ fn test_run_agent_request_frontend_tools() {
 
     let frontend = request.frontend_tools();
     assert_eq!(frontend.len(), 2);
-    assert!(frontend.iter().all(|t| t.execute == ToolExecutionLocation::Frontend));
+    assert!(frontend
+        .iter()
+        .all(|t| t.execute == ToolExecutionLocation::Frontend));
 }
 
 /// Test: RunAgentRequest.backend_tools
@@ -9969,7 +10639,9 @@ fn test_run_agent_request_backend_tools() {
 
     let backend = request.backend_tools();
     assert_eq!(backend.len(), 2);
-    assert!(backend.iter().all(|t| t.execute == ToolExecutionLocation::Backend));
+    assert!(backend
+        .iter()
+        .all(|t| t.execute == ToolExecutionLocation::Backend));
 }
 
 /// Test: RunAgentRequest.is_frontend_tool
@@ -10015,7 +10687,9 @@ fn test_interaction_response_is_approved_bool_false() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_response_is_approved_strings() {
-    let approved_strings = vec!["true", "yes", "approved", "allow", "confirm", "ok", "accept"];
+    let approved_strings = vec![
+        "true", "yes", "approved", "allow", "confirm", "ok", "accept",
+    ];
     for s in approved_strings {
         assert!(
             InteractionResponse::is_approved(&json!(s)),
@@ -10037,7 +10711,9 @@ fn test_interaction_response_is_approved_strings() {
 fn test_interaction_response_is_approved_object() {
     assert!(InteractionResponse::is_approved(&json!({"approved": true})));
     assert!(InteractionResponse::is_approved(&json!({"allowed": true})));
-    assert!(!InteractionResponse::is_approved(&json!({"approved": false})));
+    assert!(!InteractionResponse::is_approved(
+        &json!({"approved": false})
+    ));
     assert!(!InteractionResponse::is_approved(&json!({"other": true})));
 }
 
@@ -10241,11 +10917,7 @@ fn test_text_message_chunk_first_requires_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_text_message_chunk_subsequent_only_delta() {
-    let subsequent_chunk = AGUIEvent::text_message_chunk(
-        None,
-        None,
-        Some(" World".to_string()),
-    );
+    let subsequent_chunk = AGUIEvent::text_message_chunk(None, None, Some(" World".to_string()));
 
     let json = serde_json::to_string(&subsequent_chunk).unwrap();
     assert!(json.contains(r#""delta":" World""#));
@@ -10299,12 +10971,8 @@ fn test_tool_call_chunk_first_requires_id_and_name() {
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
 fn test_tool_call_chunk_subsequent_only_delta() {
-    let subsequent_chunk = AGUIEvent::tool_call_chunk(
-        None,
-        None,
-        None,
-        Some(r#": "rust tutorials"}"#.to_string()),
-    );
+    let subsequent_chunk =
+        AGUIEvent::tool_call_chunk(None, None, None, Some(r#": "rust tutorials"}"#.to_string()));
 
     let json = serde_json::to_string(&subsequent_chunk).unwrap();
     assert!(json.contains(r#""delta""#));
@@ -10429,11 +11097,21 @@ fn test_run_branching_parent_child() {
     }
 
     // Verify children reference parent
-    if let AGUIEvent::RunStarted { parent_run_id, run_id, .. } = &child1 {
+    if let AGUIEvent::RunStarted {
+        parent_run_id,
+        run_id,
+        ..
+    } = &child1
+    {
         assert_eq!(parent_run_id.as_deref(), Some("run_parent"));
         assert_eq!(run_id, "run_child1");
     }
-    if let AGUIEvent::RunStarted { parent_run_id, run_id, .. } = &child2 {
+    if let AGUIEvent::RunStarted {
+        parent_run_id,
+        run_id,
+        ..
+    } = &child2
+    {
         assert_eq!(parent_run_id.as_deref(), Some("run_parent"));
         assert_eq!(run_id, "run_child2");
     }
@@ -10490,7 +11168,10 @@ fn test_tool_call_result_error_content_with_role() {
 
     let event = AGUIEvent::tool_call_result("msg_1", "call_1", &content);
 
-    if let AGUIEvent::ToolCallResult { content: c, role, .. } = &event {
+    if let AGUIEvent::ToolCallResult {
+        content: c, role, ..
+    } = &event
+    {
         let parsed: Value = serde_json::from_str(c).unwrap();
         assert_eq!(parsed["status"], "error");
         assert_eq!(parsed["code"], "ENOENT");
@@ -10571,7 +11252,9 @@ fn test_agent_event_run_finish_ends_text_stream() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text
-    let text = AgentEvent::TextDelta { delta: "Hello".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Hello".into(),
+    };
     let _ = text.to_ag_ui_events(&mut ctx);
 
     // Finish run while text is active
@@ -10583,14 +11266,28 @@ fn test_agent_event_run_finish_ends_text_stream() {
     let events = finish.to_ag_ui_events(&mut ctx);
 
     // Should produce TEXT_MESSAGE_END + RUN_FINISHED
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
-        "Should end text stream");
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
-        "Should emit RUN_FINISHED");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+        "Should end text stream"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
+        "Should emit RUN_FINISHED"
+    );
 
     // TEXT_MESSAGE_END should come before RUN_FINISHED
-    let end_idx = events.iter().position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })).unwrap();
-    let finish_idx = events.iter().position(|e| matches!(e, AGUIEvent::RunFinished { .. })).unwrap();
+    let end_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::TextMessageEnd { .. }))
+        .unwrap();
+    let finish_idx = events
+        .iter()
+        .position(|e| matches!(e, AGUIEvent::RunFinished { .. }))
+        .unwrap();
     assert!(end_idx < finish_idx);
 }
 
@@ -10602,15 +11299,23 @@ fn test_agent_event_done_ends_text_and_run() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text
-    let text = AgentEvent::TextDelta { delta: "Response".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Response".into(),
+    };
     let _ = text.to_ag_ui_events(&mut ctx);
 
     // Done
-    let done = AgentEvent::Done { response: "Response".into() };
+    let done = AgentEvent::Done {
+        response: "Response".into(),
+    };
     let events = done.to_ag_ui_events(&mut ctx);
 
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
 }
 
 /// Test: AgentEvent::Aborted produces RUN_ERROR with ABORTED code
@@ -10620,7 +11325,9 @@ fn test_agent_event_done_ends_text_and_run() {
 fn test_agent_event_aborted_produces_run_error() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let aborted = AgentEvent::Aborted { reason: "User cancelled".into() };
+    let aborted = AgentEvent::Aborted {
+        reason: "User cancelled".into(),
+    };
     let events = aborted.to_ag_ui_events(&mut ctx);
 
     assert_eq!(events.len(), 1);
@@ -10639,7 +11346,9 @@ fn test_agent_event_aborted_produces_run_error() {
 fn test_agent_event_error_produces_run_error() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let error = AgentEvent::Error { message: "API rate limit".into() };
+    let error = AgentEvent::Error {
+        message: "API rate limit".into(),
+    };
     let events = error.to_ag_ui_events(&mut ctx);
 
     assert_eq!(events.len(), 1);
@@ -10661,7 +11370,9 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text
-    let text = AgentEvent::TextDelta { delta: "Processing".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Processing".into(),
+    };
     let _ = text.to_ag_ui_events(&mut ctx);
 
     // Pending interaction
@@ -10670,12 +11381,20 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
     let events = pending.to_ag_ui_events(&mut ctx);
 
     // Should end text stream first
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
-        "Should end text stream before pending");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })),
+        "Should end text stream before pending"
+    );
 
     // Should emit tool call events for the interaction
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-        "Should emit ToolCallStart for interaction");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
+        "Should emit ToolCallStart for interaction"
+    );
 }
 
 /// Test: AgentEvent::ActivitySnapshot maps to AGUIEvent::ActivitySnapshot
@@ -10750,12 +11469,16 @@ fn test_agent_event_step_events() {
     let step_start = AgentEvent::StepStart;
     let events = step_start.to_ag_ui_events(&mut ctx);
     assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1"));
+    assert!(
+        matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1")
+    );
 
     let step_end = AgentEvent::StepEnd;
     let events = step_end.to_ag_ui_events(&mut ctx);
     assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1"));
+    assert!(
+        matches!(&events[0], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1")
+    );
 }
 
 /// Test: ToolCallStart ends active text stream
@@ -10766,7 +11489,9 @@ fn test_tool_call_start_ends_active_text() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text
-    let text = AgentEvent::TextDelta { delta: "Thinking".into() };
+    let text = AgentEvent::TextDelta {
+        delta: "Thinking".into(),
+    };
     let _ = text.to_ag_ui_events(&mut ctx);
 
     // Tool starts - should end text first
@@ -10777,11 +11502,15 @@ fn test_tool_call_start_ends_active_text() {
     let events = tool_start.to_ag_ui_events(&mut ctx);
 
     // First event should be TEXT_MESSAGE_END
-    assert!(matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
-        "First event should be TEXT_MESSAGE_END");
+    assert!(
+        matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
+        "First event should be TEXT_MESSAGE_END"
+    );
 
     // Then TOOL_CALL_START
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 }
 
 /// Test: ToolCallStart includes parentMessageId from context
@@ -10797,9 +11526,18 @@ fn test_tool_call_start_includes_parent_message_id() {
     };
     let events = tool_start.to_ag_ui_events(&mut ctx);
 
-    let start_event = events.iter().find(|e| matches!(e, AGUIEvent::ToolCallStart { .. })).unwrap();
-    if let AGUIEvent::ToolCallStart { parent_message_id, .. } = start_event {
-        assert!(parent_message_id.is_some(), "Should include parentMessageId");
+    let start_event = events
+        .iter()
+        .find(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+        .unwrap();
+    if let AGUIEvent::ToolCallStart {
+        parent_message_id, ..
+    } = start_event
+    {
+        assert!(
+            parent_message_id.is_some(),
+            "Should include parentMessageId"
+        );
     }
 }
 
@@ -10821,7 +11559,12 @@ fn test_interaction_to_ag_ui_events() {
     assert!(matches!(&events[2], AGUIEvent::ToolCallEnd { .. }));
 
     // Verify tool call ID matches interaction ID
-    if let AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. } = &events[0] {
+    if let AGUIEvent::ToolCallStart {
+        tool_call_id,
+        tool_call_name,
+        ..
+    } = &events[0]
+    {
         assert_eq!(tool_call_id, "int_1");
         assert_eq!(tool_call_name, "confirm_delete");
     }
@@ -10870,42 +11613,27 @@ mod llmmetry_tracing {
             }
         }
 
-        fn on_close(
-            &self,
-            id: tracing::span::Id,
-            ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
+        fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
             let raw_id = id.into_u64();
-            if ctx.span(&id).is_some() {
-                let mut captured = self.captured.lock().unwrap();
-                if let Some(entry) = captured.iter_mut().find(|c| c.id == raw_id) {
-                    entry.was_closed = true;
-                }
+            let _ = ctx; // span may no longer be queryable from the registry at close time
+            let mut captured = self.captured.lock().unwrap();
+            if let Some(entry) = captured.iter_mut().find(|c| c.id == raw_id) {
+                entry.was_closed = true;
             }
         }
     }
 
-    fn setup_tracing() -> Arc<Mutex<Vec<CapturedSpan>>> {
+    fn setup_tracing() -> (
+        tracing::subscriber::DefaultGuard,
+        Arc<Mutex<Vec<CapturedSpan>>>,
+    ) {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
         };
         let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
-        tracing::subscriber::set_global_default(subscriber).ok();
-        captured
-    }
-
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    static CAPTURED: std::sync::OnceLock<Arc<Mutex<Vec<CapturedSpan>>>> =
-        std::sync::OnceLock::new();
-
-    fn global_captured() -> Arc<Mutex<Vec<CapturedSpan>>> {
-        INIT.call_once(|| {
-            let c = setup_tracing();
-            CAPTURED.set(c).ok();
-        });
-        CAPTURED.get().unwrap().clone()
+        let guard = tracing::subscriber::set_default(subscriber);
+        (guard, captured)
     }
 
     fn usage(prompt: i32, completion: i32, total: i32) -> genai::chat::Usage {
@@ -10918,10 +11646,10 @@ mod llmmetry_tracing {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_inference_tracing_span_lifecycle() {
-        let captured = global_captured();
-        let baseline = captured.lock().unwrap().len();
+        let (_guard, captured) = setup_tracing();
+        let baseline = { captured.lock().unwrap().len() };
 
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
@@ -10941,10 +11669,15 @@ mod llmmetry_tracing {
 
         plugin.on_phase(Phase::AfterInference, &mut step).await;
 
-        let spans = captured.lock().unwrap();
-        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let new_spans: Vec<CapturedSpan> = {
+            let spans = captured.lock().unwrap();
+            spans[baseline..].to_vec()
+        };
         let chat_span = new_spans.iter().find(|s| s.name == "gen_ai");
-        assert!(chat_span.is_some(), "gen_ai span (inference) should be created");
+        assert!(
+            chat_span.is_some(),
+            "gen_ai span (inference) should be created"
+        );
         assert!(
             chat_span.unwrap().was_closed,
             "gen_ai span (inference) should be closed after AfterInference"
@@ -10956,10 +11689,10 @@ mod llmmetry_tracing {
         assert_eq!(m.total_input_tokens(), 100);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_tool_tracing_span_lifecycle() {
-        let captured = global_captured();
-        let baseline = captured.lock().unwrap().len();
+        let (_guard, captured) = setup_tracing();
+        let baseline = { captured.lock().unwrap().len() };
 
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
@@ -10970,24 +11703,19 @@ mod llmmetry_tracing {
         let call = ToolCall::new("tc1", "search", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
-        let spans = captured.lock().unwrap();
-        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let new_spans: Vec<CapturedSpan> = {
+            let spans = captured.lock().unwrap();
+            spans[baseline..].to_vec()
+        };
         let tool_span = new_spans.iter().find(|s| s.name == "gen_ai");
-        assert!(
-            tool_span.is_some(),
-            "gen_ai span (tool) should be created"
-        );
+        assert!(tool_span.is_some(), "gen_ai span (tool) should be created");
         assert!(
             tool_span.unwrap().was_closed,
             "gen_ai span (tool) should be closed after AfterToolExecute"
@@ -10998,10 +11726,10 @@ mod llmmetry_tracing {
         assert!(m.tools[0].is_success());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_full_session_with_tracing_spans() {
-        let captured = global_captured();
-        let baseline = captured.lock().unwrap().len();
+        let (_guard, captured) = setup_tracing();
+        let baseline = { captured.lock().unwrap().len() };
 
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
@@ -11026,24 +11754,23 @@ mod llmmetry_tracing {
         // Tool execution
         let call = ToolCall::new("c1", "search", json!({"q": "test"}));
         step.tool = Some(ToolContext::new(&call));
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"results": []})));
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         // Session end
         plugin.on_phase(Phase::SessionEnd, &mut step).await;
 
-        let spans = captured.lock().unwrap();
-        let new_spans: Vec<_> = spans[baseline..].to_vec();
+        let new_spans: Vec<CapturedSpan> = {
+            let spans = captured.lock().unwrap();
+            spans[baseline..].to_vec()
+        };
         let gen_ai_count = new_spans.iter().filter(|s| s.name == "gen_ai").count();
-        // Should have at least 2 gen_ai spans (1 inference + 1 tool)
-        // Use >= because concurrent tests may contribute spans to the global collector
-        assert!(gen_ai_count >= 2, "should have at least 2 gen_ai spans (inference + tool)");
+        assert_eq!(
+            gen_ai_count, 2,
+            "expected 2 gen_ai spans (inference + tool)"
+        );
         assert!(
             new_spans.iter().all(|s| s.was_closed),
             "all spans should be closed"

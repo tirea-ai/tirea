@@ -8,6 +8,7 @@ use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -82,26 +83,17 @@ pub struct AgentMetrics {
 impl AgentMetrics {
     /// Total input tokens across all inferences.
     pub fn total_input_tokens(&self) -> i32 {
-        self.inferences
-            .iter()
-            .filter_map(|s| s.input_tokens)
-            .sum()
+        self.inferences.iter().filter_map(|s| s.input_tokens).sum()
     }
 
     /// Total output tokens across all inferences.
     pub fn total_output_tokens(&self) -> i32 {
-        self.inferences
-            .iter()
-            .filter_map(|s| s.output_tokens)
-            .sum()
+        self.inferences.iter().filter_map(|s| s.output_tokens).sum()
     }
 
     /// Total tokens across all inferences.
     pub fn total_tokens(&self) -> i32 {
-        self.inferences
-            .iter()
-            .filter_map(|s| s.total_tokens)
-            .sum()
+        self.inferences.iter().filter_map(|s| s.total_tokens).sum()
     }
 
     /// Number of inferences.
@@ -199,8 +191,8 @@ pub struct LLMMetryPlugin {
     metrics: Mutex<AgentMetrics>,
     /// Inference timing: set at BeforeInference, consumed at AfterInference.
     inference_start: Mutex<Option<Instant>>,
-    /// Tool timing: set at BeforeToolExecute, consumed at AfterToolExecute.
-    tool_start: Mutex<Option<Instant>>,
+    /// Tool timing per call_id: set at BeforeToolExecute, consumed at AfterToolExecute.
+    tool_start: Mutex<HashMap<String, Instant>>,
     /// Model name captured from AgentDefinition (set externally or from data).
     model: Mutex<String>,
     /// Provider name (e.g. "openai", "anthropic"). OTel: `gen_ai.provider.name`.
@@ -209,8 +201,8 @@ pub struct LLMMetryPlugin {
     operation: String,
     /// Tracing span for the current inference (created at BeforeInference, closed at AfterInference).
     inference_tracing_span: Mutex<Option<tracing::Span>>,
-    /// Tracing span for the current tool execution (created at BeforeToolExecute, closed at AfterToolExecute).
-    tool_tracing_span: Mutex<Option<tracing::Span>>,
+    /// Tracing span per tool call_id (created at BeforeToolExecute, closed at AfterToolExecute).
+    tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
 }
 
 impl LLMMetryPlugin {
@@ -220,12 +212,12 @@ impl LLMMetryPlugin {
             session_start: Mutex::new(None),
             metrics: Mutex::new(AgentMetrics::default()),
             inference_start: Mutex::new(None),
-            tool_start: Mutex::new(None),
+            tool_start: Mutex::new(HashMap::new()),
             model: Mutex::new(String::new()),
             provider: Mutex::new(String::new()),
             operation: "chat".to_string(),
             inference_tracing_span: Mutex::new(None),
-            tool_tracing_span: Mutex::new(None),
+            tool_tracing_span: Mutex::new(HashMap::new()),
         }
     }
 
@@ -292,6 +284,7 @@ impl AgentPlugin for LLMMetryPlugin {
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
                 let (cache_read_input_tokens, cache_creation_input_tokens) =
                     extract_cache_tokens(usage);
+                let error_type: Option<String> = step.get("llmmetry.inference_error_type");
 
                 let model = self.model.lock().unwrap().clone();
                 let provider = self.provider.lock().unwrap().clone();
@@ -302,7 +295,7 @@ impl AgentPlugin for LLMMetryPlugin {
                     response_model: None,
                     response_id: None,
                     finish_reasons: Vec::new(),
-                    error_type: None,
+                    error_type,
                     input_tokens,
                     output_tokens,
                     total_tokens,
@@ -349,17 +342,18 @@ impl AgentPlugin for LLMMetryPlugin {
                 self.metrics.lock().unwrap().inferences.push(span);
             }
             Phase::BeforeToolExecute => {
-                *self.tool_start.lock().unwrap() = Some(Instant::now());
                 let tool_name = step
                     .tool
                     .as_ref()
                     .map(|t| t.name.clone())
                     .unwrap_or_default();
-                let call_id = step
-                    .tool
-                    .as_ref()
-                    .map(|t| t.id.clone())
-                    .unwrap_or_default();
+                let call_id = step.tool.as_ref().map(|t| t.id.clone()).unwrap_or_default();
+                if !call_id.is_empty() {
+                    self.tool_start
+                        .lock()
+                        .unwrap()
+                        .insert(call_id.clone(), Instant::now());
+                }
                 let provider = self.provider.lock().unwrap().clone();
                 let span_name = format!("execute_tool {}", tool_name);
                 let span = tracing::info_span!("gen_ai",
@@ -374,17 +368,20 @@ impl AgentPlugin for LLMMetryPlugin {
                     "error.type" = tracing::field::Empty,
                 );
                 step.tracing_span = Some(span.clone());
-                *self.tool_tracing_span.lock().unwrap() = Some(span);
+                if !call_id.is_empty() {
+                    self.tool_tracing_span.lock().unwrap().insert(call_id, span);
+                }
             }
             Phase::AfterToolExecute => {
                 // Clear the step's reference so the span can fully close
                 step.tracing_span.take();
 
+                let call_id_for_span = step.tool.as_ref().map(|t| t.id.clone()).unwrap_or_default();
                 let duration_ms = self
                     .tool_start
                     .lock()
                     .unwrap()
-                    .take()
+                    .remove(&call_id_for_span)
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
 
@@ -395,9 +392,7 @@ impl AgentPlugin for LLMMetryPlugin {
                         .map(|r| r.status == crate::traits::tool::ToolStatus::Success)
                         .unwrap_or(false);
                     let err = if !ok {
-                        tc.result
-                            .as_ref()
-                            .and_then(|r| r.message.clone())
+                        tc.result.as_ref().and_then(|r| r.message.clone())
                     } else {
                         None
                     };
@@ -414,7 +409,12 @@ impl AgentPlugin for LLMMetryPlugin {
                     duration_ms,
                 };
 
-                if let Some(tracing_span) = self.tool_tracing_span.lock().unwrap().take() {
+                let tracing_span = self
+                    .tool_tracing_span
+                    .lock()
+                    .unwrap()
+                    .remove(&call_id_for_span);
+                if let Some(tracing_span) = tracing_span {
                     if let Some(ref v) = span.error_type {
                         tracing_span.record("error.type", v.as_str());
                         tracing_span.record("otel.status_code", "ERROR");
@@ -470,8 +470,10 @@ mod tests {
     use crate::stream::StreamResult;
     use crate::traits::tool::ToolResult;
     use crate::types::ToolCall;
+    use futures::future::join_all;
     use genai::chat::PromptTokensDetails;
     use serde_json::json;
+    use std::sync::Arc;
 
     fn mock_session() -> Session {
         Session::new("test")
@@ -678,16 +680,12 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         let m = sink.metrics();
         assert_eq!(m.tool_count(), 1);
@@ -709,16 +707,11 @@ mod tests {
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        step.tool.as_mut().unwrap().result =
-            Some(ToolResult::error("write", "permission denied"));
+        step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         let m = sink.metrics();
         assert!(!m.tools[0].is_success());
@@ -787,6 +780,62 @@ mod tests {
         assert_eq!(m.inference_count(), 3);
         assert_eq!(m.total_input_tokens(), 60); // 10+20+30
         assert_eq!(m.total_output_tokens(), 30); // 5+10+15
+    }
+
+    #[tokio::test]
+    async fn test_plugin_captures_inference_error() {
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone())
+            .with_model("gpt-4")
+            .with_provider("openai");
+
+        let session = mock_session();
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        step.set("llmmetry.inference_error_type", "rate_limited");
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+        let m = sink.metrics();
+        assert_eq!(m.inference_count(), 1);
+        assert_eq!(m.inferences[0].error_type.as_deref(), Some("rate_limited"));
+    }
+
+    #[tokio::test]
+    async fn test_plugin_parallel_tool_spans_are_isolated_by_call_id() {
+        use std::time::Duration;
+
+        let sink = InMemorySink::new();
+        let plugin = Arc::new(LLMMetryPlugin::new(sink.clone()).with_provider("p"));
+
+        let calls = vec![
+            ToolCall::new("c1", "search", json!({"q": "a"})),
+            ToolCall::new("c2", "write", json!({"path": "x"})),
+            ToolCall::new("c3", "read", json!({"path": "y"})),
+        ];
+
+        let tasks = calls.into_iter().enumerate().map(|(i, call)| {
+            let plugin = plugin.clone();
+            async move {
+                let session = Session::new("test");
+                let mut step = StepContext::new(&session, vec![]);
+                step.tool = Some(PhaseToolContext::new(&call));
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                // Stagger completion to maximize the chance of cross-talk.
+                tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
+                step.tool.as_mut().unwrap().result =
+                    Some(ToolResult::success(&call.name, json!({"ok": true})));
+                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            }
+        });
+
+        join_all(tasks).await;
+
+        let m = sink.metrics();
+        assert_eq!(m.tool_count(), 3);
+        let mut ids: Vec<String> = m.tools.iter().map(|t| t.call_id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["c1", "c2", "c3"]);
     }
 
     #[test]
@@ -940,14 +989,10 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
         let spans = captured.lock().unwrap();
         let tool_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -987,10 +1032,7 @@ mod tests {
             (guard, exporter, provider)
         }
 
-        fn find_attribute<'a>(
-            span: &'a SpanData,
-            key: &str,
-        ) -> Option<&'a opentelemetry::Value> {
+        fn find_attribute<'a>(span: &'a SpanData, key: &str) -> Option<&'a opentelemetry::Value> {
             span.attributes
                 .iter()
                 .find(|kv| kv.key.as_str() == key)
@@ -1025,15 +1067,21 @@ mod tests {
                 .expect("expected chat span in OTel export");
 
             assert_eq!(
-                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.provider.name")
+                    .unwrap()
+                    .as_str(),
                 "test-provider"
             );
             assert_eq!(
-                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.operation.name")
+                    .unwrap()
+                    .as_str(),
                 "chat"
             );
             assert_eq!(
-                find_attribute(span, "gen_ai.request.model").unwrap().as_str(),
+                find_attribute(span, "gen_ai.request.model")
+                    .unwrap()
+                    .as_str(),
                 "test-model"
             );
             assert_eq!(
@@ -1048,6 +1096,42 @@ mod tests {
             assert!(
                 find_attribute(span, "gen_ai.client.operation.duration_ms").is_none(),
                 "duration should not be a custom attribute (OTel captures it via span timestamps)"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_otel_export_inference_error_sets_status_and_error_type() {
+            use opentelemetry::trace::Status;
+
+            let (_guard, exporter, provider) = setup_otel_test();
+
+            let sink = InMemorySink::new();
+            let plugin = LLMMetryPlugin::new(sink)
+                .with_model("test-model")
+                .with_provider("test-provider");
+
+            let session = mock_session();
+            let mut step = StepContext::new(&session, vec![]);
+
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            step.set("llmmetry.inference_error_type", "rate_limited");
+            plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+            let _ = provider.force_flush();
+            let exported = exporter.get_finished_spans().unwrap();
+            let span = exported
+                .iter()
+                .find(|s| s.name.starts_with("chat "))
+                .expect("expected chat span in OTel export");
+
+            assert_eq!(
+                find_attribute(span, "error.type").unwrap().as_str(),
+                "rate_limited"
+            );
+            assert!(
+                matches!(span.status, Status::Error { .. }),
+                "failed inference span should have OTel Status::Error, got {:?}",
+                span.status
             );
         }
 
@@ -1127,9 +1211,7 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
             assert!(
                 step.tracing_span.is_some(),
@@ -1138,9 +1220,7 @@ mod tests {
 
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1174,9 +1254,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             // No parent span entered — should be a root span
             let session = mock_session();
@@ -1211,9 +1289,7 @@ mod tests {
             let (_guard, _exporter, _provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let session = mock_session();
 
@@ -1239,15 +1315,10 @@ mod tests {
                 let mut step = StepContext::new(&session, vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin
-                    .on_phase(Phase::BeforeToolExecute, &mut step)
-                    .await;
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
                 assert!(step.tracing_span.is_some());
-                step.tool.as_mut().unwrap().result =
-                    Some(ToolResult::success("test", json!({})));
-                plugin
-                    .on_phase(Phase::AfterToolExecute, &mut step)
-                    .await;
+                step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
+                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
                 assert!(
                     step.tracing_span.is_none(),
                     "AfterToolExecute should clear tracing_span"
@@ -1260,9 +1331,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let parent = tracing::info_span!("agent_step");
             let _parent_guard = parent.enter();
@@ -1286,14 +1355,9 @@ mod tests {
                 let mut step = StepContext::new(&session, vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin
-                    .on_phase(Phase::BeforeToolExecute, &mut step)
-                    .await;
-                step.tool.as_mut().unwrap().result =
-                    Some(ToolResult::success("search", json!({})));
-                plugin
-                    .on_phase(Phase::AfterToolExecute, &mut step)
-                    .await;
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
             }
 
             drop(_parent_guard);
@@ -1358,14 +1422,10 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1379,11 +1439,15 @@ mod tests {
                 "search"
             );
             assert_eq!(
-                find_attribute(span, "gen_ai.tool.call.id").unwrap().as_str(),
+                find_attribute(span, "gen_ai.tool.call.id")
+                    .unwrap()
+                    .as_str(),
                 "tc1"
             );
             assert_eq!(
-                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.operation.name")
+                    .unwrap()
+                    .as_str(),
                 "execute_tool"
             );
         }
@@ -1440,14 +1504,9 @@ mod tests {
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
-            step.tool.as_mut().unwrap().result =
-                Some(ToolResult::success("web_search", json!({})));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1471,9 +1530,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let session = mock_session();
             let mut step = StepContext::new(&session, vec![]);
@@ -1516,14 +1573,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
-            step.tool.as_mut().unwrap().result =
-                Some(ToolResult::success("search", json!({})));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1545,8 +1597,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_provider("anthropic");
+            let plugin = LLMMetryPlugin::new(sink).with_provider("anthropic");
 
             let session = mock_session();
             let mut step = StepContext::new(&session, vec![]);
@@ -1554,14 +1605,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
-            step.tool.as_mut().unwrap().result =
-                Some(ToolResult::success("search", json!({})));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1572,7 +1618,9 @@ mod tests {
 
             // Spec: gen_ai.provider.name is required on all GenAI spans
             assert_eq!(
-                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.provider.name")
+                    .unwrap()
+                    .as_str(),
                 "anthropic",
                 "tool span must include gen_ai.provider.name per OTel GenAI spec"
             );
@@ -1593,14 +1641,10 @@ mod tests {
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
-            plugin
-                .on_phase(Phase::AfterToolExecute, &mut step)
-                .await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1630,9 +1674,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let session = mock_session();
             let mut step = StepContext::new(&session, vec![]);
@@ -1692,17 +1734,23 @@ mod tests {
 
             // Required: gen_ai.operation.name
             assert_eq!(
-                find_attribute(span, "gen_ai.operation.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.operation.name")
+                    .unwrap()
+                    .as_str(),
                 "chat"
             );
             // Required: gen_ai.provider.name
             assert_eq!(
-                find_attribute(span, "gen_ai.provider.name").unwrap().as_str(),
+                find_attribute(span, "gen_ai.provider.name")
+                    .unwrap()
+                    .as_str(),
                 "anthropic"
             );
             // Conditionally required: gen_ai.request.model
             assert_eq!(
-                find_attribute(span, "gen_ai.request.model").unwrap().as_str(),
+                find_attribute(span, "gen_ai.request.model")
+                    .unwrap()
+                    .as_str(),
                 "claude-3"
             );
             // Recommended: gen_ai.usage.input_tokens
@@ -1722,9 +1770,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let session = mock_session();
             let mut step = StepContext::new(&session, vec![]);
@@ -1761,9 +1807,7 @@ mod tests {
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
-            let plugin = LLMMetryPlugin::new(sink)
-                .with_model("m")
-                .with_provider("p");
+            let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let session = mock_session();
 

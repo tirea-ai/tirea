@@ -352,14 +352,25 @@ pub async fn run_step(
 
     // Call LLM (instrumented with tracing span for context propagation)
     let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
-    let response = async {
+    let response_res = async {
         client
             .exec_chat(&config.model, request, config.chat_options.as_ref())
             .await
     }
     .instrument(inference_span)
-    .await
-    .map_err(|e| AgentLoopError::LlmError(e.to_string()))?;
+    .await;
+    let response = match response_res {
+        Ok(r) => r,
+        Err(e) => {
+            // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+            let err = e.to_string();
+            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            step.set("llmmetry.inference_error_type", err.clone());
+            emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+            plugin_data.sync_from_step(&step);
+            return Err(AgentLoopError::LlmError(err));
+        }
+    };
 
     // Extract text and tool calls from response
     let text = response
@@ -373,7 +384,12 @@ pub async fn run_step(
         .map(|tc| crate::types::ToolCall::new(&tc.call_id, &tc.fn_name, tc.fn_arguments.clone()))
         .collect();
 
-    let result = StreamResult { text, tool_calls, usage: None };
+    let usage = Some(response.usage.clone());
+    let result = StreamResult {
+        text,
+        tool_calls,
+        usage,
+    };
 
     // Phase 3: AfterInference (with new context)
     {
@@ -934,6 +950,11 @@ pub fn run_loop_stream(
             let chat_stream_response = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
+                    // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                    let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                    step.set("llmmetry.inference_error_type", e.to_string());
+                    emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                    plugin_data.sync_from_step(&step);
                     yield AgentEvent::Error { message: e.to_string() };
                     return;
                 }
@@ -962,6 +983,12 @@ pub fn run_loop_stream(
                         }
                     }
                     Err(e) => {
+                        // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                        let mut step =
+                            plugin_data.new_step_context(&session, tool_descriptors.clone());
+                        step.set("llmmetry.inference_error_type", e.to_string());
+                        emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                        plugin_data.sync_from_step(&step);
                         yield AgentEvent::Error { message: e.to_string() };
                         return;
                     }
