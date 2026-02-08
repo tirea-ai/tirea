@@ -207,6 +207,10 @@ pub struct LLMMetryPlugin {
     provider: Mutex<String>,
     /// Operation name (defaults to "chat").
     operation: String,
+    /// Tracing span for the current inference (created at BeforeInference, closed at AfterInference).
+    inference_tracing_span: Mutex<Option<tracing::Span>>,
+    /// Tracing span for the current tool execution (created at BeforeToolExecute, closed at AfterToolExecute).
+    tool_tracing_span: Mutex<Option<tracing::Span>>,
 }
 
 impl LLMMetryPlugin {
@@ -220,6 +224,8 @@ impl LLMMetryPlugin {
             model: Mutex::new(String::new()),
             provider: Mutex::new(String::new()),
             operation: "chat".to_string(),
+            inference_tracing_span: Mutex::new(None),
+            tool_tracing_span: Mutex::new(None),
         }
     }
 
@@ -247,6 +253,22 @@ impl AgentPlugin for LLMMetryPlugin {
             }
             Phase::BeforeInference => {
                 *self.inference_start.lock().unwrap() = Some(Instant::now());
+                let model = self.model.lock().unwrap().clone();
+                let provider = self.provider.lock().unwrap().clone();
+                let span = tracing::info_span!("gen_ai.chat",
+                    "gen_ai.provider.name" = %provider,
+                    "gen_ai.operation.name" = %self.operation,
+                    "gen_ai.request.model" = %model,
+                    "gen_ai.response.model" = tracing::field::Empty,
+                    "gen_ai.response.id" = tracing::field::Empty,
+                    "gen_ai.usage.input_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.output_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
+                    "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
+                    "gen_ai.client.operation.duration_ms" = tracing::field::Empty,
+                    "error.type" = tracing::field::Empty,
+                );
+                *self.inference_tracing_span.lock().unwrap() = Some(span);
             }
             Phase::AfterInference => {
                 let duration_ms = self
@@ -280,26 +302,52 @@ impl AgentPlugin for LLMMetryPlugin {
                     duration_ms,
                 };
 
-                tracing::info!(
-                    gen_ai.provider.name = %span.provider,
-                    gen_ai.operation.name = %span.operation,
-                    gen_ai.request.model = %span.model,
-                    gen_ai.response.model = ?span.response_model,
-                    gen_ai.response.id = ?span.response_id,
-                    gen_ai.usage.input_tokens = ?span.input_tokens,
-                    gen_ai.usage.output_tokens = ?span.output_tokens,
-                    gen_ai.usage.cache_read.input_tokens = ?span.cache_read_input_tokens,
-                    gen_ai.usage.cache_creation.input_tokens = ?span.cache_creation_input_tokens,
-                    gen_ai.client.operation.duration_ms = span.duration_ms,
-                    error.r#type = ?span.error_type,
-                    "gen_ai.inference.complete"
-                );
+                // Record fields onto the tracing span and drop it (closing the OTel span).
+                if let Some(tracing_span) = self.inference_tracing_span.lock().unwrap().take() {
+                    tracing_span.record("gen_ai.usage.input_tokens", span.input_tokens.unwrap_or(0));
+                    tracing_span.record("gen_ai.usage.output_tokens", span.output_tokens.unwrap_or(0));
+                    if let Some(v) = span.cache_read_input_tokens {
+                        tracing_span.record("gen_ai.usage.cache_read.input_tokens", v);
+                    }
+                    if let Some(v) = span.cache_creation_input_tokens {
+                        tracing_span.record("gen_ai.usage.cache_creation.input_tokens", v);
+                    }
+                    if let Some(ref v) = span.response_model {
+                        tracing_span.record("gen_ai.response.model", v.as_str());
+                    }
+                    if let Some(ref v) = span.response_id {
+                        tracing_span.record("gen_ai.response.id", v.as_str());
+                    }
+                    if let Some(ref v) = span.error_type {
+                        tracing_span.record("error.type", v.as_str());
+                    }
+                    tracing_span.record("gen_ai.client.operation.duration_ms", span.duration_ms);
+                    drop(tracing_span);
+                }
 
                 self.sink.on_inference(&span);
                 self.metrics.lock().unwrap().inferences.push(span);
             }
             Phase::BeforeToolExecute => {
                 *self.tool_start.lock().unwrap() = Some(Instant::now());
+                let tool_name = step
+                    .tool
+                    .as_ref()
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default();
+                let call_id = step
+                    .tool
+                    .as_ref()
+                    .map(|t| t.id.clone())
+                    .unwrap_or_default();
+                let span = tracing::info_span!("gen_ai.execute_tool",
+                    "gen_ai.operation.name" = "execute_tool",
+                    "gen_ai.tool.name" = %tool_name,
+                    "gen_ai.tool.call.id" = %call_id,
+                    "error.type" = tracing::field::Empty,
+                    "tool.duration_ms" = tracing::field::Empty,
+                );
+                *self.tool_tracing_span.lock().unwrap() = Some(span);
             }
             Phase::AfterToolExecute => {
                 let duration_ms = self
@@ -336,14 +384,13 @@ impl AgentPlugin for LLMMetryPlugin {
                     duration_ms,
                 };
 
-                tracing::info!(
-                    gen_ai.operation.name = %span.operation,
-                    gen_ai.tool.name = %span.name,
-                    gen_ai.tool.call.id = %span.call_id,
-                    error.r#type = ?span.error_type,
-                    tool.duration_ms = span.duration_ms,
-                    "gen_ai.tool.complete"
-                );
+                if let Some(tracing_span) = self.tool_tracing_span.lock().unwrap().take() {
+                    if let Some(ref v) = span.error_type {
+                        tracing_span.record("error.type", v.as_str());
+                    }
+                    tracing_span.record("tool.duration_ms", span.duration_ms);
+                    drop(tracing_span);
+                }
 
                 self.sink.on_tool(&span);
                 self.metrics.lock().unwrap().tools.push(span);
@@ -768,6 +815,113 @@ mod tests {
         assert_eq!(extract_cache_tokens(None), (None, None));
         let u = usage(10, 20, 30);
         assert_eq!(extract_cache_tokens(Some(&u)), (None, None));
+    }
+
+    // ---- Tracing span capture tests ----
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry::LookupSpan;
+
+    #[derive(Debug, Clone)]
+    struct CapturedSpan {
+        name: String,
+        was_closed: bool,
+    }
+
+    struct SpanCaptureLayer {
+        captured: Arc<Mutex<Vec<CapturedSpan>>>,
+    }
+
+    impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S>
+        for SpanCaptureLayer
+    {
+        fn on_new_span(
+            &self,
+            _attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if let Some(span_ref) = ctx.span(id) {
+                self.captured.lock().unwrap().push(CapturedSpan {
+                    name: span_ref.name().to_string(),
+                    was_closed: false,
+                });
+            }
+        }
+
+        fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+            if let Some(span_ref) = ctx.span(&id) {
+                let name = span_ref.name().to_string();
+                let mut captured = self.captured.lock().unwrap();
+                if let Some(entry) = captured.iter_mut().find(|c| c.name == name) {
+                    entry.was_closed = true;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tracing_span_inference() {
+        let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
+        let layer = SpanCaptureLayer {
+            captured: captured.clone(),
+        };
+        let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone())
+            .with_model("test-model")
+            .with_provider("test-provider");
+
+        let session = mock_session();
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        step.response = Some(StreamResult {
+            text: "hi".into(),
+            tool_calls: vec![],
+            usage: Some(usage(10, 20, 30)),
+        });
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+
+        let spans = captured.lock().unwrap();
+        let inference_span = spans.iter().find(|s| s.name == "gen_ai.chat");
+        assert!(inference_span.is_some(), "expected gen_ai.chat span");
+        assert!(inference_span.unwrap().was_closed, "span should be closed");
+    }
+
+    #[tokio::test]
+    async fn test_tracing_span_tool() {
+        let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
+        let layer = SpanCaptureLayer {
+            captured: captured.clone(),
+        };
+        let subscriber = tracing_subscriber::registry::Registry::default().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let sink = InMemorySink::new();
+        let plugin = LLMMetryPlugin::new(sink.clone());
+
+        let session = mock_session();
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("c1", "search", json!({}));
+        step.tool = Some(PhaseToolContext::new(&call));
+
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .await;
+        step.tool.as_mut().unwrap().result =
+            Some(ToolResult::success("search", json!({"found": true})));
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step)
+            .await;
+
+        let spans = captured.lock().unwrap();
+        let tool_span = spans.iter().find(|s| s.name == "gen_ai.execute_tool");
+        assert!(tool_span.is_some(), "expected gen_ai.execute_tool span");
+        assert!(tool_span.unwrap().was_closed, "span should be closed");
     }
 
     #[test]

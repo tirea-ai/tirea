@@ -20,11 +20,12 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 tracing = "0.1"
 unicode-normalization = "0.1"
+tokio-util = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
 
 [[example]]
 name = "live_deepseek"
