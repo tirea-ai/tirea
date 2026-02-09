@@ -1,7 +1,6 @@
 use crate::plugin::AgentPlugin;
 use crate::r#loop::{run_loop, run_loop_stream};
 mod registry;
-pub use registry::{AgentRegistry, AgentRegistryError, ToolRegistry, ToolRegistryError};
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
@@ -9,6 +8,7 @@ use crate::skills::{
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
+pub use registry::{AgentRegistry, AgentRegistryError, ToolRegistry, ToolRegistryError};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,7 +31,8 @@ pub struct SkillsConfig {
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
-            mode: SkillsMode::DiscoveryAndRuntime,
+            // Skills are opt-in. If enabled, the caller must provide at least one skills root.
+            mode: SkillsMode::Disabled,
             discovery_max_entries: 32,
             discovery_max_chars: 16 * 1024,
         }
@@ -45,12 +46,18 @@ pub enum AgentOsWiringError {
 
     #[error("skills plugin already installed: {0}")]
     SkillsPluginAlreadyInstalled(String),
+
+    #[error("skills enabled but no skills root/registry configured")]
+    SkillsNotConfigured,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsBuildError {
     #[error(transparent)]
     Tools(#[from] ToolRegistryError),
+
+    #[error("skills enabled but no skills root/registry configured")]
+    SkillsNotConfigured,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +166,10 @@ impl AgentOsBuilder {
     }
 
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
+        if self.skills.mode != SkillsMode::Disabled && self.skills_roots.is_empty() {
+            return Err(AgentOsBuildError::SkillsNotConfigured);
+        }
+
         let skills_registry = if self.skills_roots.is_empty() {
             None
         } else {
@@ -213,13 +224,14 @@ impl AgentOs {
         mut config: AgentConfig,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
-        let Some(reg) = self.skills_registry.clone() else {
-            return Ok(config);
-        };
-
         if self.skills.mode == SkillsMode::Disabled {
             return Ok(config);
         }
+
+        let reg = self
+            .skills_registry
+            .clone()
+            .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
 
         // Prevent duplicate plugin installation.
         let reserved_plugin_ids = ["skills", "skills_discovery", "skills_runtime"];
@@ -331,7 +343,14 @@ mod tests {
     #[tokio::test]
     async fn wire_skills_inserts_tools_and_plugin() {
         let (_td, root) = make_skills_root();
-        let os = AgentOs::builder().with_skills_root(root).build().unwrap();
+        let os = AgentOs::builder()
+            .with_skills_root(root)
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryAndRuntime,
+                ..SkillsConfig::default()
+            })
+            .build()
+            .unwrap();
 
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         let cfg = AgentConfig::new("gpt-4o-mini");
@@ -438,7 +457,14 @@ mod tests {
     #[test]
     fn wire_skills_errors_if_plugin_already_installed() {
         let (_td, root) = make_skills_root();
-        let os = AgentOs::builder().with_skills_root(root).build().unwrap();
+        let os = AgentOs::builder()
+            .with_skills_root(root)
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryAndRuntime,
+                ..SkillsConfig::default()
+            })
+            .build()
+            .unwrap();
 
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         let cfg = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(FakeSkillsPlugin));
@@ -478,6 +504,10 @@ mod tests {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
             .with_skills_root(root)
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryAndRuntime,
+                ..SkillsConfig::default()
+            })
             .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
             .with_tools(HashMap::from([(
                 "base_tool".to_string(),
@@ -551,6 +581,10 @@ mod tests {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
             .with_skills_root(root)
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryAndRuntime,
+                ..SkillsConfig::default()
+            })
             .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
             .with_tools(HashMap::from([(
                 "skill".to_string(),
@@ -566,5 +600,17 @@ mod tests {
             AgentOsResolveError::Wiring(AgentOsWiringError::SkillsToolIdConflict(ref id))
             if id == "skill"
         ));
+    }
+
+    #[test]
+    fn build_errors_if_skills_enabled_without_root() {
+        let err = AgentOs::builder()
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryAndRuntime,
+                ..SkillsConfig::default()
+            })
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, AgentOsBuildError::SkillsNotConfigured));
     }
 }

@@ -157,8 +157,7 @@ pub use convert::{
 pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentTool};
 pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
-    AgentOsWiringError,
-    SkillsConfig, SkillsMode,
+    AgentOsWiringError, SkillsConfig, SkillsMode,
 };
 
 // Loop exports

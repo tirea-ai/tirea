@@ -187,10 +187,7 @@ mod tests {
     #[test]
     fn tool_registry_register_named_detects_mismatch() {
         let mut reg = ToolRegistry::new();
-        let err = reg
-            .register_named("x", Arc::new(T("y")))
-            .err()
-            .unwrap();
+        let err = reg.register_named("x", Arc::new(T("y"))).err().unwrap();
         assert!(matches!(err, ToolRegistryError::ToolIdMismatch { .. }));
     }
 
@@ -203,4 +200,3 @@ mod tests {
         assert_eq!(def.id, "a1");
     }
 }
-
