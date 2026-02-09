@@ -8,7 +8,10 @@ use crate::skills::{
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
-pub use registry::{AgentRegistry, AgentRegistryError, ToolRegistry, ToolRegistryError};
+pub use registry::{
+    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
+    ToolRegistry, ToolRegistryError,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,6 +59,9 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     Tools(#[from] ToolRegistryError),
 
+    #[error(transparent)]
+    Models(#[from] ModelRegistryError),
+
     #[error("skills enabled but no skills root/registry configured")]
     SkillsNotConfigured,
 }
@@ -64,6 +70,9 @@ pub enum AgentOsBuildError {
 pub enum AgentOsResolveError {
     #[error("agent not found: {0}")]
     AgentNotFound(String),
+
+    #[error("model not found: {0}")]
+    ModelNotFound(String),
 
     #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
@@ -80,9 +89,10 @@ pub enum AgentOsRunError {
 
 #[derive(Clone)]
 pub struct AgentOs {
-    client: Client,
+    default_client: Client,
     agents: AgentRegistry,
     base_tools: ToolRegistry,
+    models: ModelRegistry,
     skills_registry: Option<Arc<SkillRegistry>>,
     skills: SkillsConfig,
 }
@@ -92,6 +102,7 @@ pub struct AgentOsBuilder {
     client: Option<Client>,
     agents: HashMap<String, AgentDefinition>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
+    models: HashMap<String, ModelDefinition>,
     skills_roots: Vec<PathBuf>,
     skills: SkillsConfig,
 }
@@ -99,9 +110,10 @@ pub struct AgentOsBuilder {
 impl std::fmt::Debug for AgentOs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentOs")
-            .field("client", &"[genai::Client]")
+            .field("default_client", &"[genai::Client]")
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
+            .field("models", &self.models.len())
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .finish()
@@ -114,6 +126,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("client", &self.client.is_some())
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
+            .field("models", &self.models.len())
             .field("skills_roots", &self.skills_roots)
             .field("skills", &self.skills)
             .finish()
@@ -126,6 +139,7 @@ impl AgentOsBuilder {
             client: None,
             agents: HashMap::new(),
             base_tools: HashMap::new(),
+            models: HashMap::new(),
             skills_roots: Vec::new(),
             skills: SkillsConfig::default(),
         }
@@ -147,6 +161,16 @@ impl AgentOsBuilder {
 
     pub fn with_tools(mut self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
         self.base_tools = tools;
+        self
+    }
+
+    pub fn with_model(mut self, model_id: impl Into<String>, def: ModelDefinition) -> Self {
+        self.models.insert(model_id.into(), def);
+        self
+    }
+
+    pub fn with_models(mut self, defs: HashMap<String, ModelDefinition>) -> Self {
+        self.models = defs;
         self
     }
 
@@ -179,13 +203,17 @@ impl AgentOsBuilder {
         let mut base_tools = ToolRegistry::new();
         base_tools.extend_named(self.base_tools)?;
 
+        let mut models = ModelRegistry::new();
+        models.extend(self.models)?;
+
         let mut agents = AgentRegistry::new();
         agents.extend_upsert(self.agents);
 
         Ok(AgentOs {
-            client: self.client.unwrap_or_default(),
+            default_client: self.client.unwrap_or_default(),
             agents,
             base_tools,
+            models,
             skills_registry,
             skills: self.skills,
         })
@@ -204,7 +232,7 @@ impl AgentOs {
     }
 
     pub fn client(&self) -> Client {
-        self.client.clone()
+        self.default_client.clone()
     }
 
     pub fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
@@ -217,6 +245,22 @@ impl AgentOs {
 
     pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
         self.base_tools.to_map()
+    }
+
+    fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<Client, AgentOsResolveError> {
+        if self.models.is_empty() {
+            return Ok(self.default_client.clone());
+        }
+
+        let Some(def) = self.models.get(&cfg.model) else {
+            return Err(AgentOsResolveError::ModelNotFound(cfg.model.clone()));
+        };
+
+        cfg.model = def.model;
+        if let Some(opts) = def.chat_options {
+            cfg.chat_options = Some(opts);
+        }
+        Ok(def.client)
     }
 
     pub fn wire_skills_into(
@@ -286,15 +330,17 @@ impl AgentOs {
         &self,
         agent_id: &str,
         session: Session,
-    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>, Session), AgentOsResolveError> {
+    ) -> Result<(Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Session), AgentOsResolveError>
+    {
         let def = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
         let mut tools = self.base_tools.to_map();
-        let cfg = self.wire_skills_into(def, &mut tools)?;
-        Ok((cfg, tools, session))
+        let mut cfg = self.wire_skills_into(def, &mut tools)?;
+        let client = self.resolve_model(&mut cfg)?;
+        Ok((client, cfg, tools, session))
     }
 
     pub async fn run(
@@ -302,8 +348,8 @@ impl AgentOs {
         agent_id: &str,
         session: Session,
     ) -> Result<(Session, String), AgentOsRunError> {
-        let (cfg, tools, session) = self.resolve(agent_id, session)?;
-        let (session, text) = run_loop(&self.client, &cfg, session, &tools).await?;
+        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        let (session, text) = run_loop(&client, &cfg, session, &tools).await?;
         Ok((session, text))
     }
 
@@ -312,8 +358,8 @@ impl AgentOs {
         agent_id: &str,
         session: Session,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
-        let (cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream(self.client.clone(), cfg, session, tools))
+        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        Ok(run_loop_stream(client, cfg, session, tools))
     }
 }
 
@@ -517,7 +563,7 @@ mod tests {
             .unwrap();
 
         let session = Session::with_initial_state("s", json!({}));
-        let (cfg, tools, _session) = os.resolve("a1", session).unwrap();
+        let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
 
         assert_eq!(cfg.id, "a1");
         assert!(tools.contains_key("base_tool"));
@@ -612,5 +658,38 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(err, AgentOsBuildError::SkillsNotConfigured));
+    }
+
+    #[tokio::test]
+    async fn resolve_errors_if_models_registry_present_but_model_missing() {
+        let os = AgentOs::builder()
+            .with_model(
+                "m1",
+                ModelDefinition::new(Client::default(), "gpt-4o-mini").with_chat_options(
+                    genai::chat::ChatOptions::default().with_capture_usage(true),
+                ),
+            )
+            .with_agent("a1", AgentDefinition::new("missing_model_ref"))
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(
+            matches!(err, AgentOsResolveError::ModelNotFound(ref id) if id == "missing_model_ref")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_rewrites_model_when_registry_present() {
+        let os = AgentOs::builder()
+            .with_model("m1", ModelDefinition::new(Client::default(), "gpt-4o-mini"))
+            .with_agent("a1", AgentDefinition::new("m1"))
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
+        assert_eq!(cfg.model, "gpt-4o-mini");
     }
 }

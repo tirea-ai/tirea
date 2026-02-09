@@ -1,5 +1,7 @@
 use crate::traits::tool::Tool;
 use crate::AgentDefinition;
+use genai::chat::ChatOptions;
+use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -151,6 +153,90 @@ impl AgentRegistry {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelDefinition {
+    pub client: Client,
+    pub model: String,
+    pub chat_options: Option<ChatOptions>,
+}
+
+impl ModelDefinition {
+    pub fn new(client: Client, model: impl Into<String>) -> Self {
+        Self {
+            client,
+            model: model.into(),
+            chat_options: None,
+        }
+    }
+
+    pub fn with_chat_options(mut self, opts: ChatOptions) -> Self {
+        self.chat_options = Some(opts);
+        self
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelRegistryError {
+    #[error("model id already registered: {0}")]
+    ModelIdConflict(String),
+
+    #[error("model name must be non-empty")]
+    EmptyModelName,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModelRegistry {
+    models: HashMap<String, ModelDefinition>,
+}
+
+impl ModelRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.models.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
+    pub fn get(&self, id: &str) -> Option<ModelDefinition> {
+        self.models.get(id).cloned()
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = &String> {
+        self.models.keys()
+    }
+
+    pub fn register(
+        &mut self,
+        model_id: impl Into<String>,
+        def: ModelDefinition,
+    ) -> Result<(), ModelRegistryError> {
+        let model_id = model_id.into();
+        if self.models.contains_key(&model_id) {
+            return Err(ModelRegistryError::ModelIdConflict(model_id));
+        }
+        if def.model.trim().is_empty() {
+            return Err(ModelRegistryError::EmptyModelName);
+        }
+        self.models.insert(model_id, def);
+        Ok(())
+    }
+
+    pub fn extend(
+        &mut self,
+        defs: HashMap<String, ModelDefinition>,
+    ) -> Result<(), ModelRegistryError> {
+        for (id, def) in defs {
+            self.register(id, def)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,5 +284,15 @@ mod tests {
             .unwrap();
         let def = reg.get("a1").unwrap();
         assert_eq!(def.id, "a1");
+    }
+
+    #[test]
+    fn model_registry_register_rejects_empty_model_name() {
+        let mut reg = ModelRegistry::new();
+        let err = reg
+            .register("m1", ModelDefinition::new(Client::default(), "   "))
+            .err()
+            .unwrap();
+        assert!(matches!(err, ModelRegistryError::EmptyModelName));
     }
 }
