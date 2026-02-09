@@ -294,9 +294,9 @@ impl PluginRuntimeData {
     }
 }
 
-/// Build messages from StepContext for LLM request.
-fn build_messages(step: &mut StepContext<'_>, system_prompt: &str) {
-    step.messages.clear();
+/// Build the message list for an LLM request from step context.
+fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
+    let mut messages = Vec::new();
 
     // [1] System Prompt + Context
     let system = if step.system_context.is_empty() {
@@ -306,16 +306,18 @@ fn build_messages(step: &mut StepContext<'_>, system_prompt: &str) {
     };
 
     if !system.is_empty() {
-        step.messages.push(Message::system(system));
+        messages.push(Message::system(system));
     }
 
     // [2] Session Context
     for ctx in &step.session_context {
-        step.messages.push(Message::system(ctx.clone()));
+        messages.push(Message::system(ctx.clone()));
     }
 
     // [3+] History from session
-    step.messages.extend(step.session.messages.clone());
+    messages.extend(step.session.messages.clone());
+
+    messages
 }
 
 /// Run one step of the agent loop (non-streaming).
@@ -365,11 +367,10 @@ pub async fn run_step(
         emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
         // Build messages
-        build_messages(&mut step, &config.system_prompt);
+        let msgs = build_messages(&step, &config.system_prompt);
 
         // Get data before dropping step
         let skip = step.skip_inference;
-        let msgs = step.messages.clone();
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
         let tracing_span = step.tracing_span.take();
         plugin_data.sync_from_step(&step);
@@ -966,10 +967,9 @@ pub fn run_loop_stream(
                 emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
                 emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
-                build_messages(&mut step, &config.system_prompt);
+                let msgs = build_messages(&step, &config.system_prompt);
 
                 let skip = step.skip_inference;
-                let msgs = step.messages.clone();
                 let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
                 let tracing_span = step.tracing_span.take();
                 plugin_data.sync_from_step(&step);
@@ -1907,29 +1907,25 @@ mod tests {
         step.system("System context 2");
         step.session("Session context");
 
-        build_messages(&mut step, "Base system prompt");
+        let messages = build_messages(&step, "Base system prompt");
 
-        assert_eq!(step.messages.len(), 3);
-        // First message should be system prompt + context
-        assert!(step.messages[0].content.contains("Base system prompt"));
-        assert!(step.messages[0].content.contains("System context 1"));
-        assert!(step.messages[0].content.contains("System context 2"));
-        // Second message should be session context
-        assert_eq!(step.messages[1].content, "Session context");
-        // Third message should be user message
-        assert_eq!(step.messages[2].content, "Hello");
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].content.contains("Base system prompt"));
+        assert!(messages[0].content.contains("System context 1"));
+        assert!(messages[0].content.contains("System context 2"));
+        assert_eq!(messages[1].content, "Session context");
+        assert_eq!(messages[2].content, "Hello");
     }
 
     #[test]
     fn test_build_messages_empty_system() {
         let session = Session::new("test").with_message(Message::user("Hello"));
-        let mut step = StepContext::new(&session, vec![]);
+        let step = StepContext::new(&session, vec![]);
 
-        build_messages(&mut step, "");
+        let messages = build_messages(&step, "");
 
-        // Only user message
-        assert_eq!(step.messages.len(), 1);
-        assert_eq!(step.messages[0].content, "Hello");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "Hello");
     }
 
     struct ToolFilterPlugin;

@@ -9,7 +9,7 @@ use crate::session::Session;
 use crate::state_types::Interaction;
 use crate::stream::StreamResult;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
-use crate::types::{Message, ToolCall};
+use crate::types::ToolCall;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -124,8 +124,6 @@ pub struct StepContext<'a> {
     pub system_context: Vec<String>,
     /// Session context messages (before user messages) [Position 2].
     pub session_context: Vec<String>,
-    /// Messages to send to LLM.
-    pub messages: Vec<Message>,
     /// System reminders (after tool results) [Position 7].
     pub system_reminders: Vec<String>,
 
@@ -159,7 +157,6 @@ impl<'a> StepContext<'a> {
             session,
             system_context: Vec::new(),
             session_context: Vec::new(),
-            messages: Vec::new(),
             system_reminders: Vec::new(),
             tools,
             tool: None,
@@ -174,7 +171,6 @@ impl<'a> StepContext<'a> {
     pub fn reset(&mut self) {
         self.system_context.clear();
         self.session_context.clear();
-        self.messages.clear();
         self.system_reminders.clear();
         self.tool = None;
         self.response = None;
@@ -423,7 +419,6 @@ mod tests {
 
         assert!(ctx.system_context.is_empty());
         assert!(ctx.session_context.is_empty());
-        assert!(ctx.messages.is_empty());
         assert!(ctx.system_reminders.is_empty());
         assert_eq!(ctx.tools.len(), 3);
         assert!(ctx.tool.is_none());
