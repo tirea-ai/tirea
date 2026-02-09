@@ -9,8 +9,9 @@ use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
 pub use registry::{
-    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+    AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
+    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError,
     ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
 };
 use std::collections::HashMap;
@@ -57,6 +58,9 @@ pub enum AgentOsWiringError {
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsBuildError {
     #[error(transparent)]
+    Agents(#[from] AgentRegistryError),
+
+    #[error(transparent)]
     Tools(#[from] ToolRegistryError),
 
     #[error(transparent)]
@@ -102,10 +106,10 @@ pub enum AgentOsRunError {
 #[derive(Clone)]
 pub struct AgentOs {
     default_client: Client,
-    agents: AgentRegistry,
+    agents: Arc<dyn AgentRegistry>,
     base_tools: Arc<dyn ToolRegistry>,
     providers: Arc<dyn ProviderRegistry>,
-    models: ModelRegistry,
+    models: Arc<dyn ModelRegistry>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
 }
@@ -114,11 +118,13 @@ pub struct AgentOs {
 pub struct AgentOsBuilder {
     client: Option<Client>,
     agents: HashMap<String, AgentDefinition>,
+    agent_registries: Vec<Arc<dyn AgentRegistry>>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
     base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
     providers: HashMap<String, Client>,
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
+    model_registries: Vec<Arc<dyn ModelRegistry>>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
 }
@@ -156,11 +162,13 @@ impl AgentOsBuilder {
         Self {
             client: None,
             agents: HashMap::new(),
+            agent_registries: Vec::new(),
             base_tools: HashMap::new(),
             base_tool_registries: Vec::new(),
             providers: HashMap::new(),
             provider_registries: Vec::new(),
             models: HashMap::new(),
+            model_registries: Vec::new(),
             skills_registry: None,
             skills: SkillsConfig::default(),
         }
@@ -177,6 +185,11 @@ impl AgentOsBuilder {
         // The registry key is the canonical id to avoid mismatches.
         def.id = agent_id.clone();
         self.agents.insert(agent_id, def);
+        self
+    }
+
+    pub fn with_agent_registry(mut self, registry: Arc<dyn AgentRegistry>) -> Self {
+        self.agent_registries.push(registry);
         self
     }
 
@@ -210,6 +223,11 @@ impl AgentOsBuilder {
         self
     }
 
+    pub fn with_model_registry(mut self, registry: Arc<dyn ModelRegistry>) -> Self {
+        self.model_registries.push(registry);
+        self
+    }
+
     pub fn with_skills_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
         self.skills_registry = Some(registry);
         self
@@ -224,11 +242,13 @@ impl AgentOsBuilder {
         let AgentOsBuilder {
             client,
             agents: agents_defs,
+            agent_registries,
             base_tools: base_tools_defs,
             base_tool_registries,
             providers: provider_defs,
             provider_registries,
             models: model_defs,
+            model_registries,
             skills_registry,
             skills,
         } = self;
@@ -277,24 +297,56 @@ impl AgentOsBuilder {
             }
         };
 
-        let mut models = ModelRegistry::new();
+        let mut models = InMemoryModelRegistry::new();
         models.extend(model_defs.clone())?;
+
+        let models: Arc<dyn ModelRegistry> = match model_registries.len() {
+            0 => Arc::new(models),
+            _ => {
+                let mut regs: Vec<Arc<dyn ModelRegistry>> = Vec::new();
+                if !models.is_empty() {
+                    regs.push(Arc::new(models));
+                }
+                regs.extend(model_registries);
+                if regs.len() == 1 {
+                    regs.pop().unwrap()
+                } else {
+                    Arc::new(CompositeModelRegistry::try_new(regs)?)
+                }
+            }
+        };
 
         if !models.is_empty() && providers.is_empty() {
             return Err(AgentOsBuildError::ProvidersNotConfigured);
         }
 
-        for (model_id, def) in &model_defs {
+        for (model_id, def) in models.snapshot() {
             if providers.get(&def.provider).is_none() {
                 return Err(AgentOsBuildError::ProviderNotFound {
-                    provider_id: def.provider.clone(),
-                    model_id: model_id.clone(),
+                    provider_id: def.provider,
+                    model_id,
                 });
             }
         }
 
-        let mut agents = AgentRegistry::new();
+        let mut agents = InMemoryAgentRegistry::new();
         agents.extend_upsert(agents_defs);
+
+        let agents: Arc<dyn AgentRegistry> = match agent_registries.len() {
+            0 => Arc::new(agents),
+            _ => {
+                let mut regs: Vec<Arc<dyn AgentRegistry>> = Vec::new();
+                if !agents.is_empty() {
+                    regs.push(Arc::new(agents));
+                }
+                regs.extend(agent_registries);
+                if regs.len() == 1 {
+                    regs.pop().unwrap()
+                } else {
+                    Arc::new(CompositeAgentRegistry::try_new(regs)?)
+                }
+            }
+        };
 
         Ok(AgentOs {
             default_client: client.unwrap_or_default(),

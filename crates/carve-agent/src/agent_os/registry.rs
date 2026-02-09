@@ -323,12 +323,26 @@ pub enum AgentRegistryError {
     AgentIdConflict(String),
 }
 
+pub trait AgentRegistry: Send + Sync {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, id: &str) -> Option<AgentDefinition>;
+
+    fn ids(&self) -> Vec<String>;
+
+    fn snapshot(&self) -> HashMap<String, AgentDefinition>;
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct AgentRegistry {
+pub struct InMemoryAgentRegistry {
     agents: HashMap<String, AgentDefinition>,
 }
 
-impl AgentRegistry {
+impl InMemoryAgentRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -375,6 +389,78 @@ impl AgentRegistry {
             self.upsert(id, def);
         }
     }
+
+    pub fn extend_registry(&mut self, other: &dyn AgentRegistry) -> Result<(), AgentRegistryError> {
+        for (id, def) in other.snapshot() {
+            self.register(id, def)?;
+        }
+        Ok(())
+    }
+}
+
+impl AgentRegistry for InMemoryAgentRegistry {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, id: &str) -> Option<AgentDefinition> {
+        self.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.agents.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, AgentDefinition> {
+        self.agents.clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CompositeAgentRegistry {
+    merged: InMemoryAgentRegistry,
+}
+
+impl std::fmt::Debug for CompositeAgentRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompositeAgentRegistry")
+            .field("len", &self.merged.len())
+            .finish()
+    }
+}
+
+impl CompositeAgentRegistry {
+    pub fn try_new(
+        regs: impl IntoIterator<Item = Arc<dyn AgentRegistry>>,
+    ) -> Result<Self, AgentRegistryError> {
+        let mut merged = InMemoryAgentRegistry::new();
+        for r in regs {
+            merged.extend_registry(r.as_ref())?;
+        }
+        Ok(Self { merged })
+    }
+}
+
+impl AgentRegistry for CompositeAgentRegistry {
+    fn len(&self) -> usize {
+        self.merged.len()
+    }
+
+    fn get(&self, id: &str) -> Option<AgentDefinition> {
+        self.merged.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.merged.agents.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, AgentDefinition> {
+        self.merged.agents.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -412,11 +498,25 @@ pub enum ModelRegistryError {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ModelRegistry {
+pub struct InMemoryModelRegistry {
     models: HashMap<String, ModelDefinition>,
 }
 
-impl ModelRegistry {
+pub trait ModelRegistry: Send + Sync {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, id: &str) -> Option<ModelDefinition>;
+
+    fn ids(&self) -> Vec<String>;
+
+    fn snapshot(&self) -> HashMap<String, ModelDefinition>;
+}
+
+impl InMemoryModelRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -465,6 +565,75 @@ impl ModelRegistry {
         }
         Ok(())
     }
+
+    pub fn extend_registry(&mut self, other: &dyn ModelRegistry) -> Result<(), ModelRegistryError> {
+        self.extend(other.snapshot())
+    }
+}
+
+impl ModelRegistry for InMemoryModelRegistry {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, id: &str) -> Option<ModelDefinition> {
+        self.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.models.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, ModelDefinition> {
+        self.models.clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CompositeModelRegistry {
+    merged: InMemoryModelRegistry,
+}
+
+impl std::fmt::Debug for CompositeModelRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompositeModelRegistry")
+            .field("len", &self.merged.len())
+            .finish()
+    }
+}
+
+impl CompositeModelRegistry {
+    pub fn try_new(
+        regs: impl IntoIterator<Item = Arc<dyn ModelRegistry>>,
+    ) -> Result<Self, ModelRegistryError> {
+        let mut merged = InMemoryModelRegistry::new();
+        for r in regs {
+            merged.extend_registry(r.as_ref())?;
+        }
+        Ok(Self { merged })
+    }
+}
+
+impl ModelRegistry for CompositeModelRegistry {
+    fn len(&self) -> usize {
+        self.merged.len()
+    }
+
+    fn get(&self, id: &str) -> Option<ModelDefinition> {
+        self.merged.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.merged.models.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, ModelDefinition> {
+        self.merged.models.clone()
+    }
 }
 
 #[cfg(test)]
@@ -509,7 +678,7 @@ mod tests {
 
     #[test]
     fn agent_registry_register_canonicalizes_id() {
-        let mut reg = AgentRegistry::new();
+        let mut reg = InMemoryAgentRegistry::new();
         reg.register("a1", AgentDefinition::with_id("not-a1", "gpt-4o-mini"))
             .unwrap();
         let def = reg.get("a1").unwrap();
@@ -518,7 +687,7 @@ mod tests {
 
     #[test]
     fn model_registry_register_rejects_empty_model_name() {
-        let mut reg = ModelRegistry::new();
+        let mut reg = InMemoryModelRegistry::new();
         let err = reg
             .register("m1", ModelDefinition::new("p1", "   "))
             .err()
@@ -528,7 +697,7 @@ mod tests {
 
     #[test]
     fn model_registry_register_rejects_empty_provider_id() {
-        let mut reg = ModelRegistry::new();
+        let mut reg = InMemoryModelRegistry::new();
         let err = reg
             .register("m1", ModelDefinition::new("   ", "gpt-4o-mini"))
             .err()
