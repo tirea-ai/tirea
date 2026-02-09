@@ -341,7 +341,7 @@ impl Tool for SubAgentTool {
 }
 
 /// Generate a simple UUID v4-like string.
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

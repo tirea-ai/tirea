@@ -292,6 +292,18 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
+    /// Extract the response text from a `RunFinish` result value.
+    ///
+    /// Looks for `result.response` as a string; returns empty string if absent.
+    pub(crate) fn extract_response(result: &Option<Value>) -> String {
+        result
+            .as_ref()
+            .and_then(|v| v.get("response"))
+            .and_then(|r| r.as_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
     /// Convert this event to AI SDK v6 compatible UI stream events.
     ///
     /// Some internal events map to multiple UI events. For example,
@@ -572,6 +584,29 @@ mod tests {
     use super::*;
     use crate::ag_ui::{AGUIContext, AGUIEvent};
     use serde_json::json;
+
+    #[test]
+    fn test_extract_response_with_value() {
+        let result = Some(json!({"response": "Hello world"}));
+        assert_eq!(AgentEvent::extract_response(&result), "Hello world");
+    }
+
+    #[test]
+    fn test_extract_response_none() {
+        assert_eq!(AgentEvent::extract_response(&None), "");
+    }
+
+    #[test]
+    fn test_extract_response_missing_key() {
+        let result = Some(json!({"other": "value"}));
+        assert_eq!(AgentEvent::extract_response(&result), "");
+    }
+
+    #[test]
+    fn test_extract_response_non_string() {
+        let result = Some(json!({"response": 42}));
+        assert_eq!(AgentEvent::extract_response(&result), "");
+    }
 
     #[test]
     fn test_stream_collector_new() {
