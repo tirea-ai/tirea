@@ -1,9 +1,12 @@
 use crate::plugin::AgentPlugin;
+use crate::r#loop::{run_loop, run_loop_stream};
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
+    SkillSubsystemError,
 };
 use crate::traits::tool::Tool;
-use crate::AgentConfig;
+use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
+use genai::Client;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,24 +45,94 @@ pub enum AgentOsWiringError {
     SkillsPluginAlreadyInstalled(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror::Error)]
+pub enum AgentOsResolveError {
+    #[error("agent not found: {0}")]
+    AgentNotFound(String),
+
+    #[error(transparent)]
+    Wiring(#[from] AgentOsWiringError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AgentOsRunError {
+    #[error(transparent)]
+    Resolve(#[from] AgentOsResolveError),
+
+    #[error(transparent)]
+    Loop(#[from] AgentLoopError),
+}
+
+#[derive(Clone)]
 pub struct AgentOs {
+    client: Client,
+    agents: HashMap<String, AgentDefinition>,
+    base_tools: HashMap<String, Arc<dyn Tool>>,
     skills_registry: Option<Arc<SkillRegistry>>,
     skills: SkillsConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentOsBuilder {
+    client: Option<Client>,
+    agents: HashMap<String, AgentDefinition>,
+    base_tools: HashMap<String, Arc<dyn Tool>>,
     skills_roots: Vec<PathBuf>,
     skills: SkillsConfig,
+}
+
+impl std::fmt::Debug for AgentOs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentOs")
+            .field("client", &"[genai::Client]")
+            .field("agents", &self.agents.len())
+            .field("base_tools", &self.base_tools.len())
+            .field("skills_registry", &self.skills_registry.is_some())
+            .field("skills", &self.skills)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for AgentOsBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentOsBuilder")
+            .field("client", &self.client.is_some())
+            .field("agents", &self.agents.len())
+            .field("base_tools", &self.base_tools.len())
+            .field("skills_roots", &self.skills_roots)
+            .field("skills", &self.skills)
+            .finish()
+    }
 }
 
 impl AgentOsBuilder {
     pub fn new() -> Self {
         Self {
+            client: None,
+            agents: HashMap::new(),
+            base_tools: HashMap::new(),
             skills_roots: Vec::new(),
             skills: SkillsConfig::default(),
         }
+    }
+
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    pub fn with_agent(mut self, agent_id: impl Into<String>, def: AgentDefinition) -> Self {
+        let agent_id = agent_id.into();
+        let mut def = def;
+        // The registry key is the canonical id to avoid mismatches.
+        def.id = agent_id.clone();
+        self.agents.insert(agent_id, def);
+        self
+    }
+
+    pub fn with_tools(mut self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
+        self.base_tools = tools;
+        self
     }
 
     pub fn with_skills_root(mut self, root: impl Into<PathBuf>) -> Self {
@@ -85,6 +158,9 @@ impl AgentOsBuilder {
         };
 
         AgentOs {
+            client: self.client.unwrap_or_default(),
+            agents: self.agents,
+            base_tools: self.base_tools,
             skills_registry,
             skills: self.skills,
         }
@@ -102,8 +178,20 @@ impl AgentOs {
         AgentOsBuilder::new()
     }
 
+    pub fn client(&self) -> Client {
+        self.client.clone()
+    }
+
     pub fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
         self.skills_registry.clone()
+    }
+
+    pub fn agent(&self, agent_id: &str) -> Option<AgentDefinition> {
+        self.agents.get(agent_id).cloned()
+    }
+
+    pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
+        self.base_tools.clone()
     }
 
     pub fn wire_skills_into(
@@ -134,9 +222,9 @@ impl AgentOs {
 
         // Register skills tools.
         let skills = SkillSubsystem::new(reg.clone());
-        skills
-            .extend_tools(tools)
-            .map_err(|e| AgentOsWiringError::SkillsToolIdConflict(e.to_string()))?;
+        skills.extend_tools(tools).map_err(|e| match e {
+            SkillSubsystemError::ToolIdConflict(id) => AgentOsWiringError::SkillsToolIdConflict(id),
+        })?;
 
         // Register skills plugins.
         let mut plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
@@ -167,6 +255,41 @@ impl AgentOs {
 
         Ok(config)
     }
+
+    pub fn resolve(
+        &self,
+        agent_id: &str,
+        session: Session,
+    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>, Session), AgentOsResolveError> {
+        let def = self
+            .agents
+            .get(agent_id)
+            .cloned()
+            .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
+
+        let mut tools = self.base_tools.clone();
+        let cfg = self.wire_skills_into(def, &mut tools)?;
+        Ok((cfg, tools, session))
+    }
+
+    pub async fn run(
+        &self,
+        agent_id: &str,
+        session: Session,
+    ) -> Result<(Session, String), AgentOsRunError> {
+        let (cfg, tools, session) = self.resolve(agent_id, session)?;
+        let (session, text) = run_loop(&self.client, &cfg, session, &tools).await?;
+        Ok((session, text))
+    }
+
+    pub fn run_stream(
+        &self,
+        agent_id: &str,
+        session: Session,
+    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
+        let (cfg, tools, session) = self.resolve(agent_id, session)?;
+        Ok(run_loop_stream(self.client.clone(), cfg, session, tools))
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +298,7 @@ mod tests {
     use crate::phase::{Phase, StepContext};
     use crate::session::Session;
     use crate::traits::tool::ToolDescriptor;
+    use crate::traits::tool::{ToolError, ToolResult};
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -306,5 +430,124 @@ mod tests {
 
         let err = os.wire_skills_into(cfg, &mut tools).unwrap_err();
         assert!(err.to_string().contains("skills plugin already installed"));
+    }
+
+    #[test]
+    fn resolve_errors_if_agent_missing() {
+        let os = AgentOs::builder().build();
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("missing", session).err().unwrap();
+        assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn resolve_wires_skills_and_preserves_base_tools() {
+        #[derive(Debug)]
+        struct BaseTool;
+
+        #[async_trait::async_trait]
+        impl Tool for BaseTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("base_tool", "Base Tool", "Base Tool")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("base_tool", json!({"ok": true})))
+            }
+        }
+
+        let (_td, root) = make_skills_root();
+        let os = AgentOs::builder()
+            .with_skills_root(root)
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .with_tools(HashMap::from([(
+                "base_tool".to_string(),
+                Arc::new(BaseTool) as Arc<dyn Tool>,
+            )]))
+            .build();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let (cfg, tools, _session) = os.resolve("a1", session).unwrap();
+
+        assert_eq!(cfg.id, "a1");
+        assert!(tools.contains_key("base_tool"));
+        assert!(tools.contains_key("skill"));
+        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("skill_script"));
+        assert_eq!(cfg.plugins.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn run_and_run_stream_work_without_llm_when_skip_inference() {
+        #[derive(Debug)]
+        struct SkipInferencePlugin;
+
+        #[async_trait::async_trait]
+        impl AgentPlugin for SkipInferencePlugin {
+            fn id(&self) -> &str {
+                "skip_inference"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let def = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipInferencePlugin));
+        let os = AgentOs::builder().with_agent("a1", def).build();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let (_session, text) = os.run("a1", session).await.unwrap();
+        assert_eq!(text, "");
+
+        let session = Session::with_initial_state("s2", json!({}));
+        let mut stream = os.run_stream("a1", session).unwrap();
+        let ev = futures::StreamExt::next(&mut stream).await.unwrap();
+        assert!(matches!(ev, AgentEvent::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn resolve_errors_on_skills_tool_id_conflict() {
+        #[derive(Debug)]
+        struct ConflictingTool;
+
+        #[async_trait::async_trait]
+        impl Tool for ConflictingTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("skill", "Conflicting", "Conflicting")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("skill", json!({"ok": true})))
+            }
+        }
+
+        let (_td, root) = make_skills_root();
+        let os = AgentOs::builder()
+            .with_skills_root(root)
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .with_tools(HashMap::from([(
+                "skill".to_string(),
+                Arc::new(ConflictingTool) as Arc<dyn Tool>,
+            )]))
+            .build();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::SkillsToolIdConflict(ref id))
+            if id == "skill"
+        ));
     }
 }
