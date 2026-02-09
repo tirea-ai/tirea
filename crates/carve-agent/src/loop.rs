@@ -365,10 +365,13 @@ pub async fn run_step(
             // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
             let err = e.to_string();
             let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
-            step.set("llmmetry.inference_error_type", err.clone());
+            step.set(
+                "llmmetry.inference_error",
+                serde_json::json!({ "type": "llm_exec_error", "message": err }),
+            );
             emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
             plugin_data.sync_from_step(&step);
-            return Err(AgentLoopError::LlmError(err));
+            return Err(AgentLoopError::LlmError(e.to_string()));
         }
     };
 
@@ -952,7 +955,10 @@ pub fn run_loop_stream(
                 Err(e) => {
                     // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
                     let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
-                    step.set("llmmetry.inference_error_type", e.to_string());
+                    step.set(
+                        "llmmetry.inference_error",
+                        serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
+                    );
                     emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                     plugin_data.sync_from_step(&step);
                     yield AgentEvent::Error { message: e.to_string() };
@@ -986,7 +992,10 @@ pub fn run_loop_stream(
                         // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
                         let mut step =
                             plugin_data.new_step_context(&session, tool_descriptors.clone());
-                        step.set("llmmetry.inference_error_type", e.to_string());
+                        step.set(
+                            "llmmetry.inference_error",
+                            serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
+                        );
                         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                         plugin_data.sync_from_step(&step);
                         yield AgentEvent::Error { message: e.to_string() };

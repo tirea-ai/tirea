@@ -12,6 +12,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 // =============================================================================
 // Span types (OTel GenAI aligned)
 // =============================================================================
@@ -205,6 +212,13 @@ pub struct LLMMetryPlugin {
     tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InferenceError {
+    #[serde(rename = "type")]
+    error_type: String,
+    message: String,
+}
+
 impl LLMMetryPlugin {
     pub fn new(sink: impl MetricsSink + 'static) -> Self {
         Self {
@@ -222,12 +236,12 @@ impl LLMMetryPlugin {
     }
 
     pub fn with_model(self, model: impl Into<String>) -> Self {
-        *self.model.lock().unwrap() = model.into();
+        *lock_unpoison(&self.model) = model.into();
         self
     }
 
     pub fn with_provider(self, provider: impl Into<String>) -> Self {
-        *self.provider.lock().unwrap() = provider.into();
+        *lock_unpoison(&self.provider) = provider.into();
         self
     }
 }
@@ -241,12 +255,12 @@ impl AgentPlugin for LLMMetryPlugin {
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::SessionStart => {
-                *self.session_start.lock().unwrap() = Some(Instant::now());
+                *lock_unpoison(&self.session_start) = Some(Instant::now());
             }
             Phase::BeforeInference => {
-                *self.inference_start.lock().unwrap() = Some(Instant::now());
-                let model = self.model.lock().unwrap().clone();
-                let provider = self.provider.lock().unwrap().clone();
+                *lock_unpoison(&self.inference_start) = Some(Instant::now());
+                let model = lock_unpoison(&self.model).clone();
+                let provider = lock_unpoison(&self.provider).clone();
                 let span_name = format!("{} {}", self.operation, model);
                 let span = tracing::info_span!("gen_ai",
                     "otel.name" = %span_name,
@@ -264,9 +278,10 @@ impl AgentPlugin for LLMMetryPlugin {
                     "gen_ai.usage.cache_read.input_tokens" = tracing::field::Empty,
                     "gen_ai.usage.cache_creation.input_tokens" = tracing::field::Empty,
                     "error.type" = tracing::field::Empty,
+                    "error.message" = tracing::field::Empty,
                 );
                 step.tracing_span = Some(span.clone());
-                *self.inference_tracing_span.lock().unwrap() = Some(span);
+                *lock_unpoison(&self.inference_tracing_span) = Some(span);
             }
             Phase::AfterInference => {
                 // Clear the step's reference so the span can fully close
@@ -275,7 +290,7 @@ impl AgentPlugin for LLMMetryPlugin {
                 let duration_ms = self
                     .inference_start
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|p| p.into_inner())
                     .take()
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
@@ -284,10 +299,11 @@ impl AgentPlugin for LLMMetryPlugin {
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
                 let (cache_read_input_tokens, cache_creation_input_tokens) =
                     extract_cache_tokens(usage);
-                let error_type: Option<String> = step.get("llmmetry.inference_error_type");
+                let error: Option<InferenceError> = step.get("llmmetry.inference_error");
+                step.remove("llmmetry.inference_error");
 
-                let model = self.model.lock().unwrap().clone();
-                let provider = self.provider.lock().unwrap().clone();
+                let model = lock_unpoison(&self.model).clone();
+                let provider = lock_unpoison(&self.provider).clone();
                 let span = GenAISpan {
                     model,
                     provider,
@@ -295,7 +311,7 @@ impl AgentPlugin for LLMMetryPlugin {
                     response_model: None,
                     response_id: None,
                     finish_reasons: Vec::new(),
-                    error_type,
+                    error_type: error.as_ref().map(|e| e.error_type.clone()),
                     input_tokens,
                     output_tokens,
                     total_tokens,
@@ -305,7 +321,7 @@ impl AgentPlugin for LLMMetryPlugin {
                 };
 
                 // Record fields onto the tracing span and drop it (closing the OTel span).
-                if let Some(tracing_span) = self.inference_tracing_span.lock().unwrap().take() {
+                if let Some(tracing_span) = lock_unpoison(&self.inference_tracing_span).take() {
                     if let Some(v) = span.input_tokens {
                         tracing_span.record("gen_ai.usage.input_tokens", v);
                     }
@@ -330,16 +346,17 @@ impl AgentPlugin for LLMMetryPlugin {
                     if let Some(ref v) = span.response_id {
                         tracing_span.record("gen_ai.response.id", v.as_str());
                     }
-                    if let Some(ref v) = span.error_type {
-                        tracing_span.record("error.type", v.as_str());
+                    if let Some(ref err) = error {
+                        tracing_span.record("error.type", err.error_type.as_str());
+                        tracing_span.record("error.message", err.message.as_str());
                         tracing_span.record("otel.status_code", "ERROR");
-                        tracing_span.record("otel.status_description", v.as_str());
+                        tracing_span.record("otel.status_description", err.message.as_str());
                     }
                     drop(tracing_span);
                 }
 
                 self.sink.on_inference(&span);
-                self.metrics.lock().unwrap().inferences.push(span);
+                lock_unpoison(&self.metrics).inferences.push(span);
             }
             Phase::BeforeToolExecute => {
                 let tool_name = step
@@ -351,10 +368,10 @@ impl AgentPlugin for LLMMetryPlugin {
                 if !call_id.is_empty() {
                     self.tool_start
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(|p| p.into_inner())
                         .insert(call_id.clone(), Instant::now());
                 }
-                let provider = self.provider.lock().unwrap().clone();
+                let provider = lock_unpoison(&self.provider).clone();
                 let span_name = format!("execute_tool {}", tool_name);
                 let span = tracing::info_span!("gen_ai",
                     "otel.name" = %span_name,
@@ -366,10 +383,11 @@ impl AgentPlugin for LLMMetryPlugin {
                     "gen_ai.tool.name" = %tool_name,
                     "gen_ai.tool.call.id" = %call_id,
                     "error.type" = tracing::field::Empty,
+                    "error.message" = tracing::field::Empty,
                 );
                 step.tracing_span = Some(span.clone());
                 if !call_id.is_empty() {
-                    self.tool_tracing_span.lock().unwrap().insert(call_id, span);
+                    lock_unpoison(&self.tool_tracing_span).insert(call_id, span);
                 }
             }
             Phase::AfterToolExecute => {
@@ -380,25 +398,28 @@ impl AgentPlugin for LLMMetryPlugin {
                 let duration_ms = self
                     .tool_start
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|p| p.into_inner())
                     .remove(&call_id_for_span)
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
 
-                let (name, call_id, error_type) = if let Some(ref tc) = step.tool {
-                    let ok = tc
-                        .result
-                        .as_ref()
-                        .map(|r| r.status == crate::traits::tool::ToolStatus::Success)
-                        .unwrap_or(false);
-                    let err = if !ok {
-                        tc.result.as_ref().and_then(|r| r.message.clone())
-                    } else {
-                        None
+                let (name, call_id, error_message, error_type) = if let Some(ref tc) = step.tool {
+                    let status = tc.result.as_ref().map(|r| r.status.clone());
+                    let message = tc.result.as_ref().and_then(|r| r.message.clone());
+                    let error_type = match status {
+                        Some(crate::traits::tool::ToolStatus::Error) => {
+                            Some("tool_error".to_string())
+                        }
+                        _ => None,
                     };
-                    (tc.name.clone(), tc.id.clone(), err)
+                    (
+                        tc.name.clone(),
+                        tc.id.clone(),
+                        message.filter(|_| error_type.is_some()),
+                        error_type,
+                    )
                 } else {
-                    ("unknown".to_string(), String::new(), None)
+                    ("unknown".to_string(), String::new(), None, None)
                 };
 
                 let span = ToolSpan {
@@ -412,30 +433,36 @@ impl AgentPlugin for LLMMetryPlugin {
                 let tracing_span = self
                     .tool_tracing_span
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|p| p.into_inner())
                     .remove(&call_id_for_span);
                 if let Some(tracing_span) = tracing_span {
-                    if let Some(ref v) = span.error_type {
+                    if let (Some(ref v), Some(ref msg)) = (&span.error_type, &error_message) {
                         tracing_span.record("error.type", v.as_str());
+                        tracing_span.record("error.message", msg.as_str());
                         tracing_span.record("otel.status_code", "ERROR");
-                        tracing_span.record("otel.status_description", v.as_str());
+                        tracing_span.record("otel.status_description", msg.as_str());
                     }
                     drop(tracing_span);
                 }
 
                 self.sink.on_tool(&span);
-                self.metrics.lock().unwrap().tools.push(span);
+                lock_unpoison(&self.metrics).tools.push(span);
             }
             Phase::SessionEnd => {
                 let session_duration_ms = self
                     .session_start
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|p| p.into_inner())
                     .take()
                     .map(|s| s.elapsed().as_millis() as u64)
                     .unwrap_or(0);
 
-                let mut metrics = self.metrics.lock().unwrap().clone();
+                // Best-effort cleanup in case some spans never reached their closing phase.
+                lock_unpoison(&self.inference_tracing_span).take();
+                lock_unpoison(&self.tool_tracing_span).clear();
+                lock_unpoison(&self.tool_start).clear();
+
+                let mut metrics = lock_unpoison(&self.metrics).clone();
                 metrics.session_duration_ms = session_duration_ms;
                 self.sink.on_session_end(&metrics);
             }
@@ -715,7 +742,7 @@ mod tests {
 
         let m = sink.metrics();
         assert!(!m.tools[0].is_success());
-        assert_eq!(m.tools[0].error_type.as_deref(), Some("permission denied"));
+        assert_eq!(m.tools[0].error_type.as_deref(), Some("tool_error"));
     }
 
     #[tokio::test]
@@ -793,7 +820,10 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
-        step.set("llmmetry.inference_error_type", "rate_limited");
+        step.set(
+            "llmmetry.inference_error",
+            serde_json::json!({ "type": "rate_limited", "message": "429" }),
+        );
         plugin.on_phase(Phase::AfterInference, &mut step).await;
 
         let m = sink.metrics();
@@ -1114,7 +1144,10 @@ mod tests {
             let mut step = StepContext::new(&session, vec![]);
 
             plugin.on_phase(Phase::BeforeInference, &mut step).await;
-            step.set("llmmetry.inference_error_type", "rate_limited");
+            step.set(
+                "llmmetry.inference_error",
+                serde_json::json!({ "type": "rate_limited", "message": "429" }),
+            );
             plugin.on_phase(Phase::AfterInference, &mut step).await;
 
             let _ = provider.force_flush();
@@ -1656,7 +1689,7 @@ mod tests {
             // Spec: error.type should be set
             assert_eq!(
                 find_attribute(span, "error.type").unwrap().as_str(),
-                "permission denied"
+                "tool_error"
             );
 
             // Spec: OTel status should be Error on failure

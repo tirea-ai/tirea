@@ -258,7 +258,10 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     // Metrics should record the failed inference.
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);
-    assert!(m.inferences[0].error_type.as_ref().is_some());
+    assert_eq!(
+        m.inferences[0].error_type.as_deref(),
+        Some("llm_exec_error")
+    );
 
     // OTel export should include error.type and Error status.
     let _ = provider.force_flush();
@@ -270,7 +273,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     let error_type = find_attribute(span, "error.type")
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
-    assert!(!error_type.is_empty());
+    assert_eq!(error_type, "llm_exec_error");
     assert!(matches!(
         span.status,
         opentelemetry::trace::Status::Error { .. }
@@ -317,7 +320,10 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
     // Metrics should record a failed inference.
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);
-    assert!(m.inferences[0].error_type.as_ref().is_some());
+    assert_eq!(
+        m.inferences[0].error_type.as_deref(),
+        Some("llm_stream_event_error")
+    );
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
@@ -328,7 +334,7 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
     let error_type = find_attribute(span, "error.type")
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
-    assert!(!error_type.is_empty());
+    assert_eq!(error_type, "llm_stream_event_error");
     assert!(matches!(
         span.status,
         opentelemetry::trace::Status::Error { .. }
@@ -377,7 +383,10 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
 
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);
-    assert!(m.inferences[0].error_type.as_ref().is_some());
+    assert_eq!(
+        m.inferences[0].error_type.as_deref(),
+        Some("llm_stream_event_error")
+    );
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
@@ -388,7 +397,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
     let error_type = find_attribute(span, "error.type")
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
-    assert!(!error_type.is_empty());
+    assert_eq!(error_type, "llm_stream_event_error");
     assert!(matches!(
         span.status,
         opentelemetry::trace::Status::Error { .. }
