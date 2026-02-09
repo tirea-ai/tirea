@@ -72,7 +72,7 @@ mod tests {
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let discovery = SkillDiscoveryPlugin::new(reg);
         let plugin = SkillPlugin::new(discovery);
 

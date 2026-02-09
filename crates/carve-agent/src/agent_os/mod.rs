@@ -382,7 +382,7 @@ mod tests {
     async fn wire_skills_inserts_tools_and_plugin() {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::DiscoveryAndRuntime,
                 ..SkillsConfig::default()
@@ -426,7 +426,7 @@ mod tests {
     async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::RuntimeOnly,
                 ..SkillsConfig::default()
@@ -464,7 +464,7 @@ mod tests {
     fn wire_skills_disabled_is_noop() {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::Disabled,
                 ..SkillsConfig::default()
@@ -496,7 +496,7 @@ mod tests {
     fn wire_skills_errors_if_plugin_already_installed() {
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::DiscoveryAndRuntime,
                 ..SkillsConfig::default()
@@ -541,7 +541,7 @@ mod tests {
 
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::DiscoveryAndRuntime,
                 ..SkillsConfig::default()
@@ -618,7 +618,7 @@ mod tests {
 
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
-            .with_skills_registry(Arc::new(FsSkillRegistry::from_root(root)))
+            .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
             .with_skills_config(SkillsConfig {
                 mode: SkillsMode::DiscoveryAndRuntime,
                 ..SkillsConfig::default()

@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use tracing::warn;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +42,9 @@ pub enum SkillRegistryError {
     #[error("io error: {0}")]
     Io(String),
 
+    #[error("duplicate skill id: {0}")]
+    DuplicateSkillId(String),
+
     #[error("unsupported operation: {0}")]
     Unsupported(String),
 }
@@ -57,20 +58,25 @@ impl From<SkillMaterializeError> for SkillRegistryError {
 #[async_trait]
 pub trait SkillRegistry: Send + Sync + std::fmt::Debug {
     fn list(&self) -> Vec<SkillMeta>;
+
     fn warnings(&self) -> Vec<SkillRegistryWarning> {
         Vec::new()
     }
+
     fn get(&self, skill_id: &str) -> Option<SkillMeta>;
+
     fn resolve(&self, key: &str) -> Option<SkillMeta> {
         self.get(key.trim())
     }
 
     async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError>;
+
     async fn load_reference(
         &self,
         skill_id: &str,
         path: &str,
     ) -> Result<LoadedReference, SkillRegistryError>;
+
     async fn run_script(
         &self,
         skill_id: &str,
@@ -80,170 +86,92 @@ pub trait SkillRegistry: Send + Sync + std::fmt::Debug {
 }
 
 #[derive(Debug, Clone, Default)]
-struct Index {
+struct FsIndex {
     metas: Vec<SkillMeta>,
     by_id: HashMap<String, SkillMeta>,
     by_id_root: HashMap<String, PathBuf>,
+    by_id_skill_md: HashMap<String, String>,
     warnings: Vec<SkillRegistryWarning>,
 }
 
-/// A registry for discovering skills on disk.
+/// A registry for skills discovered from the local filesystem.
 ///
-/// Discovery is metadata-only: it reads `SKILL.md` frontmatter and builds an index.
+/// Construction performs IO and builds an immutable in-memory index.
 #[derive(Debug, Clone)]
 pub struct FsSkillRegistry {
-    roots: Vec<PathBuf>,
-    index: Arc<RwLock<Option<Index>>>,
+    index: FsIndex,
 }
 
 impl FsSkillRegistry {
-    pub fn new(roots: Vec<PathBuf>) -> Self {
-        Self {
-            roots,
-            index: Arc::new(RwLock::new(None)),
-        }
+    pub fn discover_root(root: impl Into<PathBuf>) -> Result<Self, SkillRegistryError> {
+        Self::discover_roots(vec![root.into()])
     }
 
-    pub fn from_root(root: impl Into<PathBuf>) -> Self {
-        Self::new(vec![root.into()])
-    }
+    pub fn discover_roots(roots: Vec<PathBuf>) -> Result<Self, SkillRegistryError> {
+        let mut metas: Vec<SkillMeta> = Vec::new();
+        let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
+        let mut by_id_root: HashMap<String, PathBuf> = HashMap::new();
+        let mut by_id_skill_md: HashMap<String, String> = HashMap::new();
 
-    /// Return all discovered skills (metadata only).
-    pub fn list(&self) -> Vec<SkillMeta> {
-        self.ensure_indexed();
-        self.index
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|idx| idx.metas.clone())
-            .unwrap_or_default()
-    }
-
-    /// Diagnostics for skills that were skipped due to spec violations or IO errors.
-    pub fn warnings(&self) -> Vec<SkillRegistryWarning> {
-        self.ensure_indexed();
-        self.index
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|idx| idx.warnings.clone())
-            .unwrap_or_default()
-    }
-
-    /// Find skill metadata by id.
-    pub fn get(&self, skill_id: &str) -> Option<SkillMeta> {
-        self.ensure_indexed();
-        self.index
-            .read()
-            .unwrap()
-            .as_ref()
-            .and_then(|idx| idx.by_id.get(skill_id).cloned())
-    }
-
-    /// Resolve a user-supplied skill key.
-    ///
-    /// Accepts:
-    /// - exact id match
-    pub fn resolve(&self, key: &str) -> Option<SkillMeta> {
-        let key = key.trim();
-        if let Some(meta) = self.get(key) {
-            return Some(meta);
-        }
-        None
-    }
-
-    pub fn refresh(&self) {
-        *self.index.write().unwrap() = None;
-    }
-
-    fn ensure_indexed(&self) {
-        if self.index.read().unwrap().is_some() {
-            return;
-        }
-
-        let mut metas = Vec::new();
-        let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
-        let mut warnings = Vec::new();
-        for root in &self.roots {
-            let (m, discovered_roots, w) = discover_under_root(root);
+        for root in roots {
+            let (m, roots_by_id, docs_by_id, w) = discover_under_root(&root)?;
             warnings.extend(w);
 
             for meta in m {
-                let Some(root_dir) = discovered_roots.get(&meta.id).cloned() else {
-                    continue;
-                };
-                if let Some(existing_root) = roots_by_id.get(&meta.id).cloned() {
-                    warnings.push(SkillRegistryWarning {
-                        path: root_dir.clone(),
-                        reason: format!(
-                            "duplicate skill id '{}' (already discovered under {})",
-                            meta.id,
-                            existing_root.to_string_lossy()
-                        ),
-                    });
-                    continue;
+                if by_id_root.contains_key(&meta.id) {
+                    return Err(SkillRegistryError::DuplicateSkillId(meta.id));
                 }
-                roots_by_id.insert(meta.id.clone(), root_dir);
+                let root_dir = roots_by_id.get(&meta.id).cloned().ok_or_else(|| {
+                    SkillRegistryError::Io(format!("missing root dir for skill {}", meta.id))
+                })?;
+                let raw = docs_by_id.get(&meta.id).cloned().ok_or_else(|| {
+                    SkillRegistryError::Io(format!("missing SKILL.md for skill {}", meta.id))
+                })?;
+                by_id_root.insert(meta.id.clone(), root_dir);
+                by_id_skill_md.insert(meta.id.clone(), raw);
                 metas.push(meta);
             }
         }
 
         metas.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut by_id = HashMap::new();
+        let mut by_id: HashMap<String, SkillMeta> = HashMap::new();
         for m in &metas {
             by_id.insert(m.id.clone(), m.clone());
         }
-        let by_id_root = roots_by_id;
-
         warnings.sort_by(|a, b| a.path.cmp(&b.path));
 
-        // Emit warnings once per indexing pass (no prompt injection).
-        for w in &warnings {
-            warn!(
-                target: "skills",
-                path = %w.path.to_string_lossy(),
-                reason = %w.reason,
-                "Skipped skill"
-            );
-        }
-
-        *self.index.write().unwrap() = Some(Index {
-            metas,
-            by_id,
-            by_id_root,
-            warnings,
-        });
+        Ok(Self {
+            index: FsIndex {
+                metas,
+                by_id,
+                by_id_root,
+                by_id_skill_md,
+                warnings,
+            },
+        })
     }
 }
 
 #[async_trait]
 impl SkillRegistry for FsSkillRegistry {
     fn list(&self) -> Vec<SkillMeta> {
-        FsSkillRegistry::list(self)
+        self.index.metas.clone()
     }
 
     fn warnings(&self) -> Vec<SkillRegistryWarning> {
-        FsSkillRegistry::warnings(self)
+        self.index.warnings.clone()
     }
 
     fn get(&self, skill_id: &str) -> Option<SkillMeta> {
-        FsSkillRegistry::get(self, skill_id)
+        self.index.by_id.get(skill_id).cloned()
     }
 
     async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError> {
-        self.ensure_indexed();
-        let root = self
-            .index
-            .read()
-            .unwrap()
-            .as_ref()
-            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
-            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
-        let path = root.join("SKILL.md");
-        tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
-            .await
-            .map_err(|e| SkillRegistryError::Io(e.to_string()))?
-            .map_err(|e| SkillRegistryError::Io(e.to_string()))
+        self.index
+            .by_id_skill_md
+            .get(skill_id)
+            .cloned()
+            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))
     }
 
     async fn load_reference(
@@ -251,17 +179,15 @@ impl SkillRegistry for FsSkillRegistry {
         skill_id: &str,
         path: &str,
     ) -> Result<LoadedReference, SkillRegistryError> {
-        self.ensure_indexed();
         let root = self
             .index
-            .read()
-            .unwrap()
-            .as_ref()
-            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
+            .by_id_root
+            .get(skill_id)
+            .cloned()
             .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
-
         let skill_id = skill_id.to_string();
         let path = path.to_string();
+
         tokio::task::spawn_blocking(move || load_reference_material(&skill_id, &root, &path))
             .await
             .map_err(|e| SkillRegistryError::Io(e.to_string()))?
@@ -274,13 +200,11 @@ impl SkillRegistry for FsSkillRegistry {
         script: &str,
         args: &[String],
     ) -> Result<ScriptResult, SkillRegistryError> {
-        self.ensure_indexed();
         let root = self
             .index
-            .read()
-            .unwrap()
-            .as_ref()
-            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
+            .by_id_root
+            .get(skill_id)
+            .cloned()
             .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
         run_script_material(skill_id, &root, script, args)
             .await
@@ -290,36 +214,25 @@ impl SkillRegistry for FsSkillRegistry {
 
 fn discover_under_root(
     root: &Path,
-) -> (
-    Vec<SkillMeta>,
-    HashMap<String, PathBuf>,
-    Vec<SkillRegistryWarning>,
-) {
-    let mut metas = Vec::new();
+) -> Result<
+    (
+        Vec<SkillMeta>,
+        HashMap<String, PathBuf>,
+        HashMap<String, String>,
+        Vec<SkillRegistryWarning>,
+    ),
+    SkillRegistryError,
+> {
+    let mut metas: Vec<SkillMeta> = Vec::new();
     let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
-    let mut warnings = Vec::new();
+    let mut docs_by_id: HashMap<String, String> = HashMap::new();
+    let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
 
-    let root = match fs::canonicalize(root) {
-        Ok(p) => p,
-        Err(e) => {
-            warnings.push(SkillRegistryWarning {
-                path: root.to_path_buf(),
-                reason: format!("failed to access skills root: {e}"),
-            });
-            return (metas, roots_by_id, warnings);
-        }
-    };
+    let root = fs::canonicalize(root)
+        .map_err(|e| SkillRegistryError::Io(format!("failed to access skills root: {e}")))?;
 
-    let entries = match fs::read_dir(&root) {
-        Ok(e) => e,
-        Err(e) => {
-            warnings.push(SkillRegistryWarning {
-                path: root,
-                reason: format!("failed to read skills root: {e}"),
-            });
-            return (metas, roots_by_id, warnings);
-        }
-    };
+    let entries = fs::read_dir(&root)
+        .map_err(|e| SkillRegistryError::Io(format!("failed to read skills root: {e}")))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -337,6 +250,7 @@ fn discover_under_root(
         if dir_name_raw.starts_with('.') {
             continue;
         }
+
         let dir_name = normalize_name(&dir_name_raw);
         if let Err(reason) = validate_dir_name(&dir_name) {
             warnings.push(SkillRegistryWarning {
@@ -356,8 +270,9 @@ fn discover_under_root(
         }
 
         match meta_from_skill_md_path(&dir_name, &skill_md) {
-            Ok((meta, root_dir)) => {
+            Ok((meta, root_dir, raw)) => {
                 roots_by_id.insert(meta.id.clone(), root_dir);
+                docs_by_id.insert(meta.id.clone(), raw);
                 metas.push(meta);
             }
             Err(reason) => warnings.push(SkillRegistryWarning {
@@ -367,13 +282,13 @@ fn discover_under_root(
         }
     }
 
-    (metas, roots_by_id, warnings)
+    Ok((metas, roots_by_id, docs_by_id, warnings))
 }
 
 fn meta_from_skill_md_path(
     dir_name: &str,
     skill_md: &Path,
-) -> Result<(SkillMeta, PathBuf), String> {
+) -> Result<(SkillMeta, PathBuf, String), String> {
     let root_dir = skill_md
         .parent()
         .ok_or_else(|| "invalid skill path".to_string())?
@@ -401,13 +316,16 @@ fn meta_from_skill_md_path(
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
-    let meta = SkillMeta {
-        id: name.clone(),
-        name,
-        description,
-        allowed_tools,
-    };
-    Ok((meta, root_dir))
+    Ok((
+        SkillMeta {
+            id: name.clone(),
+            name,
+            description,
+            allowed_tools,
+        },
+        root_dir,
+        raw,
+    ))
 }
 
 fn normalize_name(s: &str) -> String {
@@ -448,29 +366,26 @@ fn validate_dir_name(dir_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
-    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn registry_discovers_skills_and_parses_frontmatter() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("docx-processing")).unwrap();
-        let mut f = fs::File::create(skills_root.join("docx-processing").join("SKILL.md")).unwrap();
-        writeln!(
-            f,
-            "{}",
+        fs::write(
+            skills_root.join("docx-processing").join("SKILL.md"),
             r#"---
 name: docx-processing
 description: Docs
 allowed-tools: read_file
 ---
-Body"#
+Body
+"#,
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "docx-processing");
@@ -480,14 +395,6 @@ Body"#
 
     #[test]
     fn registry_skips_invalid_skills_and_reports_warnings() {
-        let buf: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let make_writer = TestWriter(buf.clone());
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(make_writer)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("good-skill")).unwrap();
@@ -504,7 +411,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         assert_eq!(reg.list().len(), 1);
         assert_eq!(reg.list()[0].id, "good-skill");
         let warnings = reg.warnings();
@@ -513,11 +420,6 @@ Body"#
         assert!(warnings
             .iter()
             .any(|w| w.reason.contains("missing SKILL.md")));
-
-        // Ensure warnings were logged (not injected).
-        let logged = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
-        assert!(logged.contains("Skipped skill"));
-        assert!(logged.contains("missing SKILL.md"));
     }
 
     #[test]
@@ -531,7 +433,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         assert!(reg.list().is_empty());
         let warnings = reg.warnings();
         assert!(warnings
@@ -558,7 +460,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "good-skill");
@@ -581,7 +483,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         assert!(reg.list().is_empty());
     }
 
@@ -596,69 +498,70 @@ Body"#
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "技能");
         assert_eq!(list[0].name, "技能");
     }
 
-    #[test]
-    fn registry_logs_warnings_once_per_indexing_pass() {
-        let buf: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let make_writer = TestWriter(buf.clone());
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(make_writer)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
+    #[tokio::test]
+    async fn registry_read_skill_md_is_in_memory_after_discovery() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
-        fs::create_dir_all(skills_root.join("BadSkill")).unwrap();
+        fs::create_dir_all(skills_root.join("s1")).unwrap();
+        let skill_md = skills_root.join("s1").join("SKILL.md");
+        fs::write(&skill_md, "---\nname: s1\ndescription: ok\n---\nBody\n").unwrap();
+
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
+        fs::remove_file(&skill_md).unwrap();
+
+        let raw = reg.read_skill_md("s1").await.unwrap();
+        assert!(raw.contains("Body"));
+    }
+
+    #[test]
+    fn registry_discovery_errors_for_missing_root() {
+        let td = TempDir::new().unwrap();
+        let missing = td.path().join("missing");
+        let err = FsSkillRegistry::discover_root(&missing).unwrap_err();
+        assert!(matches!(err, SkillRegistryError::Io(_)));
+    }
+
+    #[test]
+    fn registry_discovery_rejects_duplicate_ids_across_roots() {
+        let td = TempDir::new().unwrap();
+        let root1 = td.path().join("skills1");
+        let root2 = td.path().join("skills2");
+        fs::create_dir_all(root1.join("s1")).unwrap();
+        fs::create_dir_all(root2.join("s1")).unwrap();
         fs::write(
-            skills_root.join("BadSkill").join("SKILL.md"),
-            "---\nname: badskill\ndescription: ok\n---\nBody\n",
+            root1.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(
+            root2.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::from_root(&skills_root);
-        let _ = reg.list();
-        let _ = reg.list();
-
-        let logged1 = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
-        let first_count = logged1.matches("Skipped skill").count();
-        assert!(first_count >= 1);
-
-        buf.lock().unwrap().clear();
-        reg.refresh();
-        let _ = reg.list();
-        let logged2 = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
-        let second_count = logged2.matches("Skipped skill").count();
-        assert!(second_count >= 1);
+        let err = FsSkillRegistry::discover_roots(vec![root1, root2]).unwrap_err();
+        assert!(matches!(err, SkillRegistryError::DuplicateSkillId(ref id) if id == "s1"));
     }
 
-    #[derive(Clone)]
-    struct TestWriter(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> MakeWriter<'a> for TestWriter {
-        type Writer = TestWriterGuard;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            TestWriterGuard(self.0.clone())
-        }
+    #[test]
+    fn normalize_relative_name_nfkc() {
+        // Full-width hyphen should normalize; exact behavior is implementation-defined but should be stable.
+        let s = "a\u{FF0D}b";
+        let norm = normalize_name(s);
+        assert!(!norm.is_empty());
     }
 
-    struct TestWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for TestWriterGuard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    #[test]
+    fn validate_dir_name_rejects_parent_dir_like_segments() {
+        // Sanity: validate_dir_name doesn't allow slashes; this is enforced by the filesystem anyway.
+        assert!(validate_dir_name("a/b").is_err());
+        assert!(validate_dir_name("..").is_err());
     }
 }

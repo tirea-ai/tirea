@@ -17,7 +17,9 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     )
     .unwrap();
 
-    let skills = SkillSubsystem::new(std::sync::Arc::new(FsSkillRegistry::from_root(root)));
+    let skills = SkillSubsystem::new(std::sync::Arc::new(
+        FsSkillRegistry::discover_root(root).unwrap(),
+    ));
     let tools = skills.tools();
     let tool = tools.get("skill").expect("skill tool registered");
 
@@ -119,7 +121,9 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     )
     .unwrap();
 
-    let skills = SkillSubsystem::new(std::sync::Arc::new(FsSkillRegistry::from_root(root)));
+    let skills = SkillSubsystem::new(std::sync::Arc::new(
+        FsSkillRegistry::discover_root(root).unwrap(),
+    ));
     let plugin = skills.plugin();
 
     // Even without activation, discovery should inject available_skills.

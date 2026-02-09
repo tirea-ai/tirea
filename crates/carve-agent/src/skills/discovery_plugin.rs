@@ -171,7 +171,7 @@ Body"#
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         (td, reg)
     }
 
@@ -219,7 +219,7 @@ Body"#
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(&root).unwrap();
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -238,7 +238,7 @@ Body"#
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         assert!(reg.list().is_empty());
 
         let p = SkillDiscoveryPlugin::new(reg);
@@ -265,7 +265,7 @@ Body"#
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -292,7 +292,7 @@ Body"#
             )
             .unwrap();
         }
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -314,7 +314,7 @@ Body"#
             "---\nname: s\ndescription: A very long description\n---\nBody",
         )
         .unwrap();
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);

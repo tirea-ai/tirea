@@ -250,6 +250,9 @@ fn map_registry_error(e: SkillRegistryError) -> ToolError {
         SkillRegistryError::InvalidSkillMd(msg) => ToolError::ExecutionFailed(msg),
         SkillRegistryError::Materialize(msg) => ToolError::ExecutionFailed(msg),
         SkillRegistryError::Io(msg) => ToolError::ExecutionFailed(msg),
+        SkillRegistryError::DuplicateSkillId(id) => {
+            ToolError::ExecutionFailed(format!("duplicate skill id: {id}"))
+        }
         SkillRegistryError::Unsupported(msg) => ToolError::ExecutionFailed(msg),
     }
 }

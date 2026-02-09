@@ -29,7 +29,8 @@ pub enum SkillSubsystemError {
 ///
 /// // 1) Build a registry and wire it into the subsystem.
 /// # use carve_agent::FsSkillRegistry;
-/// let skills = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root("skills")));
+/// let reg = FsSkillRegistry::discover_root("skills").unwrap();
+/// let skills = SkillSubsystem::new(Arc::new(reg));
 ///
 /// // 2) Register tools (skill activation + reference/script utilities).
 /// let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -84,11 +85,12 @@ impl SkillSubsystem {
     ///
     /// ```no_run
     /// use carve_agent::{SkillSubsystem, Tool};
+    /// use carve_agent::FsSkillRegistry;
     /// use std::collections::HashMap;
     /// use std::sync::Arc;
     ///
-    /// # use carve_agent::FsSkillRegistry;
-    /// let skills = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root("skills")));
+    /// let reg = FsSkillRegistry::discover_root("skills").unwrap();
+    /// let skills = SkillSubsystem::new(Arc::new(reg));
     ///
     /// // Conflict example: `tools()` already contains the skill tool ids.
     /// let mut tools: HashMap<String, Arc<dyn Tool>> = skills.tools();
@@ -163,7 +165,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert("skill".to_string(), Arc::new(DummyTool));
         let err = sys.extend_tools(&mut tools).unwrap_err();
@@ -181,7 +183,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let tools = sys.tools();
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_reference"));
@@ -200,7 +202,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert("other".to_string(), Arc::new(DummyOtherTool));
         sys.extend_tools(&mut tools).unwrap();
@@ -248,7 +250,7 @@ Use docx-js for new documents.
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         sys.extend_tools(&mut tools).unwrap();
 

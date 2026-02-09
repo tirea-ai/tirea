@@ -48,7 +48,8 @@ echo "hello"
     )
     .unwrap();
 
-    let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(skills_root));
+    let reg: Arc<dyn SkillRegistry> =
+        Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
     (td, reg)
 }
 
@@ -256,9 +257,9 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_skill_md_missing_after_index_is_error() {
+async fn test_skill_activation_skill_md_removed_after_discovery_still_works() {
     let (td, reg) = make_skill_tree();
-    // Force indexing so the meta remains even if we remove SKILL.md.
+    // Ensure discovery has produced the meta and cached SKILL.md content.
     assert_eq!(reg.list().len(), 1);
     fs::remove_file(td.path().join("skills").join("docx").join("SKILL.md")).unwrap();
 
@@ -271,7 +272,7 @@ async fn test_skill_activation_skill_md_missing_after_index_is_error() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert!(result.is_success());
 }
 
 #[tokio::test]
