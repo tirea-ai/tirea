@@ -451,12 +451,24 @@ impl AgentOs {
         &self,
         mut config: AgentConfig,
     ) -> Result<AgentConfig, AgentOsWiringError> {
-        if config.plugin_ids.is_empty() {
+        if config.policy_ids.is_empty() && config.plugin_ids.is_empty() {
             return Ok(config);
         }
 
         let reserved = Self::reserved_plugin_ids();
         let mut out: Vec<Arc<dyn AgentPlugin>> = Vec::new();
+
+        for id in &config.policy_ids {
+            let id = id.trim();
+            if reserved.contains(&id) {
+                return Err(AgentOsWiringError::ReservedPluginId(id.to_string()));
+            }
+            let p = self
+                .plugins
+                .get(id)
+                .ok_or_else(|| AgentOsWiringError::PluginNotFound(id.to_string()))?;
+            out.push(p);
+        }
 
         for id in &config.plugin_ids {
             let id = id.trim();
@@ -980,6 +992,26 @@ mod tests {
         assert!(step.system_context.iter().any(|s| s.contains("p1")));
     }
 
+    #[tokio::test]
+    async fn resolve_wires_policies_before_plugins() {
+        let os = AgentOs::builder()
+            .with_registered_plugin("policy1", Arc::new(TestPlugin("policy1")))
+            .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_policy_id("policy1")
+                    .with_plugin_id("p1"),
+            )
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
+        assert_eq!(cfg.plugins[0].id(), "policy1");
+        assert_eq!(cfg.plugins[1].id(), "p1");
+    }
+
     #[test]
     fn resolve_errors_if_plugin_missing() {
         let os = AgentOs::builder()
@@ -992,6 +1024,21 @@ mod tests {
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::PluginNotFound(ref id)) if id == "p1"
+        ));
+    }
+
+    #[test]
+    fn resolve_errors_if_policy_missing() {
+        let os = AgentOs::builder()
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_policy_id("policy1"))
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::PluginNotFound(ref id)) if id == "policy1"
         ));
     }
 
@@ -1017,11 +1064,50 @@ mod tests {
     }
 
     #[test]
+    fn resolve_errors_on_duplicate_plugin_id_between_policy_and_plugin_ref() {
+        let os = AgentOs::builder()
+            .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_policy_id("p1")
+                    .with_plugin_id("p1"),
+            )
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::PluginAlreadyInstalled(ref id)) if id == "p1"
+        ));
+    }
+
+    #[test]
     fn resolve_errors_on_reserved_plugin_id() {
         let os = AgentOs::builder()
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+            )
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
+        ));
+    }
+
+    #[test]
+    fn resolve_errors_on_reserved_policy_id() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
             )
             .build()
             .unwrap();

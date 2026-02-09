@@ -81,6 +81,11 @@ pub struct AgentDefinition {
     /// This keeps AgentDefinition decoupled from plugin construction/loading. The AgentOs
     /// instance decides how to map these ids to plugin instances.
     pub plugin_ids: Vec<String>,
+    /// Policy references to resolve via AgentOs wiring.
+    ///
+    /// Policies are "guardrails" plugins. They are resolved from the same registry as plugins,
+    /// but are wired ahead of non-policy plugins to run first within the non-system plugin chain.
+    pub policy_ids: Vec<String>,
     /// Tool whitelist (None = all tools available).
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
@@ -101,6 +106,7 @@ impl Default for AgentDefinition {
             chat_options: Some(ChatOptions::default().with_capture_usage(true)),
             plugins: Vec::new(),
             plugin_ids: Vec::new(),
+            policy_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
         }
@@ -121,6 +127,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
+            .field("policy_ids", &self.policy_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
             .finish()
@@ -195,6 +202,20 @@ impl AgentDefinition {
         self
     }
 
+    /// Set policy references to be resolved via AgentOs.
+    #[must_use]
+    pub fn with_policy_ids(mut self, policy_ids: Vec<String>) -> Self {
+        self.policy_ids = policy_ids;
+        self
+    }
+
+    /// Add a single policy reference.
+    #[must_use]
+    pub fn with_policy_id(mut self, policy_id: impl Into<String>) -> Self {
+        self.policy_ids.push(policy_id.into());
+        self
+    }
+
     /// Add a single plugin.
     #[must_use]
     pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
@@ -218,7 +239,7 @@ impl AgentDefinition {
 
     /// Check if any plugins are configured.
     pub fn has_plugins(&self) -> bool {
-        !self.plugins.is_empty() || !self.plugin_ids.is_empty()
+        !self.plugins.is_empty() || !self.plugin_ids.is_empty() || !self.policy_ids.is_empty()
     }
 }
 
