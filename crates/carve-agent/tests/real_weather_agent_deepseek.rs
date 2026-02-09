@@ -159,6 +159,21 @@ async fn deepseek_real_weather_agent_smoke() {
         );
     }
 
+    // DeepSeek is flaky — retry up to 3 times.
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        match run_weather_agent().await {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("[attempt {attempt}/3] {e}");
+                last_err = e;
+            }
+        }
+    }
+    panic!("all 3 attempts failed; last: {last_err}");
+}
+
+async fn run_weather_agent() -> Result<(), String> {
     let os = AgentOs::builder()
         .with_tools(std::collections::HashMap::from([(
             "get_weather".to_string(),
@@ -188,7 +203,7 @@ Rules:\n\
     let mut text = String::new();
 
     let deadline = Duration::from_secs(60);
-    let result = tokio::time::timeout(deadline, async {
+    let timed_out = tokio::time::timeout(deadline, async {
         while let Some(ev) = stream.next().await {
             match ev {
                 AgentEvent::ToolCallReady { name, .. } if name == "get_weather" => {
@@ -201,15 +216,25 @@ Rules:\n\
                 }
                 AgentEvent::TextDelta { delta } => text.push_str(&delta),
                 AgentEvent::RunFinish { .. } => break,
-                AgentEvent::Error { message } => panic!("agent error: {}", message),
+                AgentEvent::Error { .. } => break,
                 _ => {}
             }
         }
     })
-    .await;
+    .await
+    .is_err();
 
-    assert!(result.is_ok(), "test timed out after {:?}", deadline);
-    assert!(saw_weather_ready, "model did not call get_weather");
-    assert!(saw_weather_done, "get_weather never succeeded");
-    assert!(!text.trim().is_empty(), "no assistant output produced");
+    if timed_out {
+        return Err("timed out after 60s".into());
+    }
+    if !saw_weather_ready {
+        return Err("model did not call get_weather".into());
+    }
+    if !saw_weather_done {
+        return Err("get_weather never succeeded".into());
+    }
+    if text.trim().is_empty() {
+        return Err("no assistant output produced".into());
+    }
+    Ok(())
 }
