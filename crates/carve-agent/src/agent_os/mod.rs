@@ -10,7 +10,7 @@ use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
 pub use registry::{
     AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    ToolRegistry, ToolRegistryError,
+    CompositeToolRegistry, InMemoryToolRegistry, ToolRegistry, ToolRegistryError,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -90,7 +90,7 @@ pub enum AgentOsRunError {
 pub struct AgentOs {
     default_client: Client,
     agents: AgentRegistry,
-    base_tools: ToolRegistry,
+    base_tools: Arc<dyn ToolRegistry>,
     models: ModelRegistry,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
@@ -101,6 +101,7 @@ pub struct AgentOsBuilder {
     client: Option<Client>,
     agents: HashMap<String, AgentDefinition>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
+    base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
     models: HashMap<String, ModelDefinition>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
@@ -138,6 +139,7 @@ impl AgentOsBuilder {
             client: None,
             agents: HashMap::new(),
             base_tools: HashMap::new(),
+            base_tool_registries: Vec::new(),
             models: HashMap::new(),
             skills_registry: None,
             skills: SkillsConfig::default(),
@@ -160,6 +162,11 @@ impl AgentOsBuilder {
 
     pub fn with_tools(mut self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
         self.base_tools = tools;
+        self
+    }
+
+    pub fn with_tool_registry(mut self, registry: Arc<dyn ToolRegistry>) -> Self {
+        self.base_tool_registries.push(registry);
         self
     }
 
@@ -190,8 +197,24 @@ impl AgentOsBuilder {
 
         let skills_registry: Option<Arc<dyn SkillRegistry>> = self.skills_registry;
 
-        let mut base_tools = ToolRegistry::new();
+        let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(self.base_tools)?;
+
+        let base_tools: Arc<dyn ToolRegistry> = match self.base_tool_registries.len() {
+            0 => Arc::new(base_tools),
+            _ => {
+                let mut regs: Vec<Arc<dyn ToolRegistry>> = Vec::new();
+                if !base_tools.is_empty() {
+                    regs.push(Arc::new(base_tools));
+                }
+                regs.extend(self.base_tool_registries);
+                if regs.len() == 1 {
+                    regs.pop().unwrap()
+                } else {
+                    Arc::new(CompositeToolRegistry::try_new(regs)?)
+                }
+            }
+        };
 
         let mut models = ModelRegistry::new();
         models.extend(self.models)?;
@@ -234,7 +257,7 @@ impl AgentOs {
     }
 
     pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
-        self.base_tools.to_map()
+        self.base_tools.snapshot()
     }
 
     fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<Client, AgentOsResolveError> {
@@ -327,7 +350,7 @@ impl AgentOs {
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        let mut tools = self.base_tools.to_map();
+        let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_skills_into(def, &mut tools)?;
         let client = self.resolve_model(&mut cfg)?;
         Ok((client, cfg, tools, session))

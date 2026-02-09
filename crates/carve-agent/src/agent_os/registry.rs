@@ -14,20 +14,34 @@ pub enum ToolRegistryError {
     ToolIdMismatch { key: String, descriptor_id: String },
 }
 
+pub trait ToolRegistry: Send + Sync {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Tool>>;
+
+    fn ids(&self) -> Vec<String>;
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>>;
+}
+
 #[derive(Clone, Default)]
-pub struct ToolRegistry {
+pub struct InMemoryToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
 
-impl std::fmt::Debug for ToolRegistry {
+impl std::fmt::Debug for InMemoryToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToolRegistry")
+        f.debug_struct("InMemoryToolRegistry")
             .field("len", &self.tools.len())
             .finish()
     }
 }
 
-impl ToolRegistry {
+impl InMemoryToolRegistry {
     pub fn new() -> Self {
         Self::default()
     }
@@ -84,14 +98,14 @@ impl ToolRegistry {
         Ok(())
     }
 
-    pub fn extend_registry(&mut self, other: &ToolRegistry) -> Result<(), ToolRegistryError> {
-        self.extend_named(other.to_map())
+    pub fn extend_registry(&mut self, other: &dyn ToolRegistry) -> Result<(), ToolRegistryError> {
+        self.extend_named(other.snapshot())
     }
 
     pub fn merge_many(
-        regs: impl IntoIterator<Item = ToolRegistry>,
-    ) -> Result<ToolRegistry, ToolRegistryError> {
-        let mut out = ToolRegistry::new();
+        regs: impl IntoIterator<Item = InMemoryToolRegistry>,
+    ) -> Result<InMemoryToolRegistry, ToolRegistryError> {
+        let mut out = InMemoryToolRegistry::new();
         for r in regs {
             out.extend_named(r.into_map())?;
         }
@@ -104,6 +118,67 @@ impl ToolRegistry {
 
     pub fn to_map(&self) -> HashMap<String, Arc<dyn Tool>> {
         self.tools.clone()
+    }
+}
+
+impl ToolRegistry for InMemoryToolRegistry {
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
+        self.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+        self.tools.clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CompositeToolRegistry {
+    merged: InMemoryToolRegistry,
+}
+
+impl std::fmt::Debug for CompositeToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompositeToolRegistry")
+            .field("len", &self.merged.len())
+            .finish()
+    }
+}
+
+impl CompositeToolRegistry {
+    pub fn try_new(
+        regs: impl IntoIterator<Item = Arc<dyn ToolRegistry>>,
+    ) -> Result<Self, ToolRegistryError> {
+        let mut merged = InMemoryToolRegistry::new();
+        for reg in regs {
+            merged.extend_registry(reg.as_ref())?;
+        }
+        Ok(Self { merged })
+    }
+}
+
+impl ToolRegistry for CompositeToolRegistry {
+    fn len(&self) -> usize {
+        self.merged.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
+        self.merged.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        self.merged.ids().cloned().collect()
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+        self.merged.to_map()
     }
 }
 
@@ -278,7 +353,7 @@ mod tests {
 
     #[test]
     fn tool_registry_register_uses_descriptor_id_and_detects_conflict() {
-        let mut reg = ToolRegistry::new();
+        let mut reg = InMemoryToolRegistry::new();
         reg.register(Arc::new(T("a"))).unwrap();
         let err = reg.register(Arc::new(T("a"))).err().unwrap();
         assert!(matches!(err, ToolRegistryError::ToolIdConflict(ref id) if id == "a"));
@@ -286,7 +361,7 @@ mod tests {
 
     #[test]
     fn tool_registry_register_named_detects_mismatch() {
-        let mut reg = ToolRegistry::new();
+        let mut reg = InMemoryToolRegistry::new();
         let err = reg.register_named("x", Arc::new(T("y"))).err().unwrap();
         assert!(matches!(err, ToolRegistryError::ToolIdMismatch { .. }));
     }
@@ -312,11 +387,28 @@ mod tests {
 
     #[test]
     fn tool_registry_merge_many_detects_conflict() {
-        let mut a = ToolRegistry::new();
+        let mut a = InMemoryToolRegistry::new();
         a.register(Arc::new(T("x"))).unwrap();
-        let mut b = ToolRegistry::new();
+        let mut b = InMemoryToolRegistry::new();
         b.register(Arc::new(T("x"))).unwrap();
-        let err = ToolRegistry::merge_many([a, b]).err().unwrap();
+        let err = InMemoryToolRegistry::merge_many([a, b]).err().unwrap();
+        assert!(matches!(err, ToolRegistryError::ToolIdConflict(ref id) if id == "x"));
+    }
+
+    #[test]
+    fn composite_tool_registry_detects_conflict() {
+        let mut a = InMemoryToolRegistry::new();
+        a.register(Arc::new(T("x"))).unwrap();
+        let mut b = InMemoryToolRegistry::new();
+        b.register(Arc::new(T("x"))).unwrap();
+
+        let err = CompositeToolRegistry::try_new([
+            Arc::new(a) as Arc<dyn ToolRegistry>,
+            Arc::new(b) as Arc<dyn ToolRegistry>,
+        ])
+        .err()
+        .unwrap();
+
         assert!(matches!(err, ToolRegistryError::ToolIdConflict(ref id) if id == "x"));
     }
 }

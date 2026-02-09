@@ -161,6 +161,7 @@ pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
     AgentOsWiringError, AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry,
     ModelRegistryError, SkillsConfig, SkillsMode, ToolRegistry, ToolRegistryError,
+    CompositeToolRegistry, InMemoryToolRegistry,
 };
 
 // Loop exports
