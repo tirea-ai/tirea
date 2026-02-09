@@ -82,6 +82,18 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     Models(#[from] ModelRegistryError),
 
+    #[error("agent {agent_id} references an empty plugin id")]
+    AgentEmptyPluginRef { agent_id: String },
+
+    #[error("agent {agent_id} references reserved plugin id: {plugin_id}")]
+    AgentReservedPluginId { agent_id: String, plugin_id: String },
+
+    #[error("agent {agent_id} references unknown plugin id: {plugin_id}")]
+    AgentPluginNotFound { agent_id: String, plugin_id: String },
+
+    #[error("agent {agent_id} has duplicate plugin reference: {plugin_id}")]
+    AgentDuplicatePluginRef { agent_id: String, plugin_id: String },
+
     #[error("models configured but no ProviderRegistry configured")]
     ProvidersNotConfigured,
 
@@ -332,6 +344,44 @@ impl AgentOsBuilder {
                 }
             }
         };
+
+        // Fail-fast for builder-provided agents (external registries may be dynamic).
+        {
+            let reserved = AgentOs::reserved_plugin_ids();
+            for (agent_id, def) in &agents_defs {
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for id in def
+                    .policy_ids
+                    .iter()
+                    .chain(def.plugin_ids.iter())
+                {
+                    let id = id.trim();
+                    if id.is_empty() {
+                        return Err(AgentOsBuildError::AgentEmptyPluginRef {
+                            agent_id: agent_id.clone(),
+                        });
+                    }
+                    if reserved.contains(&id) {
+                        return Err(AgentOsBuildError::AgentReservedPluginId {
+                            agent_id: agent_id.clone(),
+                            plugin_id: id.to_string(),
+                        });
+                    }
+                    if !seen.insert(id.to_string()) {
+                        return Err(AgentOsBuildError::AgentDuplicatePluginRef {
+                            agent_id: agent_id.clone(),
+                            plugin_id: id.to_string(),
+                        });
+                    }
+                    if plugins.get(id).is_none() {
+                        return Err(AgentOsBuildError::AgentPluginNotFound {
+                            agent_id: agent_id.clone(),
+                            plugin_id: id.to_string(),
+                        });
+                    }
+                }
+            }
+        }
 
         let mut providers = InMemoryProviderRegistry::new();
         providers.extend(provider_defs)?;
@@ -1118,32 +1168,28 @@ mod tests {
     }
 
     #[test]
-    fn resolve_errors_if_plugin_missing() {
-        let os = AgentOs::builder()
+    fn build_errors_if_builder_agent_references_missing_plugin() {
+        let err = AgentOs::builder()
             .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"))
             .build()
-            .unwrap();
-
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+            .unwrap_err();
         assert!(matches!(
             err,
-            AgentOsResolveError::Wiring(AgentOsWiringError::PluginNotFound(ref id)) if id == "p1"
+            AgentOsBuildError::AgentPluginNotFound { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "p1"
         ));
     }
 
     #[test]
-    fn resolve_errors_if_policy_missing() {
-        let os = AgentOs::builder()
+    fn build_errors_if_builder_agent_references_missing_policy() {
+        let err = AgentOs::builder()
             .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_policy_id("policy1"))
             .build()
-            .unwrap();
-
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+            .unwrap_err();
         assert!(matches!(
             err,
-            AgentOsResolveError::Wiring(AgentOsWiringError::PluginNotFound(ref id)) if id == "policy1"
+            AgentOsBuildError::AgentPluginNotFound { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "policy1"
         ));
     }
 
@@ -1172,12 +1218,16 @@ mod tests {
     fn resolve_errors_on_duplicate_plugin_id_between_policy_and_plugin_ref() {
         let os = AgentOs::builder()
             .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
-            .with_agent(
-                "a1",
-                AgentDefinition::new("gpt-4o-mini")
-                    .with_policy_id("p1")
-                    .with_plugin_id("p1"),
-            )
+            .with_agent_registry(Arc::new({
+                let mut reg = InMemoryAgentRegistry::new();
+                reg.upsert(
+                    "a1",
+                    AgentDefinition::new("gpt-4o-mini")
+                        .with_policy_id("p1")
+                        .with_plugin_id("p1"),
+                );
+                reg
+            }))
             .build()
             .unwrap();
 
@@ -1190,12 +1240,48 @@ mod tests {
     }
 
     #[test]
-    fn resolve_errors_on_reserved_plugin_id() {
-        let os = AgentOs::builder()
+    fn build_errors_on_duplicate_plugin_ref_in_builder_agent() {
+        let err = AgentOs::builder()
+            .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
             .with_agent(
                 "a1",
-                AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_policy_id("p1")
+                    .with_plugin_id("p1"),
             )
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentOsBuildError::AgentDuplicatePluginRef { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "p1"
+        ));
+    }
+
+    #[test]
+    fn build_errors_on_reserved_plugin_id_in_builder_agent() {
+        let err = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
+            )
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "skills"
+        ));
+    }
+
+    #[test]
+    fn resolve_errors_on_reserved_plugin_id() {
+        let os = AgentOs::builder()
+            .with_agent_registry(Arc::new({
+                let mut reg = InMemoryAgentRegistry::new();
+                reg.upsert("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"));
+                reg
+            }))
             .build()
             .unwrap();
 
@@ -1210,10 +1296,11 @@ mod tests {
     #[test]
     fn resolve_errors_on_reserved_policy_id() {
         let os = AgentOs::builder()
-            .with_agent(
-                "a1",
-                AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
-            )
+            .with_agent_registry(Arc::new({
+                let mut reg = InMemoryAgentRegistry::new();
+                reg.upsert("a1", AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"));
+                reg
+            }))
             .build()
             .unwrap();
 
