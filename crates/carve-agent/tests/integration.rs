@@ -2027,12 +2027,16 @@ fn test_agent_event_all_variants() {
         _ => panic!("Wrong variant"),
     }
 
-    // Done
-    let done = AgentEvent::Done {
-        response: "Final response".to_string(),
+    // RunFinish
+    let finish = AgentEvent::RunFinish {
+        thread_id: "t1".to_string(),
+        run_id: "r1".to_string(),
+        result: Some(serde_json::json!({"response": "Final response"})),
     };
-    match done {
-        AgentEvent::Done { response } => assert_eq!(response, "Final response"),
+    match finish {
+        AgentEvent::RunFinish { result, .. } => {
+            assert_eq!(result.unwrap()["response"], "Final response");
+        }
         _ => panic!("Wrong variant"),
     }
 }
@@ -8277,10 +8281,12 @@ fn test_multiple_text_messages() {
     events.extend(text1.to_ag_ui_events(&mut ctx));
 
     // End first message by starting something else
-    let done1 = AgentEvent::Done {
-        response: "First message".into(),
+    let finish1 = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(serde_json::json!({"response": "First message"})),
     };
-    events.extend(done1.to_ag_ui_events(&mut ctx));
+    events.extend(finish1.to_ag_ui_events(&mut ctx));
 
     // Reset context for new message
     ctx = AGUIContext::new("t1".into(), "r2".into());
@@ -9291,10 +9297,12 @@ fn test_run_started_is_first_event() {
     };
     events.extend(text.to_ag_ui_events(&mut ctx));
 
-    let done = AgentEvent::Done {
-        response: "Hello".into(),
+    let finish = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(serde_json::json!({"response": "Hello"})),
     };
-    events.extend(done.to_ag_ui_events(&mut ctx));
+    events.extend(finish.to_ag_ui_events(&mut ctx));
 
     // First event must be RUN_STARTED
     assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
@@ -9472,12 +9480,14 @@ fn test_run_finished_or_error_mutually_exclusive() {
         AgentEvent::TextDelta {
             delta: "Hello".into(),
         },
-        AgentEvent::Done {
-            response: "Hello".into(),
+        AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: Some(serde_json::json!({"response": "Hello"})),
         },
     ]
     .iter()
-    .flat_map(|e| e.to_ag_ui_events(&mut ctx))
+    .flat_map(|e: &AgentEvent| e.to_ag_ui_events(&mut ctx))
     .collect();
 
     let has_finished = success_events
@@ -11291,11 +11301,11 @@ fn test_agent_event_run_finish_ends_text_stream() {
     assert!(end_idx < finish_idx);
 }
 
-/// Test: AgentEvent::Done produces TEXT_MESSAGE_END + RUN_FINISHED
-/// Protocol: Done event completes text stream and run
+/// Test: AgentEvent::RunFinish produces TEXT_MESSAGE_END + RUN_FINISHED
+/// Protocol: RunFinish event completes text stream and run
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
-fn test_agent_event_done_ends_text_and_run() {
+fn test_agent_event_run_finish_ends_text_and_run() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Start text
@@ -11304,11 +11314,13 @@ fn test_agent_event_done_ends_text_and_run() {
     };
     let _ = text.to_ag_ui_events(&mut ctx);
 
-    // Done
-    let done = AgentEvent::Done {
-        response: "Response".into(),
+    // RunFinish
+    let finish = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: Some(serde_json::json!({"response": "Response"})),
     };
-    let events = done.to_ag_ui_events(&mut ctx);
+    let events = finish.to_ag_ui_events(&mut ctx);
 
     assert!(events
         .iter()

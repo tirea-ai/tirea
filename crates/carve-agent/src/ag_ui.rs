@@ -1620,16 +1620,17 @@ pub fn run_agent_stream_with_parent(
 
         // Run the agent loop
         let mut inner_stream = run_loop_stream(client, config, session, tools);
-        let mut final_response = String::new();
         let mut has_pending = false;
         let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
-            // Track final response, errors, and pending state
+            // Skip inner RunStart — we already emitted our own synthetic one above
+            if matches!(&event, AgentEvent::RunStart { .. }) {
+                continue;
+            }
+
+            // Track errors and pending state
             match &event {
-                AgentEvent::Done { response } => {
-                    final_response = response.clone();
-                }
                 AgentEvent::Error { message } => {
                     yield AGUIEvent::run_error(message.clone(), None);
                     return; // Early return on error, no RUN_FINISHED
@@ -1637,28 +1638,31 @@ pub fn run_agent_stream_with_parent(
                 AgentEvent::Pending { .. } => {
                     has_pending = true;
                 }
+                // Intercept RunFinish: use wrapper's thread_id/run_id
+                AgentEvent::RunFinish { result, .. } => {
+                    // End text stream if active
+                    if ctx.end_text() {
+                        yield AGUIEvent::text_message_end(&ctx.message_id);
+                    }
+                    if !has_pending {
+                        yield AGUIEvent::run_finished(&thread_id, &run_id, result.clone());
+                        emitted_run_finished = true;
+                    }
+                    continue;
+                }
                 _ => {}
             }
 
             // Convert and emit AG-UI events
             let ag_ui_events = event.to_ag_ui_events(&mut ctx);
             for ag_event in ag_ui_events {
-                if matches!(ag_event, AGUIEvent::RunFinished { .. }) {
-                    emitted_run_finished = true;
-                }
                 yield ag_event;
             }
         }
 
-        // Emit RUN_FINISHED only if not pending
-        // When pending, client must respond and start a new run
+        // Fallback: emit RUN_FINISHED if inner stream ended without one
         if !has_pending && !emitted_run_finished {
-            let result = if final_response.is_empty() {
-                None
-            } else {
-                Some(serde_json::json!({ "response": final_response }))
-            };
-            yield AGUIEvent::run_finished(&thread_id, &run_id, result);
+            yield AGUIEvent::run_finished(&thread_id, &run_id, None);
         }
         // Note: When has_pending is true, the run stays open waiting for client response
         // Client should include interaction responses in the next request
@@ -2163,9 +2167,11 @@ mod tests {
         assert_eq!(outputs2.len(), 1);
         assert!(matches!(outputs2[0], AGUIEvent::TextMessageContent { .. }));
 
-        // Done event should emit END
-        let event3 = AgentEvent::Done {
-            response: "Hello World".to_string(),
+        // RunFinish event should emit END
+        let event3 = AgentEvent::RunFinish {
+            thread_id: "thread_1".to_string(),
+            run_id: "run_123".to_string(),
+            result: Some(serde_json::json!({"response": "Hello World"})),
         };
         let outputs3 = adapter.convert(&event3);
         assert!(outputs3
@@ -2472,9 +2478,11 @@ mod tests {
         });
         all_events.extend(events);
 
-        // Step 7: Done
-        let events = adapter.convert(&AgentEvent::Done {
-            response: "Found 5 results!".to_string(),
+        // Step 7: RunFinish
+        let events = adapter.convert(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "r".to_string(),
+            result: Some(serde_json::json!({"response": "Found 5 results!"})),
         });
         all_events.extend(events);
 
@@ -2762,8 +2770,10 @@ mod tests {
         events.extend(adapter.convert(&AgentEvent::TextDelta {
             delta: "how can I help?".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::Done {
-            response: "Hello, how can I help?".to_string(),
+        events.extend(adapter.convert(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "r".to_string(),
+            result: Some(serde_json::json!({"response": "Hello, how can I help?"})),
         }));
 
         // Should have: START, CONTENT, CONTENT, END, RUN_FINISHED
@@ -2914,8 +2924,10 @@ mod tests {
             delta: "Step 2".to_string(),
         });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::Done {
-            response: "Step 2".to_string(),
+        let events = adapter.convert(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "r".to_string(),
+            result: Some(serde_json::json!({"response": "Step 2"})),
         });
         total_events += events.len();
 
@@ -3362,8 +3374,10 @@ mod tests {
                 delta: format!("chunk_{}", i),
             }));
         }
-        events.extend(adapter.convert(&AgentEvent::Done {
-            response: "full response".to_string(),
+        events.extend(adapter.convert(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "r".to_string(),
+            result: Some(serde_json::json!({"response": "full response"})),
         }));
 
         // Verify order: START, CONTENT*5, END, RUN_FINISHED

@@ -985,7 +985,9 @@ mod tests {
         let session = Session::with_initial_state("s2", json!({}));
         let mut stream = os.run_stream("a1", session).unwrap();
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
-        assert!(matches!(ev, AgentEvent::Done { .. }));
+        assert!(matches!(ev, AgentEvent::RunStart { .. }));
+        let ev = futures::StreamExt::next(&mut stream).await.unwrap();
+        assert!(matches!(ev, AgentEvent::RunFinish { .. }));
     }
 
     #[tokio::test]

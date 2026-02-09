@@ -283,8 +283,6 @@ pub enum AgentEvent {
     // ========================================================================
     // Completion Events
     // ========================================================================
-    /// Agent loop completed with final response.
-    Done { response: String },
     /// Stream aborted by user or system.
     Aborted { reason: String },
     /// Error occurred.
@@ -402,9 +400,6 @@ impl AgentEvent {
             }
 
             // Completion events
-            AgentEvent::Done { .. } => {
-                vec![UIStreamEvent::finish()]
-            }
             AgentEvent::Aborted { reason } => {
                 vec![UIStreamEvent::abort(reason)]
             }
@@ -540,20 +535,6 @@ impl AgentEvent {
             }
 
             // Completion events
-            AgentEvent::Done { response } => {
-                let mut events = vec![];
-                // End text stream if active
-                if ctx.end_text() {
-                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
-                }
-                let result = if response.is_empty() {
-                    None
-                } else {
-                    Some(serde_json::json!({ "response": response }))
-                };
-                events.push(AGUIEvent::run_finished(&ctx.thread_id, &ctx.run_id, result));
-                events
-            }
             AgentEvent::Aborted { reason } => {
                 vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
             }
@@ -723,12 +704,17 @@ mod tests {
             assert!(patch.is_none());
         }
 
-        // Test Done
-        let event = AgentEvent::Done {
-            response: "Final response".to_string(),
+        // Test RunFinish
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            result: Some(json!({"response": "Final response"})),
         };
-        if let AgentEvent::Done { response } = event {
-            assert_eq!(response, "Final response");
+        if let AgentEvent::RunFinish { result, .. } = &event {
+            assert_eq!(
+                AgentEvent::extract_response(result),
+                "Final response"
+            );
         }
 
         // Test ActivitySnapshot
@@ -1242,9 +1228,11 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_event_to_ui_events_done() {
-        let event = AgentEvent::Done {
-            response: "Final answer".to_string(),
+    fn test_agent_event_to_ui_events_run_finish() {
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            result: Some(json!({"response": "Final answer"})),
         };
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
@@ -1561,8 +1549,10 @@ mod tests {
                 patch: None,
             },
             AgentEvent::StepEnd,
-            AgentEvent::Done {
-                response: "Found 3 results.".to_string(),
+            AgentEvent::RunFinish {
+                thread_id: "t1".to_string(),
+                run_id: "r1".to_string(),
+                result: Some(json!({"response": "Found 3 results."})),
             },
         ];
 

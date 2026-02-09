@@ -195,8 +195,8 @@ impl Agent {
                     }
                     event = stream.next() => {
                         match event {
-                            Some(AgentEvent::Done { response }) => {
-                                last_response = response;
+                            Some(AgentEvent::RunFinish { result, .. }) => {
+                                last_response = AgentEvent::extract_response(&result);
                                 break;
                             }
                             Some(AgentEvent::Error { message }) => {
@@ -316,15 +316,15 @@ impl Tool for SubAgentTool {
         let mut session_id = String::new();
         while let Some(event) = stream.next().await {
             match event {
-                AgentEvent::Done { response: r } => {
-                    response = r;
+                AgentEvent::RunStart { thread_id, .. } => {
+                    session_id = thread_id;
+                }
+                AgentEvent::RunFinish { result, .. } => {
+                    response = AgentEvent::extract_response(&result);
                     break;
                 }
                 AgentEvent::Error { message } => {
                     return Ok(ToolResult::error(&self.name, message));
-                }
-                AgentEvent::RunStart { thread_id, .. } => {
-                    session_id = thread_id;
                 }
                 _ => {}
             }
@@ -1091,7 +1091,8 @@ mod tests {
         let mut events = Vec::new();
         let mut stream = stream;
         while let Some(event) = stream.next().await {
-            let is_terminal = matches!(event, AgentEvent::Done { .. } | AgentEvent::Error { .. });
+            let is_terminal =
+                matches!(event, AgentEvent::RunFinish { .. } | AgentEvent::Error { .. });
             events.push(event);
             if is_terminal {
                 break;
@@ -1376,7 +1377,7 @@ mod tests {
     // ========================================================================
 
     #[tokio::test]
-    async fn test_agent_run_produces_done_event() {
+    async fn test_agent_run_produces_run_finish_event() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default())
@@ -1387,14 +1388,16 @@ mod tests {
 
         let events = collect_events(agent.run(session)).await;
 
-        // With skip_inference, we should get at least a Done event
-        let done_events: Vec<&AgentEvent> = events
+        // With skip_inference, we should get RunStart and RunFinish events
+        let finish_events: Vec<&AgentEvent> = events
             .iter()
-            .filter(|e| matches!(e, AgentEvent::Done { .. }))
+            .filter(|e| matches!(e, AgentEvent::RunFinish { .. }))
             .collect();
-        assert_eq!(done_events.len(), 1);
-        match &done_events[0] {
-            AgentEvent::Done { response } => assert_eq!(response, ""),
+        assert_eq!(finish_events.len(), 1);
+        match &finish_events[0] {
+            AgentEvent::RunFinish { result, .. } => {
+                assert_eq!(AgentEvent::extract_response(result), "");
+            }
             _ => unreachable!(),
         }
     }
@@ -1432,9 +1435,11 @@ mod tests {
         let stream = agent.run_subagent("test prompt", None);
         let events = collect_events(stream).await;
 
-        // Should have at least StepStart and Done events
-        let has_done = events.iter().any(|e| matches!(e, AgentEvent::Done { .. }));
-        assert!(has_done, "Expected Done event in stream");
+        // Should have RunStart and RunFinish events
+        let has_finish = events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunFinish { .. }));
+        assert!(has_finish, "Expected RunFinish event in stream");
     }
 
     #[tokio::test]
@@ -1479,7 +1484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_subagent_stream_ends_with_done_not_error() {
+    async fn test_run_subagent_stream_ends_with_run_finish_not_error() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default()).with_tool(DummyTool("a"));
@@ -1489,8 +1494,8 @@ mod tests {
 
         let last = events.last().expect("Should have at least one event");
         assert!(
-            matches!(last, AgentEvent::Done { .. }),
-            "Last event should be Done, got: {:?}",
+            matches!(last, AgentEvent::RunFinish { .. }),
+            "Last event should be RunFinish, got: {:?}",
             last
         );
     }

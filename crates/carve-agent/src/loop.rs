@@ -44,6 +44,7 @@ use crate::execute::{collect_patches, execute_single_tool, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
+use crate::agent::uuid_v4;
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
@@ -946,6 +947,13 @@ pub fn run_loop_stream(
             plugin_data.sync_from_step(&session_step);
         }
 
+        let run_id = uuid_v4();
+        yield AgentEvent::RunStart {
+            thread_id: session.id.clone(),
+            run_id: run_id.clone(),
+            parent_run_id: None,
+        };
+
         loop {
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let (messages, filtered_tools, skip_inference, tracing_span) = {
@@ -967,7 +975,11 @@ pub fn run_loop_stream(
 
             // Skip inference if requested
             if skip_inference {
-                yield AgentEvent::Done { response: String::new() };
+                yield AgentEvent::RunFinish {
+                    thread_id: session.id.clone(),
+                    run_id: run_id.clone(),
+                    result: None,
+                };
                 return;
             }
 
@@ -1087,7 +1099,16 @@ pub fn run_loop_stream(
                 emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
                 plugin_data.sync_from_step(&end_step);
 
-                yield AgentEvent::Done { response: result.text };
+                let result_value = if result.text.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!({"response": result.text}))
+                };
+                yield AgentEvent::RunFinish {
+                    thread_id: session.id.clone(),
+                    run_id: run_id.clone(),
+                    result: result_value,
+                };
                 return;
             }
 

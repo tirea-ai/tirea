@@ -437,7 +437,12 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
                 print!("{}", delta);
                 std::io::Write::flush(&mut std::io::stdout())?;
             }
-            AgentEvent::Done { response } => {
+            AgentEvent::RunFinish { result, .. } => {
+                let response = result
+                    .as_ref()
+                    .and_then(|v| v.get("response"))
+                    .and_then(|r| r.as_str())
+                    .unwrap_or_default();
                 println!("\n[Stream completed: {} chars]", response.len());
             }
             AgentEvent::Error { message } => {
