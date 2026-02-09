@@ -1091,6 +1091,15 @@ pub fn run_loop_stream(
                 return;
             }
 
+            // Emit ToolCallReady for each finalized tool call
+            for tc in &result.tool_calls {
+                yield AgentEvent::ToolCallReady {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                };
+            }
+
             // Execute tools with phase hooks
             let state = match session.rebuild_state() {
                 Ok(s) => s,
