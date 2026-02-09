@@ -1,3 +1,4 @@
+use crate::plugin::AgentPlugin;
 use crate::traits::tool::Tool;
 use crate::AgentDefinition;
 use genai::chat::ChatOptions;
@@ -132,6 +133,154 @@ impl ProviderRegistry for CompositeProviderRegistry {
     }
 
     fn snapshot(&self) -> HashMap<String, Client> {
+        self.merged.snapshot()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PluginRegistryError {
+    #[error("plugin id already registered: {0}")]
+    PluginIdConflict(String),
+
+    #[error("plugin id mismatch: key={key} plugin.id()={plugin_id}")]
+    PluginIdMismatch { key: String, plugin_id: String },
+}
+
+pub trait PluginRegistry: Send + Sync {
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>>;
+
+    fn ids(&self) -> Vec<String>;
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>>;
+}
+
+#[derive(Clone, Default)]
+pub struct InMemoryPluginRegistry {
+    plugins: HashMap<String, Arc<dyn AgentPlugin>>,
+}
+
+impl std::fmt::Debug for InMemoryPluginRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemoryPluginRegistry")
+            .field("len", &self.plugins.len())
+            .finish()
+    }
+}
+
+impl InMemoryPluginRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, plugin: Arc<dyn AgentPlugin>) -> Result<(), PluginRegistryError> {
+        let id = plugin.id().to_string();
+        if self.plugins.contains_key(&id) {
+            return Err(PluginRegistryError::PluginIdConflict(id));
+        }
+        self.plugins.insert(id, plugin);
+        Ok(())
+    }
+
+    pub fn register_named(
+        &mut self,
+        id: impl Into<String>,
+        plugin: Arc<dyn AgentPlugin>,
+    ) -> Result<(), PluginRegistryError> {
+        let key = id.into();
+        let plugin_id = plugin.id().to_string();
+        if key != plugin_id {
+            return Err(PluginRegistryError::PluginIdMismatch { key, plugin_id });
+        }
+        if self.plugins.contains_key(&key) {
+            return Err(PluginRegistryError::PluginIdConflict(key));
+        }
+        self.plugins.insert(key, plugin);
+        Ok(())
+    }
+
+    pub fn extend_named(
+        &mut self,
+        plugins: HashMap<String, Arc<dyn AgentPlugin>>,
+    ) -> Result<(), PluginRegistryError> {
+        for (key, plugin) in plugins {
+            self.register_named(key, plugin)?;
+        }
+        Ok(())
+    }
+
+    pub fn extend_registry(
+        &mut self,
+        other: &dyn PluginRegistry,
+    ) -> Result<(), PluginRegistryError> {
+        self.extend_named(other.snapshot())
+    }
+}
+
+impl PluginRegistry for InMemoryPluginRegistry {
+    fn len(&self) -> usize {
+        self.plugins.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>> {
+        self.plugins.get(id).cloned()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.plugins.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
+        self.plugins.clone()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct CompositePluginRegistry {
+    merged: InMemoryPluginRegistry,
+}
+
+impl std::fmt::Debug for CompositePluginRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompositePluginRegistry")
+            .field("len", &self.merged.len())
+            .finish()
+    }
+}
+
+impl CompositePluginRegistry {
+    pub fn try_new(
+        regs: impl IntoIterator<Item = Arc<dyn PluginRegistry>>,
+    ) -> Result<Self, PluginRegistryError> {
+        let mut merged = InMemoryPluginRegistry::new();
+        for r in regs {
+            merged.extend_registry(r.as_ref())?;
+        }
+        Ok(Self { merged })
+    }
+}
+
+impl PluginRegistry for CompositePluginRegistry {
+    fn len(&self) -> usize {
+        self.merged.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn AgentPlugin>> {
+        self.merged.get(id)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        self.merged.ids()
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
         self.merged.snapshot()
     }
 }
@@ -639,6 +788,8 @@ impl ModelRegistry for CompositeModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phase::{Phase, StepContext};
+    use crate::plugin::AgentPlugin;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use async_trait::async_trait;
     use serde_json::json;
@@ -661,6 +812,18 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct P(&'static str);
+
+    #[async_trait]
+    impl AgentPlugin for P {
+        fn id(&self) -> &str {
+            self.0
+        }
+
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    }
+
     #[test]
     fn tool_registry_register_uses_descriptor_id_and_detects_conflict() {
         let mut reg = InMemoryToolRegistry::new();
@@ -674,6 +837,27 @@ mod tests {
         let mut reg = InMemoryToolRegistry::new();
         let err = reg.register_named("x", Arc::new(T("y"))).err().unwrap();
         assert!(matches!(err, ToolRegistryError::ToolIdMismatch { .. }));
+    }
+
+    #[test]
+    fn plugin_registry_register_named_detects_mismatch() {
+        let mut reg = InMemoryPluginRegistry::new();
+        let err = reg
+            .register_named("x", Arc::new(P("y")) as Arc<dyn AgentPlugin>)
+            .err()
+            .unwrap();
+        assert!(matches!(err, PluginRegistryError::PluginIdMismatch { .. }));
+    }
+
+    #[test]
+    fn plugin_registry_register_detects_conflict() {
+        let mut reg = InMemoryPluginRegistry::new();
+        reg.register(Arc::new(P("p1"))).unwrap();
+        let err = reg.register(Arc::new(P("p1"))).err().unwrap();
+        assert!(matches!(
+            err,
+            PluginRegistryError::PluginIdConflict(ref id) if id == "p1"
+        ));
     }
 
     #[test]

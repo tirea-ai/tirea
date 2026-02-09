@@ -167,6 +167,7 @@ pub use agent_os::{
     CompositeModelRegistry, InMemoryModelRegistry, SkillsConfig, SkillsMode, ToolRegistry,
     ToolRegistryError, CompositeToolRegistry, InMemoryToolRegistry, ProviderRegistry,
     ProviderRegistryError, CompositeProviderRegistry, InMemoryProviderRegistry,
+    PluginRegistry, PluginRegistryError, CompositePluginRegistry, InMemoryPluginRegistry,
 };
 
 // Loop exports

@@ -76,6 +76,11 @@ pub struct AgentDefinition {
     pub chat_options: Option<ChatOptions>,
     /// Plugins to run during the agent loop.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
+    /// Plugin references to resolve via AgentOs wiring.
+    ///
+    /// This keeps AgentDefinition decoupled from plugin construction/loading. The AgentOs
+    /// instance decides how to map these ids to plugin instances.
+    pub plugin_ids: Vec<String>,
     /// Tool whitelist (None = all tools available).
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
@@ -95,6 +100,7 @@ impl Default for AgentDefinition {
             parallel_tools: true,
             chat_options: Some(ChatOptions::default().with_capture_usage(true)),
             plugins: Vec::new(),
+            plugin_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
         }
@@ -114,6 +120,7 @@ impl std::fmt::Debug for AgentDefinition {
             .field("parallel_tools", &self.parallel_tools)
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
+            .field("plugin_ids", &self.plugin_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
             .finish()
@@ -174,6 +181,20 @@ impl AgentDefinition {
         self
     }
 
+    /// Set plugin references to be resolved via AgentOs.
+    #[must_use]
+    pub fn with_plugin_ids(mut self, plugin_ids: Vec<String>) -> Self {
+        self.plugin_ids = plugin_ids;
+        self
+    }
+
+    /// Add a single plugin reference.
+    #[must_use]
+    pub fn with_plugin_id(mut self, plugin_id: impl Into<String>) -> Self {
+        self.plugin_ids.push(plugin_id.into());
+        self
+    }
+
     /// Add a single plugin.
     #[must_use]
     pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
@@ -197,7 +218,7 @@ impl AgentDefinition {
 
     /// Check if any plugins are configured.
     pub fn has_plugins(&self) -> bool {
-        !self.plugins.is_empty()
+        !self.plugins.is_empty() || !self.plugin_ids.is_empty()
     }
 }
 
