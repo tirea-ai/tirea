@@ -104,7 +104,11 @@ impl Default for AgentDefinition {
             system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
-            chat_options: Some(ChatOptions::default().with_capture_usage(true)),
+            chat_options: Some(
+                ChatOptions::default()
+                    .with_capture_usage(true)
+                    .with_capture_tool_calls(true),
+            ),
             plugins: Vec::new(),
             plugin_ids: Vec::new(),
             policy_ids: Vec::new(),

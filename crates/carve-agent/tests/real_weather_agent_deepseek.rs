@@ -202,21 +202,27 @@ Rules:\n\
     let mut saw_weather_done = false;
     let mut text = String::new();
 
+    let mut last_error = String::new();
     let deadline = Duration::from_secs(60);
     let timed_out = tokio::time::timeout(deadline, async {
         while let Some(ev) = stream.next().await {
             match ev {
-                AgentEvent::ToolCallReady { name, .. } if name == "get_weather" => {
-                    saw_weather_ready = true;
+                AgentEvent::ToolCallReady { ref name, .. } => {
+                    if name == "get_weather" {
+                        saw_weather_ready = true;
+                    }
                 }
-                AgentEvent::ToolCallDone { result, .. }
-                    if result.tool_name == "get_weather" && result.is_success() =>
-                {
-                    saw_weather_done = true;
+                AgentEvent::ToolCallDone { ref result, .. } => {
+                    if result.tool_name == "get_weather" && result.is_success() {
+                        saw_weather_done = true;
+                    }
                 }
                 AgentEvent::TextDelta { delta } => text.push_str(&delta),
                 AgentEvent::RunFinish { .. } => break,
-                AgentEvent::Error { .. } => break,
+                AgentEvent::Error { ref message } => {
+                    last_error = message.clone();
+                    break;
+                }
                 _ => {}
             }
         }
@@ -228,13 +234,19 @@ Rules:\n\
         return Err("timed out after 60s".into());
     }
     if !saw_weather_ready {
-        return Err("model did not call get_weather".into());
+        return Err(format!(
+            "model did not call get_weather (last_error: {last_error})"
+        ));
     }
     if !saw_weather_done {
-        return Err("get_weather never succeeded".into());
+        return Err(format!(
+            "get_weather never succeeded (last_error: {last_error})"
+        ));
     }
     if text.trim().is_empty() {
-        return Err("no assistant output produced".into());
+        return Err(format!(
+            "no assistant output produced (last_error: {last_error})"
+        ));
     }
     Ok(())
 }

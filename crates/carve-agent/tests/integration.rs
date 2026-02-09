@@ -4136,7 +4136,6 @@ fn test_stream_collector_tool_chunk_with_null_arguments() {
 
 #[test]
 fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
-    use carve_agent::StreamOutput;
     use genai::chat::{ChatStreamEvent, ToolChunk};
 
     let mut collector = StreamCollector::new();
@@ -4145,28 +4144,21 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
     let tc1 = genai::chat::ToolCall {
         call_id: "call_1".to_string(),
         fn_name: "test_tool".to_string(),
-        fn_arguments: json!(""), // empty string serializes to ""
+        fn_arguments: json!(""), // Value::String("") — empty string
         thought_signatures: None,
     };
     collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
 
-    // Now try with empty string value - tests the !args_str.is_empty() check
+    // Empty string argument should NOT produce a delta
     let tc2 = genai::chat::ToolCall {
         call_id: "call_1".to_string(),
         fn_name: "".to_string(),
-        fn_arguments: json!(""), // empty string
+        fn_arguments: json!(""), // Value::String("") — empty, skipped
         thought_signatures: None,
     };
     let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
-    // Should emit ToolCallDelta because "" serializes to `"\"\""`
-    // Actually let's check what it serializes to
-    let serialized = json!("").to_string();
-    if serialized.is_empty() || serialized == "null" {
-        assert!(output.is_none());
-    } else {
-        // It should be `""` which is not empty
-        assert!(matches!(output, Some(StreamOutput::ToolCallDelta { .. })));
-    }
+    // Value::String("") is treated as empty and filtered out
+    assert!(output.is_none());
 }
 
 // ============================================================================

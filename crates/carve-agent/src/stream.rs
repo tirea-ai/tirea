@@ -71,40 +71,81 @@ impl StreamCollector {
                             arguments: String::new(),
                         });
 
+                let mut output = None;
+
                 // Update name if provided (non-empty)
                 if !tool_chunk.tool_call.fn_name.is_empty() && partial.name.is_empty() {
                     partial.name = tool_chunk.tool_call.fn_name.clone();
                     self.current_tool_id = Some(call_id.clone());
-                    return Some(StreamOutput::ToolCallStart {
-                        id: call_id,
+                    output = Some(StreamOutput::ToolCallStart {
+                        id: call_id.clone(),
                         name: partial.name.clone(),
                     });
                 }
 
-                // Accumulate arguments
-                let args_str = tool_chunk.tool_call.fn_arguments.to_string();
-                if args_str != "null" && !args_str.is_empty() {
-                    partial.arguments.push_str(&args_str);
-                    return Some(StreamOutput::ToolCallDelta {
-                        id: call_id,
-                        args_delta: args_str,
-                    });
+                // Extract raw argument string from fn_arguments.
+                // genai wraps argument strings in Value::String(...);
+                // .to_string() would JSON-serialize it with extra quotes.
+                // With capture_tool_calls enabled, each chunk carries the
+                // ACCUMULATED value (not a delta), so we replace rather than
+                // append.
+                let args_str = match &tool_chunk.tool_call.fn_arguments {
+                    Value::String(s) if !s.is_empty() => s.clone(),
+                    Value::Null | Value::String(_) => String::new(),
+                    other => other.to_string(),
+                };
+                if !args_str.is_empty() {
+                    // Compute delta for the output event
+                    let delta = if args_str.len() > partial.arguments.len()
+                        && args_str.starts_with(&partial.arguments)
+                    {
+                        args_str[partial.arguments.len()..].to_string()
+                    } else {
+                        args_str.clone()
+                    };
+                    partial.arguments = args_str;
+                    if !delta.is_empty() {
+                        output = Some(StreamOutput::ToolCallDelta {
+                            id: call_id,
+                            args_delta: delta,
+                        });
+                    }
                 }
 
-                None
+                output
             }
             ChatStreamEvent::End(end) => {
-                // Capture any tool calls from the end event
+                // Use captured tool calls from the End event as the source
+                // of truth, overriding any partial data accumulated during
+                // streaming (which may be incorrect if chunks carried
+                // accumulated rather than delta values).
                 if let Some(tool_calls) = end.captured_tool_calls() {
                     for tc in tool_calls {
-                        self.tool_calls.insert(
-                            tc.call_id.clone(),
-                            PartialToolCall {
-                                id: tc.call_id.clone(),
-                                name: tc.fn_name.clone(),
-                                arguments: tc.fn_arguments.to_string(),
-                            },
-                        );
+                        // Extract raw string; genai may wrap in Value::String
+                        let end_args = match &tc.fn_arguments {
+                            Value::String(s) if !s.is_empty() => s.clone(),
+                            Value::Null | Value::String(_) => String::new(),
+                            other => other.to_string(),
+                        };
+                        match self.tool_calls.entry(tc.call_id.clone()) {
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                let partial = e.get_mut();
+                                if partial.name.is_empty() {
+                                    partial.name = tc.fn_name.clone();
+                                }
+                                // Always prefer End event arguments over streaming
+                                if !end_args.is_empty() {
+                                    partial.arguments = end_args;
+                                }
+                            }
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(PartialToolCall {
+                                    id: tc.call_id.clone(),
+                                    name: tc.fn_name.clone(),
+                                    arguments: end_args,
+                                });
+                            }
+                        }
                     }
                 }
                 // Capture token usage
@@ -120,6 +161,7 @@ impl StreamCollector {
         let tool_calls: Vec<ToolCall> = self
             .tool_calls
             .into_values()
+            .filter(|p| !p.name.is_empty())
             .map(|p| {
                 let arguments = serde_json::from_str(&p.arguments).unwrap_or(Value::Null);
                 ToolCall::new(p.id, p.name, arguments)
@@ -1105,6 +1147,8 @@ mod tests {
 
     #[test]
     fn test_stream_collector_tool_arguments_accumulation() {
+        // genai sends ACCUMULATED arguments in each chunk (with capture_tool_calls=true).
+        // Each chunk carries the full accumulated string so far, not just a delta.
         let mut collector = StreamCollector::new();
 
         // Start tool call
@@ -1116,11 +1160,11 @@ mod tests {
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
 
-        // Accumulate arguments in chunks
+        // Accumulated argument chunks (each is the full value so far)
         let tc2 = genai::chat::ToolCall {
             call_id: "call_1".to_string(),
             fn_name: String::new(),
-            fn_arguments: json!({"url": "https://"}),
+            fn_arguments: Value::String("{\"url\":".to_string()),
             thought_signatures: None,
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
@@ -1128,14 +1172,72 @@ mod tests {
         let tc3 = genai::chat::ToolCall {
             call_id: "call_1".to_string(),
             fn_name: String::new(),
-            fn_arguments: json!({"method": "GET"}),
+            fn_arguments: Value::String("{\"url\": \"https://example.com\"}".to_string()),
             thought_signatures: None,
         };
         collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc3 }));
 
         let result = collector.finish();
         assert_eq!(result.tool_calls.len(), 1);
-        // Arguments are accumulated as strings and parsed at finish
+        assert_eq!(result.tool_calls[0].name, "api");
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            json!({"url": "https://example.com"})
+        );
+    }
+
+    #[test]
+    fn test_stream_collector_value_string_args_accumulation() {
+        // genai sends ACCUMULATED arguments as Value::String in each chunk.
+        // Verify that we extract raw strings and properly de-duplicate.
+        let mut collector = StreamCollector::new();
+
+        // First chunk: name only, empty arguments
+        let tc1 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "get_weather".to_string(),
+            fn_arguments: Value::String(String::new()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+        // Accumulated argument chunks (each is the full value so far)
+        let tc2 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: String::new(),
+            fn_arguments: Value::String("{\"city\":".to_string()),
+            thought_signatures: None,
+        };
+        let output2 = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: tc2,
+        }));
+        assert!(matches!(
+            output2,
+            Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == "{\"city\":"
+        ));
+
+        let tc3 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: String::new(),
+            fn_arguments: Value::String("{\"city\": \"San Francisco\"}".to_string()),
+            thought_signatures: None,
+        };
+        let output3 = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: tc3,
+        }));
+        // Delta should be only the new part
+        assert!(matches!(
+            output3,
+            Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == " \"San Francisco\"}"
+        ));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "get_weather");
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            json!({"city": "San Francisco"})
+        );
     }
 
     #[test]
