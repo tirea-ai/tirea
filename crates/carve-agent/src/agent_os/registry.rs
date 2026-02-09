@@ -83,7 +83,9 @@ impl ProviderRegistry for InMemoryProviderRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        self.providers.keys().cloned().collect()
+        let mut ids: Vec<String> = self.providers.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 
     fn snapshot(&self) -> HashMap<String, Client> {
@@ -260,7 +262,9 @@ impl ToolRegistry for InMemoryToolRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
+        let mut ids: Vec<String> = self.tools.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
@@ -303,7 +307,9 @@ impl ToolRegistry for CompositeToolRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        self.merged.ids().cloned().collect()
+        let mut ids: Vec<String> = self.merged.tools.keys().cloned().collect();
+        ids.sort();
+        ids
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {

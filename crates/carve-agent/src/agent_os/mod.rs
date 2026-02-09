@@ -68,6 +68,9 @@ pub enum AgentOsBuildError {
     #[error("models configured but no ProviderRegistry configured")]
     ProvidersNotConfigured,
 
+    #[error("provider not found: {provider_id} (for model id: {model_id})")]
+    ProviderNotFound { provider_id: String, model_id: String },
+
     #[error("skills enabled but no SkillRegistry configured")]
     SkillsNotConfigured,
 }
@@ -218,23 +221,35 @@ impl AgentOsBuilder {
     }
 
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
-        if self.skills.mode != SkillsMode::Disabled && self.skills_registry.is_none() {
+        let AgentOsBuilder {
+            client,
+            agents: agents_defs,
+            base_tools: base_tools_defs,
+            base_tool_registries,
+            providers: provider_defs,
+            provider_registries,
+            models: model_defs,
+            skills_registry,
+            skills,
+        } = self;
+
+        if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
             return Err(AgentOsBuildError::SkillsNotConfigured);
         }
 
-        let skills_registry: Option<Arc<dyn SkillRegistry>> = self.skills_registry;
+        let skills_registry: Option<Arc<dyn SkillRegistry>> = skills_registry;
 
         let mut base_tools = InMemoryToolRegistry::new();
-        base_tools.extend_named(self.base_tools)?;
+        base_tools.extend_named(base_tools_defs)?;
 
-        let base_tools: Arc<dyn ToolRegistry> = match self.base_tool_registries.len() {
+        let base_tools: Arc<dyn ToolRegistry> = match base_tool_registries.len() {
             0 => Arc::new(base_tools),
             _ => {
                 let mut regs: Vec<Arc<dyn ToolRegistry>> = Vec::new();
                 if !base_tools.is_empty() {
                     regs.push(Arc::new(base_tools));
                 }
-                regs.extend(self.base_tool_registries);
+                regs.extend(base_tool_registries);
                 if regs.len() == 1 {
                     regs.pop().unwrap()
                 } else {
@@ -244,16 +259,16 @@ impl AgentOsBuilder {
         };
 
         let mut providers = InMemoryProviderRegistry::new();
-        providers.extend(self.providers)?;
+        providers.extend(provider_defs)?;
 
-        let providers: Arc<dyn ProviderRegistry> = match self.provider_registries.len() {
+        let providers: Arc<dyn ProviderRegistry> = match provider_registries.len() {
             0 => Arc::new(providers),
             _ => {
                 let mut regs: Vec<Arc<dyn ProviderRegistry>> = Vec::new();
                 if !providers.is_empty() {
                     regs.push(Arc::new(providers));
                 }
-                regs.extend(self.provider_registries);
+                regs.extend(provider_registries);
                 if regs.len() == 1 {
                     regs.pop().unwrap()
                 } else {
@@ -263,23 +278,32 @@ impl AgentOsBuilder {
         };
 
         let mut models = ModelRegistry::new();
-        models.extend(self.models)?;
+        models.extend(model_defs.clone())?;
 
         if !models.is_empty() && providers.is_empty() {
             return Err(AgentOsBuildError::ProvidersNotConfigured);
         }
 
+        for (model_id, def) in &model_defs {
+            if providers.get(&def.provider).is_none() {
+                return Err(AgentOsBuildError::ProviderNotFound {
+                    provider_id: def.provider.clone(),
+                    model_id: model_id.clone(),
+                });
+            }
+        }
+
         let mut agents = AgentRegistry::new();
-        agents.extend_upsert(self.agents);
+        agents.extend_upsert(agents_defs);
 
         Ok(AgentOs {
-            default_client: self.client.unwrap_or_default(),
+            default_client: client.unwrap_or_default(),
             agents,
             base_tools,
             providers,
             models,
             skills_registry,
-            skills: self.skills,
+            skills,
         })
     }
 }
