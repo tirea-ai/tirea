@@ -187,22 +187,28 @@ Rules:\n\
     let mut saw_weather_done = false;
     let mut text = String::new();
 
-    while let Some(ev) = stream.next().await {
-        match ev {
-            AgentEvent::ToolCallReady { name, .. } if name == "get_weather" => {
-                saw_weather_ready = true;
+    let deadline = Duration::from_secs(60);
+    let result = tokio::time::timeout(deadline, async {
+        while let Some(ev) = stream.next().await {
+            match ev {
+                AgentEvent::ToolCallReady { name, .. } if name == "get_weather" => {
+                    saw_weather_ready = true;
+                }
+                AgentEvent::ToolCallDone { result, .. }
+                    if result.tool_name == "get_weather" && result.is_success() =>
+                {
+                    saw_weather_done = true;
+                }
+                AgentEvent::TextDelta { delta } => text.push_str(&delta),
+                AgentEvent::RunFinish { .. } => break,
+                AgentEvent::Error { message } => panic!("agent error: {}", message),
+                _ => {}
             }
-            AgentEvent::ToolCallDone { result, .. }
-                if result.tool_name == "get_weather" && result.is_success() =>
-            {
-                saw_weather_done = true;
-            }
-            AgentEvent::TextDelta { delta } => text.push_str(&delta),
-            AgentEvent::RunFinish { .. } => break,
-            _ => {}
         }
-    }
+    })
+    .await;
 
+    assert!(result.is_ok(), "test timed out after {:?}", deadline);
     assert!(saw_weather_ready, "model did not call get_weather");
     assert!(saw_weather_done, "get_weather never succeeded");
     assert!(!text.trim().is_empty(), "no assistant output produced");
