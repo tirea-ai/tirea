@@ -100,6 +100,9 @@ pub mod traits;
 pub mod types;
 pub mod ui_stream;
 
+#[cfg(feature = "mcp")]
+pub mod mcp_registry;
+
 // Re-export from carve-state for convenience
 pub use carve_state::{Context, StateManager, TrackedPatch};
 

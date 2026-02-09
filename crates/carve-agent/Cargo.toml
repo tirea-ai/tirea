@@ -21,6 +21,11 @@ sha2 = "0.10"
 tracing = "0.1"
 unicode-normalization = "0.1"
 tokio-util = "0.7"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"], optional = true }
+
+[features]
+default = []
+mcp = ["dep:mcp"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
