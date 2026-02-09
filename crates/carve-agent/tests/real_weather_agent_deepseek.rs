@@ -198,7 +198,7 @@ Rules:\n\
                 saw_weather_done = true;
             }
             AgentEvent::TextDelta { delta } => text.push_str(&delta),
-            AgentEvent::RunFinish { .. } => break,
+            AgentEvent::Done { .. } => break,
             _ => {}
         }
     }
