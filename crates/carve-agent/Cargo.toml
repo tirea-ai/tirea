@@ -34,6 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
 opentelemetry = "0.28"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
 tracing-opentelemetry = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [[example]]
 name = "live_deepseek"
