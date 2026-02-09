@@ -1,11 +1,10 @@
 use crate::plugin::AgentPlugin;
 use crate::skills::{
-    FsSkillRegistry, LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin,
-    SkillRegistry, SkillRuntimePlugin, SkillScriptTool,
+    LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
+    SkillRuntimePlugin, SkillScriptTool,
 };
 use crate::traits::tool::Tool;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Errors returned when wiring the skills subsystem into an agent.
@@ -28,8 +27,9 @@ pub enum SkillSubsystemError {
 /// use std::collections::HashMap;
 /// use std::sync::Arc;
 ///
-/// // 1) Build the subsystem from your skills root directory.
-/// let skills = SkillSubsystem::from_root("skills");
+/// // 1) Build a registry and wire it into the subsystem.
+/// # use carve_agent::FsSkillRegistry;
+/// let skills = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root("skills")));
 ///
 /// // 2) Register tools (skill activation + reference/script utilities).
 /// let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -48,14 +48,6 @@ pub struct SkillSubsystem {
 impl SkillSubsystem {
     pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
-    }
-
-    pub fn from_roots(roots: Vec<PathBuf>) -> Self {
-        Self::new(Arc::new(FsSkillRegistry::new(roots)))
-    }
-
-    pub fn from_root(root: impl Into<PathBuf>) -> Self {
-        Self::new(Arc::new(FsSkillRegistry::from_root(root)))
     }
 
     pub fn registry(&self) -> Arc<dyn SkillRegistry> {
@@ -95,7 +87,8 @@ impl SkillSubsystem {
     /// use std::collections::HashMap;
     /// use std::sync::Arc;
     ///
-    /// let skills = SkillSubsystem::from_root("skills");
+    /// # use carve_agent::FsSkillRegistry;
+    /// let skills = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root("skills")));
     ///
     /// // Conflict example: `tools()` already contains the skill tool ids.
     /// let mut tools: HashMap<String, Arc<dyn Tool>> = skills.tools();
@@ -131,6 +124,7 @@ mod tests {
     use crate::execute::execute_single_tool;
     use crate::phase::{Phase, StepContext};
     use crate::session::Session;
+    use crate::skills::FsSkillRegistry;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::types::{Message, ToolCall};
     use async_trait::async_trait;
@@ -169,7 +163,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::from_root(root);
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert("skill".to_string(), Arc::new(DummyTool));
         let err = sys.extend_tools(&mut tools).unwrap_err();
@@ -187,7 +181,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::from_root(root);
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
         let tools = sys.tools();
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_reference"));
@@ -206,7 +200,7 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::from_root(root);
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert("other".to_string(), Arc::new(DummyOtherTool));
         sys.extend_tools(&mut tools).unwrap();
@@ -254,7 +248,7 @@ Use docx-js for new documents.
         )
         .unwrap();
 
-        let sys = SkillSubsystem::from_root(root);
+        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::from_root(root)));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         sys.extend_tools(&mut tools).unwrap();
 

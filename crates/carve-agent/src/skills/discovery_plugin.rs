@@ -149,7 +149,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn make_registry() -> Arc<dyn SkillRegistry> {
+    fn make_registry() -> (TempDir, Arc<dyn SkillRegistry>) {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("a-skill")).unwrap();
@@ -171,14 +171,13 @@ Body"#
         )
         .unwrap();
 
-        // Keep tempdir alive by leaking it: this is test-only and acceptable.
-        std::mem::forget(td);
-        Arc::new(FsSkillRegistry::from_root(root))
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        (td, reg)
     }
 
     #[tokio::test]
     async fn injects_catalog_with_usage() {
-        let reg = make_registry();
+        let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 8 * 1024);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -195,7 +194,7 @@ Body"#
 
     #[tokio::test]
     async fn marks_active_skills() {
-        let reg = make_registry();
+        let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
         let session = Session::with_initial_state(
             "s",

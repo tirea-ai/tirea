@@ -1,6 +1,6 @@
 use carve_agent::{
-    execute_single_tool, AGUIContext, AGUIEvent, AgentEvent, Session, SkillSubsystem, ToolCall,
-    ToolDescriptor,
+    execute_single_tool, AGUIContext, AGUIEvent, AgentEvent, FsSkillRegistry, Session,
+    SkillSubsystem, ToolCall, ToolDescriptor,
 };
 use serde_json::json;
 use std::fs;
@@ -17,7 +17,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     )
     .unwrap();
 
-    let skills = SkillSubsystem::from_root(root);
+    let skills = SkillSubsystem::new(std::sync::Arc::new(FsSkillRegistry::from_root(root)));
     let tools = skills.tools();
     let tool = tools.get("skill").expect("skill tool registered");
 
@@ -119,7 +119,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     )
     .unwrap();
 
-    let skills = SkillSubsystem::from_root(root);
+    let skills = SkillSubsystem::new(std::sync::Arc::new(FsSkillRegistry::from_root(root)));
     let plugin = skills.plugin();
 
     // Even without activation, discovery should inject available_skills.
