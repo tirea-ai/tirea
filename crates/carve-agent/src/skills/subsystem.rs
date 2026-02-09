@@ -1,7 +1,7 @@
 use crate::plugin::AgentPlugin;
 use crate::skills::{
-    LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
-    SkillRuntimePlugin, SkillScriptTool,
+    FsSkillRegistry, LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin,
+    SkillRegistry, SkillRuntimePlugin, SkillScriptTool,
 };
 use crate::traits::tool::Tool;
 use std::collections::HashMap;
@@ -42,23 +42,23 @@ pub enum SkillSubsystemError {
 /// ```
 #[derive(Debug, Clone)]
 pub struct SkillSubsystem {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<dyn SkillRegistry>,
 }
 
 impl SkillSubsystem {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
 
     pub fn from_roots(roots: Vec<PathBuf>) -> Self {
-        Self::new(Arc::new(SkillRegistry::new(roots)))
+        Self::new(Arc::new(FsSkillRegistry::new(roots)))
     }
 
     pub fn from_root(root: impl Into<PathBuf>) -> Self {
-        Self::new(Arc::new(SkillRegistry::from_root(root)))
+        Self::new(Arc::new(FsSkillRegistry::from_root(root)))
     }
 
-    pub fn registry(&self) -> Arc<SkillRegistry> {
+    pub fn registry(&self) -> Arc<dyn SkillRegistry> {
         self.registry.clone()
     }
 

@@ -12,13 +12,13 @@ use std::sync::Arc;
 /// This is intentionally non-persistent: the catalog is rebuilt from `SkillRegistry` per step.
 #[derive(Debug, Clone)]
 pub struct SkillDiscoveryPlugin {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<dyn SkillRegistry>,
     max_entries: usize,
     max_chars: usize,
 }
 
 impl SkillDiscoveryPlugin {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self {
             registry,
             max_entries: 32,
@@ -142,13 +142,14 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 mod tests {
     use super::*;
     use crate::session::Session;
+    use crate::skills::FsSkillRegistry;
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn make_registry() -> Arc<SkillRegistry> {
+    fn make_registry() -> Arc<dyn SkillRegistry> {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("a-skill")).unwrap();
@@ -172,7 +173,7 @@ Body"#
 
         // Keep tempdir alive by leaking it: this is test-only and acceptable.
         std::mem::forget(td);
-        Arc::new(SkillRegistry::from_root(root))
+        Arc::new(FsSkillRegistry::from_root(root))
     }
 
     #[tokio::test]
@@ -219,7 +220,7 @@ Body"#
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(&root).unwrap();
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         let p = SkillDiscoveryPlugin::new(reg);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -238,7 +239,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         assert!(reg.list().is_empty());
 
         let p = SkillDiscoveryPlugin::new(reg);
@@ -265,7 +266,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         let p = SkillDiscoveryPlugin::new(reg);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -292,7 +293,7 @@ Body"#
             )
             .unwrap();
         }
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -314,7 +315,7 @@ Body"#
             "---\nname: s\ndescription: A very long description\n---\nBody",
         )
         .unwrap();
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
         let session = Session::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);

@@ -1,7 +1,7 @@
 use carve_agent::{
-    execute_single_tool, AgentPlugin, LoadSkillReferenceTool, Message, Phase, Session,
-    SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool, StepContext, ToolCall,
-    ToolDescriptor, ToolResult,
+    execute_single_tool, AgentPlugin, FsSkillRegistry, LoadSkillReferenceTool, Message, Phase,
+    Session, SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool, StepContext,
+    ToolCall, ToolDescriptor, ToolResult,
 };
 use serde_json::json;
 use std::fs;
@@ -9,7 +9,7 @@ use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn make_skill_tree() -> (TempDir, Arc<SkillRegistry>) {
+fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     let td = TempDir::new().unwrap();
     let skills_root = td.path().join("skills");
     let docx_root = skills_root.join("docx");
@@ -48,7 +48,7 @@ echo "hello"
     )
     .unwrap();
 
-    let reg = Arc::new(SkillRegistry::from_root(skills_root));
+    let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(skills_root));
     (td, reg)
 }
 
@@ -393,7 +393,12 @@ async fn test_load_reference_symlink_escape_is_error() {
 
     assert!(result.is_error());
     let msg = result.message.clone().unwrap_or_default().to_lowercase();
-    assert!(msg.contains("escapes") || msg.contains("invalid"));
+    assert!(
+        msg.contains("escapes")
+            || msg.contains("invalid")
+            || msg.contains("outside skill root")
+            || msg.contains("outside")
+    );
 }
 
 #[tokio::test]

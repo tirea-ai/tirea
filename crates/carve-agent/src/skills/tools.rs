@@ -1,8 +1,5 @@
 use crate::plugins::PermissionContextExt;
-use crate::skills::materialize::{
-    load_reference_material, run_script_material, SkillMaterializeError,
-};
-use crate::skills::registry::SkillRegistry;
+use crate::skills::registry::{SkillRegistry, SkillRegistryError};
 use crate::skills::skill_md::parse_skill_md;
 use crate::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -12,11 +9,11 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<dyn SkillRegistry>,
 }
 
 impl SkillActivateTool {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
 }
@@ -52,11 +49,11 @@ impl Tool for SkillActivateTool {
             .resolve(&key)
             .ok_or_else(|| ToolError::NotFound(format!("Unknown skill: {key}")))?;
 
-        let skill_md_path = self.registry.skill_md_path(&meta);
-        let raw = tokio::task::spawn_blocking(move || std::fs::read_to_string(skill_md_path))
+        let raw = self
+            .registry
+            .read_skill_md(&meta.id)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            .map_err(map_registry_error)?;
 
         let doc = parse_skill_md(&raw)
             .map_err(|e| ToolError::ExecutionFailed(format!("invalid SKILL.md: {e}")))?;
@@ -74,13 +71,11 @@ impl Tool for SkillActivateTool {
         // For the current permission model we best-effort map each token to a tool id by stripping
         // optional "(...)" suffix.
         let mut applied_tool_ids: Vec<String> = Vec::new();
-        if let Some(s) = doc.frontmatter.allowed_tools.as_deref() {
-            for token in s.split_whitespace() {
-                let tool_id = token.split('(').next().unwrap_or(token).to_string();
-                if !tool_id.is_empty() {
-                    ctx.allow_tool(tool_id.clone());
-                    applied_tool_ids.push(tool_id);
-                }
+        for token in meta.allowed_tools.iter() {
+            let tool_id = token.split('(').next().unwrap_or(token).to_string();
+            if !tool_id.is_empty() {
+                ctx.allow_tool(tool_id.clone());
+                applied_tool_ids.push(tool_id);
             }
         }
 
@@ -98,11 +93,11 @@ impl Tool for SkillActivateTool {
 
 #[derive(Debug, Clone)]
 pub struct LoadSkillReferenceTool {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<dyn SkillRegistry>,
 }
 
 impl LoadSkillReferenceTool {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
 }
@@ -144,14 +139,11 @@ impl Tool for LoadSkillReferenceTool {
             .resolve(&key)
             .ok_or_else(|| ToolError::NotFound(format!("Unknown skill: {key}")))?;
 
-        let mat = tokio::task::spawn_blocking({
-            let root = meta.root_dir.clone();
-            let skill_id = meta.id.clone();
-            move || load_reference_material(&skill_id, &root, &path)
-        })
-        .await
-        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
-        .map_err(map_materialize_error)?;
+        let mat = self
+            .registry
+            .load_reference(&meta.id, &path)
+            .await
+            .map_err(map_registry_error)?;
 
         let key = material_key(&meta.id, &mat.path);
         let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
@@ -172,11 +164,11 @@ impl Tool for LoadSkillReferenceTool {
 
 #[derive(Debug, Clone)]
 pub struct SkillScriptTool {
-    registry: Arc<SkillRegistry>,
+    registry: Arc<dyn SkillRegistry>,
 }
 
 impl SkillScriptTool {
-    pub fn new(registry: Arc<SkillRegistry>) -> Self {
+    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
         Self { registry }
     }
 }
@@ -228,9 +220,11 @@ impl Tool for SkillScriptTool {
             .resolve(&key)
             .ok_or_else(|| ToolError::NotFound(format!("Unknown skill: {key}")))?;
 
-        let res = run_script_material(&meta.id, &meta.root_dir, &script, &argv)
+        let res = self
+            .registry
+            .run_script(&meta.id, &script, &argv)
             .await
-            .map_err(map_materialize_error)?;
+            .map_err(map_registry_error)?;
 
         let key = material_key(&meta.id, &res.script);
         let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
@@ -250,19 +244,12 @@ impl Tool for SkillScriptTool {
     }
 }
 
-fn map_materialize_error(e: SkillMaterializeError) -> ToolError {
+fn map_registry_error(e: SkillRegistryError) -> ToolError {
     match e {
-        SkillMaterializeError::InvalidPath(msg) => ToolError::InvalidArguments(msg),
-        SkillMaterializeError::UnsupportedPath(msg) => ToolError::InvalidArguments(msg),
-        SkillMaterializeError::PathEscapesRoot => {
-            ToolError::InvalidArguments("path escapes root".to_string())
-        }
-        SkillMaterializeError::UnsupportedRuntime(p) => {
-            ToolError::InvalidArguments(format!("unsupported runtime: {p}"))
-        }
-        SkillMaterializeError::Timeout(secs) => {
-            ToolError::ExecutionFailed(format!("timeout after {secs}s"))
-        }
-        SkillMaterializeError::Io(msg) => ToolError::ExecutionFailed(msg),
+        SkillRegistryError::UnknownSkill(id) => ToolError::NotFound(format!("Unknown skill: {id}")),
+        SkillRegistryError::InvalidSkillMd(msg) => ToolError::ExecutionFailed(msg),
+        SkillRegistryError::Materialize(msg) => ToolError::ExecutionFailed(msg),
+        SkillRegistryError::Io(msg) => ToolError::ExecutionFailed(msg),
+        SkillRegistryError::Unsupported(msg) => ToolError::ExecutionFailed(msg),
     }
 }

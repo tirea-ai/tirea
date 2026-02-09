@@ -1,4 +1,9 @@
+use crate::skills::materialize::{
+    load_reference_material, run_script_material, SkillMaterializeError,
+};
 use crate::skills::skill_md::{parse_skill_md, SkillFrontmatter};
+use crate::skills::state::{LoadedReference, ScriptResult};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -17,9 +22,6 @@ pub struct SkillMeta {
     pub description: String,
     /// Tools suggested/allowed by this skill (optional).
     pub allowed_tools: Vec<String>,
-    /// Skill root directory (contains `SKILL.md`, `references/`, `scripts/`, ...).
-    #[serde(skip)]
-    pub root_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,10 +30,60 @@ pub struct SkillRegistryWarning {
     pub reason: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SkillRegistryError {
+    #[error("unknown skill: {0}")]
+    UnknownSkill(String),
+
+    #[error("invalid SKILL.md: {0}")]
+    InvalidSkillMd(String),
+
+    #[error("materialize error: {0}")]
+    Materialize(String),
+
+    #[error("io error: {0}")]
+    Io(String),
+
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+}
+
+impl From<SkillMaterializeError> for SkillRegistryError {
+    fn from(e: SkillMaterializeError) -> Self {
+        SkillRegistryError::Materialize(e.to_string())
+    }
+}
+
+#[async_trait]
+pub trait SkillRegistry: Send + Sync + std::fmt::Debug {
+    fn list(&self) -> Vec<SkillMeta>;
+    fn warnings(&self) -> Vec<SkillRegistryWarning> {
+        Vec::new()
+    }
+    fn get(&self, skill_id: &str) -> Option<SkillMeta>;
+    fn resolve(&self, key: &str) -> Option<SkillMeta> {
+        self.get(key.trim())
+    }
+
+    async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError>;
+    async fn load_reference(
+        &self,
+        skill_id: &str,
+        path: &str,
+    ) -> Result<LoadedReference, SkillRegistryError>;
+    async fn run_script(
+        &self,
+        skill_id: &str,
+        script: &str,
+        args: &[String],
+    ) -> Result<ScriptResult, SkillRegistryError>;
+}
+
 #[derive(Debug, Clone, Default)]
 struct Index {
     metas: Vec<SkillMeta>,
     by_id: HashMap<String, SkillMeta>,
+    by_id_root: HashMap<String, PathBuf>,
     warnings: Vec<SkillRegistryWarning>,
 }
 
@@ -39,12 +91,12 @@ struct Index {
 ///
 /// Discovery is metadata-only: it reads `SKILL.md` frontmatter and builds an index.
 #[derive(Debug, Clone)]
-pub struct SkillRegistry {
+pub struct FsSkillRegistry {
     roots: Vec<PathBuf>,
     index: Arc<RwLock<Option<Index>>>,
 }
 
-impl SkillRegistry {
+impl FsSkillRegistry {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots,
@@ -100,10 +152,6 @@ impl SkillRegistry {
         None
     }
 
-    pub fn skill_md_path(&self, skill: &SkillMeta) -> PathBuf {
-        skill.root_dir.join("SKILL.md")
-    }
-
     pub fn refresh(&self) {
         *self.index.write().unwrap() = None;
     }
@@ -114,11 +162,30 @@ impl SkillRegistry {
         }
 
         let mut metas = Vec::new();
+        let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
         let mut warnings = Vec::new();
         for root in &self.roots {
-            let (m, w) = discover_under_root(root);
-            metas.extend(m);
+            let (m, discovered_roots, w) = discover_under_root(root);
             warnings.extend(w);
+
+            for meta in m {
+                let Some(root_dir) = discovered_roots.get(&meta.id).cloned() else {
+                    continue;
+                };
+                if let Some(existing_root) = roots_by_id.get(&meta.id).cloned() {
+                    warnings.push(SkillRegistryWarning {
+                        path: root_dir.clone(),
+                        reason: format!(
+                            "duplicate skill id '{}' (already discovered under {})",
+                            meta.id,
+                            existing_root.to_string_lossy()
+                        ),
+                    });
+                    continue;
+                }
+                roots_by_id.insert(meta.id.clone(), root_dir);
+                metas.push(meta);
+            }
         }
 
         metas.sort_by(|a, b| a.id.cmp(&b.id));
@@ -126,6 +193,7 @@ impl SkillRegistry {
         for m in &metas {
             by_id.insert(m.id.clone(), m.clone());
         }
+        let by_id_root = roots_by_id;
 
         warnings.sort_by(|a, b| a.path.cmp(&b.path));
 
@@ -142,13 +210,93 @@ impl SkillRegistry {
         *self.index.write().unwrap() = Some(Index {
             metas,
             by_id,
+            by_id_root,
             warnings,
         });
     }
 }
 
-fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning>) {
+#[async_trait]
+impl SkillRegistry for FsSkillRegistry {
+    fn list(&self) -> Vec<SkillMeta> {
+        FsSkillRegistry::list(self)
+    }
+
+    fn warnings(&self) -> Vec<SkillRegistryWarning> {
+        FsSkillRegistry::warnings(self)
+    }
+
+    fn get(&self, skill_id: &str) -> Option<SkillMeta> {
+        FsSkillRegistry::get(self, skill_id)
+    }
+
+    async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError> {
+        self.ensure_indexed();
+        let root = self
+            .index
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
+            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
+        let path = root.join("SKILL.md");
+        tokio::task::spawn_blocking(move || std::fs::read_to_string(path))
+            .await
+            .map_err(|e| SkillRegistryError::Io(e.to_string()))?
+            .map_err(|e| SkillRegistryError::Io(e.to_string()))
+    }
+
+    async fn load_reference(
+        &self,
+        skill_id: &str,
+        path: &str,
+    ) -> Result<LoadedReference, SkillRegistryError> {
+        self.ensure_indexed();
+        let root = self
+            .index
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
+            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
+
+        let skill_id = skill_id.to_string();
+        let path = path.to_string();
+        tokio::task::spawn_blocking(move || load_reference_material(&skill_id, &root, &path))
+            .await
+            .map_err(|e| SkillRegistryError::Io(e.to_string()))?
+            .map_err(SkillRegistryError::from)
+    }
+
+    async fn run_script(
+        &self,
+        skill_id: &str,
+        script: &str,
+        args: &[String],
+    ) -> Result<ScriptResult, SkillRegistryError> {
+        self.ensure_indexed();
+        let root = self
+            .index
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|idx| idx.by_id_root.get(skill_id).cloned())
+            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
+        run_script_material(skill_id, &root, script, args)
+            .await
+            .map_err(SkillRegistryError::from)
+    }
+}
+
+fn discover_under_root(
+    root: &Path,
+) -> (
+    Vec<SkillMeta>,
+    HashMap<String, PathBuf>,
+    Vec<SkillRegistryWarning>,
+) {
     let mut metas = Vec::new();
+    let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
     let mut warnings = Vec::new();
 
     let root = match fs::canonicalize(root) {
@@ -158,7 +306,7 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
                 path: root.to_path_buf(),
                 reason: format!("failed to access skills root: {e}"),
             });
-            return (metas, warnings);
+            return (metas, roots_by_id, warnings);
         }
     };
 
@@ -169,7 +317,7 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
                 path: root,
                 reason: format!("failed to read skills root: {e}"),
             });
-            return (metas, warnings);
+            return (metas, roots_by_id, warnings);
         }
     };
 
@@ -208,7 +356,10 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
         }
 
         match meta_from_skill_md_path(&dir_name, &skill_md) {
-            Ok(meta) => metas.push(meta),
+            Ok((meta, root_dir)) => {
+                roots_by_id.insert(meta.id.clone(), root_dir);
+                metas.push(meta);
+            }
             Err(reason) => warnings.push(SkillRegistryWarning {
                 path: skill_md,
                 reason,
@@ -216,10 +367,13 @@ fn discover_under_root(root: &Path) -> (Vec<SkillMeta>, Vec<SkillRegistryWarning
         }
     }
 
-    (metas, warnings)
+    (metas, roots_by_id, warnings)
 }
 
-fn meta_from_skill_md_path(dir_name: &str, skill_md: &Path) -> Result<SkillMeta, String> {
+fn meta_from_skill_md_path(
+    dir_name: &str,
+    skill_md: &Path,
+) -> Result<(SkillMeta, PathBuf), String> {
     let root_dir = skill_md
         .parent()
         .ok_or_else(|| "invalid skill path".to_string())?
@@ -247,13 +401,13 @@ fn meta_from_skill_md_path(dir_name: &str, skill_md: &Path) -> Result<SkillMeta,
         .map(|s| s.to_string())
         .collect::<Vec<_>>();
 
-    Ok(SkillMeta {
+    let meta = SkillMeta {
         id: name.clone(),
         name,
         description,
         allowed_tools,
-        root_dir,
-    })
+    };
+    Ok((meta, root_dir))
 }
 
 fn normalize_name(s: &str) -> String {
@@ -316,7 +470,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "docx-processing");
@@ -350,7 +504,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         assert_eq!(reg.list().len(), 1);
         assert_eq!(reg.list()[0].id, "good-skill");
         let warnings = reg.warnings();
@@ -377,7 +531,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         assert!(reg.list().is_empty());
         let warnings = reg.warnings();
         assert!(warnings
@@ -404,7 +558,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "good-skill");
@@ -427,7 +581,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         assert!(reg.list().is_empty());
     }
 
@@ -442,7 +596,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         let list = reg.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "技能");
@@ -468,7 +622,7 @@ Body"#
         )
         .unwrap();
 
-        let reg = SkillRegistry::from_root(&skills_root);
+        let reg = FsSkillRegistry::from_root(&skills_root);
         let _ = reg.list();
         let _ = reg.list();
 

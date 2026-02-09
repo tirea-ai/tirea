@@ -2,8 +2,8 @@ use crate::plugin::AgentPlugin;
 use crate::r#loop::{run_loop, run_loop_stream};
 mod registry;
 use crate::skills::{
-    SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
-    SkillSubsystemError,
+    FsSkillRegistry, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin,
+    SkillSubsystem, SkillSubsystemError,
 };
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
@@ -64,6 +64,9 @@ pub enum AgentOsBuildError {
 
     #[error("skills enabled but no skills root/registry configured")]
     SkillsNotConfigured,
+
+    #[error("skills configured multiple ways (roots + registry)")]
+    SkillsConfiguredTwice,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -93,7 +96,7 @@ pub struct AgentOs {
     agents: AgentRegistry,
     base_tools: ToolRegistry,
     models: ModelRegistry,
-    skills_registry: Option<Arc<SkillRegistry>>,
+    skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
 }
 
@@ -104,6 +107,7 @@ pub struct AgentOsBuilder {
     base_tools: HashMap<String, Arc<dyn Tool>>,
     models: HashMap<String, ModelDefinition>,
     skills_roots: Vec<PathBuf>,
+    skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
 }
 
@@ -141,6 +145,7 @@ impl AgentOsBuilder {
             base_tools: HashMap::new(),
             models: HashMap::new(),
             skills_roots: Vec::new(),
+            skills_registry: None,
             skills: SkillsConfig::default(),
         }
     }
@@ -184,21 +189,36 @@ impl AgentOsBuilder {
         self
     }
 
+    pub fn with_skills_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
+        self.skills_registry = Some(registry);
+        self
+    }
+
     pub fn with_skills_config(mut self, cfg: SkillsConfig) -> Self {
         self.skills = cfg;
         self
     }
 
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
-        if self.skills.mode != SkillsMode::Disabled && self.skills_roots.is_empty() {
+        if self.skills_registry.is_some() && !self.skills_roots.is_empty() {
+            return Err(AgentOsBuildError::SkillsConfiguredTwice);
+        }
+
+        if self.skills.mode != SkillsMode::Disabled
+            && self.skills_registry.is_none()
+            && self.skills_roots.is_empty()
+        {
             return Err(AgentOsBuildError::SkillsNotConfigured);
         }
 
-        let skills_registry = if self.skills_roots.is_empty() {
-            None
-        } else {
-            Some(Arc::new(SkillRegistry::new(self.skills_roots)))
-        };
+        let skills_registry: Option<Arc<dyn SkillRegistry>> =
+            if let Some(reg) = self.skills_registry {
+                Some(reg)
+            } else if self.skills_roots.is_empty() {
+                None
+            } else {
+                Some(Arc::new(FsSkillRegistry::new(self.skills_roots)))
+            };
 
         let mut base_tools = ToolRegistry::new();
         base_tools.extend_named(self.base_tools)?;
@@ -235,7 +255,7 @@ impl AgentOs {
         self.default_client.clone()
     }
 
-    pub fn skill_registry(&self) -> Option<Arc<SkillRegistry>> {
+    pub fn skill_registry(&self) -> Option<Arc<dyn SkillRegistry>> {
         self.skills_registry.clone()
     }
 
@@ -658,6 +678,18 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(err, AgentOsBuildError::SkillsNotConfigured));
+    }
+
+    #[test]
+    fn build_errors_if_skills_roots_and_registry_both_set() {
+        let (_td, root) = make_skills_root();
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
+        let err = AgentOs::builder()
+            .with_skills_root("skills")
+            .with_skills_registry(reg)
+            .build()
+            .unwrap_err();
+        assert!(matches!(err, AgentOsBuildError::SkillsConfiguredTwice));
     }
 
     #[tokio::test]

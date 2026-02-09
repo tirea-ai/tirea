@@ -55,7 +55,7 @@ impl AgentPlugin for SkillPlugin {
 mod tests {
     use super::*;
     use crate::session::Session;
-    use crate::skills::SkillRegistry;
+    use crate::skills::{FsSkillRegistry, SkillRegistry};
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
     use std::fs;
@@ -72,7 +72,7 @@ mod tests {
         )
         .unwrap();
 
-        let reg = Arc::new(SkillRegistry::from_root(root));
+        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::from_root(root));
         let discovery = SkillDiscoveryPlugin::new(reg);
         let plugin = SkillPlugin::new(discovery);
 

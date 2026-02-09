@@ -84,6 +84,20 @@ impl ToolRegistry {
         Ok(())
     }
 
+    pub fn extend_registry(&mut self, other: &ToolRegistry) -> Result<(), ToolRegistryError> {
+        self.extend_named(other.to_map())
+    }
+
+    pub fn merge_many(
+        regs: impl IntoIterator<Item = ToolRegistry>,
+    ) -> Result<ToolRegistry, ToolRegistryError> {
+        let mut out = ToolRegistry::new();
+        for r in regs {
+            out.extend_named(r.into_map())?;
+        }
+        Ok(out)
+    }
+
     pub fn into_map(self) -> HashMap<String, Arc<dyn Tool>> {
         self.tools
     }
@@ -294,5 +308,15 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, ModelRegistryError::EmptyModelName));
+    }
+
+    #[test]
+    fn tool_registry_merge_many_detects_conflict() {
+        let mut a = ToolRegistry::new();
+        a.register(Arc::new(T("x"))).unwrap();
+        let mut b = ToolRegistry::new();
+        b.register(Arc::new(T("x"))).unwrap();
+        let err = ToolRegistry::merge_many([a, b]).err().unwrap();
+        assert!(matches!(err, ToolRegistryError::ToolIdConflict(ref id) if id == "x"));
     }
 }
