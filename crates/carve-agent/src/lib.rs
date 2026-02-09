@@ -83,6 +83,7 @@
 pub mod activity;
 pub mod ag_ui;
 pub mod agent;
+pub mod agent_os;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -154,6 +155,7 @@ pub use convert::{
 
 // Agent exports
 pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentTool};
+pub use agent_os::{AgentOs, AgentOsBuilder, AgentOsWiringError, SkillsConfig, SkillsMode};
 
 // Loop exports
 pub use r#loop::{
