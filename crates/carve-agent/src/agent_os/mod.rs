@@ -10,7 +10,8 @@ use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
 pub use registry::{
     AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    CompositeToolRegistry, InMemoryToolRegistry, ToolRegistry, ToolRegistryError,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+    ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -59,7 +60,13 @@ pub enum AgentOsBuildError {
     Tools(#[from] ToolRegistryError),
 
     #[error(transparent)]
+    Providers(#[from] ProviderRegistryError),
+
+    #[error(transparent)]
     Models(#[from] ModelRegistryError),
+
+    #[error("models configured but no ProviderRegistry configured")]
+    ProvidersNotConfigured,
 
     #[error("skills enabled but no SkillRegistry configured")]
     SkillsNotConfigured,
@@ -72,6 +79,9 @@ pub enum AgentOsResolveError {
 
     #[error("model not found: {0}")]
     ModelNotFound(String),
+
+    #[error("provider not found: {provider_id} (for model id: {model_id})")]
+    ProviderNotFound { provider_id: String, model_id: String },
 
     #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
@@ -91,6 +101,7 @@ pub struct AgentOs {
     default_client: Client,
     agents: AgentRegistry,
     base_tools: Arc<dyn ToolRegistry>,
+    providers: Arc<dyn ProviderRegistry>,
     models: ModelRegistry,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
@@ -102,6 +113,8 @@ pub struct AgentOsBuilder {
     agents: HashMap<String, AgentDefinition>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
     base_tool_registries: Vec<Arc<dyn ToolRegistry>>,
+    providers: HashMap<String, Client>,
+    provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
@@ -113,6 +126,7 @@ impl std::fmt::Debug for AgentOs {
             .field("default_client", &"[genai::Client]")
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
+            .field("providers", &self.providers.len())
             .field("models", &self.models.len())
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
@@ -126,6 +140,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("client", &self.client.is_some())
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
+            .field("providers", &self.providers.len())
             .field("models", &self.models.len())
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
@@ -140,6 +155,8 @@ impl AgentOsBuilder {
             agents: HashMap::new(),
             base_tools: HashMap::new(),
             base_tool_registries: Vec::new(),
+            providers: HashMap::new(),
+            provider_registries: Vec::new(),
             models: HashMap::new(),
             skills_registry: None,
             skills: SkillsConfig::default(),
@@ -167,6 +184,16 @@ impl AgentOsBuilder {
 
     pub fn with_tool_registry(mut self, registry: Arc<dyn ToolRegistry>) -> Self {
         self.base_tool_registries.push(registry);
+        self
+    }
+
+    pub fn with_provider(mut self, provider_id: impl Into<String>, client: Client) -> Self {
+        self.providers.insert(provider_id.into(), client);
+        self
+    }
+
+    pub fn with_provider_registry(mut self, registry: Arc<dyn ProviderRegistry>) -> Self {
+        self.provider_registries.push(registry);
         self
     }
 
@@ -216,8 +243,31 @@ impl AgentOsBuilder {
             }
         };
 
+        let mut providers = InMemoryProviderRegistry::new();
+        providers.extend(self.providers)?;
+
+        let providers: Arc<dyn ProviderRegistry> = match self.provider_registries.len() {
+            0 => Arc::new(providers),
+            _ => {
+                let mut regs: Vec<Arc<dyn ProviderRegistry>> = Vec::new();
+                if !providers.is_empty() {
+                    regs.push(Arc::new(providers));
+                }
+                regs.extend(self.provider_registries);
+                if regs.len() == 1 {
+                    regs.pop().unwrap()
+                } else {
+                    Arc::new(CompositeProviderRegistry::try_new(regs)?)
+                }
+            }
+        };
+
         let mut models = ModelRegistry::new();
         models.extend(self.models)?;
+
+        if !models.is_empty() && providers.is_empty() {
+            return Err(AgentOsBuildError::ProvidersNotConfigured);
+        }
 
         let mut agents = AgentRegistry::new();
         agents.extend_upsert(self.agents);
@@ -226,6 +276,7 @@ impl AgentOsBuilder {
             default_client: self.client.unwrap_or_default(),
             agents,
             base_tools,
+            providers,
             models,
             skills_registry,
             skills: self.skills,
@@ -269,11 +320,18 @@ impl AgentOs {
             return Err(AgentOsResolveError::ModelNotFound(cfg.model.clone()));
         };
 
+        let Some(client) = self.providers.get(&def.provider) else {
+            return Err(AgentOsResolveError::ProviderNotFound {
+                provider_id: def.provider.clone(),
+                model_id: cfg.model.clone(),
+            });
+        };
+
         cfg.model = def.model;
         if let Some(opts) = def.chat_options {
             cfg.chat_options = Some(opts);
         }
-        Ok(def.client)
+        Ok(client)
     }
 
     pub fn wire_skills_into(
@@ -678,9 +736,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_errors_if_models_registry_present_but_model_missing() {
         let os = AgentOs::builder()
+            .with_provider("p1", Client::default())
             .with_model(
                 "m1",
-                ModelDefinition::new(Client::default(), "gpt-4o-mini").with_chat_options(
+                ModelDefinition::new("p1", "gpt-4o-mini").with_chat_options(
                     genai::chat::ChatOptions::default().with_capture_usage(true),
                 ),
             )
@@ -698,7 +757,8 @@ mod tests {
     #[tokio::test]
     async fn resolve_rewrites_model_when_registry_present() {
         let os = AgentOs::builder()
-            .with_model("m1", ModelDefinition::new(Client::default(), "gpt-4o-mini"))
+            .with_provider("p1", Client::default())
+            .with_model("m1", ModelDefinition::new("p1", "gpt-4o-mini"))
             .with_agent("a1", AgentDefinition::new("m1"))
             .build()
             .unwrap();
