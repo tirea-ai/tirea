@@ -612,6 +612,21 @@ pub async fn execute_tools_with_config(
         });
     }
 
+    // If a previous run left a persisted pending interaction, clear it once we successfully
+    // complete tool execution without creating a new pending interaction.
+    if let Ok(state) = session.rebuild_state() {
+        if state
+            .get(AGENT_STATE_PATH)
+            .and_then(|v| v.get("pending_interaction"))
+            .is_some()
+        {
+            let patch = clear_agent_pending_interaction(&state);
+            if !patch.patch().is_empty() {
+                session = session.with_patch(patch);
+            }
+        }
+    }
+
     Ok(session)
 }
 
@@ -707,6 +722,21 @@ pub async fn execute_tools_with_plugins(
             session,
             interaction,
         });
+    }
+
+    // If a previous run left a persisted pending interaction, clear it once we successfully
+    // complete tool execution without creating a new pending interaction.
+    if let Ok(state) = session.rebuild_state() {
+        if state
+            .get(AGENT_STATE_PATH)
+            .and_then(|v| v.get("pending_interaction"))
+            .is_some()
+        {
+            let patch = clear_agent_pending_interaction(&state);
+            if !patch.patch().is_empty() {
+                session = session.with_patch(patch);
+            }
+        }
     }
 
     Ok(session)
@@ -2678,6 +2708,45 @@ mod tests {
             // Should have tool response + reminder message
             assert_eq!(session.message_count(), 2);
             assert!(session.messages[1].content.contains("system-reminder"));
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_success() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Seed a session with a previously persisted pending interaction.
+            let base_state = json!({});
+            let pending_patch = set_agent_pending_interaction(
+                &base_state,
+                Interaction::new("confirm_1", "confirm").with_message("ok"),
+            );
+            let session = Session::with_initial_state("test", base_state).with_patch(pending_patch);
+
+            let result = StreamResult {
+                text: "Calling tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4");
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            let state = session.rebuild_state().unwrap();
+            let pending = state
+                .get("agent")
+                .and_then(|a| a.get("pending_interaction"));
+            assert!(
+                pending.is_none() || pending.is_some_and(|v| v.is_null()),
+                "expected pending_interaction to be cleared, got: {pending:?}"
+            );
         });
     }
 
