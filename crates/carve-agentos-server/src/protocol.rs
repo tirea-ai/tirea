@@ -26,7 +26,10 @@ impl AiSdkEncoder {
 
         if matches!(ev, AgentEvent::RunFinish { .. }) {
             self.finished = true;
-            return vec![self.adapter.text_end(), self.adapter.finish()];
+            return vec![
+                self.adapter.text_end(),
+                UIStreamEvent::finish_with_reason("stop"),
+            ];
         }
 
         ev.to_ui_events(self.adapter.text_id())
@@ -101,7 +104,7 @@ mod tests {
             result: None,
         });
         assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
-        assert!(matches!(out[1], UIStreamEvent::Finish));
+        assert!(matches!(out[1], UIStreamEvent::Finish { .. }));
     }
 
     #[test]

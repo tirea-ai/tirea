@@ -20,7 +20,10 @@ export default function Chat() {
             }}
           >
             <strong>{m.role === "user" ? "You" : "Agent"}:</strong>{" "}
-            {m.content}
+            {m.parts
+              .filter((p) => p.type === "text")
+              .map((p) => (p as { type: "text"; text: string }).text)
+              .join("")}
           </div>
         ))}
         {isLoading && (

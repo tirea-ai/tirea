@@ -352,7 +352,7 @@ impl AgentEvent {
         match self {
             // Lifecycle events - AI SDK doesn't have direct equivalents
             AgentEvent::RunStart { .. } => vec![],
-            AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish()],
+            AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish_with_reason("stop")],
 
             // Text events
             AgentEvent::TextDelta { delta } => {
@@ -1683,7 +1683,7 @@ mod tests {
             .any(|e| matches!(e, UIStreamEvent::FinishStep)));
         assert!(all_ui_events
             .iter()
-            .any(|e| matches!(e, UIStreamEvent::Finish)));
+            .any(|e| matches!(e, UIStreamEvent::Finish { .. })));
     }
 
     // ========================================================================
@@ -1710,7 +1710,7 @@ mod tests {
         let ui_events = event.to_ui_events("txt_0");
         assert_eq!(ui_events.len(), 1);
         assert!(
-            matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason == "User cancelled")
+            matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason.as_deref() == Some("User cancelled"))
         );
     }
 
@@ -2659,7 +2659,7 @@ mod tests {
                 UIStreamEvent::ToolInputDelta { .. } => "ToolInputDelta",
                 UIStreamEvent::ToolInputAvailable { .. } => "ToolInputAvailable",
                 UIStreamEvent::ToolOutputAvailable { .. } => "ToolOutputAvailable",
-                UIStreamEvent::Finish => "Finish",
+                UIStreamEvent::Finish { .. } => "Finish",
                 _ => "Other",
             })
             .collect();

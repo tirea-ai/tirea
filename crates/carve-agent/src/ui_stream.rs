@@ -32,10 +32,16 @@ pub enum UIStreamEvent {
     // Message Lifecycle
     // ========================================================================
     /// Indicates the beginning of a new message with metadata.
+    ///
+    /// AI SDK v6 expects this as `{"type":"start","messageId":"..."}`.
+    #[serde(rename = "start")]
     MessageStart {
         /// Unique identifier for this message.
-        #[serde(rename = "messageId")]
-        message_id: String,
+        #[serde(rename = "messageId", skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        /// Optional message metadata.
+        #[serde(rename = "messageMetadata", skip_serializing_if = "Option::is_none")]
+        message_metadata: Option<Value>,
     },
 
     // ========================================================================
@@ -171,27 +177,37 @@ pub enum UIStreamEvent {
     },
 
     /// Contains a file reference.
+    ///
+    /// AI SDK v6 strict schema only includes `url`, `mediaType`, and optional `providerMetadata`.
     File {
         /// URL to the file.
         url: String,
         /// IANA media type.
         #[serde(rename = "mediaType")]
         media_type: String,
-        /// Optional filename.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filename: Option<String>,
+        /// Optional provider metadata.
+        #[serde(rename = "providerMetadata", skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<Value>,
     },
 
     // ========================================================================
     // Stream Lifecycle
     // ========================================================================
     /// Indicates message completion.
-    Finish,
+    Finish {
+        /// Optional reason for finishing (stop, length, content-filter, tool-calls, error, other).
+        #[serde(rename = "finishReason", skip_serializing_if = "Option::is_none")]
+        finish_reason: Option<String>,
+        /// Optional message metadata.
+        #[serde(rename = "messageMetadata", skip_serializing_if = "Option::is_none")]
+        message_metadata: Option<Value>,
+    },
 
     /// Signals stream abortion with a reason.
     Abort {
-        /// Reason for the abort.
-        reason: String,
+        /// Optional reason for the abort.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 
     /// Appends error messages to stream.
@@ -220,10 +236,19 @@ impl UIStreamEvent {
     // Factory Methods
     // ========================================================================
 
-    /// Create a message-start event.
+    /// Create a start event (message start).
     pub fn message_start(message_id: impl Into<String>) -> Self {
         Self::MessageStart {
-            message_id: message_id.into(),
+            message_id: Some(message_id.into()),
+            message_metadata: None,
+        }
+    }
+
+    /// Create a start event without message ID.
+    pub fn start() -> Self {
+        Self::MessageStart {
+            message_id: None,
+            message_metadata: None,
         }
     }
 
@@ -339,27 +364,34 @@ impl UIStreamEvent {
     }
 
     /// Create a file event.
-    pub fn file(
-        url: impl Into<String>,
-        media_type: impl Into<String>,
-        filename: Option<String>,
-    ) -> Self {
+    pub fn file(url: impl Into<String>, media_type: impl Into<String>) -> Self {
         Self::File {
             url: url.into(),
             media_type: media_type.into(),
-            filename,
+            provider_metadata: None,
         }
     }
 
     /// Create a finish event.
     pub fn finish() -> Self {
-        Self::Finish
+        Self::Finish {
+            finish_reason: None,
+            message_metadata: None,
+        }
+    }
+
+    /// Create a finish event with a reason.
+    pub fn finish_with_reason(reason: impl Into<String>) -> Self {
+        Self::Finish {
+            finish_reason: Some(reason.into()),
+            message_metadata: None,
+        }
     }
 
     /// Create an abort event.
     pub fn abort(reason: impl Into<String>) -> Self {
         Self::Abort {
-            reason: reason.into(),
+            reason: Some(reason.into()),
         }
     }
 
@@ -491,9 +523,6 @@ pub enum UIMessagePart {
         /// IANA media type.
         #[serde(rename = "mediaType")]
         media_type: String,
-        /// Optional filename.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filename: Option<String>,
     },
 
     /// Step start marker.
@@ -745,7 +774,7 @@ mod tests {
     fn test_message_start_serialization() {
         let event = UIStreamEvent::message_start("msg_123");
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""type":"message-start""#));
+        assert!(json.contains(r#""type":"start""#));
         assert!(json.contains(r#""messageId":"msg_123""#));
     }
 
@@ -878,7 +907,7 @@ mod tests {
 
     #[test]
     fn test_file_serialization() {
-        let event = UIStreamEvent::file("https://example.com/file.png", "image/png", None);
+        let event = UIStreamEvent::file("https://example.com/file.png", "image/png");
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"file""#));
         assert!(json.contains(r#""url":"https://example.com/file.png""#));
@@ -914,7 +943,7 @@ mod tests {
 
     #[test]
     fn test_message_start_deserialization() {
-        let json = r#"{"type":"message-start","messageId":"msg_123"}"#;
+        let json = r#"{"type":"start","messageId":"msg_123"}"#;
         let event: UIStreamEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event, UIStreamEvent::message_start("msg_123"));
     }
@@ -1092,7 +1121,7 @@ mod tests {
         assert_eq!(events.len(), 7);
         assert!(matches!(&events[0], UIStreamEvent::MessageStart { .. }));
         assert!(matches!(&events[1], UIStreamEvent::TextStart { .. }));
-        assert!(matches!(&events[6], UIStreamEvent::Finish));
+        assert!(matches!(&events[6], UIStreamEvent::Finish { .. }));
     }
 
     #[test]
@@ -1183,7 +1212,7 @@ mod tests {
 
         assert!(events
             .iter()
-            .any(|e| matches!(e, UIStreamEvent::Abort { reason } if reason == "User cancelled")));
+            .any(|e| matches!(e, UIStreamEvent::Abort { reason } if reason.as_deref() == Some("User cancelled"))));
     }
 
     #[test]
@@ -1282,7 +1311,6 @@ mod tests {
         let part = UIMessagePart::File {
             url: "https://example.com/image.png".to_string(),
             media_type: "image/png".to_string(),
-            filename: Some("image.png".to_string()),
         };
         let json = serde_json::to_string(&part).unwrap();
         assert!(json.contains(r#""type":"file""#));
@@ -1375,14 +1403,11 @@ mod tests {
     }
 
     #[test]
-    fn test_file_event_with_filename() {
-        let event = UIStreamEvent::file(
-            "https://example.com/doc.pdf",
-            "application/pdf",
-            Some("document.pdf".to_string()),
-        );
+    fn test_file_event_without_provider_metadata() {
+        let event = UIStreamEvent::file("https://example.com/doc.pdf", "application/pdf");
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains(r#""filename":"document.pdf""#));
+        assert!(json.contains(r#""type":"file""#));
+        assert!(!json.contains("providerMetadata"));
     }
 
     #[test]
@@ -1491,6 +1516,200 @@ mod tests {
         assert!(matches!(txt_end, UIStreamEvent::TextEnd { .. }));
 
         let finish = adapter.finish();
-        assert!(matches!(finish, UIStreamEvent::Finish));
+        assert!(matches!(finish, UIStreamEvent::Finish { .. }));
+    }
+
+    // ========================================================================
+    // AI SDK v6 Strict Schema Compliance Tests
+    //
+    // V6 uses z7.strictObject which rejects extra fields. These tests verify
+    // our serialization produces exactly the fields v6 expects.
+    // ========================================================================
+
+    /// Helper: parse JSON and return its keys.
+    fn json_keys(json_str: &str) -> Vec<String> {
+        let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        v.as_object().unwrap().keys().cloned().collect()
+    }
+
+    #[test]
+    fn test_v6_start_event_strict_schema() {
+        // v6 schema: { type: "start", messageId?: string, messageMetadata?: unknown }
+        let event = UIStreamEvent::message_start("msg_1");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert!(keys.contains(&"type".to_string()));
+        assert!(keys.contains(&"messageId".to_string()));
+        // Must use "start" not "message-start"
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "start");
+        // No extra fields beyond type + messageId (messageMetadata skipped when None)
+        assert!(keys.len() <= 3, "too many fields: {:?}", keys);
+    }
+
+    #[test]
+    fn test_v6_text_start_strict_schema() {
+        // v6 schema: { type: "text-start", id: string, providerMetadata?: ... }
+        let event = UIStreamEvent::text_start("txt_1");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 2); // type + id only
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "text-start");
+        assert_eq!(v["id"], "txt_1");
+    }
+
+    #[test]
+    fn test_v6_text_delta_strict_schema() {
+        // v6 schema: { type: "text-delta", id: string, delta: string, providerMetadata?: ... }
+        let event = UIStreamEvent::text_delta("txt_1", "Hello");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 3); // type + id + delta
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "text-delta");
+    }
+
+    #[test]
+    fn test_v6_finish_strict_schema() {
+        // v6 schema: { type: "finish", finishReason?: enum, messageMetadata?: unknown }
+        let event = UIStreamEvent::finish_with_reason("stop");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "finish");
+        assert_eq!(v["finishReason"], "stop");
+        // No extra fields
+        assert!(keys.len() <= 3, "too many fields: {:?}", keys);
+    }
+
+    #[test]
+    fn test_v6_finish_without_reason_strict_schema() {
+        let event = UIStreamEvent::finish();
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "finish");
+        // finishReason and messageMetadata should be absent (skip_serializing_if)
+        assert!(v.get("finishReason").is_none());
+        assert!(v.get("messageMetadata").is_none());
+    }
+
+    #[test]
+    fn test_v6_error_strict_schema() {
+        // v6 schema: { type: "error", errorText: string }
+        let event = UIStreamEvent::error("Something went wrong");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 2); // type + errorText
+    }
+
+    #[test]
+    fn test_v6_tool_input_start_strict_schema() {
+        // v6 schema: { type: "tool-input-start", toolCallId, toolName, providerExecuted?, providerMetadata?, dynamic?, title? }
+        let event = UIStreamEvent::tool_input_start("call_1", "search");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 3); // type + toolCallId + toolName
+    }
+
+    #[test]
+    fn test_v6_tool_input_delta_strict_schema() {
+        // v6 schema: { type: "tool-input-delta", toolCallId, inputTextDelta }
+        let event = UIStreamEvent::tool_input_delta("call_1", r#"{"q":"r"}"#);
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 3); // type + toolCallId + inputTextDelta
+    }
+
+    #[test]
+    fn test_v6_tool_output_available_strict_schema() {
+        // v6 schema: { type: "tool-output-available", toolCallId, output, providerExecuted?, dynamic?, preliminary? }
+        let event = UIStreamEvent::tool_output_available("call_1", json!({"result": "ok"}));
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 3); // type + toolCallId + output
+    }
+
+    #[test]
+    fn test_v6_abort_strict_schema() {
+        // v6 schema: { type: "abort", reason?: string }
+        let event = UIStreamEvent::abort("cancelled");
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "abort");
+        assert_eq!(v["reason"], "cancelled");
+    }
+
+    #[test]
+    fn test_v6_file_strict_schema() {
+        // v6 schema: { type: "file", url, mediaType, providerMetadata? }
+        // NOTE: v6 strict schema does NOT include "filename"
+        let event = UIStreamEvent::file("https://example.com/f.png", "image/png");
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 3); // type + url + mediaType
+        assert!(!json.contains("filename"));
+    }
+
+    #[test]
+    fn test_v6_start_step_strict_schema() {
+        // v6 schema: { type: "start-step" }
+        let event = UIStreamEvent::start_step();
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 1); // type only
+    }
+
+    #[test]
+    fn test_v6_finish_step_strict_schema() {
+        // v6 schema: { type: "finish-step" }
+        let event = UIStreamEvent::finish_step();
+        let json = serde_json::to_string(&event).unwrap();
+        let keys = json_keys(&json);
+        assert_eq!(keys.len(), 1); // type only
+    }
+
+    #[test]
+    fn test_v6_data_event_strict_schema() {
+        // v6 schema: { type: /^data-.*/, id?: string, data: unknown, transient?: boolean }
+        let event = UIStreamEvent::data("run-info", json!({"runId": "r1"}));
+        let json = serde_json::to_string(&event).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "data-run-info");
+        assert!(v.get("data").is_some());
+    }
+
+    #[test]
+    fn test_v6_complete_stream_sequence() {
+        // Simulate a complete v6-compliant stream sequence
+        let events = vec![
+            UIStreamEvent::message_start("msg_1"),
+            UIStreamEvent::text_start("txt_0"),
+            UIStreamEvent::text_delta("txt_0", "Hello "),
+            UIStreamEvent::text_delta("txt_0", "World!"),
+            UIStreamEvent::text_end("txt_0"),
+            UIStreamEvent::finish_with_reason("stop"),
+        ];
+
+        // All events should serialize to valid JSON
+        for event in &events {
+            let json = serde_json::to_string(event).unwrap();
+            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(v["type"].is_string(), "event must have string type field");
+        }
+
+        // Verify the type sequence
+        let types: Vec<String> = events
+            .iter()
+            .map(|e| {
+                let json = serde_json::to_string(e).unwrap();
+                let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                v["type"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            types,
+            vec!["start", "text-start", "text-delta", "text-delta", "text-end", "finish"]
+        );
     }
 }

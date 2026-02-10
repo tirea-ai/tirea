@@ -218,8 +218,8 @@ async fn test_nats_aisdk_happy_path() {
 
     let all = events.join("\n");
     assert!(
-        all.contains("\"type\":\"message-start\""),
-        "missing message-start in: {all}"
+        all.contains("\"type\":\"start\""),
+        "missing start in: {all}"
     );
     assert!(
         all.contains("\"type\":\"text-start\""),

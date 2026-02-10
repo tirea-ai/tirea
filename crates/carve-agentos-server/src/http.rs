@@ -236,6 +236,11 @@ async fn run_ai_sdk_sse(
                 }
             }
         }
+
+        // AI SDK v6 expects a [DONE] sentinel to cleanly terminate the stream.
+        if !output_closed {
+            let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
+        }
     });
 
     // Persist intermediate checkpoints and the final session.
@@ -401,6 +406,10 @@ where
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
+    headers.insert(
+        header::HeaderName::from_static("x-vercel-ai-ui-message-stream"),
+        HeaderValue::from_static("v1"),
+    );
 
     (headers, Body::from_stream(stream)).into_response()
 }

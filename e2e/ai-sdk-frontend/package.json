@@ -8,8 +8,8 @@
     "start": "next start -p 3001"
   },
   "dependencies": {
-    "@ai-sdk/react": "^1",
-    "ai": "^4",
+    "@ai-sdk/react": "^3.0.81",
+    "ai": "^6.0.79",
     "next": "15",
     "react": "19",
     "react-dom": "19"
