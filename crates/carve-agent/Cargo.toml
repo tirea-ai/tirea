@@ -39,3 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [[example]]
 name = "live_deepseek"
 path = "examples/live_deepseek.rs"
+
+[[example]]
+name = "live_deepseek_skills"
+path = "examples/live_deepseek_skills.rs"
