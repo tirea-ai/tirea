@@ -556,6 +556,16 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
     println!("=== AG-UI Tool Call via TensorZero ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"STEP_STARTED""#),
+        "missing STEP_STARTED — agent loop should emit step boundaries"
+    );
+    assert!(
+        text.contains(r#""type":"STEP_FINISHED""#),
+        "missing STEP_FINISHED — agent loop should emit step boundaries"
+    );
     assert!(
         text.contains(r#""type":"TOOL_CALL_START""#),
         "missing TOOL_CALL_START"
@@ -564,7 +574,6 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
         text.contains(r#""type":"TOOL_CALL_END""#),
         "missing TOOL_CALL_END"
     );
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
 
     let answer = extract_agui_text(&text);
     println!("Extracted text: {answer}");
@@ -707,4 +716,168 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
         answer.to_lowercase().contains("purple"),
         "LLM did not recall 'purple'. Got: {answer}"
     );
+}
+
+// ============================================================================
+// AG-UI: RUN_ERROR via max rounds exceeded (TensorZero)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
+    if skip_unless_ready() {
+        return;
+    }
+
+    // max_rounds=1 + tool = the agent will call the tool, then need a second round → error.
+    let def = AgentDefinition {
+        id: "limited".to_string(),
+        model: "deepseek".to_string(),
+        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
+            .to_string(),
+        max_rounds: 1,
+        ..Default::default()
+    };
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
+
+    let os = Arc::new(
+        AgentOsBuilder::new()
+            .with_provider("tz", make_tz_client())
+            .with_model(
+                "deepseek",
+                ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
+            )
+            .with_tools(tools)
+            .with_agent("limited", def)
+            .build()
+            .expect("failed to build limited AgentOs"),
+    );
+
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let (status, text) = post_sse(
+        app,
+        "/v1/agents/limited/runs/ag-ui/sse",
+        json!({
+            "threadId": "tz-agui-error",
+            "runId": "r-err-1",
+            "messages": [
+                {"role": "user", "content": "Use the calculator to add 1 and 2."}
+            ],
+            "tools": []
+        }),
+    )
+    .await;
+
+    println!("=== TZ AG-UI RUN_ERROR Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+
+    assert!(
+        text.contains(r#""type":"RUN_ERROR""#),
+        "missing RUN_ERROR — max rounds should trigger an error. Response:\n{text}"
+    );
+    assert!(
+        text.contains("Max rounds") || text.contains("max rounds"),
+        "RUN_ERROR should mention max rounds exceeded"
+    );
+}
+
+// ============================================================================
+// AG-UI: Multi-step tool call (verify multiple STEP cycles, TensorZero)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ag_ui_multistep_tool() {
+    if skip_unless_ready() {
+        return;
+    }
+
+    let os = Arc::new(make_tool_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let (status, text) = post_sse(
+        app,
+        "/v1/agents/calc/runs/ag-ui/sse",
+        json!({
+            "threadId": "tz-agui-multistep",
+            "runId": "r-ms-1",
+            "messages": [
+                {"role": "user", "content": "Use the calculator to multiply 9 by 6. Reply with just the number."}
+            ],
+            "tools": []
+        }),
+    )
+    .await;
+
+    println!("=== TZ AG-UI Multi-Step Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+
+    // Should have >= 2 STEP cycles (tool call round + text round).
+    let step_started_count = text.matches(r#""type":"STEP_STARTED""#).count();
+    let step_finished_count = text.matches(r#""type":"STEP_FINISHED""#).count();
+
+    println!("STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}");
+
+    assert!(
+        step_started_count >= 2,
+        "expected >= 2 STEP_STARTED events, got {step_started_count}"
+    );
+    assert!(
+        step_finished_count >= 2,
+        "expected >= 2 STEP_FINISHED events, got {step_finished_count}"
+    );
+
+    // Tool events.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START"
+    );
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_RESULT""#),
+        "missing TOOL_CALL_RESULT"
+    );
+
+    // Final answer.
+    let answer = extract_agui_text(&text);
+    println!("Extracted text: {answer}");
+    assert!(
+        answer.contains("54"),
+        "LLM did not answer '54' for 9*6. Got: {answer}"
+    );
+
+    // Event ordering: RUN_STARTED first, RUN_FINISHED last.
+    let events: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("data: "))
+        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
+        .filter_map(|v| {
+            let t = v.get("type")?.as_str()?;
+            match t {
+                "RUN_STARTED" | "RUN_FINISHED" | "STEP_STARTED" | "STEP_FINISHED" => {
+                    Some(t.to_string())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    println!("Lifecycle event sequence: {events:?}");
+    assert_eq!(events.first().map(|s| s.as_str()), Some("RUN_STARTED"));
+    assert_eq!(events.last().map(|s| s.as_str()), Some("RUN_FINISHED"));
 }

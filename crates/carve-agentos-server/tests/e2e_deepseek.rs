@@ -380,7 +380,17 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
 
     assert_eq!(status, StatusCode::OK);
 
-    // AG-UI protocol: TOOL_CALL_START and TOOL_CALL_END events.
+    // AG-UI protocol: lifecycle + tool call events.
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"STEP_STARTED""#),
+        "missing STEP_STARTED — agent loop should emit step boundaries"
+    );
+    assert!(
+        text.contains(r#""type":"STEP_FINISHED""#),
+        "missing STEP_FINISHED — agent loop should emit step boundaries"
+    );
     assert!(
         text.contains(r#""type":"TOOL_CALL_START""#),
         "missing TOOL_CALL_START — LLM didn't invoke the calculator"
@@ -389,8 +399,6 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
         text.contains(r#""type":"TOOL_CALL_END""#),
         "missing TOOL_CALL_END — tool execution didn't complete"
     );
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
 
     // The response should contain "579".
     let answer = extract_agui_text(&text);
@@ -680,4 +688,169 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
         answer.contains("Mouse") || answer.contains("mouse"),
         "LLM should mention 'Mouse' from context. Got: {answer}"
     );
+}
+
+// ============================================================================
+// AG-UI: RUN_ERROR via max rounds exceeded
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    // Build agent with max_rounds=1 and a tool — the LLM will call the tool,
+    // then the second round is needed to produce text, exceeding the limit.
+    let def = AgentDefinition {
+        id: "limited".to_string(),
+        model: "deepseek-chat".to_string(),
+        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
+            .to_string(),
+        max_rounds: 1,
+        ..Default::default()
+    };
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
+
+    let os = Arc::new(
+        AgentOsBuilder::new()
+            .with_tools(tools)
+            .with_agent("limited", def)
+            .build()
+            .expect("failed to build limited AgentOs"),
+    );
+
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "e2e-agui-error",
+        "runId": "r-err-1",
+        "messages": [
+            {"role": "user", "content": "Use the calculator to add 1 and 2."}
+        ],
+        "tools": []
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/limited/runs/ag-ui/sse", payload).await;
+
+    println!("=== AG-UI RUN_ERROR Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+
+    // Should contain RUN_ERROR with max rounds message.
+    assert!(
+        text.contains(r#""type":"RUN_ERROR""#),
+        "missing RUN_ERROR — max rounds should trigger an error. Response:\n{text}"
+    );
+    assert!(
+        text.contains("Max rounds") || text.contains("max rounds"),
+        "RUN_ERROR should mention max rounds exceeded"
+    );
+
+    // After RUN_ERROR, the AgUiEncoder stops — no RUN_FINISHED is emitted.
+    // This is correct AG-UI behavior: RUN_ERROR is terminal.
+}
+
+// ============================================================================
+// AG-UI: Multi-step tool call (verify multiple STEP cycles)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_multistep_tool_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_tool_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    // Ask a question that requires a tool call, then a text response — two steps.
+    let payload = json!({
+        "threadId": "e2e-agui-multistep",
+        "runId": "r-ms-1",
+        "messages": [
+            {"role": "user", "content": "Use the calculator to multiply 7 by 8. Reply with just the number."}
+        ],
+        "tools": []
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
+
+    println!("=== AG-UI Multi-Step Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+
+    // Count STEP_STARTED and STEP_FINISHED events — should be >= 2 of each
+    // (step 1: LLM→tool call, step 2: LLM→text response).
+    let step_started_count = text.matches(r#""type":"STEP_STARTED""#).count();
+    let step_finished_count = text.matches(r#""type":"STEP_FINISHED""#).count();
+
+    println!("STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}");
+
+    assert!(
+        step_started_count >= 2,
+        "expected >= 2 STEP_STARTED events (tool call round + text round), got {step_started_count}"
+    );
+    assert!(
+        step_finished_count >= 2,
+        "expected >= 2 STEP_FINISHED events, got {step_finished_count}"
+    );
+
+    // Tool call events should be present.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START"
+    );
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_RESULT""#),
+        "missing TOOL_CALL_RESULT"
+    );
+
+    // Final answer should contain 56.
+    let answer = extract_agui_text(&text);
+    println!("Extracted text: {answer}");
+    assert!(
+        answer.contains("56"),
+        "LLM did not answer '56' for 7*8. Got: {answer}"
+    );
+
+    // Verify event ordering: RUN_STARTED → STEP_STARTED → ... → STEP_FINISHED → STEP_STARTED → ... → STEP_FINISHED → RUN_FINISHED
+    let events: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("data: "))
+        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
+        .filter_map(|v| {
+            let t = v.get("type")?.as_str()?;
+            match t {
+                "RUN_STARTED" | "RUN_FINISHED" | "STEP_STARTED" | "STEP_FINISHED" => {
+                    Some(t.to_string())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+
+    println!("Lifecycle event sequence: {events:?}");
+
+    assert_eq!(events.first().map(|s| s.as_str()), Some("RUN_STARTED"));
+    assert_eq!(events.last().map(|s| s.as_str()), Some("RUN_FINISHED"));
 }
