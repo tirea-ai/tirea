@@ -234,7 +234,7 @@ mod tests {
 
         let session = (0..10).fold(session, |s, i| {
             s.with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("field").key(&i.to_string()), json!(i))),
+                Patch::new().with_op(Op::set(path!("field").key(i.to_string()), json!(i))),
             ))
         });
 

@@ -46,7 +46,7 @@ async fn start_single_response_server(
 
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n{body}",
-        body.as_bytes().len()
+        body.len()
     )
     .into_bytes();
 

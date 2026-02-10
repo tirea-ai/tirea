@@ -1078,7 +1078,7 @@ mod tests {
 
     #[test]
     fn test_complete_text_streaming_flow() {
-        let events = vec![
+        let events = [
             UIStreamEvent::message_start("msg_1"),
             UIStreamEvent::text_start("txt_1"),
             UIStreamEvent::text_delta("txt_1", "Hello "),
@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     fn test_error_flow() {
-        let events = vec![
+        let events = [
             UIStreamEvent::message_start("msg_1"),
             UIStreamEvent::text_start("txt_1"),
             UIStreamEvent::text_delta("txt_1", "Starting..."),
@@ -1174,7 +1174,7 @@ mod tests {
 
     #[test]
     fn test_abort_flow() {
-        let events = vec![
+        let events = [
             UIStreamEvent::message_start("msg_1"),
             UIStreamEvent::text_start("txt_1"),
             UIStreamEvent::text_delta("txt_1", "Processing..."),

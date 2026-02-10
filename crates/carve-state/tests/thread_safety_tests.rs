@@ -248,7 +248,7 @@ async fn test_manager_read_write_concurrency() {
                     let snapshot = m.snapshot().await;
                     // Value should be between 0 and 50
                     let val = snapshot["value"].as_i64().unwrap();
-                    assert!(val >= 0 && val <= 50);
+                    assert!((0..=50).contains(&val));
                     tokio::task::yield_now().await;
                 }
             })

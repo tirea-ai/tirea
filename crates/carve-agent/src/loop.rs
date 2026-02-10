@@ -266,6 +266,23 @@ async fn emit_phase(phase: Phase, step: &mut StepContext<'_>, plugins: &[Arc<dyn
     }
 }
 
+/// Emit SessionEnd phase and apply any resulting patches to the session.
+async fn emit_session_end(
+    mut session: Session,
+    plugin_data: &mut PluginRuntimeData,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Session {
+    let mut step = plugin_data.new_step_context(&session, tool_descriptors.to_vec());
+    emit_phase(Phase::SessionEnd, &mut step, plugins).await;
+    let pending = std::mem::take(&mut step.pending_patches);
+    plugin_data.sync_from_step(&step);
+    if !pending.is_empty() {
+        session = session.with_patches(pending);
+    }
+    session
+}
+
 /// Build initial plugin data map.
 fn initial_plugin_data(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
     let mut data = HashMap::new();
@@ -485,10 +502,10 @@ pub async fn run_step(
     let (messages, filtered_tools, skip_inference, tracing_span, pending) = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
-        // Phase 1: StepStart
+        // Phase: StepStart
         emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
 
-        // Phase 2: BeforeInference
+        // Phase: BeforeInference
         emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
         // Build messages
@@ -541,7 +558,7 @@ pub async fn run_step(
     let response = match response_res {
         Ok(r) => r,
         Err(e) => {
-            // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+            // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
             let err = e.to_string();
             let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
             step.set(
@@ -549,6 +566,7 @@ pub async fn run_step(
                 serde_json::json!({ "type": "llm_exec_error", "message": err }),
             );
             emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+            emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
             plugin_data.sync_from_step(&step);
             return Err(AgentLoopError::LlmError(e.to_string()));
         }
@@ -573,7 +591,7 @@ pub async fn run_step(
         usage,
     };
 
-    // Phase 3: AfterInference (with new context)
+    // Phase: AfterInference (with new context)
     let session = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
         step.response = Some(result.clone());
@@ -597,7 +615,7 @@ pub async fn run_step(
         ))
     };
 
-    // Phase 6: StepEnd (with new context)
+    // Phase: StepEnd (with new context)
     let session = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors);
         emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
@@ -632,7 +650,14 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<Session, AgentLoopError> {
-    execute_tools_with_plugins(session, result, tools, config.parallel_tools, &config.plugins).await
+    execute_tools_with_plugins(
+        session,
+        result,
+        tools,
+        config.parallel_tools,
+        &config.plugins,
+    )
+    .await
 }
 
 /// Execute tool calls with plugin hooks (backward compatible).
@@ -682,8 +707,8 @@ pub async fn execute_tools_with_plugins(
     let applied = apply_tool_results_to_session(session, &results)?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            session: applied.session,
-            interaction,
+            session: Box::new(applied.session),
+            interaction: Box::new(interaction),
         });
     }
     Ok(applied.session)
@@ -979,18 +1004,26 @@ pub async fn run_loop(
         let response = match response_res {
             Ok(r) => r,
             Err(e) => {
-                // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 step.set(
                     "llmmetry.inference_error",
                     serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
                 );
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
                 let pending = std::mem::take(&mut step.pending_patches);
                 plugin_data.sync_from_step(&step);
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
+                emit_session_end(
+                    session,
+                    &mut plugin_data,
+                    &tool_descriptors,
+                    &config.plugins,
+                )
+                .await;
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
         };
@@ -1054,9 +1087,19 @@ pub async fn run_loop(
         }
 
         // Execute tools with phase hooks (respect config.parallel_tools).
-        let state = session
-            .rebuild_state()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let state = match session.rebuild_state() {
+            Ok(s) => s,
+            Err(e) => {
+                emit_session_end(
+                    session,
+                    &mut plugin_data,
+                    &tool_descriptors,
+                    &config.plugins,
+                )
+                .await;
+                return Err(AgentLoopError::StateError(e.to_string()));
+            }
+        };
 
         let results = if config.parallel_tools {
             execute_tools_parallel_with_phases(
@@ -1086,33 +1129,51 @@ pub async fn run_loop(
             plugin_data.data = last.plugin_data.clone();
         }
 
-        let applied = apply_tool_results_to_session(session, &results)?;
+        let applied = match apply_tool_results_to_session(session, &results) {
+            Ok(a) => a,
+            Err(e) => {
+                // Session consumed; SessionEnd can't run with the original session.
+                return Err(e);
+            }
+        };
         session = applied.session;
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            return Err(AgentLoopError::PendingInteraction {
+            session = emit_session_end(
                 session,
-                interaction,
+                &mut plugin_data,
+                &tool_descriptors,
+                &config.plugins,
+            )
+            .await;
+            return Err(AgentLoopError::PendingInteraction {
+                session: Box::new(session),
+                interaction: Box::new(interaction),
             });
         }
 
         rounds += 1;
         if rounds >= config.max_rounds {
+            emit_session_end(
+                session,
+                &mut plugin_data,
+                &tool_descriptors,
+                &config.plugins,
+            )
+            .await;
             return Err(AgentLoopError::MaxRoundsExceeded(config.max_rounds));
         }
     }
 
     // Phase: SessionEnd
-    {
-        let mut end_step = plugin_data.new_step_context(&session, tool_descriptors);
-        emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
-        let pending = std::mem::take(&mut end_step.pending_patches);
-        plugin_data.sync_from_step(&end_step);
-        if !pending.is_empty() {
-            session = session.with_patches(pending);
-        }
-    }
+    session = emit_session_end(
+        session,
+        &mut plugin_data,
+        &tool_descriptors,
+        &config.plugins,
+    )
+    .await;
 
     Ok((session, last_text))
 }
@@ -1178,6 +1239,7 @@ pub fn run_loop_stream(
 
             // Skip inference if requested
             if skip_inference {
+                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
@@ -1210,14 +1272,20 @@ pub fn run_loop_stream(
             let chat_stream_response = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                    // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                     let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                     step.set(
                         "llmmetry.inference_error",
                         serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
                     );
                     emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                    emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+                    let pending = std::mem::take(&mut step.pending_patches);
                     plugin_data.sync_from_step(&step);
+                    if !pending.is_empty() {
+                        session = session.with_patches(pending);
+                    }
+                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                     yield AgentEvent::Error { message: e.to_string() };
                     yield AgentEvent::RunFinish {
                         thread_id: session.id.clone(),
@@ -1251,7 +1319,7 @@ pub fn run_loop_stream(
                         }
                     }
                     Err(e) => {
-                        // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                        // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         let mut step =
                             plugin_data.new_step_context(&session, tool_descriptors.clone());
                         step.set(
@@ -1259,7 +1327,13 @@ pub fn run_loop_stream(
                             serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
                         );
                         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                        emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+                        let pending = std::mem::take(&mut step.pending_patches);
                         plugin_data.sync_from_step(&step);
+                        if !pending.is_empty() {
+                            session = session.with_patches(pending);
+                        }
+                        session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                         yield AgentEvent::Error { message: e.to_string() };
                         yield AgentEvent::RunFinish {
                             thread_id: session.id.clone(),
@@ -1315,14 +1389,7 @@ pub fn run_loop_stream(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
-                // Phase: SessionEnd
-                let mut end_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
-                emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
-                let pending = std::mem::take(&mut end_step.pending_patches);
-                plugin_data.sync_from_step(&end_step);
-                if !pending.is_empty() {
-                    session = session.with_patches(pending);
-                }
+                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
 
                 let result_value = if result.text.is_empty() {
                     None
@@ -1350,6 +1417,7 @@ pub fn run_loop_stream(
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
+                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                     yield AgentEvent::Error { message: e.to_string() };
                     yield AgentEvent::RunFinish {
                         thread_id: session.id.clone(),
@@ -1421,6 +1489,7 @@ pub fn run_loop_stream(
             let applied = match apply_tool_results_to_session(session, &results) {
                 Ok(a) => a,
                 Err(e) => {
+                    // Session consumed by apply_tool_results_to_session; SessionEnd can't run.
                     yield AgentEvent::Error {
                         message: e.to_string(),
                     };
@@ -1453,6 +1522,7 @@ pub fn run_loop_stream(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
+                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
@@ -1463,6 +1533,7 @@ pub fn run_loop_stream(
 
             rounds += 1;
             if rounds >= config.max_rounds {
+                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::Error { message: format!("Max rounds ({}) exceeded", config.max_rounds) };
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
@@ -1534,8 +1605,8 @@ pub enum AgentLoopError {
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        session: Session,
-        interaction: Interaction,
+        session: Box<Session>,
+        interaction: Box<Interaction>,
     },
 }
 
@@ -1576,6 +1647,7 @@ mod tests {
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
+    use std::sync::Mutex;
     use tokio::sync::Notify;
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
@@ -1690,9 +1762,7 @@ mod tests {
             };
             let tools = HashMap::new();
 
-            let session = execute_tools(session, &result, &tools, true)
-                .await
-                .unwrap();
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
             assert_eq!(session.message_count(), 0);
         });
     }
@@ -1713,9 +1783,7 @@ mod tests {
             };
             let tools = tool_map([EchoTool]);
 
-            let session = execute_tools(session, &result, &tools, true)
-                .await
-                .unwrap();
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
@@ -1910,9 +1978,7 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let session = execute_tools(session, &result, &tools, true)
-                .await
-                .unwrap();
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.patch_count(), 1);
@@ -1975,9 +2041,7 @@ mod tests {
             };
             let tools = tool_map([FailingTool]);
 
-            let session = execute_tools(session, &result, &tools, true)
-                .await
-                .unwrap();
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
@@ -2041,10 +2105,8 @@ mod tests {
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeToolExecute {
-                if step.tool_id() == Some("echo") {
-                    step.block("Echo tool is blocked");
-                }
+            if phase == Phase::BeforeToolExecute && step.tool_id() == Some("echo") {
+                step.block("Echo tool is blocked");
             }
         }
     }
@@ -2354,13 +2416,11 @@ mod tests {
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeToolExecute {
-                if step.tool_id() == Some("echo") {
-                    use crate::state_types::Interaction;
-                    step.pending(
-                        Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),
-                    );
-                }
+            if phase == Phase::BeforeToolExecute && step.tool_id() == Some("echo") {
+                use crate::state_types::Interaction;
+                step.pending(
+                    Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),
+                );
             }
         }
     }
@@ -2426,9 +2486,7 @@ mod tests {
             };
             let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-            let session = execute_tools(session, &result, &tools, true)
-                .await
-                .unwrap();
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
 
             assert_eq!(session.message_count(), 1);
             let msg = &session.messages[0];
@@ -2627,6 +2685,227 @@ mod tests {
                 "expected pending_interaction to be cleared, got: {pending:?}"
             );
         });
+    }
+
+    // ========================================================================
+    // Phase lifecycle helpers & tests for run_loop_stream
+    // ========================================================================
+
+    /// Plugin that records phases AND skips inference.
+    struct RecordAndSkipPlugin {
+        phases: Arc<Mutex<Vec<Phase>>>,
+    }
+
+    impl RecordAndSkipPlugin {
+        fn new() -> (Self, Arc<Mutex<Vec<Phase>>>) {
+            let phases = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    phases: phases.clone(),
+                },
+                phases,
+            )
+        }
+    }
+
+    #[async_trait]
+    impl AgentPlugin for RecordAndSkipPlugin {
+        fn id(&self) -> &str {
+            "record_and_skip"
+        }
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            self.phases.lock().unwrap().push(phase);
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        }
+    }
+
+    /// Collect all events from a stream.
+    async fn collect_stream_events(
+        stream: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
+    ) -> Vec<AgentEvent> {
+        use futures::StreamExt;
+        let mut events = Vec::new();
+        let mut stream = stream;
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn test_stream_skip_inference_emits_session_end_phase() {
+        let (recorder, phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+
+        let stream = run_loop_stream(
+            Client::default(),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+        );
+        let events = collect_stream_events(stream).await;
+
+        // Verify events include RunStart and RunFinish
+        assert!(
+            matches!(events.first(), Some(AgentEvent::RunStart { .. })),
+            "Expected RunStart as first event, got: {:?}",
+            events.first()
+        );
+        assert!(
+            matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
+            "Expected RunFinish as last event, got: {:?}",
+            events.last()
+        );
+
+        // Verify phase lifecycle: SessionStart → StepStart → BeforeInference → SessionEnd
+        let recorded = phases.lock().unwrap().clone();
+        assert!(
+            recorded.contains(&Phase::SessionStart),
+            "Missing SessionStart phase"
+        );
+        assert!(
+            recorded.contains(&Phase::SessionEnd),
+            "Missing SessionEnd phase"
+        );
+
+        // SessionEnd must be last
+        assert_eq!(
+            recorded.last(),
+            Some(&Phase::SessionEnd),
+            "SessionEnd should be last phase, got: {:?}",
+            recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_skip_inference_emits_run_start_and_finish() {
+        // Verify the complete event sequence on skip_inference path
+        let (recorder, _phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+
+        let stream = run_loop_stream(
+            Client::default(),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+        );
+        let events = collect_stream_events(stream).await;
+
+        let event_names: Vec<&str> = events
+            .iter()
+            .map(|e| match e {
+                AgentEvent::RunStart { .. } => "RunStart",
+                AgentEvent::RunFinish { .. } => "RunFinish",
+                AgentEvent::Error { .. } => "Error",
+                _ => "Other",
+            })
+            .collect();
+        assert_eq!(event_names, vec!["RunStart", "RunFinish"]);
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_skip_inference_emits_session_end_phase() {
+        let (recorder, phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+        let client = Client::default();
+
+        let result = run_loop(&client, &config, session, &tools).await;
+        assert!(result.is_ok());
+
+        let recorded = phases.lock().unwrap().clone();
+        assert!(
+            recorded.contains(&Phase::SessionStart),
+            "Missing SessionStart phase"
+        );
+        assert!(
+            recorded.contains(&Phase::SessionEnd),
+            "Missing SessionEnd phase"
+        );
+        assert_eq!(
+            recorded.last(),
+            Some(&Phase::SessionEnd),
+            "SessionEnd should be last phase, got: {:?}",
+            recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_phase_sequence_on_skip_inference() {
+        // Verify the full phase sequence: SessionStart → StepStart → BeforeInference → SessionEnd
+        let (recorder, phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+        let client = Client::default();
+
+        let result = run_loop(&client, &config, session, &tools).await;
+        assert!(result.is_ok());
+
+        let recorded = phases.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![
+                Phase::SessionStart,
+                Phase::StepStart,
+                Phase::BeforeInference,
+                Phase::SessionEnd,
+            ],
+            "Unexpected phase sequence: {:?}",
+            recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_run_finish_has_matching_thread_id() {
+        let (recorder, _phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("my-session").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+
+        let stream = run_loop_stream(
+            Client::default(),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+        );
+        let events = collect_stream_events(stream).await;
+
+        // Extract thread_id from RunStart and RunFinish
+        let start_tid = events.iter().find_map(|e| match e {
+            AgentEvent::RunStart { thread_id, .. } => Some(thread_id.clone()),
+            _ => None,
+        });
+        let finish_tid = events.iter().find_map(|e| match e {
+            AgentEvent::RunFinish { thread_id, .. } => Some(thread_id.clone()),
+            _ => None,
+        });
+
+        assert_eq!(
+            start_tid, finish_tid,
+            "RunStart and RunFinish thread_ids must match"
+        );
+        assert_eq!(start_tid.as_deref(), Some("my-session"));
     }
 
     // ========================================================================

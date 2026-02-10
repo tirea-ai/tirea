@@ -1865,4 +1865,832 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ActivityDelta { .. }));
     }
+
+    // ========================================================================
+    // AG-UI Lifecycle Ordering Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ag_ui_run_start_produces_run_started() {
+        let event = AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: Some("parent".into()),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::RunStarted {
+            thread_id,
+            run_id,
+            parent_run_id,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(thread_id, "t1");
+            assert_eq!(run_id, "r1");
+            assert_eq!(parent_run_id.as_deref(), Some("parent"));
+        } else {
+            panic!("Expected RunStarted, got: {:?}", events[0]);
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_run_finish_ends_active_text_stream() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // Start text stream via a TextDelta
+        let delta = AgentEvent::TextDelta {
+            delta: "hello".into(),
+        };
+        let _ = delta.to_ag_ui_events(&mut ctx);
+
+        // RunFinish should emit TextMessageEnd THEN RunFinished
+        let finish = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: None,
+        };
+        let events = finish.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
+            "Expected TextMessageEnd, got: {:?}",
+            events[0]
+        );
+        assert!(
+            matches!(&events[1], AGUIEvent::RunFinished { .. }),
+            "Expected RunFinished, got: {:?}",
+            events[1]
+        );
+    }
+
+    #[test]
+    fn test_ag_ui_run_finish_without_active_text() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // No text started — RunFinish should only emit RunFinished
+        let finish = AgentEvent::RunFinish {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            result: Some(json!({"ok": true})),
+        };
+        let events = finish.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], AGUIEvent::RunFinished { .. }));
+    }
+
+    #[test]
+    fn test_ag_ui_error_produces_run_error_without_code() {
+        let event = AgentEvent::Error {
+            message: "LLM timeout".into(),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+            assert_eq!(message, "LLM timeout");
+            assert!(code.is_none());
+        } else {
+            panic!("Expected RunError");
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_aborted_produces_run_error_with_code() {
+        let event = AgentEvent::Aborted {
+            reason: "user cancelled".into(),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+            assert_eq!(message, "user cancelled");
+            assert_eq!(code.as_deref(), Some("ABORTED"));
+        } else {
+            panic!("Expected RunError");
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_inference_complete_produces_no_events() {
+        let event = AgentEvent::InferenceComplete {
+            model: "gpt-4".into(),
+            usage: None,
+            duration_ms: 100,
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_ag_ui_state_snapshot_produces_state_snapshot() {
+        let event = AgentEvent::StateSnapshot {
+            snapshot: json!({"count": 42}),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = &events[0] {
+            assert_eq!(snapshot["count"], 42);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_state_delta_produces_state_delta() {
+        let patch = vec![json!({"op": "replace", "path": "/count", "value": 43})];
+        let event = AgentEvent::StateDelta {
+            delta: patch.clone(),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::StateDelta { delta, .. } = &events[0] {
+            assert_eq!(delta.len(), 1);
+            assert_eq!(delta[0]["op"], "replace");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_messages_snapshot_produces_messages_snapshot() {
+        let msgs = vec![json!({"role": "user", "content": "hi"})];
+        let event = AgentEvent::MessagesSnapshot {
+            messages: msgs.clone(),
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], AGUIEvent::MessagesSnapshot { .. }));
+    }
+
+    #[test]
+    fn test_ag_ui_step_started_finished_pairing() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        let start_events = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        assert_eq!(start_events.len(), 1);
+        let step_name = if let AGUIEvent::StepStarted { step_name, .. } = &start_events[0] {
+            step_name.clone()
+        } else {
+            panic!("Expected StepStarted");
+        };
+
+        let end_events = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+        assert_eq!(end_events.len(), 1);
+        if let AGUIEvent::StepFinished {
+            step_name: end_name,
+            ..
+        } = &end_events[0]
+        {
+            assert_eq!(
+                &step_name, end_name,
+                "StepStarted and StepFinished must share the same step name"
+            );
+        } else {
+            panic!("Expected StepFinished");
+        }
+    }
+
+    #[test]
+    fn test_ag_ui_multi_step_increments_step_names() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // Step 1
+        let s1 = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        let _ = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+
+        // Step 2
+        let s2 = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        let _ = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+
+        let name1 = if let AGUIEvent::StepStarted { step_name, .. } = &s1[0] {
+            step_name.clone()
+        } else {
+            panic!("Expected StepStarted");
+        };
+        let name2 = if let AGUIEvent::StepStarted { step_name, .. } = &s2[0] {
+            step_name.clone()
+        } else {
+            panic!("Expected StepStarted");
+        };
+
+        assert_ne!(name1, name2, "Step names must be unique across steps");
+        assert_eq!(name1, "step_1");
+        assert_eq!(name2, "step_2");
+    }
+
+    #[test]
+    fn test_ag_ui_complete_lifecycle_ordering() {
+        // Simulate: RunStart → StepStart → TextDelta → ToolCallStart → ToolCallEnd →
+        //           ToolCallDone → StepEnd → RunFinish
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let mut all_events = Vec::new();
+
+        let agent_events = vec![
+            AgentEvent::RunStart {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+                parent_run_id: None,
+            },
+            AgentEvent::StepStart,
+            AgentEvent::TextDelta {
+                delta: "Let me search".into(),
+            },
+            AgentEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "search".into(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "c1".into(),
+                args_delta: r#"{"q":"rust"}"#.into(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "c1".into(),
+                name: "search".into(),
+                arguments: json!({"q": "rust"}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "c1".into(),
+                result: ToolResult::success("search", json!({"found": 1})),
+                patch: None,
+            },
+            AgentEvent::StepEnd,
+            AgentEvent::RunFinish {
+                thread_id: "t1".into(),
+                run_id: "r1".into(),
+                result: None,
+            },
+        ];
+
+        for event in &agent_events {
+            all_events.extend(event.to_ag_ui_events(&mut ctx));
+        }
+
+        // Classify events by type name for ordering verification
+        let type_names: Vec<&str> = all_events
+            .iter()
+            .map(|e| match e {
+                AGUIEvent::RunStarted { .. } => "RunStarted",
+                AGUIEvent::RunFinished { .. } => "RunFinished",
+                AGUIEvent::StepStarted { .. } => "StepStarted",
+                AGUIEvent::StepFinished { .. } => "StepFinished",
+                AGUIEvent::TextMessageStart { .. } => "TextMessageStart",
+                AGUIEvent::TextMessageContent { .. } => "TextMessageContent",
+                AGUIEvent::TextMessageEnd { .. } => "TextMessageEnd",
+                AGUIEvent::ToolCallStart { .. } => "ToolCallStart",
+                AGUIEvent::ToolCallArgs { .. } => "ToolCallArgs",
+                AGUIEvent::ToolCallEnd { .. } => "ToolCallEnd",
+                AGUIEvent::ToolCallResult { .. } => "ToolCallResult",
+                _ => "Other",
+            })
+            .collect();
+
+        // Verify first/last
+        assert_eq!(type_names.first(), Some(&"RunStarted"));
+        assert_eq!(type_names.last(), Some(&"RunFinished"));
+
+        // Verify text stream properly closed before tool call
+        let text_end_idx = type_names
+            .iter()
+            .position(|n| *n == "TextMessageEnd")
+            .unwrap();
+        let tool_start_idx = type_names
+            .iter()
+            .position(|n| *n == "ToolCallStart")
+            .unwrap();
+        assert!(
+            text_end_idx < tool_start_idx,
+            "TextMessageEnd ({text_end_idx}) must come before ToolCallStart ({tool_start_idx})"
+        );
+
+        // Verify step pairing
+        let step_start_idx = type_names.iter().position(|n| *n == "StepStarted").unwrap();
+        let step_end_idx = type_names
+            .iter()
+            .position(|n| *n == "StepFinished")
+            .unwrap();
+        assert!(step_start_idx < step_end_idx);
+
+        // Verify tool call lifecycle: START → ARGS → END → RESULT
+        let tc_start = type_names
+            .iter()
+            .position(|n| *n == "ToolCallStart")
+            .unwrap();
+        let tc_args = type_names
+            .iter()
+            .position(|n| *n == "ToolCallArgs")
+            .unwrap();
+        let tc_end = type_names.iter().position(|n| *n == "ToolCallEnd").unwrap();
+        let tc_result = type_names
+            .iter()
+            .position(|n| *n == "ToolCallResult")
+            .unwrap();
+        assert!(
+            tc_start < tc_args,
+            "ToolCallStart must precede ToolCallArgs"
+        );
+        assert!(tc_args < tc_end, "ToolCallArgs must precede ToolCallEnd");
+        assert!(
+            tc_end < tc_result,
+            "ToolCallEnd must precede ToolCallResult"
+        );
+    }
+
+    // ========================================================================
+    // AI SDK v6 Lifecycle Ordering Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ui_run_start_produces_no_events() {
+        let event = AgentEvent::RunStart {
+            thread_id: "t1".into(),
+            run_id: "r1".into(),
+            parent_run_id: None,
+        };
+        let events = event.to_ui_events("txt_0");
+        assert!(
+            events.is_empty(),
+            "RunStart should not produce AI SDK events"
+        );
+    }
+
+    #[test]
+    fn test_ui_inference_complete_produces_no_events() {
+        let event = AgentEvent::InferenceComplete {
+            model: "gpt-4".into(),
+            usage: None,
+            duration_ms: 100,
+        };
+        let events = event.to_ui_events("txt_0");
+        assert!(
+            events.is_empty(),
+            "InferenceComplete should not produce AI SDK events"
+        );
+    }
+
+    #[test]
+    fn test_ui_state_snapshot_produces_data_event() {
+        let event = AgentEvent::StateSnapshot {
+            snapshot: json!({"count": 1}),
+        };
+        let events = event.to_ui_events("txt_0");
+        assert_eq!(events.len(), 1);
+        if let UIStreamEvent::Data { data_type, data } = &events[0] {
+            assert_eq!(data_type, "data-state-snapshot");
+            assert_eq!(data["count"], 1);
+        } else {
+            panic!("Expected Data event, got: {:?}", events[0]);
+        }
+    }
+
+    #[test]
+    fn test_ui_state_delta_produces_data_event() {
+        let event = AgentEvent::StateDelta {
+            delta: vec![json!({"op": "add", "path": "/x", "value": 1})],
+        };
+        let events = event.to_ui_events("txt_0");
+        assert_eq!(events.len(), 1);
+        if let UIStreamEvent::Data { data_type, data } = &events[0] {
+            assert_eq!(data_type, "data-state-delta");
+            assert!(data.is_array());
+        } else {
+            panic!("Expected Data event");
+        }
+    }
+
+    #[test]
+    fn test_ui_messages_snapshot_produces_data_event() {
+        let event = AgentEvent::MessagesSnapshot {
+            messages: vec![json!({"role": "user", "content": "hi"})],
+        };
+        let events = event.to_ui_events("txt_0");
+        assert_eq!(events.len(), 1);
+        if let UIStreamEvent::Data { data_type, .. } = &events[0] {
+            assert_eq!(data_type, "data-messages-snapshot");
+        } else {
+            panic!("Expected Data event");
+        }
+    }
+
+    // ========================================================================
+    // AG-UI Context-Dependent Path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ag_ui_tool_call_start_without_active_text() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        // No text started — ToolCallStart should not emit TextMessageEnd
+        let event = AgentEvent::ToolCallStart {
+            id: "c1".into(),
+            name: "search".into(),
+        };
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], AGUIEvent::ToolCallStart { .. }),
+            "Should only emit ToolCallStart without TextMessageEnd when no text active"
+        );
+    }
+
+    #[test]
+    fn test_ag_ui_pending_without_active_text() {
+        use crate::state_types::Interaction;
+
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        // No text started — Pending should not emit TextMessageEnd
+        let event = AgentEvent::Pending {
+            interaction: Interaction::new("int_1", "confirm"),
+        };
+        let events = event.to_ag_ui_events(&mut ctx);
+        // Should be exactly 3 tool call events (no TextMessageEnd prefix)
+        assert_eq!(
+            events.len(),
+            3,
+            "Should emit 3 tool events without TextMessageEnd, got: {:?}",
+            events
+        );
+        assert!(matches!(&events[0], AGUIEvent::ToolCallStart { .. }));
+        assert!(matches!(&events[1], AGUIEvent::ToolCallArgs { .. }));
+        assert!(matches!(&events[2], AGUIEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn test_ag_ui_tool_call_done_error_result() {
+        let event = AgentEvent::ToolCallDone {
+            id: "c1".into(),
+            result: ToolResult::error("search", "Connection refused"),
+            patch: None,
+        };
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+        let events = event.to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::ToolCallResult {
+            tool_call_id,
+            content,
+            message_id,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(tool_call_id, "c1");
+            assert_eq!(message_id, "result_c1");
+            // Content should contain the error info
+            assert!(
+                content.contains("error") || content.contains("Error"),
+                "ToolCallResult content should contain error status, got: {content}"
+            );
+            assert!(
+                content.contains("Connection refused"),
+                "ToolCallResult content should contain error message"
+            );
+        } else {
+            panic!("Expected ToolCallResult, got: {:?}", events[0]);
+        }
+    }
+
+    // ========================================================================
+    // value_to_map Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_value_to_map_with_object() {
+        let value = json!({"key": "val", "num": 42});
+        let map = value_to_map(&value);
+        assert_eq!(map.get("key"), Some(&json!("val")));
+        assert_eq!(map.get("num"), Some(&json!(42)));
+        assert!(
+            !map.contains_key("value"),
+            "Object should not wrap in 'value' key"
+        );
+    }
+
+    #[test]
+    fn test_value_to_map_with_number() {
+        let value = json!(42);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(42)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_boolean() {
+        let value = json!(true);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_null() {
+        let value = json!(null);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(null)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_array() {
+        let value = json!([1, 2, 3]);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!([1, 2, 3])));
+    }
+
+    #[test]
+    fn test_value_to_map_with_empty_object() {
+        let value = json!({});
+        let map = value_to_map(&value);
+        assert!(map.is_empty(), "Empty object should produce empty map");
+    }
+
+    // ========================================================================
+    // StreamCollector Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_stream_collector_ghost_tool_call_filtered() {
+        // DeepSeek sends ghost tool calls with empty fn_name
+        let mut collector = StreamCollector::new();
+
+        // Ghost call: empty fn_name
+        let ghost = genai::chat::ToolCall {
+            call_id: "ghost_1".to_string(),
+            fn_name: String::new(),
+            fn_arguments: json!(null),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: ghost,
+        }));
+
+        // Real call
+        let real = genai::chat::ToolCall {
+            call_id: "real_1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"rust"}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: real,
+        }));
+
+        let result = collector.finish();
+        // Ghost call should be filtered out (empty name)
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+    }
+
+    #[test]
+    fn test_stream_collector_invalid_json_arguments_fallback() {
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "test".to_string(),
+            fn_arguments: Value::String("not valid json {{".to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "test");
+        // Invalid JSON falls back to Value::Null
+        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+    }
+
+    #[test]
+    fn test_stream_collector_duplicate_accumulated_args_full_replace() {
+        let mut collector = StreamCollector::new();
+
+        // Start tool call
+        let tc1 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "test".to_string(),
+            fn_arguments: Value::String(r#"{"a":1}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+        // Same accumulated args again — not a strict prefix extension, so treated
+        // as a full replacement delta (correct for accumulated-mode providers).
+        let tc2 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: String::new(),
+            fn_arguments: Value::String(r#"{"a":1}"#.to_string()),
+            thought_signatures: None,
+        };
+        let output =
+            collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
+        match output {
+            Some(StreamOutput::ToolCallDelta { id, args_delta }) => {
+                assert_eq!(id, "call_1");
+                assert_eq!(args_delta, r#"{"a":1}"#);
+            }
+            other => panic!("Expected ToolCallDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_stream_collector_end_event_captures_usage() {
+        let mut collector = StreamCollector::new();
+
+        let end = StreamEnd {
+            captured_usage: Some(Usage {
+                prompt_tokens: Some(10),
+                prompt_tokens_details: None,
+                completion_tokens: Some(20),
+                completion_tokens_details: None,
+                total_tokens: Some(30),
+            }),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert!(result.usage.is_some());
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, Some(10));
+        assert_eq!(usage.completion_tokens, Some(20));
+        assert_eq!(usage.total_tokens, Some(30));
+    }
+
+    #[test]
+    fn test_stream_collector_end_event_fills_missing_partial() {
+        // End event creates a new partial tool call when one doesn't exist from chunks
+        use genai::chat::MessageContent;
+
+        let mut collector = StreamCollector::new();
+
+        let end_tc = genai::chat::ToolCall {
+            call_id: "end_call".to_string(),
+            fn_name: "finalize".to_string(),
+            fn_arguments: Value::String(r#"{"done":true}"#.to_string()),
+            thought_signatures: None,
+        };
+        let end = StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![end_tc])),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "end_call");
+        assert_eq!(result.tool_calls[0].name, "finalize");
+        assert_eq!(result.tool_calls[0].arguments, json!({"done": true}));
+    }
+
+    #[test]
+    fn test_stream_collector_end_event_overrides_partial_args() {
+        // End event should override streaming partial arguments
+        use genai::chat::MessageContent;
+
+        let mut collector = StreamCollector::new();
+
+        // Start with partial data from chunks
+        let tc1 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "api".to_string(),
+            fn_arguments: Value::String(r#"{"partial":true"#.to_string()), // incomplete JSON
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+        // End event provides correct, complete arguments
+        let end_tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: String::new(), // name already set from chunk
+            fn_arguments: Value::String(r#"{"complete":true}"#.to_string()),
+            thought_signatures: None,
+        };
+        let end = StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![end_tc])),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "api");
+        // End event's arguments should override the incomplete streaming args
+        assert_eq!(result.tool_calls[0].arguments, json!({"complete": true}));
+    }
+
+    #[test]
+    fn test_stream_collector_value_object_args() {
+        // When fn_arguments is not a String, falls through to `other.to_string()`
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "test".to_string(),
+            fn_arguments: json!({"key": "val"}), // Value::Object, not Value::String
+            thought_signatures: None,
+        };
+        let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        // Should produce ToolCallStart (name) — the args delta comes from .to_string()
+        // First output is ToolCallStart, then the args are also processed
+        // But since name is set on the same chunk, output is ToolCallDelta (args wins over name)
+        // Actually: name emit happens first, then args. But `output` only holds the LAST one.
+        // Let's just check the final result.
+        assert!(output.is_some());
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].arguments, json!({"key": "val"}));
+    }
+
+    // ========================================================================
+    // AI SDK v6 Complete Flow Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ui_complete_flow_event_ordering() {
+        // Simulate a full step with text + tool call and verify AI SDK event types
+        let agent_events = [
+            AgentEvent::StepStart,
+            AgentEvent::TextDelta {
+                delta: "Searching...".into(),
+            },
+            AgentEvent::ToolCallStart {
+                id: "c1".into(),
+                name: "search".into(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "c1".into(),
+                args_delta: r#"{"q":"r"}"#.into(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "c1".into(),
+                name: "search".into(),
+                arguments: json!({"q": "r"}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "c1".into(),
+                result: ToolResult::success("search", json!([])),
+                patch: None,
+            },
+            AgentEvent::StepEnd,
+            AgentEvent::RunFinish {
+                thread_id: "t".into(),
+                run_id: "r".into(),
+                result: None,
+            },
+        ];
+
+        let all_ui: Vec<UIStreamEvent> = agent_events
+            .iter()
+            .flat_map(|e| e.to_ui_events("txt_0"))
+            .collect();
+
+        let type_names: Vec<&str> = all_ui
+            .iter()
+            .map(|e| match e {
+                UIStreamEvent::StartStep => "StartStep",
+                UIStreamEvent::FinishStep => "FinishStep",
+                UIStreamEvent::TextDelta { .. } => "TextDelta",
+                UIStreamEvent::ToolInputStart { .. } => "ToolInputStart",
+                UIStreamEvent::ToolInputDelta { .. } => "ToolInputDelta",
+                UIStreamEvent::ToolInputAvailable { .. } => "ToolInputAvailable",
+                UIStreamEvent::ToolOutputAvailable { .. } => "ToolOutputAvailable",
+                UIStreamEvent::Finish => "Finish",
+                _ => "Other",
+            })
+            .collect();
+
+        // StartStep must be first, Finish must be last
+        assert_eq!(type_names.first(), Some(&"StartStep"));
+        assert_eq!(type_names.last(), Some(&"Finish"));
+
+        // Tool call lifecycle ordering
+        let ti_start = type_names
+            .iter()
+            .position(|n| *n == "ToolInputStart")
+            .unwrap();
+        let ti_delta = type_names
+            .iter()
+            .position(|n| *n == "ToolInputDelta")
+            .unwrap();
+        let ti_avail = type_names
+            .iter()
+            .position(|n| *n == "ToolInputAvailable")
+            .unwrap();
+        let to_avail = type_names
+            .iter()
+            .position(|n| *n == "ToolOutputAvailable")
+            .unwrap();
+        assert!(ti_start < ti_delta);
+        assert!(ti_delta < ti_avail);
+        assert!(ti_avail < to_avail);
+
+        // FinishStep must be after ToolOutputAvailable
+        let finish_step = type_names.iter().position(|n| *n == "FinishStep").unwrap();
+        assert!(to_avail < finish_step);
+    }
 }

@@ -41,7 +41,7 @@ fn test_simple_struct_read() {
     let patch = with_state_ref::<SimpleStruct, _>(&doc, Path::root(), |state| {
         assert_eq!(state.name().unwrap(), "Alice");
         assert_eq!(state.age().unwrap(), 30);
-        assert_eq!(state.active().unwrap(), true);
+        assert!(state.active().unwrap());
     });
 
     assert!(patch.is_empty());
@@ -94,7 +94,7 @@ fn test_simple_struct_from_value() {
 
     assert_eq!(s.name, "Frank");
     assert_eq!(s.age, 50);
-    assert_eq!(s.active, false);
+    assert!(!s.active);
 }
 
 #[test]
@@ -582,7 +582,7 @@ fn test_read_write_roundtrip() {
     let patch = with_state_ref::<SimpleStruct, _>(&doc, Path::root(), |state| {
         assert_eq!(state.name().unwrap(), "Test");
         assert_eq!(state.age().unwrap(), 100);
-        assert_eq!(state.active().unwrap(), false);
+        assert!(!state.active().unwrap());
     });
 
     assert!(patch.is_empty());
@@ -729,7 +729,7 @@ fn test_state_ext_at_root_read() {
 
     assert_eq!(state.name().unwrap(), "Alice");
     assert_eq!(state.age().unwrap(), 30);
-    assert_eq!(state.active().unwrap(), true);
+    assert!(state.active().unwrap());
 }
 
 #[test]

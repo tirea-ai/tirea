@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_phase_all_8_values() {
-        let phases = vec![
+        let phases = [
             Phase::SessionStart,
             Phase::StepStart,
             Phase::BeforeInference,

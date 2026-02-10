@@ -352,7 +352,11 @@ async fn test_manager_with_context_workflow() {
     // Simulate tool execution workflow
     for i in 1..=3 {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, format!("call_{}", i), format!("tool:increment"));
+        let ctx = Context::new(
+            &snapshot,
+            format!("call_{}", i),
+            "tool:increment".to_string(),
+        );
 
         let counter = ctx.state::<CounterState>("counters.main");
         let current = counter.value().unwrap();
@@ -549,7 +553,7 @@ fn test_apply_patches_basic() {
     use carve_state::apply_patches;
 
     let doc = json!({"count": 0});
-    let patches = vec![
+    let patches = [
         Patch::new().with_op(Op::set(path!("count"), json!(1))),
         Patch::new().with_op(Op::set(path!("count"), json!(2))),
         Patch::new().with_op(Op::set(path!("count"), json!(3))),
@@ -578,7 +582,7 @@ fn test_apply_patches_error_stops_early() {
     use carve_state::apply_patches;
 
     let doc = json!({"count": "not a number"});
-    let patches = vec![
+    let patches = [
         Patch::new().with_op(Op::set(path!("valid"), json!(1))), // This will work
         Patch::new().with_op(Op::Increment {
             // This will fail

@@ -1,5 +1,3 @@
-#![cfg(feature = "mcp")]
-
 use crate::agent_os::ToolRegistry;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use async_trait::async_trait;
@@ -302,8 +300,8 @@ mod tests {
         let desc = tool.descriptor();
         assert_eq!(desc.id, id);
         assert_eq!(desc.name, "Echo");
-        assert!(desc.metadata.get("mcp.server").is_some());
-        assert!(desc.metadata.get("mcp.tool").is_some());
+        assert!(desc.metadata.contains_key("mcp.server"));
+        assert!(desc.metadata.contains_key("mcp.tool"));
 
         let res = tool
             .execute(

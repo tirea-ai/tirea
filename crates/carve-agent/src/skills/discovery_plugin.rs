@@ -155,16 +155,8 @@ mod tests {
         fs::create_dir_all(root.join("a-skill")).unwrap();
         fs::create_dir_all(root.join("b-skill")).unwrap();
         let mut fa = fs::File::create(root.join("a-skill").join("SKILL.md")).unwrap();
-        writeln!(
-            fa,
-            "{}",
-            r#"---
-name: a-skill
-description: Desc & "<tag>"
----
-Body"#
-        )
-        .unwrap();
+        fa.write_all(b"---\nname: a-skill\ndescription: Desc & \"<tag>\"\n---\nBody\n")
+            .unwrap();
         fs::write(
             root.join("b-skill").join("SKILL.md"),
             "---\nname: b-skill\ndescription: ok\n---\nBody\n",

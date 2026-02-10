@@ -855,7 +855,7 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
                 .sum();
             println!("Tool calls made: {}", tool_calls);
 
-            if tool_calls <= max_rounds as usize {
+            if tool_calls <= max_rounds {
                 println!(
                     "✅ Max rounds limit respected (stopped at {} rounds)",
                     tool_calls

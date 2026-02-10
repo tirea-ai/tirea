@@ -341,8 +341,8 @@ mod tests {
         assert!(n.is_int());
         assert_eq!(n.as_i64(), 42);
 
-        let n: Number = 3.14f64.into();
+        let n: Number = 1.5f64.into();
         assert!(n.is_float());
-        assert!((n.as_f64() - 3.14).abs() < 0.001);
+        assert!((n.as_f64() - 1.5).abs() < 0.001);
     }
 }

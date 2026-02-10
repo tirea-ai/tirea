@@ -238,15 +238,8 @@ mod tests {
         fs::create_dir_all(root.join("docx").join("references")).unwrap();
 
         let mut f = fs::File::create(root.join("docx").join("SKILL.md")).unwrap();
-        writeln!(
-            f,
-            "{}",
-            r#"---
-name: docx
-description: DOCX guidance
----
-Use docx-js for new documents.
-"#
+        f.write_all(
+            b"---\nname: docx\ndescription: DOCX guidance\n---\nUse docx-js for new documents.\n\n",
         )
         .unwrap();
 

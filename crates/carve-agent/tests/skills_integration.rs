@@ -23,20 +23,8 @@ fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     .unwrap();
 
     let mut f = fs::File::create(docx_root.join("SKILL.md")).unwrap();
-    writeln!(
-        f,
-        "{}",
-        r#"---
-name: docx
-description: DOCX processing guidance
-allowed-tools: read_file
----
-# DOCX Processing
-
-## Creating documents
-
-Use docx-js for new documents. See [DOCX-JS.md](references/DOCX-JS.md).
-"#
+    f.write_all(
+        b"---\nname: docx\ndescription: DOCX processing guidance\nallowed-tools: read_file\n---\n# DOCX Processing\n\n## Creating documents\n\nUse docx-js for new documents. See [DOCX-JS.md](references/DOCX-JS.md).\n",
     )
     .unwrap();
 

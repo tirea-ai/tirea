@@ -1640,7 +1640,7 @@ async fn test_session_resilient_to_tool_errors() {
     let session = Session::with_initial_state("error-resilient", json!({"counter": 0}));
 
     // Simulate tool calls where some fail
-    let tool_results = vec![
+    let tool_results = [
         ToolResult::success("tool1", json!({"value": 1})),
         ToolResult::error("tool2", "Network timeout"),
         ToolResult::success("tool3", json!({"value": 3})),
@@ -1840,7 +1840,7 @@ async fn test_file_storage_corrupted_json() {
 
     match result {
         Err(carve_agent::StorageError::Serialization(msg)) => {
-            assert!(msg.contains("expected") || msg.contains("key") || msg.len() > 0);
+            assert!(msg.contains("expected") || msg.contains("key") || !msg.is_empty());
         }
         Err(other) => panic!("Expected Serialization error, got: {:?}", other),
         Ok(_) => panic!("Expected error for corrupted JSON"),
@@ -2236,7 +2236,7 @@ fn test_storage_error_variants() {
         "Permission denied",
     ));
     let display = io_error.to_string();
-    assert!(display.contains("IO error") || display.contains("Permission") || display.len() > 0);
+    assert!(display.contains("IO error") || display.contains("Permission") || !display.is_empty());
 
     // Test Serialization error variant
     let serialization_error = StorageError::Serialization("Invalid JSON at line 5".to_string());
@@ -2712,8 +2712,8 @@ fn test_agent_loop_error_all_variants() {
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
-        session: Session::new("s"),
-        interaction: Interaction::new("int_1", "confirm"),
+        session: Box::new(Session::new("s")),
+        interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     let display = pending_err.to_string();
     assert!(display.contains("int_1") || display.contains("Pending"));
@@ -5596,7 +5596,7 @@ fn test_agui_sse_format() {
 /// Test: Multiple SSE events in sequence
 #[test]
 fn test_agui_sse_multiple_events() {
-    let events = vec![
+    let events = [
         AGUIEvent::run_started("t1", "r1", None),
         AGUIEvent::text_message_start("m1"),
         AGUIEvent::text_message_content("m1", "Hello"),
@@ -5617,7 +5617,7 @@ fn test_agui_sse_multiple_events() {
     for (i, line) in lines.iter().enumerate() {
         let json = line.strip_prefix("data: ").unwrap();
         let _: AGUIEvent =
-            serde_json::from_str(json).expect(&format!("Failed to parse event {}", i));
+            serde_json::from_str(json).unwrap_or_else(|e| panic!("Failed to parse event {i}: {e}"));
     }
 }
 
@@ -5920,7 +5920,7 @@ fn test_frontend_tool_flow_complex_result() {
     });
 
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
-        AGUIMessage::tool(&complex_result.to_string(), "file_picker_call"),
+        AGUIMessage::tool(complex_result.to_string(), "file_picker_call"),
     );
 
     let response = response_request
@@ -6439,10 +6439,11 @@ fn test_activity_streaming_complete_flow() {
     );
 
     // Verify all events serialize correctly
-    let events = vec![snapshot, delta1, delta2, delta_final];
+    let events = [snapshot, delta1, delta2, delta_final];
     for (i, event) in events.iter().enumerate() {
         let json = serde_json::to_string(event).unwrap();
-        let _: AGUIEvent = serde_json::from_str(&json).expect(&format!("Event {} failed", i));
+        let _: AGUIEvent =
+            serde_json::from_str(&json).unwrap_or_else(|e| panic!("Event {i} failed: {e}"));
     }
 
     // Verify event types
@@ -6471,8 +6472,8 @@ fn test_concurrent_tool_calls_event_ordering() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Simulate 3 concurrent tool calls
-    let tool_ids = vec!["call_1", "call_2", "call_3"];
-    let tool_names = vec!["search", "read_file", "write_file"];
+    let tool_ids = ["call_1", "call_2", "call_3"];
+    let tool_names = ["search", "read_file", "write_file"];
 
     let mut all_events: Vec<AGUIEvent> = Vec::new();
 
@@ -7623,7 +7624,7 @@ fn test_tool_call_result_error_content() {
     let event = AGUIEvent::tool_call_result(
         "result_err",
         "call_write",
-        &serde_json::to_string(&error_result).unwrap(),
+        serde_json::to_string(&error_result).unwrap(),
     );
 
     let json = serde_json::to_string(&event).unwrap();
@@ -7984,7 +7985,7 @@ fn test_agui_message_tool_with_error() {
         "error": "Connection refused",
         "code": "ECONNREFUSED"
     });
-    let msg = AGUIMessage::tool(&serde_json::to_string(&error_content).unwrap(), "call_err");
+    let msg = AGUIMessage::tool(serde_json::to_string(&error_content).unwrap(), "call_err");
 
     assert_eq!(msg.role, MessageRole::Tool);
     let parsed: Value = serde_json::from_str(&msg.content).unwrap();
@@ -9472,7 +9473,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Simulate successful run
-    let success_events: Vec<AGUIEvent> = vec![
+    let success_events: Vec<AGUIEvent> = [
         AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r1".into(),
@@ -9504,7 +9505,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
 
     // Simulate error run
     let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
-    let error_events: Vec<AGUIEvent> = vec![
+    let error_events: Vec<AGUIEvent> = [
         AgentEvent::RunStart {
             thread_id: "t1".into(),
             run_id: "r2".into(),
@@ -9810,7 +9811,7 @@ fn test_text_message_flow_consistent_message_id() {
 #[test]
 fn test_tool_args_concatenate_to_valid_json() {
     // Simulate streaming JSON arguments in chunks
-    let chunks = vec![
+    let chunks = [
         r#"{"#,
         r#""query": "#,
         r#""rust "#,
@@ -10314,7 +10315,7 @@ fn test_tool_execution_location() {
 #[test]
 fn test_activity_message_role_not_forwarded() {
     // Activity messages should be filtered from model context
-    let messages = vec![
+    let messages = [
         AGUIMessage::user("Hello"),
         AGUIMessage::assistant("Hi!"),
         AGUIMessage::system("Be helpful"),
@@ -10505,7 +10506,7 @@ fn test_ag_ui_adapter_convert() {
     let ag_events = adapter.convert(&event);
 
     // Should produce TextMessageStart + TextMessageContent
-    assert!(ag_events.len() >= 1);
+    assert!(!ag_events.is_empty());
     assert!(ag_events
         .iter()
         .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
