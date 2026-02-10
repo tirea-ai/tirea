@@ -142,9 +142,9 @@ pub use ui_stream::{
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    run_agent_stream, run_agent_stream_sse, run_agent_stream_sse_with_parent,
-    run_agent_stream_with_parent, AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter,
-    RequestError, RunAgentRequest, ToolExecutionLocation,
+    run_agent_events_with_request, run_agent_stream, run_agent_stream_sse,
+    run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIEvent,
+    AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports
@@ -174,8 +174,9 @@ pub use agent_os::{
 // Loop exports
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
-    AgentDefinition, AgentLoopError, RoundResult, RunContext,
+    run_loop, run_loop_stream, run_loop_stream_with_session, run_round, run_step, tool_map,
+    tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError, RoundResult, RunContext,
+    StreamWithSession,
 };
 
 // Plugin exports

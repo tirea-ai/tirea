@@ -1,5 +1,5 @@
 use crate::plugin::AgentPlugin;
-use crate::r#loop::{run_loop, run_loop_stream, RunContext};
+use crate::r#loop::{run_loop, run_loop_stream, run_loop_stream_with_session, RunContext, StreamWithSession};
 mod registry;
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -746,13 +746,27 @@ impl AgentOs {
         session: Session,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
         let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream(
-            client,
-            cfg,
-            session,
-            tools,
-            RunContext::default(),
-        ))
+        Ok(run_loop_stream(client, cfg, session, tools, RunContext::default()))
+    }
+
+    pub fn run_stream_with_context(
+        &self,
+        agent_id: &str,
+        session: Session,
+        run_ctx: RunContext,
+    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
+        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        Ok(run_loop_stream(client, cfg, session, tools, run_ctx))
+    }
+
+    pub fn run_stream_with_session(
+        &self,
+        agent_id: &str,
+        session: Session,
+        run_ctx: RunContext,
+    ) -> Result<StreamWithSession, AgentOsResolveError> {
+        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        Ok(run_loop_stream_with_session(client, cfg, session, tools, run_ctx))
     }
 }
 

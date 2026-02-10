@@ -1604,7 +1604,7 @@ impl AgentPlugin for FrontendToolPlugin {
 // AG-UI Run Agent Stream
 // ============================================================================
 
-use crate::r#loop::{run_loop_stream, AgentConfig, RunContext};
+use crate::r#loop::{run_loop_stream, run_loop_stream_with_session, AgentConfig, RunContext};
 use crate::session::Session;
 use crate::stream::AgentEvent;
 use crate::traits::tool::Tool;
@@ -1846,6 +1846,54 @@ pub fn run_agent_stream_with_request(
         request.run_id,
         request.parent_run_id,
     )
+}
+
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus the final `Session`.
+///
+/// This is useful for building transports (HTTP, NATS) that need to:
+/// - stream AG-UI compatible events to clients, and
+/// - persist the updated session once the run completes.
+pub fn run_agent_events_with_request(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    request: RunAgentRequest,
+) -> crate::r#loop::StreamWithSession {
+    let mut config = config;
+    let session = if should_seed_session_from_request(&session, &request) {
+        seed_session_from_request(session, &request)
+    } else {
+        session
+    };
+
+    // Apply per-request overrides when present.
+    if let Some(model) = request.model.clone() {
+        config.model = model;
+    }
+    if let Some(prompt) = request.system_prompt.clone() {
+        config.system_prompt = prompt;
+    }
+
+    // Create interaction response plugin if there are responses in the request
+    // This handles resuming from a pending state.
+    let response_plugin = InteractionResponsePlugin::from_request(&request);
+    if response_plugin.has_responses() {
+        config = config.with_plugin(Arc::new(response_plugin));
+    }
+
+    // Create frontend tool plugin if there are frontend tools.
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    if !frontend_plugin.frontend_tools.is_empty() {
+        config = config.with_plugin(Arc::new(frontend_plugin));
+    }
+
+    let run_ctx = RunContext {
+        run_id: Some(request.run_id.clone()),
+        parent_run_id: request.parent_run_id.clone(),
+    };
+
+    run_loop_stream_with_session(client, config, session, tools, run_ctx)
 }
 
 /// Run the agent loop with an AG-UI request, returning SSE-formatted strings.

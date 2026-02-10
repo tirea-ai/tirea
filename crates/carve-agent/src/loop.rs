@@ -1188,6 +1188,46 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    run_loop_stream_impl(client, config, session, tools, run_ctx, None)
+}
+
+/// A streaming agent run with access to the final `Session`.
+///
+/// This is primarily intended for transports (HTTP, NATS) that need to persist
+/// the updated session after the stream completes.
+pub struct StreamWithSession {
+    pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
+    pub final_session: tokio::sync::oneshot::Receiver<Session>,
+}
+
+/// Run the agent loop and return a stream of `AgentEvent`s plus the final `Session`.
+///
+/// The returned `final_session` receiver resolves when the stream finishes. If the
+/// stream terminates in a way that consumes the session (rare error paths), the
+/// receiver will be closed without a value.
+pub fn run_loop_stream_with_session(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+) -> StreamWithSession {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let events = run_loop_stream_impl(client, config, session, tools, run_ctx, Some(tx));
+    StreamWithSession {
+        events,
+        final_session: rx,
+    }
+}
+
+fn run_loop_stream_impl(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+    mut final_session_tx: Option<tokio::sync::oneshot::Sender<Session>>,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut session = session;
     let mut rounds = 0;
@@ -1245,6 +1285,9 @@ pub fn run_loop_stream(
                     run_id: run_id.clone(),
                     result: None,
                 };
+                if let Some(tx) = final_session_tx.take() {
+                    let _ = tx.send(session);
+                }
                 return;
             }
 
@@ -1292,6 +1335,9 @@ pub fn run_loop_stream(
                         run_id: run_id.clone(),
                         result: None,
                     };
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
                     return;
                 }
             };
@@ -1340,6 +1386,9 @@ pub fn run_loop_stream(
                             run_id: run_id.clone(),
                             result: None,
                         };
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
                         return;
                     }
                 }
@@ -1401,6 +1450,9 @@ pub fn run_loop_stream(
                     run_id: run_id.clone(),
                     result: result_value,
                 };
+                if let Some(tx) = final_session_tx.take() {
+                    let _ = tx.send(session);
+                }
                 return;
             }
 
@@ -1424,6 +1476,9 @@ pub fn run_loop_stream(
                         run_id: run_id.clone(),
                         result: None,
                     };
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
                     return;
                 }
             };
@@ -1498,6 +1553,8 @@ pub fn run_loop_stream(
                         run_id: run_id.clone(),
                         result: None,
                     };
+                    // No session available to persist; close receiver.
+                    drop(final_session_tx.take());
                     return;
                 }
             };
@@ -1528,6 +1585,9 @@ pub fn run_loop_stream(
                     run_id: run_id.clone(),
                     result: None,
                 };
+                if let Some(tx) = final_session_tx.take() {
+                    let _ = tx.send(session);
+                }
                 return;
             }
 
@@ -1540,6 +1600,9 @@ pub fn run_loop_stream(
                     run_id: run_id.clone(),
                     result: None,
                 };
+                if let Some(tx) = final_session_tx.take() {
+                    let _ = tx.send(session);
+                }
                 return;
             }
         }

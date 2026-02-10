@@ -1,0 +1,31 @@
+[package]
+name = "carve-agentos-server"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "HTTP/SSE/NATS gateway for carve-agent AgentOs"
+
+[dependencies]
+carve-agent = { path = "../carve-agent" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+futures = "0.3"
+async-stream = "0.3"
+bytes = "1"
+uuid = { version = "1", features = ["v4"] }
+
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "tokio"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+
+clap = { version = "4", features = ["derive", "env"] }
+async-nats = "0.38"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+async-trait = "0.1"
