@@ -29,3 +29,7 @@ async-nats = "0.38"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 async-trait = "0.1"
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["nats"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+genai = "0.5"

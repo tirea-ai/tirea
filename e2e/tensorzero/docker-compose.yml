@@ -1,0 +1,35 @@
+services:
+  clickhouse:
+    image: clickhouse:lts
+    environment:
+      CLICKHOUSE_DB: tensorzero
+      CLICKHOUSE_USER: chuser
+      CLICKHOUSE_PASSWORD: chpassword
+    ports:
+      - "8123:8123"
+    healthcheck:
+      test: wget --spider --tries 1 http://chuser:chpassword@localhost:8123/ping || exit 1
+      start_period: 30s
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  gateway:
+    image: tensorzero/gateway
+    volumes:
+      - ./config:/app/config:ro
+    command: --config-file /app/config/tensorzero.toml
+    environment:
+      TENSORZERO_CLICKHOUSE_URL: http://chuser:chpassword@clickhouse:8123/tensorzero
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+    ports:
+      - "3000:3000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: wget --spider --tries 1 http://localhost:3000/status || exit 1
+      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 10

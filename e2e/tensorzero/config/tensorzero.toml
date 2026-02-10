@@ -1,0 +1,16 @@
+[functions.agent_chat]
+type = "chat"
+
+[functions.agent_chat.variants.deepseek_v3]
+type = "chat_completion"
+model = "deepseek::deepseek-chat"
+
+[metrics.answer_correct]
+type = "boolean"
+optimize = "max"
+level = "inference"
+
+[metrics.response_quality]
+type = "float"
+optimize = "max"
+level = "inference"
