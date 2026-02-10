@@ -96,6 +96,7 @@ pub mod skills;
 pub mod state_types;
 pub mod storage;
 pub mod stream;
+mod tool_filter;
 pub mod traits;
 pub mod types;
 pub mod ui_stream;

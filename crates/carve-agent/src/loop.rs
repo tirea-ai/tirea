@@ -314,17 +314,11 @@ fn tool_descriptors_for_config(
         .values()
         .map(|t| t.descriptor().clone())
         .filter(|td| {
-            if let Some(ref allowed) = config.allowed_tools {
-                if !allowed.contains(&td.id) {
-                    return false;
-                }
-            }
-            if let Some(ref excluded) = config.excluded_tools {
-                if excluded.contains(&td.id) {
-                    return false;
-                }
-            }
-            true
+            crate::tool_filter::is_tool_allowed(
+                &td.id,
+                config.allowed_tools.as_deref(),
+                config.excluded_tools.as_deref(),
+            )
         })
         .collect()
 }

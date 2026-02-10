@@ -25,18 +25,8 @@ pub fn filter_tools(
 ) -> HashMap<String, Arc<dyn Tool>> {
     tools
         .iter()
-        .filter(|(name, _)| {
-            if let Some(ref allowed) = definition.allowed_tools {
-                if !allowed.contains(name) {
-                    return false;
-                }
-            }
-            if let Some(ref excluded) = definition.excluded_tools {
-                if excluded.contains(name) {
-                    return false;
-                }
-            }
-            true
+        .filter(|(_, tool)| {
+            crate::tool_filter::is_tool_allowed_by_definition(&tool.descriptor().id, definition)
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
