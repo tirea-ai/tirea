@@ -97,6 +97,17 @@ pub struct AgentDefinition {
 /// Backwards-compatible alias.
 pub type AgentConfig = AgentDefinition;
 
+/// Optional lifecycle context for a streaming agent run.
+///
+/// When fields are `None`, the loop auto-generates values.
+#[derive(Debug, Clone, Default)]
+pub struct RunContext {
+    /// External run ID. If `None`, a UUID v4 is generated internally.
+    pub run_id: Option<String>,
+    /// Parent run ID for nested/sub-agent runs.
+    pub parent_run_id: Option<String>,
+}
+
 impl Default for AgentDefinition {
     fn default() -> Self {
         Self {
@@ -1176,6 +1187,7 @@ pub fn run_loop_stream(
     config: AgentConfig,
     session: Session,
     tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut session = session;
@@ -1197,11 +1209,11 @@ pub fn run_loop_stream(
             }
         }
 
-        let run_id = uuid_v4();
+        let run_id = run_ctx.run_id.unwrap_or_else(uuid_v4);
         yield AgentEvent::RunStart {
             thread_id: session.id.clone(),
             run_id: run_id.clone(),
-            parent_run_id: None,
+            parent_run_id: run_ctx.parent_run_id,
         };
 
         loop {
@@ -2667,5 +2679,37 @@ mod tests {
             assert_eq!(session.message_count(), 2);
             assert!(session.messages[1].content.contains("system-reminder"));
         });
+    }
+
+    // ========================================================================
+    // RunContext tests
+    // ========================================================================
+
+    #[test]
+    fn test_run_context_default() {
+        let ctx = RunContext::default();
+        assert!(ctx.run_id.is_none());
+        assert!(ctx.parent_run_id.is_none());
+    }
+
+    #[test]
+    fn test_run_context_with_values() {
+        let ctx = RunContext {
+            run_id: Some("my-run".into()),
+            parent_run_id: Some("parent-run".into()),
+        };
+        assert_eq!(ctx.run_id.as_deref(), Some("my-run"));
+        assert_eq!(ctx.parent_run_id.as_deref(), Some("parent-run"));
+    }
+
+    #[test]
+    fn test_run_context_clone() {
+        let ctx = RunContext {
+            run_id: Some("r1".into()),
+            parent_run_id: None,
+        };
+        let cloned = ctx.clone();
+        assert_eq!(cloned.run_id, ctx.run_id);
+        assert_eq!(cloned.parent_run_id, ctx.parent_run_id);
     }
 }

@@ -1562,7 +1562,7 @@ impl AgentPlugin for FrontendToolPlugin {
 // AG-UI Run Agent Stream
 // ============================================================================
 
-use crate::r#loop::{run_loop_stream, AgentConfig};
+use crate::r#loop::{run_loop_stream, AgentConfig, RunContext};
 use crate::session::Session;
 use crate::stream::AgentEvent;
 use crate::traits::tool::Tool;
@@ -1632,48 +1632,38 @@ pub fn run_agent_stream_with_parent(
     parent_run_id: Option<String>,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     Box::pin(stream! {
-        // Create context
         let mut ctx = AGUIContext::new(thread_id.clone(), run_id.clone());
 
-        // Emit RUN_STARTED
-        yield AGUIEvent::run_started(&thread_id, &run_id, parent_run_id.clone());
-
-        // Run the agent loop
-        let mut inner_stream = run_loop_stream(client, config, session, tools);
+        // Pass run_id/parent_run_id into the core loop so its RunStart/RunFinish
+        // carry the correct IDs — no synthetic lifecycle events needed here.
+        let run_ctx = RunContext {
+            run_id: Some(run_id.clone()),
+            parent_run_id: parent_run_id.clone(),
+        };
+        let mut inner_stream = run_loop_stream(client, config, session, tools, run_ctx);
         let mut has_pending = false;
         let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
-            // Skip inner RunStart — we already emitted our own synthetic one above
-            if matches!(&event, AgentEvent::RunStart { .. }) {
-                continue;
-            }
-
-            // Track errors and pending state
             match &event {
                 AgentEvent::Error { message } => {
                     yield AGUIEvent::run_error(message.clone(), None);
-                    return; // Early return on error, no RUN_FINISHED
+                    return;
                 }
                 AgentEvent::Pending { .. } => {
                     has_pending = true;
                 }
-                // Intercept RunFinish: use wrapper's thread_id/run_id
-                AgentEvent::RunFinish { result, .. } => {
-                    // End text stream if active
-                    if ctx.end_text() {
-                        yield AGUIEvent::text_message_end(&ctx.message_id);
-                    }
-                    if !has_pending {
-                        yield AGUIEvent::run_finished(&thread_id, &run_id, result.clone());
-                        emitted_run_finished = true;
-                    }
+                // When pending, suppress RunFinish — run stays open for client interaction.
+                AgentEvent::RunFinish { .. } if has_pending => {
                     continue;
+                }
+                AgentEvent::RunFinish { .. } => {
+                    emitted_run_finished = true;
                 }
                 _ => {}
             }
 
-            // Convert and emit AG-UI events
+            // Uniform conversion — RunStart/RunFinish included.
             let ag_ui_events = event.to_ag_ui_events(&mut ctx);
             for ag_event in ag_ui_events {
                 yield ag_event;
@@ -1684,8 +1674,6 @@ pub fn run_agent_stream_with_parent(
         if !has_pending && !emitted_run_finished {
             yield AGUIEvent::run_finished(&thread_id, &run_id, None);
         }
-        // Note: When has_pending is true, the run stays open waiting for client response
-        // Client should include interaction responses in the next request
     })
 }
 
@@ -5311,6 +5299,103 @@ mod tests {
             assert_eq!(tool_call_id, "my_interaction_id");
         } else {
             panic!("First event should be ToolCallStart");
+        }
+    }
+
+    // ========================================================================
+    // AG-UI wrapper run_id consistency tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_run_agent_stream_emits_single_run_started() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("thread-1");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+        let events: Vec<AGUIEvent> = run_agent_stream(
+            client, config, session, tools,
+            "thread-1".to_string(), "run-abc".to_string(),
+        ).collect().await;
+
+        // Count RunStarted events — should be exactly one (no duplicate)
+        let run_started_count = events.iter().filter(|e| matches!(e, AGUIEvent::RunStarted { .. })).count();
+        assert_eq!(run_started_count, 1, "should emit exactly one RunStarted");
+
+        // Verify the single RunStarted has the correct IDs
+        if let AGUIEvent::RunStarted { thread_id, run_id, .. } = &events[0] {
+            assert_eq!(thread_id, "thread-1");
+            assert_eq!(run_id, "run-abc");
+        } else {
+            panic!("First event should be RunStarted, got: {:?}", events[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_stream_run_id_consistent_in_finished() {
+        use crate::phase::{Phase, StepContext};
+        use crate::plugin::AgentPlugin;
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        /// Plugin that skips LLM inference so the stream completes normally.
+        struct SkipPlugin;
+        #[async_trait::async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str { "skip" }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let client = Client::default();
+        let config = AgentConfig::default()
+            .with_plugin(Arc::new(SkipPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("t1");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+        let events: Vec<AGUIEvent> = run_agent_stream(
+            client, config, session, tools,
+            "t1".to_string(), "run-xyz".to_string(),
+        ).collect().await;
+
+        // Find RunFinished and verify run_id matches
+        let finished = events.iter().find(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+        assert!(finished.is_some(), "should have RunFinished");
+
+        if let AGUIEvent::RunFinished { thread_id, run_id, .. } = finished.unwrap() {
+            assert_eq!(thread_id, "t1");
+            assert_eq!(run_id, "run-xyz");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_stream_with_parent_run_id_passthrough() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("t1");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+        let events: Vec<AGUIEvent> = run_agent_stream_with_parent(
+            client, config, session, tools,
+            "t1".to_string(), "run-1".to_string(), Some("parent-run".to_string()),
+        ).collect().await;
+
+        if let AGUIEvent::RunStarted { parent_run_id, .. } = &events[0] {
+            assert_eq!(parent_run_id.as_deref(), Some("parent-run"));
+        } else {
+            panic!("First event should be RunStarted");
         }
     }
 }

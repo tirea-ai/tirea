@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context, RunContext,
     FileStorage, Message, Session, Storage, Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_state_derive::State;
@@ -429,7 +429,7 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
 
-    let mut stream = run_loop_stream(client.clone(), config, session, tools);
+    let mut stream = run_loop_stream(client.clone(), config, session, tools, RunContext::default());
 
     while let Some(event) = stream.next().await {
         match event {

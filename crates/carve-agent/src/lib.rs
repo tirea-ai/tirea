@@ -174,7 +174,7 @@ pub use agent_os::{
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
-    AgentDefinition, AgentLoopError, RoundResult,
+    AgentDefinition, AgentLoopError, RoundResult, RunContext,
 };
 
 // Plugin exports

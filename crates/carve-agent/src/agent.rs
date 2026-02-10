@@ -3,7 +3,7 @@
 //! Provides [`Agent`] as the primary interface for running agent loops,
 //! creating subagents, and managing background agent tasks.
 
-use crate::r#loop::{run_loop_stream, AgentDefinition, AgentLoopError};
+use crate::r#loop::{run_loop_stream, AgentDefinition, AgentLoopError, RunContext};
 use crate::session::Session;
 use crate::storage::{Storage, StorageError};
 use crate::stream::AgentEvent;
@@ -136,6 +136,7 @@ impl Agent {
             self.definition.clone(),
             session,
             filtered,
+            RunContext::default(),
         )
     }
 
@@ -184,7 +185,7 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let mut stream = run_loop_stream(client, definition, session.clone(), filtered);
+            let mut stream = run_loop_stream(client, definition, session.clone(), filtered, RunContext::default());
             let mut last_response = String::new();
             let final_session = session;
 
@@ -1117,7 +1118,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools);
+        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1137,7 +1138,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools);
+        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1157,7 +1158,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools);
+        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1175,7 +1176,7 @@ mod tests {
         let tools = make_tools(&["x", "y", "z"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools);
+        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1520,5 +1521,88 @@ mod tests {
 
         let snapshots = recorded.lock().unwrap();
         assert_eq!(snapshots[0], vec!["safe".to_string()]);
+    }
+
+    // ========================================================================
+    // RunContext passthrough tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_run_loop_stream_external_run_id_passthrough() {
+        let def = AgentDefinition::new("gpt-4o-mini")
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("thread-42").with_message(crate::types::Message::user("hi"));
+        let tools = HashMap::new();
+
+        let ctx = RunContext {
+            run_id: Some("external-run-id".into()),
+            parent_run_id: Some("parent-run-id".into()),
+        };
+        let events = collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+
+        // First event should be RunStart with our IDs
+        let first = &events[0];
+        if let AgentEvent::RunStart { thread_id, run_id, parent_run_id } = first {
+            assert_eq!(thread_id, "thread-42");
+            assert_eq!(run_id, "external-run-id");
+            assert_eq!(parent_run_id.as_deref(), Some("parent-run-id"));
+        } else {
+            panic!("Expected RunStart, got: {:?}", first);
+        }
+
+        // Last event should be RunFinish with the same run_id
+        let last = events.last().unwrap();
+        if let AgentEvent::RunFinish { thread_id, run_id, .. } = last {
+            assert_eq!(thread_id, "thread-42");
+            assert_eq!(run_id, "external-run-id");
+        } else {
+            panic!("Expected RunFinish, got: {:?}", last);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_stream_default_run_context_auto_generates() {
+        let def = AgentDefinition::new("gpt-4o-mini")
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
+        let tools = HashMap::new();
+
+        let events = collect_events(run_loop_stream(
+            Client::default(), def, session, tools, RunContext::default(),
+        )).await;
+
+        let first = &events[0];
+        if let AgentEvent::RunStart { run_id, parent_run_id, .. } = first {
+            assert!(!run_id.is_empty(), "auto-generated run_id should be non-empty");
+            assert!(parent_run_id.is_none());
+        } else {
+            panic!("Expected RunStart, got: {:?}", first);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_stream_run_id_consistent_across_events() {
+        let def = AgentDefinition::new("gpt-4o-mini")
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("s1").with_message(crate::types::Message::user("hi"));
+        let tools = HashMap::new();
+
+        let ctx = RunContext {
+            run_id: Some("consistent-id".into()),
+            parent_run_id: None,
+        };
+        let events = collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+
+        // Extract run_id from RunStart and RunFinish and verify they match
+        let start_id = events.iter().find_map(|e| {
+            if let AgentEvent::RunStart { run_id, .. } = e { Some(run_id.clone()) } else { None }
+        }).expect("should have RunStart");
+
+        let finish_id = events.iter().find_map(|e| {
+            if let AgentEvent::RunFinish { run_id, .. } = e { Some(run_id.clone()) } else { None }
+        }).expect("should have RunFinish");
+
+        assert_eq!(start_id, "consistent-id");
+        assert_eq!(finish_id, "consistent-id");
     }
 }
