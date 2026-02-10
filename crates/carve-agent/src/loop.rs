@@ -363,6 +363,107 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_patch()
 }
 
+struct AppliedToolResults {
+    session: Session,
+    pending_interaction: Option<Interaction>,
+    state_snapshot: Option<Value>,
+}
+
+fn apply_tool_results_to_session(
+    session: Session,
+    results: &[ToolExecutionResult],
+) -> Result<AppliedToolResults, AgentLoopError> {
+    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+
+    // Collect patches from completed tools and plugin pending patches.
+    let mut patches: Vec<TrackedPatch> = collect_patches(
+        &results
+            .iter()
+            .map(|r| r.execution.clone())
+            .collect::<Vec<_>>(),
+    );
+    for r in results {
+        patches.extend(r.pending_patches.iter().cloned());
+    }
+    let mut state_changed = !patches.is_empty();
+
+    // Only add tool messages for non-pending executions.
+    let tool_messages: Vec<Message> = results
+        .iter()
+        .filter(|r| r.pending_interaction.is_none())
+        .flat_map(|r| {
+            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+            for reminder in &r.reminders {
+                msgs.push(Message::system(format!(
+                    "<system-reminder>{}</system-reminder>",
+                    reminder
+                )));
+            }
+            msgs
+        })
+        .collect();
+
+    let mut session = session.with_patches(patches).with_messages(tool_messages);
+
+    if let Some(interaction) = pending_interaction.clone() {
+        let state = session
+            .rebuild_state()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        let patch = set_agent_pending_interaction(&state, interaction.clone());
+        if !patch.patch().is_empty() {
+            state_changed = true;
+            session = session.with_patch(patch);
+        }
+        let state_snapshot = if state_changed {
+            Some(
+                session
+                    .rebuild_state()
+                    .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
+            )
+        } else {
+            None
+        };
+        return Ok(AppliedToolResults {
+            session,
+            pending_interaction: Some(interaction),
+            state_snapshot,
+        });
+    }
+
+    // If a previous run left a persisted pending interaction, clear it once we successfully
+    // complete tool execution without creating a new pending interaction.
+    let state = session
+        .rebuild_state()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    if state
+        .get(AGENT_STATE_PATH)
+        .and_then(|v| v.get("pending_interaction"))
+        .is_some()
+    {
+        let patch = clear_agent_pending_interaction(&state);
+        if !patch.patch().is_empty() {
+            state_changed = true;
+            session = session.with_patch(patch);
+        }
+    }
+
+    let state_snapshot = if state_changed {
+        Some(
+            session
+                .rebuild_state()
+                .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+
+    Ok(AppliedToolResults {
+        session,
+        pending_interaction: None,
+        state_snapshot,
+    })
+}
+
 /// Run one step of the agent loop (non-streaming).
 ///
 /// A step consists of:
@@ -567,61 +668,14 @@ pub async fn execute_tools_with_config(
         .await
     };
 
-    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
-
-    let mut patches: Vec<TrackedPatch> = collect_patches(
-        &results
-            .iter()
-            .map(|r| r.execution.clone())
-            .collect::<Vec<_>>(),
-    );
-    for r in &results {
-        patches.extend(r.pending_patches.iter().cloned());
-    }
-    let tool_messages: Vec<Message> = results
-        .iter()
-        .filter(|r| r.pending_interaction.is_none())
-        .flat_map(|r| {
-            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
-            for reminder in &r.reminders {
-                msgs.push(Message::system(format!(
-                    "<system-reminder>{}</system-reminder>",
-                    reminder
-                )));
-            }
-            msgs
-        })
-        .collect();
-
-    let mut session = session.with_patches(patches).with_messages(tool_messages);
-
-    if let Some(interaction) = pending_interaction {
-        let patch = set_agent_pending_interaction(&state, interaction.clone());
-        if !patch.patch().is_empty() {
-            session = session.with_patch(patch);
-        }
+    let applied = apply_tool_results_to_session(session, &results)?;
+    if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            session,
+            session: applied.session,
             interaction,
         });
     }
-
-    // If a previous run left a persisted pending interaction, clear it once we successfully
-    // complete tool execution without creating a new pending interaction.
-    if let Ok(state) = session.rebuild_state() {
-        if state
-            .get(AGENT_STATE_PATH)
-            .and_then(|v| v.get("pending_interaction"))
-            .is_some()
-        {
-            let patch = clear_agent_pending_interaction(&state);
-            if !patch.patch().is_empty() {
-                session = session.with_patch(patch);
-            }
-        }
-    }
-
-    Ok(session)
+    Ok(applied.session)
 }
 
 /// Execute tool calls (simple version without config).
@@ -678,62 +732,14 @@ pub async fn execute_tools_with_plugins(
         .await
     };
 
-    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
-
-    let mut patches: Vec<TrackedPatch> = collect_patches(
-        &results
-            .iter()
-            .map(|r| r.execution.clone())
-            .collect::<Vec<_>>(),
-    );
-    for r in &results {
-        patches.extend(r.pending_patches.iter().cloned());
-    }
-
-    let tool_messages: Vec<Message> = results
-        .iter()
-        .filter(|r| r.pending_interaction.is_none())
-        .flat_map(|r| {
-            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
-            for reminder in &r.reminders {
-                msgs.push(Message::system(format!(
-                    "<system-reminder>{}</system-reminder>",
-                    reminder
-                )));
-            }
-            msgs
-        })
-        .collect();
-
-    let mut session = session.with_patches(patches).with_messages(tool_messages);
-
-    if let Some(interaction) = pending_interaction {
-        let patch = set_agent_pending_interaction(&state, interaction.clone());
-        if !patch.patch().is_empty() {
-            session = session.with_patch(patch);
-        }
+    let applied = apply_tool_results_to_session(session, &results)?;
+    if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            session,
+            session: applied.session,
             interaction,
         });
     }
-
-    // If a previous run left a persisted pending interaction, clear it once we successfully
-    // complete tool execution without creating a new pending interaction.
-    if let Ok(state) = session.rebuild_state() {
-        if state
-            .get(AGENT_STATE_PATH)
-            .and_then(|v| v.get("pending_interaction"))
-            .is_some()
-        {
-            let patch = clear_agent_pending_interaction(&state);
-            if !patch.patch().is_empty() {
-                session = session.with_patch(patch);
-            }
-        }
-    }
-
-    Ok(session)
+    Ok(applied.session)
 }
 
 /// Execute tools in parallel with phase hooks.
@@ -1133,54 +1139,15 @@ pub async fn run_loop(
             }
         }
 
-        let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+        let applied = apply_tool_results_to_session(session, &results)?;
+        session = applied.session;
 
-        // Apply patches/messages for tools that completed (skip pending ones).
-        let mut patches: Vec<TrackedPatch> = collect_patches(
-            &results
-                .iter()
-                .map(|r| r.execution.clone())
-                .collect::<Vec<_>>(),
-        );
-        for r in &results {
-            patches.extend(r.pending_patches.iter().cloned());
-        }
-        let tool_messages: Vec<Message> = results
-            .iter()
-            .filter(|r| r.pending_interaction.is_none())
-            .flat_map(|r| {
-                let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
-                for reminder in &r.reminders {
-                    msgs.push(Message::system(format!(
-                        "<system-reminder>{}</system-reminder>",
-                        reminder
-                    )));
-                }
-                msgs
-            })
-            .collect();
-
-        session = session.with_patches(patches).with_messages(tool_messages);
-
-        // Persist pending interaction state via AgentState, then pause.
-        if let Some(interaction) = pending_interaction {
-            let patch = set_agent_pending_interaction(&state, interaction.clone());
-            if !patch.patch().is_empty() {
-                session = session.with_patch(patch);
-            }
+        // Pause if any tool is waiting for client response.
+        if let Some(interaction) = applied.pending_interaction {
             return Err(AgentLoopError::PendingInteraction {
                 session,
                 interaction,
             });
-        } else if state
-            .get(AGENT_STATE_PATH)
-            .and_then(|v| v.get("pending_interaction"))
-            .is_some()
-        {
-            let patch = clear_agent_pending_interaction(&state);
-            if !patch.patch().is_empty() {
-                session = session.with_patch(patch);
-            }
         }
 
         rounds += 1;
@@ -1482,8 +1449,6 @@ pub fn run_loop_stream(
                 }
             }
 
-            let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
-
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
@@ -1492,48 +1457,16 @@ pub fn run_loop_stream(
                     };
                 }
             }
-
-            // Collect patches/messages from completed tools only (skip pending).
-            let mut patches: Vec<TrackedPatch> =
-                collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
-            for exec_result in &results {
-                patches.extend(exec_result.pending_patches.iter().cloned());
-            }
-
-            let tool_messages: Vec<Message> = results
-                .iter()
-                .filter(|r| r.pending_interaction.is_none())
-                .flat_map(|r| {
-                    let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
-                    for reminder in &r.reminders {
-                        msgs.push(Message::system(format!(
-                            "<system-reminder>{}</system-reminder>",
-                            reminder
-                        )));
-                    }
-                    msgs
-                })
-                .collect();
-
-            // Persist pending interaction state via AgentState, or clear it when resuming.
-            if let Some(ref interaction) = pending_interaction {
-                let patch = set_agent_pending_interaction(&state, interaction.clone());
-                if !patch.patch().is_empty() {
-                    patches.push(patch);
+            let applied = match apply_tool_results_to_session(session, &results) {
+                Ok(a) => a,
+                Err(e) => {
+                    yield AgentEvent::Error {
+                        message: e.to_string(),
+                    };
+                    return;
                 }
-            } else if state
-                .get(AGENT_STATE_PATH)
-                .and_then(|v| v.get("pending_interaction"))
-                .is_some()
-            {
-                let patch = clear_agent_pending_interaction(&state);
-                if !patch.patch().is_empty() {
-                    patches.push(patch);
-                }
-            }
-
-            let has_new_patches = !patches.is_empty();
-            session = session.with_patches(patches).with_messages(tool_messages);
+            };
+            session = applied.session;
 
             // Emit non-pending tool results (pending ones pause the run).
             for exec_result in &results {
@@ -1547,21 +1480,13 @@ pub fn run_loop_stream(
             }
 
             // Emit state snapshot when we mutated state (tool patches or AgentState pending/clear).
-            if has_new_patches {
-                match session.rebuild_state() {
-                    Ok(snapshot) => {
-                        yield AgentEvent::StateSnapshot { snapshot };
-                    }
-                    Err(e) => {
-                        yield AgentEvent::Error { message: e.to_string() };
-                        return;
-                    }
-                }
+            if let Some(snapshot) = applied.state_snapshot {
+                yield AgentEvent::StateSnapshot { snapshot };
             }
 
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
-            if pending_interaction.is_some() {
+            if applied.pending_interaction.is_some() {
                 return;
             }
 
