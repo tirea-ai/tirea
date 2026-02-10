@@ -50,6 +50,7 @@ use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
 use async_stream::stream;
+use async_trait::async_trait;
 use carve_state::{ActivityManager, Context, TrackedPatch};
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
@@ -60,6 +61,29 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tracing::Instrument;
+
+#[async_trait]
+trait ChatStreamProvider: Send + Sync {
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>>;
+}
+
+#[async_trait]
+impl ChatStreamProvider for Client {
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>> {
+        let resp = self.exec_chat_stream(model, chat_req, options).await?;
+        Ok(Box::pin(resp.stream))
+    }
+}
 
 /// Definition for the agent loop configuration.
 #[derive(Clone)]
@@ -1188,7 +1212,15 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    run_loop_stream_impl(client, config, session, tools, run_ctx, None)
+    run_loop_stream_impl_with_provider(
+        Arc::new(client),
+        config,
+        session,
+        tools,
+        run_ctx,
+        None,
+        None,
+    )
 }
 
 /// A streaming agent run with access to the final `Session`.
@@ -1197,6 +1229,29 @@ pub fn run_loop_stream(
 /// the updated session after the stream completes.
 pub struct StreamWithSession {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
+    pub final_session: tokio::sync::oneshot::Receiver<Session>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCheckpointReason {
+    /// An assistant turn was committed to the session (final text and/or tool calls).
+    AssistantTurnCommitted,
+    /// Tool results were applied to the session (tool messages and patches).
+    ToolResultsCommitted,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionCheckpoint {
+    pub reason: SessionCheckpointReason,
+    pub session: Session,
+}
+
+/// A streaming agent run with access to intermediate session checkpoints.
+///
+/// Intended for persistence layers to save at durable boundaries while streaming.
+pub struct StreamWithCheckpoints {
+    pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
+    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<SessionCheckpoint>,
     pub final_session: tokio::sync::oneshot::Receiver<Session>,
 }
 
@@ -1213,20 +1268,55 @@ pub fn run_loop_stream_with_session(
     run_ctx: RunContext,
 ) -> StreamWithSession {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let events = run_loop_stream_impl(client, config, session, tools, run_ctx, Some(tx));
+    let events = run_loop_stream_impl_with_provider(
+        Arc::new(client),
+        config,
+        session,
+        tools,
+        run_ctx,
+        Some(tx),
+        None,
+    );
     StreamWithSession {
         events,
         final_session: rx,
     }
 }
 
-fn run_loop_stream_impl(
+/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints and the final `Session`.
+pub fn run_loop_stream_with_checkpoints(
     client: Client,
     config: AgentConfig,
     session: Session,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
+) -> StreamWithCheckpoints {
+    let (final_tx, final_rx) = tokio::sync::oneshot::channel();
+    let (checkpoint_tx, checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let events = run_loop_stream_impl_with_provider(
+        Arc::new(client),
+        config,
+        session,
+        tools,
+        run_ctx,
+        Some(final_tx),
+        Some(checkpoint_tx),
+    );
+    StreamWithCheckpoints {
+        events,
+        checkpoints: checkpoint_rx,
+        final_session: final_rx,
+    }
+}
+
+fn run_loop_stream_impl_with_provider(
+    provider: Arc<dyn ChatStreamProvider>,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
     mut final_session_tx: Option<tokio::sync::oneshot::Sender<Session>>,
+    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<SessionCheckpoint>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut session = session;
@@ -1305,14 +1395,14 @@ fn run_loop_stream_impl(
             // Stream LLM response (instrumented with tracing span)
             let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
             let stream_result = async {
-                client
-                    .exec_chat_stream(&config.model, request, config.chat_options.as_ref())
+                provider
+                    .exec_chat_stream_events(&config.model, request, config.chat_options.as_ref())
                     .await
             }
             .instrument(inference_span)
             .await;
 
-            let chat_stream_response = match stream_result {
+            let chat_stream_events = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
@@ -1345,7 +1435,7 @@ fn run_loop_stream_impl(
             // Collect streaming response
             let inference_start = std::time::Instant::now();
             let mut collector = StreamCollector::new();
-            let mut chat_stream = chat_stream_response.stream;
+            let mut chat_stream = chat_stream_events;
 
             while let Some(event_result) = chat_stream.next().await {
                 match event_result {
@@ -1431,6 +1521,13 @@ fn run_loop_stream_impl(
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
+            }
+
+            if let Some(tx) = checkpoint_tx.as_ref() {
+                let _ = tx.send(SessionCheckpoint {
+                    reason: SessionCheckpointReason::AssistantTurnCommitted,
+                    session: session.clone(),
+                });
             }
 
             // Step boundary: finished LLM call
@@ -1559,6 +1656,13 @@ fn run_loop_stream_impl(
                 }
             };
             session = applied.session;
+
+            if let Some(tx) = checkpoint_tx.as_ref() {
+                let _ = tx.send(SessionCheckpoint {
+                    reason: SessionCheckpointReason::ToolResultsCommitted,
+                    session: session.clone(),
+                });
+            }
 
             // Emit non-pending tool results (pending ones pause the run).
             for exec_result in &results {

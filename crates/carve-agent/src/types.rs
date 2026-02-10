@@ -16,6 +16,9 @@ pub enum Role {
 /// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// Optional stable message identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub role: Role,
     pub content: String,
     /// Tool calls made by the assistant.
@@ -30,6 +33,7 @@ impl Message {
     /// Create a system message.
     pub fn system(content: impl Into<String>) -> Self {
         Self {
+            id: None,
             role: Role::System,
             content: content.into(),
             tool_calls: None,
@@ -40,6 +44,7 @@ impl Message {
     /// Create a user message.
     pub fn user(content: impl Into<String>) -> Self {
         Self {
+            id: None,
             role: Role::User,
             content: content.into(),
             tool_calls: None,
@@ -50,6 +55,7 @@ impl Message {
     /// Create an assistant message.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
+            id: None,
             role: Role::Assistant,
             content: content.into(),
             tool_calls: None,
@@ -60,6 +66,7 @@ impl Message {
     /// Create an assistant message with tool calls.
     pub fn assistant_with_tool_calls(content: impl Into<String>, calls: Vec<ToolCall>) -> Self {
         Self {
+            id: None,
             role: Role::Assistant,
             content: content.into(),
             tool_calls: if calls.is_empty() { None } else { Some(calls) },
@@ -70,6 +77,7 @@ impl Message {
     /// Create a tool response message.
     pub fn tool(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
+            id: None,
             role: Role::Tool,
             content: content.into(),
             tool_calls: None,

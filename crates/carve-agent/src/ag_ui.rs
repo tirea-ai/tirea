@@ -1237,6 +1237,7 @@ fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
     };
 
     Message {
+        id: msg.id.clone(),
         role,
         content: msg.content.clone(),
         tool_calls: None,
@@ -1270,6 +1271,58 @@ fn seed_session_from_request(session: Session, request: &RunAgentRequest) -> Ses
         .collect::<Vec<_>>();
 
     Session::with_initial_state(request.thread_id.clone(), state).with_messages(messages)
+}
+
+fn session_has_message_id(session: &Session, id: &str) -> bool {
+    session
+        .messages
+        .iter()
+        .any(|m| m.id.as_deref().is_some_and(|mid| mid == id))
+}
+
+fn session_has_tool_call_id(session: &Session, tool_call_id: &str) -> bool {
+    session
+        .messages
+        .iter()
+        .any(|m| m.tool_call_id.as_deref().is_some_and(|tid| tid == tool_call_id))
+}
+
+/// Apply request messages/state into an existing session, in an idempotent way.
+///
+/// - If the session is empty and the request carries messages/state, we seed the session.
+/// - Otherwise we only import messages that can be safely deduplicated:
+///   - tool role messages with `toolCallId`
+///   - any message with a stable `id`
+pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest) -> Session {
+    if should_seed_session_from_request(&session, request) {
+        return seed_session_from_request(session, request);
+    }
+
+    let session = session;
+    let mut new_msgs: Vec<crate::types::Message> = Vec::new();
+
+    for msg in &request.messages {
+        if let Some(id) = msg.id.as_deref() {
+            if !session_has_message_id(&session, id) {
+                new_msgs.push(core_message_from_ag_ui(msg));
+            }
+            continue;
+        }
+
+        if msg.role == MessageRole::Tool {
+            if let Some(tool_call_id) = msg.tool_call_id.as_deref() {
+                if !session_has_tool_call_id(&session, tool_call_id) {
+                    new_msgs.push(core_message_from_ag_ui(msg));
+                }
+            }
+        }
+    }
+
+    if new_msgs.is_empty() {
+        session
+    } else {
+        session.with_messages(new_msgs)
+    }
 }
 
 impl InteractionResponse {
@@ -1605,6 +1658,7 @@ impl AgentPlugin for FrontendToolPlugin {
 // ============================================================================
 
 use crate::r#loop::{run_loop_stream, run_loop_stream_with_session, AgentConfig, RunContext};
+use crate::r#loop::run_loop_stream_with_checkpoints;
 use crate::session::Session;
 use crate::stream::AgentEvent;
 use crate::traits::tool::Tool;
@@ -1806,11 +1860,7 @@ pub fn run_agent_stream_with_request(
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     let mut config = config;
-    let session = if should_seed_session_from_request(&session, &request) {
-        seed_session_from_request(session, &request)
-    } else {
-        session
-    };
+    let session = apply_agui_request_to_session(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1861,11 +1911,7 @@ pub fn run_agent_events_with_request(
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithSession {
     let mut config = config;
-    let session = if should_seed_session_from_request(&session, &request) {
-        seed_session_from_request(session, &request)
-    } else {
-        session
-    };
+    let session = apply_agui_request_to_session(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1894,6 +1940,45 @@ pub fn run_agent_events_with_request(
     };
 
     run_loop_stream_with_session(client, config, session, tools, run_ctx)
+}
+
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints and the final `Session`.
+pub fn run_agent_events_with_request_checkpoints(
+    client: Client,
+    config: AgentConfig,
+    session: Session,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    request: RunAgentRequest,
+) -> crate::r#loop::StreamWithCheckpoints {
+    let mut config = config;
+    let session = apply_agui_request_to_session(session, &request);
+
+    // Apply per-request overrides when present.
+    if let Some(model) = request.model.clone() {
+        config.model = model;
+    }
+    if let Some(prompt) = request.system_prompt.clone() {
+        config.system_prompt = prompt;
+    }
+
+    // Create interaction response plugin if there are responses in the request.
+    let response_plugin = InteractionResponsePlugin::from_request(&request);
+    if response_plugin.has_responses() {
+        config = config.with_plugin(Arc::new(response_plugin));
+    }
+
+    // Create frontend tool plugin if there are frontend tools.
+    let frontend_plugin = FrontendToolPlugin::from_request(&request);
+    if !frontend_plugin.frontend_tools.is_empty() {
+        config = config.with_plugin(Arc::new(frontend_plugin));
+    }
+
+    let run_ctx = RunContext {
+        run_id: Some(request.run_id.clone()),
+        parent_run_id: request.parent_run_id.clone(),
+    };
+
+    run_loop_stream_with_checkpoints(client, config, session, tools, run_ctx)
 }
 
 /// Run the agent loop with an AG-UI request, returning SSE-formatted strings.

@@ -1,5 +1,8 @@
 use crate::plugin::AgentPlugin;
-use crate::r#loop::{run_loop, run_loop_stream, run_loop_stream_with_session, RunContext, StreamWithSession};
+use crate::r#loop::{
+    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
+    RunContext, StreamWithCheckpoints, StreamWithSession,
+};
 mod registry;
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -767,6 +770,18 @@ impl AgentOs {
     ) -> Result<StreamWithSession, AgentOsResolveError> {
         let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
         Ok(run_loop_stream_with_session(client, cfg, session, tools, run_ctx))
+    }
+
+    pub fn run_stream_with_checkpoints(
+        &self,
+        agent_id: &str,
+        session: Session,
+        run_ctx: RunContext,
+    ) -> Result<StreamWithCheckpoints, AgentOsResolveError> {
+        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        Ok(run_loop_stream_with_checkpoints(
+            client, cfg, session, tools, run_ctx,
+        ))
     }
 }
 

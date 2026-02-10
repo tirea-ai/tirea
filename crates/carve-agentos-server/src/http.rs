@@ -6,7 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
-use carve_agent::{AgentOs, Message, RunAgentRequest, RunContext, Session, Storage};
+use carve_agent::{apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -149,6 +149,12 @@ async fn run_ai_sdk_sse(
         .unwrap_or_else(|| Session::new(session_id.clone()));
     session = session.with_message(Message::user(input));
 
+    // Industry-common: persist the user message immediately so it isn't lost if the run crashes.
+    st.storage
+        .save(&session)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
     let run_id = req
         .run_id
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
@@ -157,9 +163,9 @@ async fn run_ai_sdk_sse(
         parent_run_id: None,
     };
 
-    let stream_with_session = st
+    let stream_with_checkpoints = st
         .os
-        .run_stream_with_session(&agent_id, session, run_ctx)
+        .run_stream_with_checkpoints(&agent_id, session, run_ctx)
         .map_err(|e| match e {
             carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
             other => ApiError::BadRequest(other.to_string()),
@@ -169,7 +175,7 @@ async fn run_ai_sdk_sse(
     let storage = st.storage.clone();
 
     tokio::spawn(async move {
-        let mut events = stream_with_session.events;
+        let mut events = stream_with_checkpoints.events;
         let mut output_closed = false;
         let mut enc = AiSdkEncoder::new(run_id.clone());
 
@@ -213,11 +219,22 @@ async fn run_ai_sdk_sse(
                 }
             }
         }
-
-        if let Ok(final_session) = stream_with_session.final_session.await {
-            let _ = storage.save(&final_session).await;
-        }
     });
+
+    // Persist intermediate checkpoints and the final session.
+    {
+        let mut checkpoints = stream_with_checkpoints.checkpoints;
+        let final_session = stream_with_checkpoints.final_session;
+        let storage = storage.clone();
+        tokio::spawn(async move {
+            while let Some(cp) = checkpoints.recv().await {
+                let _ = storage.save(&cp.session).await;
+            }
+            if let Ok(final_session) = final_session.await {
+                let _ = storage.save(&final_session).await;
+            }
+        });
+    }
 
     let body_stream = async_stream::stream! {
         while let Some(chunk) = rx.recv().await {
@@ -236,7 +253,7 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let session = st
+    let base = st
         .storage
         .load(&req.thread_id)
         .await
@@ -248,10 +265,25 @@ async fn run_ag_ui_sse(
                 Session::new(req.thread_id.clone())
             }
         });
-    if session.id != req.thread_id {
+    if base.id != req.thread_id {
         return Err(ApiError::BadRequest(
             "stored session id does not match threadId".to_string(),
         ));
+    }
+
+    // Industry-common: apply inbound messages (user/tool responses) and persist before running.
+    let before_messages = base.messages.len();
+    let before_patches = base.patches.len();
+    let before_state = base.state.clone();
+    let session = apply_agui_request_to_session(base, &req);
+    if session.messages.len() != before_messages
+        || session.patches.len() != before_patches
+        || session.state != before_state
+    {
+        st.storage
+            .save(&session)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
 
     let (client, cfg, tools, session) = st
@@ -262,14 +294,14 @@ async fn run_ag_ui_sse(
             other => ApiError::BadRequest(other.to_string()),
         })?;
 
-    let stream_with_session =
-        carve_agent::run_agent_events_with_request(client, cfg, session, tools, req.clone());
+    let stream_with_checkpoints =
+        carve_agent::run_agent_events_with_request_checkpoints(client, cfg, session, tools, req.clone());
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let storage = st.storage.clone();
 
     tokio::spawn(async move {
-        let mut inner = stream_with_session.events;
+        let mut inner = stream_with_checkpoints.events;
         let mut output_closed = false;
         let mut enc = AgUiEncoder::new(req.thread_id.clone(), req.run_id.clone());
 
@@ -295,11 +327,22 @@ async fn run_ag_ui_sse(
                 }
             }
         }
-
-        if let Ok(final_session) = stream_with_session.final_session.await {
-            let _ = storage.save(&final_session).await;
-        }
     });
+
+    // Persist intermediate checkpoints and the final session.
+    {
+        let mut checkpoints = stream_with_checkpoints.checkpoints;
+        let final_session = stream_with_checkpoints.final_session;
+        let storage = storage.clone();
+        tokio::spawn(async move {
+            while let Some(cp) = checkpoints.recv().await {
+                let _ = storage.save(&cp.session).await;
+            }
+            if let Ok(final_session) = final_session.await {
+                let _ = storage.save(&final_session).await;
+            }
+        });
+    }
 
     let body_stream = async_stream::stream! {
         while let Some(chunk) = rx.recv().await {
