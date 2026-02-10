@@ -152,8 +152,7 @@ impl std::fmt::Debug for AgentDefinition {
 }
 
 impl AgentDefinition {
-    /// Create a new definition with id and model.
-    /// Create a new definition with id and model.
+    /// Create a new definition with the given model.
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
@@ -471,9 +470,8 @@ fn apply_tool_results_to_session(
 /// 2. Emit BeforeInference phase
 /// 3. Send messages to LLM
 /// 4. Emit AfterInference phase
-/// 5. If LLM returns tool calls, execute them with BeforeToolExecute/AfterToolExecute phases
-/// 6. Emit StepEnd phase
-/// 7. Return the result
+/// 5. Emit StepEnd phase
+/// 6. Return the session and result (caller handles tool execution)
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
@@ -634,58 +632,7 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<Session, AgentLoopError> {
-    if result.tool_calls.is_empty() {
-        return Ok(session);
-    }
-
-    let state = session
-        .rebuild_state()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let tool_descriptors: Vec<ToolDescriptor> =
-        tools.values().map(|t| t.descriptor().clone()).collect();
-
-    let results = if config.parallel_tools {
-        execute_tools_parallel_with_phases(
-            tools,
-            &result.tool_calls,
-            &state,
-            &tool_descriptors,
-            &config.plugins,
-            initial_plugin_data(&config.plugins),
-            None,
-        )
-        .await
-    } else {
-        execute_tools_sequential_with_phases(
-            tools,
-            &result.tool_calls,
-            &state,
-            &tool_descriptors,
-            &config.plugins,
-            initial_plugin_data(&config.plugins),
-            None,
-        )
-        .await
-    };
-
-    let applied = apply_tool_results_to_session(session, &results)?;
-    if let Some(interaction) = applied.pending_interaction {
-        return Err(AgentLoopError::PendingInteraction {
-            session: applied.session,
-            interaction,
-        });
-    }
-    Ok(applied.session)
-}
-
-/// Execute tool calls (simple version without config).
-pub async fn execute_tools_simple(
-    session: Session,
-    result: &StreamResult,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    parallel: bool,
-) -> Result<Session, AgentLoopError> {
-    execute_tools_with_plugins(session, result, tools, parallel, &[]).await
+    execute_tools_with_plugins(session, result, tools, config.parallel_tools, &config.plugins).await
 }
 
 /// Execute tool calls with plugin hooks (backward compatible).
@@ -1041,7 +988,9 @@ pub async fn run_loop(
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                 let pending = std::mem::take(&mut step.pending_patches);
                 plugin_data.sync_from_step(&step);
-                let _ = pending;
+                if !pending.is_empty() {
+                    session = session.with_patches(pending);
+                }
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
         };
@@ -1133,10 +1082,8 @@ pub async fn run_loop(
             .await
         };
 
-        if !config.parallel_tools {
-            if let Some(last) = results.last() {
-                plugin_data.data = last.plugin_data.clone();
-            }
+        if let Some(last) = results.last() {
+            plugin_data.data = last.plugin_data.clone();
         }
 
         let applied = apply_tool_results_to_session(session, &results)?;
@@ -1272,6 +1219,11 @@ pub fn run_loop_stream(
                     emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                     plugin_data.sync_from_step(&step);
                     yield AgentEvent::Error { message: e.to_string() };
+                    yield AgentEvent::RunFinish {
+                        thread_id: session.id.clone(),
+                        run_id: run_id.clone(),
+                        result: None,
+                    };
                     return;
                 }
             };
@@ -1309,6 +1261,11 @@ pub fn run_loop_stream(
                         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                         plugin_data.sync_from_step(&step);
                         yield AgentEvent::Error { message: e.to_string() };
+                        yield AgentEvent::RunFinish {
+                            thread_id: session.id.clone(),
+                            run_id: run_id.clone(),
+                            result: None,
+                        };
                         return;
                     }
                 }
@@ -1335,9 +1292,6 @@ pub fn run_loop_stream(
                 }
             }
 
-            // Step boundary: finished LLM call
-            yield AgentEvent::StepEnd;
-
             // Add assistant message
             session = if result.tool_calls.is_empty() {
                 session.with_message(assistant_message(&result.text))
@@ -1345,7 +1299,7 @@ pub fn run_loop_stream(
                 session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
             };
 
-            // Phase: StepEnd (with new context)
+            // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
             {
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
@@ -1355,6 +1309,9 @@ pub fn run_loop_stream(
                     session = session.with_patches(pending);
                 }
             }
+
+            // Step boundary: finished LLM call
+            yield AgentEvent::StepEnd;
 
             // Check if we need to execute tools
             if !result.needs_tools() {
@@ -1394,6 +1351,11 @@ pub fn run_loop_stream(
                 Ok(s) => s,
                 Err(e) => {
                     yield AgentEvent::Error { message: e.to_string() };
+                    yield AgentEvent::RunFinish {
+                        thread_id: session.id.clone(),
+                        run_id: run_id.clone(),
+                        result: None,
+                    };
                     return;
                 }
             };
@@ -1443,10 +1405,8 @@ pub fn run_loop_stream(
                 yield event;
             }
 
-            if !config.parallel_tools {
-                if let Some(last) = results.last() {
-                    plugin_data.data = last.plugin_data.clone();
-                }
+            if let Some(last) = results.last() {
+                plugin_data.data = last.plugin_data.clone();
             }
 
             // Emit pending interaction event(s) first.
@@ -1457,11 +1417,17 @@ pub fn run_loop_stream(
                     };
                 }
             }
+            let thread_id = session.id.clone();
             let applied = match apply_tool_results_to_session(session, &results) {
                 Ok(a) => a,
                 Err(e) => {
                     yield AgentEvent::Error {
                         message: e.to_string(),
+                    };
+                    yield AgentEvent::RunFinish {
+                        thread_id,
+                        run_id: run_id.clone(),
+                        result: None,
                     };
                     return;
                 }
@@ -1487,12 +1453,22 @@ pub fn run_loop_stream(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
+                yield AgentEvent::RunFinish {
+                    thread_id: session.id.clone(),
+                    run_id: run_id.clone(),
+                    result: None,
+                };
                 return;
             }
 
             rounds += 1;
             if rounds >= config.max_rounds {
                 yield AgentEvent::Error { message: format!("Max rounds ({}) exceeded", config.max_rounds) };
+                yield AgentEvent::RunFinish {
+                    thread_id: session.id.clone(),
+                    run_id: run_id.clone(),
+                    result: None,
+                };
                 return;
             }
         }
@@ -1544,40 +1520,24 @@ pub async fn run_round(
 }
 
 /// Error type for agent loop operations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum AgentLoopError {
-    /// LLM API error.
+    #[error("LLM error: {0}")]
     LlmError(String),
-    /// State rebuild error.
+    #[error("State error: {0}")]
     StateError(String),
-    /// Max rounds exceeded.
+    #[error("Max rounds ({0}) exceeded")]
     MaxRoundsExceeded(usize),
     /// Pending user interaction; execution should pause until the client responds.
     ///
     /// The returned `session` includes any patches applied up to the point where the
     /// interaction was requested (including persisting the pending interaction).
+    #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
         session: Session,
         interaction: Interaction,
     },
 }
-
-impl std::fmt::Display for AgentLoopError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::LlmError(e) => write!(f, "LLM error: {}", e),
-            Self::StateError(e) => write!(f, "State error: {}", e),
-            Self::MaxRoundsExceeded(n) => write!(f, "Max rounds ({}) exceeded", n),
-            Self::PendingInteraction { interaction, .. } => write!(
-                f,
-                "Pending interaction: {} ({})",
-                interaction.id, interaction.action
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AgentLoopError {}
 
 /// Helper to create a tool map from an iterator of tools.
 pub fn tool_map<I, T>(tools: I) -> HashMap<String, Arc<dyn Tool>>
@@ -1730,7 +1690,7 @@ mod tests {
             };
             let tools = HashMap::new();
 
-            let session = execute_tools_simple(session, &result, &tools, true)
+            let session = execute_tools(session, &result, &tools, true)
                 .await
                 .unwrap();
             assert_eq!(session.message_count(), 0);
@@ -1753,7 +1713,7 @@ mod tests {
             };
             let tools = tool_map([EchoTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true)
+            let session = execute_tools(session, &result, &tools, true)
                 .await
                 .unwrap();
 
@@ -1950,7 +1910,7 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true)
+            let session = execute_tools(session, &result, &tools, true)
                 .await
                 .unwrap();
 
@@ -2015,7 +1975,7 @@ mod tests {
             };
             let tools = tool_map([FailingTool]);
 
-            let session = execute_tools_simple(session, &result, &tools, true)
+            let session = execute_tools(session, &result, &tools, true)
                 .await
                 .unwrap();
 
@@ -2466,7 +2426,7 @@ mod tests {
             };
             let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-            let session = execute_tools_simple(session, &result, &tools, true)
+            let session = execute_tools(session, &result, &tools, true)
                 .await
                 .unwrap();
 
