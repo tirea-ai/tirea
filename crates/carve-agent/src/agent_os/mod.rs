@@ -745,7 +745,13 @@ impl AgentOs {
         session: Session,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
         let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream(client, cfg, session, tools, RunContext::default()))
+        Ok(run_loop_stream(
+            client,
+            cfg,
+            session,
+            tools,
+            RunContext::default(),
+        ))
     }
 }
 

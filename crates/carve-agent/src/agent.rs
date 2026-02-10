@@ -185,7 +185,13 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let mut stream = run_loop_stream(client, definition, session.clone(), filtered, RunContext::default());
+            let mut stream = run_loop_stream(
+                client,
+                definition,
+                session.clone(),
+                filtered,
+                RunContext::default(),
+            );
             let mut last_response = String::new();
             let final_session = session;
 
@@ -1118,7 +1124,13 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
+        let stream = run_loop_stream(
+            Client::default(),
+            def,
+            session,
+            tools,
+            RunContext::default(),
+        );
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1138,7 +1150,13 @@ mod tests {
         let tools = make_tools(&["a", "b", "c"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
+        let stream = run_loop_stream(
+            Client::default(),
+            def,
+            session,
+            tools,
+            RunContext::default(),
+        );
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1158,7 +1176,13 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
+        let stream = run_loop_stream(
+            Client::default(),
+            def,
+            session,
+            tools,
+            RunContext::default(),
+        );
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1176,7 +1200,13 @@ mod tests {
         let tools = make_tools(&["x", "y", "z"]);
         let session = Session::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(Client::default(), def, session, tools, RunContext::default());
+        let stream = run_loop_stream(
+            Client::default(),
+            def,
+            session,
+            tools,
+            RunContext::default(),
+        );
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1538,11 +1568,17 @@ mod tests {
             run_id: Some("external-run-id".into()),
             parent_run_id: Some("parent-run-id".into()),
         };
-        let events = collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+        let events =
+            collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
 
         // First event should be RunStart with our IDs
         let first = &events[0];
-        if let AgentEvent::RunStart { thread_id, run_id, parent_run_id } = first {
+        if let AgentEvent::RunStart {
+            thread_id,
+            run_id,
+            parent_run_id,
+        } = first
+        {
             assert_eq!(thread_id, "thread-42");
             assert_eq!(run_id, "external-run-id");
             assert_eq!(parent_run_id.as_deref(), Some("parent-run-id"));
@@ -1552,7 +1588,10 @@ mod tests {
 
         // Last event should be RunFinish with the same run_id
         let last = events.last().unwrap();
-        if let AgentEvent::RunFinish { thread_id, run_id, .. } = last {
+        if let AgentEvent::RunFinish {
+            thread_id, run_id, ..
+        } = last
+        {
             assert_eq!(thread_id, "thread-42");
             assert_eq!(run_id, "external-run-id");
         } else {
@@ -1568,12 +1607,25 @@ mod tests {
         let tools = HashMap::new();
 
         let events = collect_events(run_loop_stream(
-            Client::default(), def, session, tools, RunContext::default(),
-        )).await;
+            Client::default(),
+            def,
+            session,
+            tools,
+            RunContext::default(),
+        ))
+        .await;
 
         let first = &events[0];
-        if let AgentEvent::RunStart { run_id, parent_run_id, .. } = first {
-            assert!(!run_id.is_empty(), "auto-generated run_id should be non-empty");
+        if let AgentEvent::RunStart {
+            run_id,
+            parent_run_id,
+            ..
+        } = first
+        {
+            assert!(
+                !run_id.is_empty(),
+                "auto-generated run_id should be non-empty"
+            );
             assert!(parent_run_id.is_none());
         } else {
             panic!("Expected RunStart, got: {:?}", first);
@@ -1591,16 +1643,31 @@ mod tests {
             run_id: Some("consistent-id".into()),
             parent_run_id: None,
         };
-        let events = collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+        let events =
+            collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
 
         // Extract run_id from RunStart and RunFinish and verify they match
-        let start_id = events.iter().find_map(|e| {
-            if let AgentEvent::RunStart { run_id, .. } = e { Some(run_id.clone()) } else { None }
-        }).expect("should have RunStart");
+        let start_id = events
+            .iter()
+            .find_map(|e| {
+                if let AgentEvent::RunStart { run_id, .. } = e {
+                    Some(run_id.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have RunStart");
 
-        let finish_id = events.iter().find_map(|e| {
-            if let AgentEvent::RunFinish { run_id, .. } = e { Some(run_id.clone()) } else { None }
-        }).expect("should have RunFinish");
+        let finish_id = events
+            .iter()
+            .find_map(|e| {
+                if let AgentEvent::RunFinish { run_id, .. } = e {
+                    Some(run_id.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("should have RunFinish");
 
         assert_eq!(start_id, "consistent-id");
         assert_eq!(finish_id, "consistent-id");

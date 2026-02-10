@@ -310,9 +310,10 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
     let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
-    let events: Vec<_> = carve_agent::run_loop_stream(client, config, session, tools, Default::default())
-        .collect()
-        .await;
+    let events: Vec<_> =
+        carve_agent::run_loop_stream(client, config, session, tools, Default::default())
+            .collect()
+            .await;
     assert!(events
         .iter()
         .any(|e| matches!(e, carve_agent::AgentEvent::Error { .. })));
@@ -371,9 +372,10 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
     let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
-    let events: Vec<_> = carve_agent::run_loop_stream(client, config, session, tools, Default::default())
-        .collect()
-        .await;
+    let events: Vec<_> =
+        carve_agent::run_loop_stream(client, config, session, tools, Default::default())
+            .collect()
+            .await;
     assert!(events
         .iter()
         .any(|e| matches!(e, carve_agent::AgentEvent::Error { .. })));

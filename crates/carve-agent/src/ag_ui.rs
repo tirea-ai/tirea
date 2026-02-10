@@ -1230,6 +1230,53 @@ impl RunAgentRequest {
     }
 }
 
+fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
+    use crate::types::{Message, Role};
+
+    let role = match msg.role {
+        MessageRole::System => Role::System,
+        MessageRole::Developer => Role::System,
+        MessageRole::User => Role::User,
+        MessageRole::Assistant => Role::Assistant,
+        MessageRole::Tool => Role::Tool,
+    };
+
+    Message {
+        role,
+        content: msg.content.clone(),
+        tool_calls: None,
+        tool_call_id: msg.tool_call_id.clone(),
+    }
+}
+
+fn should_seed_session_from_request(session: &Session, request: &RunAgentRequest) -> bool {
+    let session_state_is_empty_object = session.state.as_object().is_some_and(|m| m.is_empty());
+
+    let request_has_state = request.state.as_ref().is_some_and(|s| !s.is_null());
+    let request_has_messages = !request.messages.is_empty();
+
+    session.messages.is_empty()
+        && session.patches.is_empty()
+        && session_state_is_empty_object
+        && (request_has_state || request_has_messages)
+}
+
+fn seed_session_from_request(session: Session, request: &RunAgentRequest) -> Session {
+    // For AG-UI, thread_id is the session identity; if caller didn't provide
+    // a session history/state, we seed it from the request payload.
+    let state = request
+        .state
+        .clone()
+        .unwrap_or_else(|| session.state.clone());
+    let messages = request
+        .messages
+        .iter()
+        .map(core_message_from_ag_ui)
+        .collect::<Vec<_>>();
+
+    Session::with_initial_state(request.thread_id.clone(), state).with_messages(messages)
+}
+
 impl InteractionResponse {
     /// Check if a result value indicates approval.
     pub fn is_approved(result: &Value) -> bool {
@@ -1764,6 +1811,19 @@ pub fn run_agent_stream_with_request(
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     let mut config = config;
+    let session = if should_seed_session_from_request(&session, &request) {
+        seed_session_from_request(session, &request)
+    } else {
+        session
+    };
+
+    // Apply per-request overrides when present.
+    if let Some(model) = request.model.clone() {
+        config.model = model;
+    }
+    if let Some(prompt) = request.system_prompt.clone() {
+        config.system_prompt = prompt;
+    }
 
     // Create interaction response plugin if there are responses in the request
     // This handles resuming from a pending state
@@ -1885,6 +1945,39 @@ mod tests {
         } else {
             panic!("Expected RunStarted event");
         }
+    }
+
+    #[test]
+    fn test_seed_session_from_request_when_session_empty() {
+        let base = Session::new("base");
+        let request = RunAgentRequest::new("thread_1", "run_1")
+            .with_state(json!({"counter": 1}))
+            .with_messages(vec![
+                AGUIMessage::system("s"),
+                AGUIMessage::user("u"),
+                AGUIMessage::assistant("a"),
+                AGUIMessage::tool(r#"{"approved":true}"#, "perm_1"),
+            ]);
+
+        assert!(should_seed_session_from_request(&base, &request));
+        let seeded = seed_session_from_request(base, &request);
+
+        assert_eq!(seeded.id, "thread_1");
+        assert_eq!(seeded.rebuild_state().unwrap()["counter"], 1);
+        assert_eq!(seeded.messages.len(), 4);
+        assert_eq!(seeded.messages[0].role, crate::types::Role::System);
+        assert_eq!(seeded.messages[3].role, crate::types::Role::Tool);
+        assert_eq!(seeded.messages[3].tool_call_id.as_deref(), Some("perm_1"));
+    }
+
+    #[test]
+    fn test_does_not_seed_session_from_request_when_session_non_empty() {
+        let base = Session::new("base").with_message(crate::types::Message::user("hello"));
+        let request = RunAgentRequest::new("thread_1", "run_1")
+            .with_state(json!({"counter": 1}))
+            .with_message(AGUIMessage::user("ignored"));
+
+        assert!(!should_seed_session_from_request(&base, &request));
     }
 
     #[test]
@@ -5318,16 +5411,28 @@ mod tests {
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
-            client, config, session, tools,
-            "thread-1".to_string(), "run-abc".to_string(),
-        ).collect().await;
+            client,
+            config,
+            session,
+            tools,
+            "thread-1".to_string(),
+            "run-abc".to_string(),
+        )
+        .collect()
+        .await;
 
         // Count RunStarted events — should be exactly one (no duplicate)
-        let run_started_count = events.iter().filter(|e| matches!(e, AGUIEvent::RunStarted { .. })).count();
+        let run_started_count = events
+            .iter()
+            .filter(|e| matches!(e, AGUIEvent::RunStarted { .. }))
+            .count();
         assert_eq!(run_started_count, 1, "should emit exactly one RunStarted");
 
         // Verify the single RunStarted has the correct IDs
-        if let AGUIEvent::RunStarted { thread_id, run_id, .. } = &events[0] {
+        if let AGUIEvent::RunStarted {
+            thread_id, run_id, ..
+        } = &events[0]
+        {
             assert_eq!(thread_id, "thread-1");
             assert_eq!(run_id, "run-abc");
         } else {
@@ -5347,7 +5452,9 @@ mod tests {
         struct SkipPlugin;
         #[async_trait::async_trait]
         impl AgentPlugin for SkipPlugin {
-            fn id(&self) -> &str { "skip" }
+            fn id(&self) -> &str {
+                "skip"
+            }
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 if phase == Phase::BeforeInference {
                     step.skip_inference = true;
@@ -5356,21 +5463,32 @@ mod tests {
         }
 
         let client = Client::default();
-        let config = AgentConfig::default()
-            .with_plugin(Arc::new(SkipPlugin) as Arc<dyn AgentPlugin>);
+        let config =
+            AgentConfig::default().with_plugin(Arc::new(SkipPlugin) as Arc<dyn AgentPlugin>);
         let session = Session::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
-            client, config, session, tools,
-            "t1".to_string(), "run-xyz".to_string(),
-        ).collect().await;
+            client,
+            config,
+            session,
+            tools,
+            "t1".to_string(),
+            "run-xyz".to_string(),
+        )
+        .collect()
+        .await;
 
         // Find RunFinished and verify run_id matches
-        let finished = events.iter().find(|e| matches!(e, AGUIEvent::RunFinished { .. }));
+        let finished = events
+            .iter()
+            .find(|e| matches!(e, AGUIEvent::RunFinished { .. }));
         assert!(finished.is_some(), "should have RunFinished");
 
-        if let AGUIEvent::RunFinished { thread_id, run_id, .. } = finished.unwrap() {
+        if let AGUIEvent::RunFinished {
+            thread_id, run_id, ..
+        } = finished.unwrap()
+        {
             assert_eq!(thread_id, "t1");
             assert_eq!(run_id, "run-xyz");
         }
@@ -5388,9 +5506,16 @@ mod tests {
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream_with_parent(
-            client, config, session, tools,
-            "t1".to_string(), "run-1".to_string(), Some("parent-run".to_string()),
-        ).collect().await;
+            client,
+            config,
+            session,
+            tools,
+            "t1".to_string(),
+            "run-1".to_string(),
+            Some("parent-run".to_string()),
+        )
+        .collect()
+        .await;
 
         if let AGUIEvent::RunStarted { parent_run_id, .. } = &events[0] {
             assert_eq!(parent_run_id.as_deref(), Some("parent-run"));

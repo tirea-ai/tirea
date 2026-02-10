@@ -12,8 +12,9 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, Context, FsSkillRegistry,
-    Message, RunContext, Session, SkillSubsystem, Tool, ToolDescriptor, ToolError, ToolResult,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, Context,
+    FsSkillRegistry, Message, RunContext, Session, SkillSubsystem, Tool, ToolDescriptor, ToolError,
+    ToolResult,
 };
 use carve_state_derive::State;
 use futures::StreamExt;
@@ -31,17 +32,21 @@ struct CalculatorTool;
 #[async_trait]
 impl Tool for CalculatorTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("calculator", "Calculator", "Perform arithmetic calculations")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "The arithmetic expression to evaluate (e.g., '2 + 3 * 4')"
-                    }
-                },
-                "required": ["expression"]
-            }))
+        ToolDescriptor::new(
+            "calculator",
+            "Calculator",
+            "Perform arithmetic calculations",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "The arithmetic expression to evaluate (e.g., '2 + 3 * 4')"
+                }
+            },
+            "required": ["expression"]
+        }))
     }
 
     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
@@ -151,7 +156,9 @@ impl Tool for CounterTool {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("DEEPSEEK_API_KEY").is_err() {
         eprintln!("Error: DEEPSEEK_API_KEY environment variable not set");
-        eprintln!("Usage: export DEEPSEEK_API_KEY=<your-key> && cargo run --example live_deepseek_skills");
+        eprintln!(
+            "Usage: export DEEPSEEK_API_KEY=<your-key> && cargo run --example live_deepseek_skills"
+        );
         std::process::exit(1);
     }
 
@@ -228,10 +235,11 @@ async fn test_unit_converter(
     println!("Messages: {}", session.message_count());
 
     // Check if skill was activated via tool calls
-    let skill_activated = session
-        .messages
-        .iter()
-        .any(|m| m.tool_calls.as_ref().is_some_and(|calls| calls.iter().any(|c| c.name == "skill")));
+    let skill_activated = session.messages.iter().any(|m| {
+        m.tool_calls
+            .as_ref()
+            .is_some_and(|calls| calls.iter().any(|c| c.name == "skill"))
+    });
 
     if skill_activated {
         println!("  Skill activated: yes");
@@ -245,7 +253,10 @@ async fn test_unit_converter(
             .as_ref()
             .is_some_and(|calls| calls.iter().any(|c| c.name == "calculator"))
     });
-    println!("  Calculator used: {}", if calc_used { "yes" } else { "no" });
+    println!(
+        "  Calculator used: {}",
+        if calc_used { "yes" } else { "no" }
+    );
 
     Ok(())
 }
@@ -358,7 +369,10 @@ async fn test_multi_skill(
     println!("\nSession summary:");
     println!("  Total messages: {}", session.message_count());
     println!("  Total patches: {}", session.patch_count());
-    println!("  Final state: {}", serde_json::to_string_pretty(&final_state)?);
+    println!(
+        "  Final state: {}",
+        serde_json::to_string_pretty(&final_state)?
+    );
 
     // Check which skills were activated
     let skill_calls: Vec<_> = session
