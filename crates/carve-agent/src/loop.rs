@@ -1989,6 +1989,7 @@ mod tests {
     use carve_state::{ActivityManager, Context};
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
+    use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
     use serde_json::{json, Value};
     use std::sync::Mutex;
     use tokio::sync::Notify;
@@ -3286,5 +3287,490 @@ mod tests {
         let cloned = ctx.clone();
         assert_eq!(cloned.run_id, ctx.run_id);
         assert_eq!(cloned.parent_run_id, ctx.parent_run_id);
+    }
+
+    // ========================================================================
+    // Mock ChatStreamProvider for stop condition integration tests
+    // ========================================================================
+
+    /// A single mock LLM response: text and optional tool calls.
+    #[derive(Clone)]
+    struct MockResponse {
+        text: String,
+        tool_calls: Vec<genai::chat::ToolCall>,
+        usage: Option<Usage>,
+    }
+
+    impl MockResponse {
+        fn text(s: &str) -> Self {
+            Self {
+                text: s.to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            }
+        }
+
+        fn with_tool_call(mut self, call_id: &str, name: &str, args: Value) -> Self {
+            self.tool_calls.push(genai::chat::ToolCall {
+                call_id: call_id.to_string(),
+                fn_name: name.to_string(),
+                fn_arguments: Value::String(args.to_string()),
+                thought_signatures: None,
+            });
+            self
+        }
+
+        fn with_usage(mut self, input: i32, output: i32) -> Self {
+            self.usage = Some(Usage {
+                prompt_tokens: Some(input),
+                prompt_tokens_details: None,
+                completion_tokens: Some(output),
+                completion_tokens_details: None,
+                total_tokens: Some(input + output),
+            });
+            self
+        }
+    }
+
+    /// Mock provider that returns pre-configured responses in order.
+    /// After all responses are consumed, returns text-only (triggering NaturalEnd).
+    struct MockStreamProvider {
+        responses: Mutex<Vec<MockResponse>>,
+    }
+
+    impl MockStreamProvider {
+        fn new(responses: Vec<MockResponse>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ChatStreamProvider for MockStreamProvider {
+        async fn exec_chat_stream_events(
+            &self,
+            _model: &str,
+            _chat_req: genai::chat::ChatRequest,
+            _options: Option<&ChatOptions>,
+        ) -> genai::Result<
+            Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send>>,
+        > {
+            let resp = {
+                let mut responses = self.responses.lock().unwrap();
+                if responses.is_empty() {
+                    MockResponse::text("done")
+                } else {
+                    responses.remove(0)
+                }
+            };
+
+            let mut events: Vec<genai::Result<ChatStreamEvent>> = Vec::new();
+            events.push(Ok(ChatStreamEvent::Start));
+
+            if !resp.text.is_empty() {
+                events.push(Ok(ChatStreamEvent::Chunk(StreamChunk {
+                    content: resp.text.clone(),
+                })));
+            }
+
+            for tc in &resp.tool_calls {
+                events.push(Ok(ChatStreamEvent::ToolCallChunk(ToolChunk {
+                    tool_call: tc.clone(),
+                })));
+            }
+
+            let end = StreamEnd {
+                captured_content: if resp.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(MessageContent::from_tool_calls(resp.tool_calls))
+                },
+                captured_usage: resp.usage,
+                ..Default::default()
+            };
+            events.push(Ok(ChatStreamEvent::End(end)));
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// Helper: run a mock stream and collect events.
+    async fn run_mock_stream(
+        provider: MockStreamProvider,
+        config: AgentConfig,
+        session: Session,
+        tools: HashMap<String, Arc<dyn Tool>>,
+    ) -> Vec<AgentEvent> {
+        let stream = run_loop_stream_impl_with_provider(
+            Arc::new(provider),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+            None,
+            None,
+        );
+        collect_stream_events(stream).await
+    }
+
+    /// Extract the stop_reason from the RunFinish event.
+    fn extract_stop_reason(events: &[AgentEvent]) -> Option<StopReason> {
+        events.iter().find_map(|e| match e {
+            AgentEvent::RunFinish { stop_reason, .. } => stop_reason.clone(),
+            _ => None,
+        })
+    }
+
+    // ========================================================================
+    // Stop condition integration tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_stop_max_rounds_via_stop_condition() {
+        // Configure MaxRounds(2) as explicit stop condition.
+        // Provider returns tool calls forever → should stop after 2 rounds.
+        let responses: Vec<MockResponse> = (0..10)
+            .map(|i| {
+                MockResponse::text("calling echo")
+                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "hi"}))
+            })
+            .collect();
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::MaxRounds(2));
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+    }
+
+    #[tokio::test]
+    async fn test_stop_natural_end_no_tools() {
+        // LLM returns text only → NaturalEnd.
+        let provider = MockStreamProvider::new(vec![MockResponse::text("Hello!")]);
+        let config = AgentConfig::new("mock");
+        let session = Session::new("test").with_message(Message::user("hi"));
+        let tools = HashMap::new();
+
+        let events = run_mock_stream(provider, config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::NaturalEnd));
+    }
+
+    #[tokio::test]
+    async fn test_stop_plugin_requested() {
+        // SkipInferencePlugin → PluginRequested.
+        let (recorder, _) = RecordAndSkipPlugin::new();
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(Message::user("hi"));
+        let tools = HashMap::new();
+
+        let provider = MockStreamProvider::new(vec![]);
+        let events = run_mock_stream(provider, config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::PluginRequested));
+    }
+
+    #[tokio::test]
+    async fn test_stop_on_tool_condition() {
+        // StopOnTool("finish") → first round calls echo, second calls finish.
+        let responses = vec![
+            MockResponse::text("step 1")
+                .with_tool_call("c1", "echo", json!({"message": "a"})),
+            MockResponse::text("step 2")
+                .with_tool_call("c2", "finish_tool", json!({})),
+        ];
+
+        struct FinishTool;
+        #[async_trait]
+        impl Tool for FinishTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("finish_tool", "Finish", "Finishes the run")
+            }
+            async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("finish_tool", json!({"done": true})))
+            }
+        }
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::StopOnTool("finish_tool".to_string()));
+        let session = Session::new("test").with_message(Message::user("go"));
+
+        let mut tools = tool_map([EchoTool]);
+        let ft: Arc<dyn Tool> = Arc::new(FinishTool);
+        tools.insert("finish_tool".to_string(), ft);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::ToolCalled("finish_tool".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_content_match_condition() {
+        // ContentMatch("FINAL_ANSWER") → second response has it in the text.
+        let responses = vec![
+            MockResponse::text("thinking...")
+                .with_tool_call("c1", "echo", json!({"message": "a"})),
+            MockResponse::text("here is the FINAL_ANSWER: 42")
+                .with_tool_call("c2", "echo", json!({"message": "b"})),
+        ];
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::ContentMatch("FINAL_ANSWER".to_string()))
+            .with_stop_condition(crate::stop::MaxRounds(10));
+        let session = Session::new("test").with_message(Message::user("solve"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::ContentMatched("FINAL_ANSWER".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stop_token_budget_condition() {
+        // TokenBudget with max_total=500 → second round pushes over budget.
+        let responses = vec![
+            MockResponse::text("step 1")
+                .with_tool_call("c1", "echo", json!({"message": "a"}))
+                .with_usage(200, 100),
+            MockResponse::text("step 2")
+                .with_tool_call("c2", "echo", json!({"message": "b"}))
+                .with_usage(200, 100),
+        ];
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::TokenBudget { max_total: 500 })
+            .with_stop_condition(crate::stop::MaxRounds(10));
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::TokenBudgetExceeded));
+    }
+
+    #[tokio::test]
+    async fn test_stop_consecutive_errors_condition() {
+        // ConsecutiveErrors(2) → all tool calls fail each round.
+        let responses: Vec<MockResponse> = (0..5)
+            .map(|i| {
+                MockResponse::text(&format!("round {i}"))
+                    .with_tool_call(&format!("c{i}"), "failing", json!({}))
+            })
+            .collect();
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::ConsecutiveErrors(2))
+            .with_stop_condition(crate::stop::MaxRounds(10));
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([FailingTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::ConsecutiveErrorsExceeded));
+    }
+
+    #[tokio::test]
+    async fn test_stop_loop_detection_condition() {
+        // LoopDetection(window=3) → same tool called repeatedly.
+        let responses: Vec<MockResponse> = (0..5)
+            .map(|i| {
+                MockResponse::text(&format!("round {i}"))
+                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "same"}))
+            })
+            .collect();
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::LoopDetection { window: 3 })
+            .with_stop_condition(crate::stop::MaxRounds(10));
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::LoopDetected));
+    }
+
+    #[tokio::test]
+    async fn test_stop_cancellation_token() {
+        // Cancel before first inference.
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let provider = MockStreamProvider::new(vec![MockResponse::text("never")]);
+        let config = AgentConfig::new("mock");
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = HashMap::new();
+
+        let stream = run_loop_stream_impl_with_provider(
+            Arc::new(provider),
+            config,
+            session,
+            tools,
+            RunContext {
+                cancellation_token: Some(token),
+                ..Default::default()
+            },
+            None,
+            None,
+        );
+        let events = collect_stream_events(stream).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn test_stop_first_condition_wins() {
+        // Both MaxRounds(1) and TokenBudget(50) should trigger after round 1.
+        // MaxRounds is first in the list → it wins.
+        let responses = vec![
+            MockResponse::text("r1")
+                .with_tool_call("c1", "echo", json!({"message": "a"}))
+                .with_usage(100, 100),
+        ];
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::MaxRounds(1))
+            .with_stop_condition(crate::stop::TokenBudget { max_total: 50 });
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        // MaxRounds listed first → wins
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+    }
+
+    #[tokio::test]
+    async fn test_stop_default_max_rounds_from_config() {
+        // No explicit stop_conditions → auto-creates MaxRounds from config.max_rounds.
+        let responses: Vec<MockResponse> = (0..5)
+            .map(|i| {
+                MockResponse::text(&format!("r{i}"))
+                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "a"}))
+            })
+            .collect();
+
+        let config = AgentConfig::new("mock").with_max_rounds(2);
+        let session = Session::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+    }
+
+    #[tokio::test]
+    async fn test_stop_reason_in_run_finish_event() {
+        // Verify RunFinish event structure when stop condition triggers.
+        let responses = vec![
+            MockResponse::text("r1")
+                .with_tool_call("c1", "echo", json!({"message": "a"})),
+        ];
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::MaxRounds(1));
+        let session = Session::new("test-thread").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+
+        let finish = events.iter().find(|e| matches!(e, AgentEvent::RunFinish { .. }));
+        assert!(finish.is_some());
+        if let Some(AgentEvent::RunFinish { thread_id, stop_reason, .. }) = finish {
+            assert_eq!(thread_id, "test-thread");
+            assert_eq!(*stop_reason, Some(StopReason::MaxRoundsReached));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_consecutive_errors_resets_on_success() {
+        // Round 1: failing tool (consecutive_errors=1)
+        // Round 2: echo succeeds (consecutive_errors=0)
+        // Round 3: failing tool (consecutive_errors=1)
+        // ConsecutiveErrors(2) should NOT trigger — never reaches 2.
+        let responses = vec![
+            MockResponse::text("r1").with_tool_call("c1", "failing", json!({})),
+            MockResponse::text("r2").with_tool_call("c2", "echo", json!({"message": "ok"})),
+            MockResponse::text("r3").with_tool_call("c3", "failing", json!({})),
+        ];
+
+        let mut tools = tool_map([EchoTool]);
+        let ft: Arc<dyn Tool> = Arc::new(FailingTool);
+        tools.insert("failing".to_string(), ft);
+
+        let config = AgentConfig::new("mock")
+            .with_stop_condition(crate::stop::ConsecutiveErrors(2))
+            .with_stop_condition(crate::stop::MaxRounds(3));
+        let session = Session::new("test").with_message(Message::user("go"));
+
+        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        // Should hit MaxRounds(3), not ConsecutiveErrors
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+    }
+
+    #[tokio::test]
+    async fn test_loop_state_tracks_rounds() {
+        let mut state = LoopState::new();
+        assert_eq!(state.rounds, 0);
+
+        let tool_calls = vec![crate::types::ToolCall::new("c1", "echo", json!({}))];
+        state.record_tool_round(&tool_calls, 0);
+        state.rounds += 1;
+        assert_eq!(state.rounds, 1);
+        assert_eq!(state.consecutive_errors, 0);
+        assert_eq!(state.tool_call_history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_loop_state_tracks_token_usage() {
+        let mut state = LoopState::new();
+        let result = StreamResult {
+            text: "hello".to_string(),
+            tool_calls: vec![],
+            usage: Some(Usage {
+                prompt_tokens: Some(100),
+                prompt_tokens_details: None,
+                completion_tokens: Some(50),
+                completion_tokens_details: None,
+                total_tokens: Some(150),
+            }),
+        };
+        state.update_from_response(&result);
+        assert_eq!(state.total_input_tokens, 100);
+        assert_eq!(state.total_output_tokens, 50);
+
+        state.update_from_response(&result);
+        assert_eq!(state.total_input_tokens, 200);
+        assert_eq!(state.total_output_tokens, 100);
+    }
+
+    #[tokio::test]
+    async fn test_loop_state_caps_history_at_20() {
+        let mut state = LoopState::new();
+        for i in 0..25 {
+            let tool_calls = vec![crate::types::ToolCall::new(
+                &format!("c{i}"), &format!("tool_{i}"), json!({}),
+            )];
+            state.record_tool_round(&tool_calls, 0);
+        }
+        assert_eq!(state.tool_call_history.len(), 20);
+    }
+
+    #[tokio::test]
+    async fn test_effective_stop_conditions_empty_uses_max_rounds() {
+        let config = AgentConfig::new("mock").with_max_rounds(5);
+        let conditions = effective_stop_conditions(&config);
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(conditions[0].id(), "max_rounds");
+    }
+
+    #[tokio::test]
+    async fn test_effective_stop_conditions_explicit_overrides() {
+        let config = AgentConfig::new("mock")
+            .with_max_rounds(5) // ignored when explicit conditions set
+            .with_stop_condition(crate::stop::Timeout(std::time::Duration::from_secs(30)));
+        let conditions = effective_stop_conditions(&config);
+        assert_eq!(conditions.len(), 1);
+        assert_eq!(conditions[0].id(), "timeout");
     }
 }

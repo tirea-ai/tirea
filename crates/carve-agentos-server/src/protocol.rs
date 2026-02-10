@@ -260,4 +260,98 @@ mod tests {
         let out = enc.on_agent_event(&ready);
         assert!(!out.is_empty());
     }
+
+    // ====================================================================
+    // AiSdkEncoder: StopReason → finish_reason mapping tests
+    // ====================================================================
+
+    /// Helper to get the finish_reason string from encoder output.
+    fn ai_sdk_finish_reason(stop_reason: Option<StopReason>) -> String {
+        let mut enc = AiSdkEncoder::new("r".to_string());
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "r".to_string(),
+            result: None,
+            stop_reason,
+        });
+        // Last event should be Finish; extract finish_reason via serialization
+        let finish = out.last().unwrap();
+        let json = serde_json::to_value(finish).unwrap();
+        json["finishReason"]
+            .as_str()
+            .unwrap_or("(none)")
+            .to_string()
+    }
+
+    #[test]
+    fn test_finish_reason_natural_end() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::NaturalEnd)), "stop");
+    }
+
+    #[test]
+    fn test_finish_reason_plugin_requested() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::PluginRequested)), "stop");
+    }
+
+    #[test]
+    fn test_finish_reason_content_matched() {
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::ContentMatched("DONE".into()))),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn test_finish_reason_max_rounds() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::MaxRoundsReached)), "length");
+    }
+
+    #[test]
+    fn test_finish_reason_timeout() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::TimeoutReached)), "length");
+    }
+
+    #[test]
+    fn test_finish_reason_token_budget() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::TokenBudgetExceeded)), "length");
+    }
+
+    #[test]
+    fn test_finish_reason_tool_called() {
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::ToolCalled("finish".into()))),
+            "tool-calls"
+        );
+    }
+
+    #[test]
+    fn test_finish_reason_cancelled() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::Cancelled)), "other");
+    }
+
+    #[test]
+    fn test_finish_reason_custom() {
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::Custom("my_reason".into()))),
+            "other"
+        );
+    }
+
+    #[test]
+    fn test_finish_reason_consecutive_errors() {
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::ConsecutiveErrorsExceeded)),
+            "error"
+        );
+    }
+
+    #[test]
+    fn test_finish_reason_loop_detected() {
+        assert_eq!(ai_sdk_finish_reason(Some(StopReason::LoopDetected)), "error");
+    }
+
+    #[test]
+    fn test_finish_reason_none_defaults_to_stop() {
+        assert_eq!(ai_sdk_finish_reason(None), "stop");
+    }
 }
