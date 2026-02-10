@@ -1385,14 +1385,34 @@ impl AgentPlugin for InteractionResponsePlugin {
 
         if is_frontend_denied || is_permission_denied {
             // Interaction was denied - block the tool
+            step.confirm();
             step.block("User denied the action".to_string());
+            clear_agent_pending_interaction(step);
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
-            // This allows the tool to execute normally
-            // Note: We don't need to do anything special here because
-            // the absence of pending state means the tool will execute
+            // This allows the tool to execute normally.
+            step.confirm();
+            clear_agent_pending_interaction(step);
         }
         // If no response found for this tool, let other plugins handle it
+    }
+}
+
+fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
+    use crate::state_types::{AgentState, AGENT_STATE_PATH};
+    use carve_state::Context;
+
+    let Ok(state) = step.session.rebuild_state() else {
+        return;
+    };
+
+    // Persist the clearance via patch so subsequent steps/runs don't remain stuck in Pending.
+    let ctx = Context::new(&state, "agent_state", "ag_ui_interaction_response");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.pending_interaction_none();
+    let patch = ctx.take_patch();
+    if !patch.patch().is_empty() {
+        step.pending_patches.push(patch);
     }
 }
 
@@ -4335,19 +4355,18 @@ mod tests {
         let frontend_plugin = FrontendToolPlugin::new(frontend_tools);
         let permission_plugin = PermissionPlugin;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({
+                "permissions": {
+                    "default_behavior": "allow",
+                    "tools": { "frontend_action": "deny" }
+                }
+            }),
+        );
         let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new("c1", "frontend_action", json!({}));
         step.tool = Some(ToolContext::new(&call));
-
-        // Set permission to Deny
-        step.set(
-            "permissions",
-            json!({
-                "default_behavior": "allow",
-                "tools": { "frontend_action": "deny" }
-            }),
-        );
 
         // Run PermissionPlugin first (simulating plugin order)
         permission_plugin

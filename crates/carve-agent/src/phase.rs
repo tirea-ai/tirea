@@ -10,6 +10,7 @@ use crate::state_types::Interaction;
 use crate::stream::StreamResult;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
 use crate::types::ToolCall;
+use carve_state::TrackedPatch;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -145,6 +146,10 @@ pub struct StepContext<'a> {
     /// OTel tracing span for the current operation (set by LLMMetryPlugin).
     pub tracing_span: Option<tracing::Span>,
 
+    // === Pending State Changes ===
+    /// Patches to apply to session state after this phase completes.
+    pub pending_patches: Vec<TrackedPatch>,
+
     // === Plugin Data ===
     /// Plugin data storage.
     data: HashMap<String, Value>,
@@ -163,6 +168,7 @@ impl<'a> StepContext<'a> {
             response: None,
             skip_inference: false,
             tracing_span: None,
+            pending_patches: Vec::new(),
             data: HashMap::new(),
         }
     }
@@ -176,6 +182,7 @@ impl<'a> StepContext<'a> {
         self.response = None;
         self.skip_inference = false;
         self.tracing_span = None;
+        self.pending_patches.clear();
     }
 
     // =========================================================================

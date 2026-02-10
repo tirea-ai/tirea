@@ -10,10 +10,10 @@ use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use genai::Client;
 pub use registry::{
     AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
-    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError,
-    ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
-    PluginRegistry, PluginRegistryError, InMemoryPluginRegistry, CompositePluginRegistry,
+    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
+    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
+    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
+    PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -98,7 +98,10 @@ pub enum AgentOsBuildError {
     ProvidersNotConfigured,
 
     #[error("provider not found: {provider_id} (for model id: {model_id})")]
-    ProviderNotFound { provider_id: String, model_id: String },
+    ProviderNotFound {
+        provider_id: String,
+        model_id: String,
+    },
 
     #[error("skills enabled but no SkillRegistry configured")]
     SkillsNotConfigured,
@@ -113,7 +116,10 @@ pub enum AgentOsResolveError {
     ModelNotFound(String),
 
     #[error("provider not found: {provider_id} (for model id: {model_id})")]
-    ProviderNotFound { provider_id: String, model_id: String },
+    ProviderNotFound {
+        provider_id: String,
+        model_id: String,
+    },
 
     #[error(transparent)]
     Wiring(#[from] AgentOsWiringError),
@@ -350,11 +356,7 @@ impl AgentOsBuilder {
             let reserved = AgentOs::reserved_plugin_ids();
             for (agent_id, def) in &agents_defs {
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                for id in def
-                    .policy_ids
-                    .iter()
-                    .chain(def.plugin_ids.iter())
-                {
+                for id in def.policy_ids.iter().chain(def.plugin_ids.iter()) {
                     let id = id.trim();
                     if id.is_empty() {
                         return Err(AgentOsBuildError::AgentEmptyPluginRef {
@@ -563,7 +565,8 @@ impl AgentOs {
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
 
-        let system_plugins: Vec<Arc<dyn AgentPlugin>> = if self.skills.mode == SkillsMode::Disabled {
+        let system_plugins: Vec<Arc<dyn AgentPlugin>> = if self.skills.mode == SkillsMode::Disabled
+        {
             Vec::new()
         } else {
             let reg = self
@@ -586,7 +589,9 @@ impl AgentOs {
             // Register skills tools.
             let skills = SkillSubsystem::new(reg.clone());
             skills.extend_tools(tools).map_err(|e| match e {
-                SkillSubsystemError::ToolIdConflict(id) => AgentOsWiringError::SkillsToolIdConflict(id),
+                SkillSubsystemError::ToolIdConflict(id) => {
+                    AgentOsWiringError::SkillsToolIdConflict(id)
+                }
             })?;
 
             // Build skills plugins.
@@ -1101,7 +1106,10 @@ mod tests {
     async fn resolve_wires_plugins_from_registry() {
         let os = AgentOs::builder()
             .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
-            .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"),
+            )
             .build()
             .unwrap();
 
@@ -1172,7 +1180,10 @@ mod tests {
     #[test]
     fn build_errors_if_builder_agent_references_missing_plugin() {
         let err = AgentOs::builder()
-            .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin_id("p1"),
+            )
             .build()
             .unwrap_err();
         assert!(matches!(
@@ -1185,7 +1196,10 @@ mod tests {
     #[test]
     fn build_errors_if_builder_agent_references_missing_policy() {
         let err = AgentOs::builder()
-            .with_agent("a1", AgentDefinition::new("gpt-4o-mini").with_policy_id("policy1"))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_policy_id("policy1"),
+            )
             .build()
             .unwrap_err();
         assert!(matches!(
@@ -1281,7 +1295,10 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent_registry(Arc::new({
                 let mut reg = InMemoryAgentRegistry::new();
-                reg.upsert("a1", AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"));
+                reg.upsert(
+                    "a1",
+                    AgentDefinition::new("gpt-4o-mini").with_plugin_id("skills"),
+                );
                 reg
             }))
             .build()
@@ -1300,7 +1317,10 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent_registry(Arc::new({
                 let mut reg = InMemoryAgentRegistry::new();
-                reg.upsert("a1", AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"));
+                reg.upsert(
+                    "a1",
+                    AgentDefinition::new("gpt-4o-mini").with_policy_id("skills"),
+                );
                 reg
             }))
             .build()

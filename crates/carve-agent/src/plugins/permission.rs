@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 
 /// State path for permission state.
@@ -122,16 +122,6 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
-        Some((
-            PERMISSION_STATE_PATH,
-            json!({
-                "default_behavior": "ask",
-                "tools": {}
-            }),
-        ))
-    }
-
     async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
         use crate::phase::Phase;
 
@@ -143,34 +133,30 @@ impl AgentPlugin for PermissionPlugin {
             return;
         };
 
-        // Get permission from stored data (simplified - in real implementation,
-        // this would read from session state)
-        let permission = step
-            .get::<Value>(PERMISSION_STATE_PATH)
+        // Read permission state from session state
+        let permission_state = step
+            .session
+            .rebuild_state()
+            .ok()
+            .and_then(|s| s.get(PERMISSION_STATE_PATH).cloned());
+
+        let permission = permission_state
+            .as_ref()
             .and_then(|state| {
                 state
                     .get("tools")
                     .and_then(|tools| tools.get(tool_id))
                     .and_then(|v| v.as_str())
-                    .and_then(|s| match s {
-                        "allow" => Some(ToolPermissionBehavior::Allow),
-                        "deny" => Some(ToolPermissionBehavior::Deny),
-                        "ask" => Some(ToolPermissionBehavior::Ask),
-                        _ => None,
-                    })
+                    .and_then(parse_behavior)
             })
             .unwrap_or_else(|| {
-                step.get::<Value>(PERMISSION_STATE_PATH)
+                permission_state
+                    .as_ref()
                     .and_then(|state| {
                         state
                             .get("default_behavior")
                             .and_then(|v| v.as_str())
-                            .and_then(|s| match s {
-                                "allow" => Some(ToolPermissionBehavior::Allow),
-                                "deny" => Some(ToolPermissionBehavior::Deny),
-                                "ask" => Some(ToolPermissionBehavior::Ask),
-                                _ => None,
-                            })
+                            .and_then(parse_behavior)
                     })
                     .unwrap_or(ToolPermissionBehavior::Ask)
             });
@@ -194,6 +180,16 @@ impl AgentPlugin for PermissionPlugin {
                 }
             }
         }
+    }
+}
+
+/// Parse a behavior string into a ToolPermissionBehavior.
+fn parse_behavior(s: &str) -> Option<ToolPermissionBehavior> {
+    match s {
+        "allow" => Some(ToolPermissionBehavior::Allow),
+        "deny" => Some(ToolPermissionBehavior::Deny),
+        "ask" => Some(ToolPermissionBehavior::Ask),
+        _ => None,
     }
 }
 
@@ -333,14 +329,9 @@ mod tests {
     }
 
     #[test]
-    fn test_permission_plugin_initial_data() {
+    fn test_permission_plugin_no_initial_data() {
         let plugin = PermissionPlugin;
-        let data = plugin.initial_data();
-
-        assert!(data.is_some());
-        let (path, value) = data.unwrap();
-        assert_eq!(path, "permissions");
-        assert_eq!(value["default_behavior"], "ask");
+        assert!(plugin.initial_data().is_none());
     }
 
     #[tokio::test]
@@ -349,23 +340,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": {} } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up allow permission in step data
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "allow", "tools": {} }),
-        );
-
-        // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should not block
         assert!(!step.tool_blocked());
         assert!(!step.tool_pending());
     }
@@ -376,23 +362,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "deny", "tools": {} } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up deny permission in step data
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "deny", "tools": {} }),
-        );
-
-        // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should block
         assert!(step.tool_blocked());
     }
 
@@ -402,23 +383,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up ask permission in step data
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "ask", "tools": {} }),
-        );
-
-        // Set up tool context
         let call = ToolCall::new("call_1", "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should set pending
         assert!(step.tool_pending());
     }
 
@@ -467,23 +443,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up with deny default but allow for specific tool
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "deny", "tools": { "allowed_tool": "allow" } }),
-        );
-
-        // Set up tool context for allowed tool
         let call = ToolCall::new("call_1", "allowed_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should not block because tool is explicitly allowed
         assert!(!step.tool_blocked());
     }
 
@@ -493,23 +464,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up with allow default but deny for specific tool
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "allow", "tools": { "denied_tool": "deny" } }),
-        );
-
-        // Set up tool context for denied tool
         let call = ToolCall::new("call_1", "denied_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should block because tool is explicitly denied
         assert!(step.tool_blocked());
     }
 
@@ -519,23 +485,18 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up with allow default but ask for specific tool
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "allow", "tools": { "ask_tool": "ask" } }),
-        );
-
-        // Set up tool context for ask tool
         let call = ToolCall::new("call_1", "ask_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
-        // Should set pending because tool requires confirmation
         assert!(step.tool_pending());
     }
 
@@ -545,16 +506,12 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up with invalid behavior string - should fall back to default
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } }),
-        );
-
-        // Set up tool context
         let call = ToolCall::new("call_1", "invalid_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -572,16 +529,12 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up with invalid default behavior string - should fall back to Ask
-        step.set(
-            PERMISSION_STATE_PATH,
-            json!({ "default_behavior": "invalid_default", "tools": {} }),
-        );
-
-        // Set up tool context
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -589,6 +542,25 @@ mod tests {
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should fall back to Ask behavior
+        assert!(step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_no_state() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // Session with no permission state at all — should default to Ask
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
         assert!(step.tool_pending());
     }
 }

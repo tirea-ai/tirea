@@ -753,10 +753,7 @@ mod tests {
             result: Some(json!({"response": "Final response"})),
         };
         if let AgentEvent::RunFinish { result, .. } = &event {
-            assert_eq!(
-                AgentEvent::extract_response(result),
-                "Final response"
-            );
+            assert_eq!(AgentEvent::extract_response(result), "Final response");
         }
 
         // Test ActivitySnapshot
@@ -1208,9 +1205,8 @@ mod tests {
             fn_arguments: Value::String("{\"city\":".to_string()),
             thought_signatures: None,
         };
-        let output2 = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
-            tool_call: tc2,
-        }));
+        let output2 =
+            collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc2 }));
         assert!(matches!(
             output2,
             Some(StreamOutput::ToolCallDelta { ref args_delta, .. }) if args_delta == "{\"city\":"
@@ -1222,9 +1218,8 @@ mod tests {
             fn_arguments: Value::String("{\"city\": \"San Francisco\"}".to_string()),
             thought_signatures: None,
         };
-        let output3 = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk {
-            tool_call: tc3,
-        }));
+        let output3 =
+            collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc3 }));
         // Delta should be only the new part
         assert!(matches!(
             output3,

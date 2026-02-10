@@ -49,7 +49,9 @@ pub use crate::plugin::AgentPlugin;
 pub use crate::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
-pub use crate::state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
+pub use crate::state_types::{
+    AgentState, Interaction, InteractionResponse, ToolPermissionBehavior, AGENT_STATE_PATH,
+};
 
 // Extension traits - these add methods to Context
 pub use crate::plugins::{PermissionContextExt, ReminderContextExt};

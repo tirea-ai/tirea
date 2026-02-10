@@ -2,6 +2,7 @@
 //!
 //! These types are used across multiple plugins and extension traits.
 
+use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -115,6 +116,19 @@ impl InteractionResponse {
             result,
         }
     }
+}
+
+/// Agent-owned state stored in the session document.
+///
+/// This is used for cross-step and cross-run flow control that should be persisted
+/// via patches (not ephemeral in-memory variables).
+pub const AGENT_STATE_PATH: &str = "agent";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+pub struct AgentState {
+    /// Pending interaction that must be resolved by the client before the run can continue.
+    #[carve(default = "None")]
+    pub pending_interaction: Option<Interaction>,
 }
 
 #[cfg(test)]

@@ -96,7 +96,9 @@ impl Tool for OpenMeteoWeatherTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("geocoding http error: {}", e)))?
             .json()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("geocoding json parse failed: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("geocoding json parse failed: {}", e))
+            })?;
 
         let r = geo
             .results
@@ -129,7 +131,9 @@ impl Tool for OpenMeteoWeatherTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("forecast http error: {}", e)))?
             .json()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("forecast json parse failed: {}", e)))?;
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("forecast json parse failed: {}", e))
+            })?;
 
         Ok(ToolResult::success(
             "get_weather",
@@ -192,8 +196,9 @@ Rules:\n\
         .build()
         .unwrap();
 
-    let session = Session::new("real-weather-smoke")
-        .with_message(Message::user("What's the current weather in San Francisco? Use the tool."));
+    let session = Session::new("real-weather-smoke").with_message(Message::user(
+        "What's the current weather in San Francisco? Use the tool.",
+    ));
 
     let stream = os.run_stream("weather", session).unwrap();
     tokio::pin!(stream);

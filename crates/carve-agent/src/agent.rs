@@ -1091,8 +1091,10 @@ mod tests {
         let mut events = Vec::new();
         let mut stream = stream;
         while let Some(event) = stream.next().await {
-            let is_terminal =
-                matches!(event, AgentEvent::RunFinish { .. } | AgentEvent::Error { .. });
+            let is_terminal = matches!(
+                event,
+                AgentEvent::RunFinish { .. } | AgentEvent::Error { .. }
+            );
             events.push(event);
             if is_terminal {
                 break;

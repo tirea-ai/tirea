@@ -129,7 +129,9 @@ fn sanitize_component(raw: &str) -> Result<String, McpToolRegistryError> {
     }
     let out = out.trim_matches('_').to_string();
     if out.is_empty() {
-        return Err(McpToolRegistryError::InvalidToolIdComponent(raw.to_string()));
+        return Err(McpToolRegistryError::InvalidToolIdComponent(
+            raw.to_string(),
+        ));
     }
     Ok(out)
 }
@@ -261,10 +263,7 @@ mod tests {
         }
 
         async fn call_tool(&self, name: &str, args: Value) -> Result<Value, McpTransportError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push((name.to_string(), args));
+            self.calls.lock().unwrap().push((name.to_string(), args));
             Ok(serde_json::json!({"ok": true}))
         }
 

@@ -39,17 +39,18 @@
 //! ```
 
 use crate::activity::ActivityHub;
+use crate::agent::uuid_v4;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
-use crate::execute::{collect_patches, execute_single_tool, ToolExecution};
+use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
-use crate::agent::uuid_v4;
+use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
 use async_stream::stream;
-use carve_state::ActivityManager;
+use carve_state::{ActivityManager, Context, TrackedPatch};
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -294,6 +295,29 @@ impl PluginRuntimeData {
     }
 }
 
+fn tool_descriptors_for_config(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+) -> Vec<ToolDescriptor> {
+    tools
+        .values()
+        .map(|t| t.descriptor().clone())
+        .filter(|td| {
+            if let Some(ref allowed) = config.allowed_tools {
+                if !allowed.contains(&td.id) {
+                    return false;
+                }
+            }
+            if let Some(ref excluded) = config.excluded_tools {
+                if excluded.contains(&td.id) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
+}
+
 /// Build the message list for an LLM request from step context.
 fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
@@ -320,6 +344,20 @@ fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     messages
 }
 
+fn set_agent_pending_interaction(state: &Value, interaction: Interaction) -> TrackedPatch {
+    let ctx = Context::new(state, "agent_pending", "agent_loop");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.set_pending_interaction(Some(interaction));
+    ctx.take_patch()
+}
+
+fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
+    let ctx = Context::new(state, "agent_pending_clear", "agent_loop");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.pending_interaction_none();
+    ctx.take_patch()
+}
+
 /// Run one step of the agent loop (non-streaming).
 ///
 /// A step consists of:
@@ -336,28 +374,11 @@ pub async fn run_step(
     session: Session,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, StreamResult), AgentLoopError> {
-    // Get tool descriptors, applying definition-level filtering
-    let tool_descriptors: Vec<ToolDescriptor> = tools
-        .values()
-        .map(|t| t.descriptor().clone())
-        .filter(|td| {
-            if let Some(ref allowed) = config.allowed_tools {
-                if !allowed.contains(&td.id) {
-                    return false;
-                }
-            }
-            if let Some(ref excluded) = config.excluded_tools {
-                if excluded.contains(&td.id) {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
+    let tool_descriptors = tool_descriptors_for_config(tools, config);
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
     // Create StepContext - use scoped blocks to manage borrows
-    let (messages, filtered_tools, skip_inference, tracing_span) = {
+    let (messages, filtered_tools, skip_inference, tracing_span, pending) = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
 
         // Phase 1: StepStart
@@ -373,9 +394,15 @@ pub async fn run_step(
         let skip = step.skip_inference;
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
         let tracing_span = step.tracing_span.take();
+        let pending = std::mem::take(&mut step.pending_patches);
         plugin_data.sync_from_step(&step);
 
-        (msgs, tools_filter, skip, tracing_span)
+        (msgs, tools_filter, skip, tracing_span, pending)
+    };
+    let session = if pending.is_empty() {
+        session
+    } else {
+        session.with_patches(pending)
     };
 
     // Skip inference if requested
@@ -443,12 +470,18 @@ pub async fn run_step(
     };
 
     // Phase 3: AfterInference (with new context)
-    {
+    let session = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
         step.response = Some(result.clone());
         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+        let pending = std::mem::take(&mut step.pending_patches);
         plugin_data.sync_from_step(&step);
-    }
+        if pending.is_empty() {
+            session
+        } else {
+            session.with_patches(pending)
+        }
+    };
 
     // Add assistant message
     let session = if result.tool_calls.is_empty() {
@@ -461,11 +494,17 @@ pub async fn run_step(
     };
 
     // Phase 6: StepEnd (with new context)
-    {
+    let session = {
         let mut step = plugin_data.new_step_context(&session, tool_descriptors);
         emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+        let pending = std::mem::take(&mut step.pending_patches);
         plugin_data.sync_from_step(&step);
-    }
+        if pending.is_empty() {
+            session
+        } else {
+            session.with_patches(pending)
+        }
+    };
 
     Ok((session, result))
 }
@@ -493,84 +532,74 @@ pub async fn execute_tools_with_config(
         return Ok(session);
     }
 
-    // Get current state
     let state = session
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-
-    // Get tool descriptors
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
-    // Execute each tool with phase hooks
-    let mut executions = Vec::new();
+    let results = if config.parallel_tools {
+        execute_tools_parallel_with_phases(
+            tools,
+            &result.tool_calls,
+            &state,
+            &tool_descriptors,
+            &config.plugins,
+            initial_plugin_data(&config.plugins),
+            None,
+        )
+        .await
+    } else {
+        execute_tools_sequential_with_phases(
+            tools,
+            &result.tool_calls,
+            &state,
+            &tool_descriptors,
+            &config.plugins,
+            initial_plugin_data(&config.plugins),
+            None,
+        )
+        .await
+    };
 
-    for call in &result.tool_calls {
-        // Create StepContext for this tool
-        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
-        step.tool = Some(ToolContext::new(call));
+    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
 
-        // Phase 4: BeforeToolExecute
-        emit_phase(Phase::BeforeToolExecute, &mut step, &config.plugins).await;
-
-        // Check if blocked
-        let execution = if step.tool_blocked() {
-            let reason = step
-                .tool
-                .as_ref()
-                .and_then(|t| t.block_reason.clone())
-                .unwrap_or_else(|| "Blocked by plugin".to_string());
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::error(&call.name, reason),
-                patch: None,
-            }
-        } else if step.tool_pending() {
-            ToolExecution {
-                call: call.clone(),
-                result: ToolResult::pending(&call.name, "Waiting for user confirmation"),
-                patch: None,
-            }
-        } else {
-            // Execute the tool
-            let tool = tools.get(&call.name).cloned();
-            execute_single_tool(tool.as_deref(), call, &state).await
-        };
-
-        // Set tool result in context
-        step.set_tool_result(execution.result.clone());
-
-        // Phase 5: AfterToolExecute
-        emit_phase(Phase::AfterToolExecute, &mut step, &config.plugins).await;
-        plugin_data.sync_from_step(&step);
-
-        executions.push((execution, step.system_reminders.clone()));
-    }
-
-    // Collect patches and tool response messages
-    let patches = collect_patches(
-        &executions
+    let mut patches: Vec<TrackedPatch> = collect_patches(
+        &results
             .iter()
-            .map(|(e, _)| e.clone())
+            .map(|r| r.execution.clone())
             .collect::<Vec<_>>(),
     );
-    let tool_messages: Vec<Message> = executions
+    for r in &results {
+        patches.extend(r.pending_patches.iter().cloned());
+    }
+    let tool_messages: Vec<Message> = results
         .iter()
-        .flat_map(|(e, reminders)| {
-            let mut msgs = vec![tool_response(&e.call.id, &e.result)];
-            for r in reminders {
+        .filter(|r| r.pending_interaction.is_none())
+        .flat_map(|r| {
+            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+            for reminder in &r.reminders {
                 msgs.push(Message::system(format!(
                     "<system-reminder>{}</system-reminder>",
-                    r
+                    reminder
                 )));
             }
             msgs
         })
         .collect();
 
-    // Update session
-    let session = session.with_patches(patches).with_messages(tool_messages);
+    let mut session = session.with_patches(patches).with_messages(tool_messages);
+
+    if let Some(interaction) = pending_interaction {
+        let patch = set_agent_pending_interaction(&state, interaction.clone());
+        if !patch.patch().is_empty() {
+            session = session.with_patch(patch);
+        }
+        return Err(AgentLoopError::PendingInteraction {
+            session,
+            interaction,
+        });
+    }
 
     Ok(session)
 }
@@ -597,17 +626,14 @@ pub async fn execute_tools_with_plugins(
         return Ok(session);
     }
 
-    // Get current state
     let state = session
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
-    // Get tool descriptors
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let plugin_data = initial_plugin_data(plugins);
 
-    // Execute tools
     let results = if parallel {
         execute_tools_parallel_with_phases(
             tools,
@@ -615,7 +641,7 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            plugin_data.clone(),
+            plugin_data,
             None,
         )
         .await
@@ -626,21 +652,27 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            plugin_data.clone(),
+            plugin_data,
             None,
         )
         .await
     };
 
-    // Collect patches and tool response messages
-    let patches = collect_patches(
+    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+
+    let mut patches: Vec<TrackedPatch> = collect_patches(
         &results
             .iter()
             .map(|r| r.execution.clone())
             .collect::<Vec<_>>(),
     );
+    for r in &results {
+        patches.extend(r.pending_patches.iter().cloned());
+    }
+
     let tool_messages: Vec<Message> = results
         .iter()
+        .filter(|r| r.pending_interaction.is_none())
         .flat_map(|r| {
             let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
             for reminder in &r.reminders {
@@ -653,8 +685,18 @@ pub async fn execute_tools_with_plugins(
         })
         .collect();
 
-    // Update session
-    let session = session.with_patches(patches).with_messages(tool_messages);
+    let mut session = session.with_patches(patches).with_messages(tool_messages);
+
+    if let Some(interaction) = pending_interaction {
+        let patch = set_agent_pending_interaction(&state, interaction.clone());
+        if !patch.patch().is_empty() {
+            session = session.with_patch(patch);
+        }
+        return Err(AgentLoopError::PendingInteraction {
+            session,
+            interaction,
+        });
+    }
 
     Ok(session)
 }
@@ -731,9 +773,25 @@ async fn execute_tools_sequential_with_phases(
                 state = new_state;
             }
         }
+        // Apply pending patches from plugins to state for next tool
+        for pp in &result.pending_patches {
+            if let Ok(new_state) = apply_patch(&state, pp.patch()) {
+                state = new_state;
+            }
+        }
 
         plugin_data = result.plugin_data.clone();
         results.push(result);
+
+        // Best-effort flow control: in sequential mode, stop at the first pending interaction.
+        // This prevents later tool calls from executing while the client still needs to respond.
+        if results
+            .last()
+            .and_then(|r| r.pending_interaction.as_ref())
+            .is_some()
+        {
+            break;
+        }
     }
 
     results
@@ -749,6 +807,8 @@ pub struct ToolExecutionResult {
     pub pending_interaction: Option<crate::state_types::Interaction>,
     /// Plugin data snapshot after this tool execution.
     pub plugin_data: HashMap<String, Value>,
+    /// Pending patches from plugins during tool phases.
+    pub pending_patches: Vec<TrackedPatch>,
 }
 
 /// Execute a single tool with phase hooks.
@@ -850,11 +910,14 @@ async fn execute_single_tool_with_phases(
     // Phase: AfterToolExecute
     emit_phase(Phase::AfterToolExecute, &mut step, plugins).await;
 
+    let pending_patches = std::mem::take(&mut step.pending_patches);
+
     ToolExecutionResult {
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
         plugin_data: step.data_snapshot(),
+        pending_patches,
     }
 }
 
@@ -868,34 +931,222 @@ pub async fn run_loop(
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, String), AgentLoopError> {
     let mut rounds = 0;
-    let mut last_text;
+    let mut last_text = String::new();
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
-    // Get tool descriptors for SessionStart
-    let tool_descriptors: Vec<ToolDescriptor> =
-        tools.values().map(|t| t.descriptor().clone()).collect();
-
-    // Create StepContext for session lifecycle
-    let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+    let tool_descriptors = tool_descriptors_for_config(tools, config);
 
     // Phase: SessionStart
-    emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
-    plugin_data.sync_from_step(&session_step);
+    {
+        let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+        emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
+        let pending = std::mem::take(&mut session_step.pending_patches);
+        plugin_data.sync_from_step(&session_step);
+        if !pending.is_empty() {
+            session = session.with_patches(pending);
+        }
+    }
 
     loop {
-        // Run one step
-        let (new_session, result) = run_step(client, config, session, tools).await?;
-        session = new_session;
-        last_text = result.text.clone();
+        // Phase: StepStart and BeforeInference
+        let (messages, filtered_tools, skip_inference, tracing_span) = {
+            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
+            emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
-        // Check if we need to execute tools
-        if !result.needs_tools() {
-            // No tools - we're done
+            let msgs = build_messages(&step, &config.system_prompt);
+            let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+            let skip = step.skip_inference;
+            let tracing_span = step.tracing_span.take();
+            let pending = std::mem::take(&mut step.pending_patches);
+            plugin_data.sync_from_step(&step);
+            if !pending.is_empty() {
+                session = session.with_patches(pending);
+            }
+
+            (msgs, tools_filter, skip, tracing_span)
+        };
+
+        if skip_inference {
             break;
         }
 
-        // Execute tools
-        session = execute_tools_with_config(session, &result, tools, config).await?;
+        // Build request with filtered tools
+        let filtered_tool_refs: Vec<&dyn Tool> = tools
+            .values()
+            .filter(|t| filtered_tools.contains(&t.descriptor().id))
+            .map(|t| t.as_ref())
+            .collect();
+        let request = build_request(&messages, &filtered_tool_refs);
+
+        // Call LLM (instrumented with tracing span)
+        let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
+        let response_res = async {
+            client
+                .exec_chat(&config.model, request, config.chat_options.as_ref())
+                .await
+        }
+        .instrument(inference_span)
+        .await;
+        let response = match response_res {
+            Ok(r) => r,
+            Err(e) => {
+                // Ensure AfterInference runs so tracing spans are closed and plugins can observe the error.
+                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                step.set(
+                    "llmmetry.inference_error",
+                    serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
+                );
+                emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                let pending = std::mem::take(&mut step.pending_patches);
+                plugin_data.sync_from_step(&step);
+                let _ = pending;
+                return Err(AgentLoopError::LlmError(e.to_string()));
+            }
+        };
+
+        // Extract text and tool calls from response
+        let text = response
+            .first_text()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let tool_calls: Vec<crate::types::ToolCall> = response
+            .tool_calls()
+            .into_iter()
+            .map(|tc| {
+                crate::types::ToolCall::new(&tc.call_id, &tc.fn_name, tc.fn_arguments.clone())
+            })
+            .collect();
+
+        let usage = Some(response.usage.clone());
+        let result = StreamResult {
+            text,
+            tool_calls,
+            usage,
+        };
+        last_text = result.text.clone();
+
+        // Phase: AfterInference
+        {
+            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            step.response = Some(result.clone());
+            emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+            let pending = std::mem::take(&mut step.pending_patches);
+            plugin_data.sync_from_step(&step);
+            if !pending.is_empty() {
+                session = session.with_patches(pending);
+            }
+        }
+
+        // Add assistant message
+        session = if result.tool_calls.is_empty() {
+            session.with_message(assistant_message(&result.text))
+        } else {
+            session.with_message(assistant_tool_calls(
+                &result.text,
+                result.tool_calls.clone(),
+            ))
+        };
+
+        // Phase: StepEnd
+        {
+            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+            let pending = std::mem::take(&mut step.pending_patches);
+            plugin_data.sync_from_step(&step);
+            if !pending.is_empty() {
+                session = session.with_patches(pending);
+            }
+        }
+
+        if !result.needs_tools() {
+            break;
+        }
+
+        // Execute tools with phase hooks (respect config.parallel_tools).
+        let state = session
+            .rebuild_state()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+
+        let results = if config.parallel_tools {
+            execute_tools_parallel_with_phases(
+                tools,
+                &result.tool_calls,
+                &state,
+                &tool_descriptors,
+                &config.plugins,
+                plugin_data.data.clone(),
+                None,
+            )
+            .await
+        } else {
+            execute_tools_sequential_with_phases(
+                tools,
+                &result.tool_calls,
+                &state,
+                &tool_descriptors,
+                &config.plugins,
+                plugin_data.data.clone(),
+                None,
+            )
+            .await
+        };
+
+        if !config.parallel_tools {
+            if let Some(last) = results.last() {
+                plugin_data.data = last.plugin_data.clone();
+            }
+        }
+
+        let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+
+        // Apply patches/messages for tools that completed (skip pending ones).
+        let mut patches: Vec<TrackedPatch> = collect_patches(
+            &results
+                .iter()
+                .map(|r| r.execution.clone())
+                .collect::<Vec<_>>(),
+        );
+        for r in &results {
+            patches.extend(r.pending_patches.iter().cloned());
+        }
+        let tool_messages: Vec<Message> = results
+            .iter()
+            .filter(|r| r.pending_interaction.is_none())
+            .flat_map(|r| {
+                let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+                for reminder in &r.reminders {
+                    msgs.push(Message::system(format!(
+                        "<system-reminder>{}</system-reminder>",
+                        reminder
+                    )));
+                }
+                msgs
+            })
+            .collect();
+
+        session = session.with_patches(patches).with_messages(tool_messages);
+
+        // Persist pending interaction state via AgentState, then pause.
+        if let Some(interaction) = pending_interaction {
+            let patch = set_agent_pending_interaction(&state, interaction.clone());
+            if !patch.patch().is_empty() {
+                session = session.with_patch(patch);
+            }
+            return Err(AgentLoopError::PendingInteraction {
+                session,
+                interaction,
+            });
+        } else if state
+            .get(AGENT_STATE_PATH)
+            .and_then(|v| v.get("pending_interaction"))
+            .is_some()
+        {
+            let patch = clear_agent_pending_interaction(&state);
+            if !patch.patch().is_empty() {
+                session = session.with_patch(patch);
+            }
+        }
 
         rounds += 1;
         if rounds >= config.max_rounds {
@@ -904,8 +1155,15 @@ pub async fn run_loop(
     }
 
     // Phase: SessionEnd
-    let mut end_step = plugin_data.new_step_context(&session, tool_descriptors);
-    emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
+    {
+        let mut end_step = plugin_data.new_step_context(&session, tool_descriptors);
+        emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
+        let pending = std::mem::take(&mut end_step.pending_patches);
+        plugin_data.sync_from_step(&end_step);
+        if !pending.is_empty() {
+            session = session.with_patches(pending);
+        }
+    }
 
     Ok((session, last_text))
 }
@@ -925,31 +1183,18 @@ pub fn run_loop_stream(
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-    // Get tool descriptors, applying definition-level filtering
-    let tool_descriptors: Vec<ToolDescriptor> = tools
-        .values()
-        .map(|t| t.descriptor().clone())
-        .filter(|td| {
-            if let Some(ref allowed) = config.allowed_tools {
-                if !allowed.contains(&td.id) {
-                    return false;
-                }
-            }
-            if let Some(ref excluded) = config.excluded_tools {
-                if excluded.contains(&td.id) {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect();
+    let tool_descriptors = tool_descriptors_for_config(&tools, &config);
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
         // Phase: SessionStart (use scoped block to manage borrow)
         {
             let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
             emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
+            let pending = std::mem::take(&mut session_step.pending_patches);
             plugin_data.sync_from_step(&session_step);
+            if !pending.is_empty() {
+                session = session.with_patches(pending);
+            }
         }
 
         let run_id = uuid_v4();
@@ -972,7 +1217,11 @@ pub fn run_loop_stream(
                 let skip = step.skip_inference;
                 let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
                 let tracing_span = step.tracing_span.take();
+                let pending = std::mem::take(&mut step.pending_patches);
                 plugin_data.sync_from_step(&step);
+                if !pending.is_empty() {
+                    session = session.with_patches(pending);
+                }
 
                 (msgs, tools_filter, skip, tracing_span)
             };
@@ -1076,7 +1325,11 @@ pub fn run_loop_stream(
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 step.response = Some(result.clone());
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
+                let pending = std::mem::take(&mut step.pending_patches);
                 plugin_data.sync_from_step(&step);
+                if !pending.is_empty() {
+                    session = session.with_patches(pending);
+                }
             }
 
             // Step boundary: finished LLM call
@@ -1093,7 +1346,11 @@ pub fn run_loop_stream(
             {
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
+                let pending = std::mem::take(&mut step.pending_patches);
                 plugin_data.sync_from_step(&step);
+                if !pending.is_empty() {
+                    session = session.with_patches(pending);
+                }
             }
 
             // Check if we need to execute tools
@@ -1101,7 +1358,11 @@ pub fn run_loop_stream(
                 // Phase: SessionEnd
                 let mut end_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::SessionEnd, &mut end_step, &config.plugins).await;
+                let pending = std::mem::take(&mut end_step.pending_patches);
                 plugin_data.sync_from_step(&end_step);
+                if !pending.is_empty() {
+                    session = session.with_patches(pending);
+                }
 
                 let result_value = if result.text.is_empty() {
                     None
@@ -1185,55 +1446,88 @@ pub fn run_loop_stream(
                 }
             }
 
-            // Check if any tool has pending interaction
-            let mut has_pending = false;
+            let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+
+            // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
-                    // Emit pending interaction event
                     yield AgentEvent::Pending {
                         interaction: interaction.clone(),
                     };
-                    has_pending = true;
                 }
             }
 
-            // If there are pending interactions, pause the loop
-            // Client must respond and start a new run to continue
-            if has_pending {
-                // Still emit non-pending tool results
-                for exec_result in &results {
-                    if exec_result.pending_interaction.is_none() {
-                        yield AgentEvent::ToolCallDone {
-                            id: exec_result.execution.call.id.clone(),
-                            result: exec_result.execution.result.clone(),
-                            patch: exec_result.execution.patch.clone(),
-                        };
+            // Collect patches/messages from completed tools only (skip pending).
+            let mut patches: Vec<TrackedPatch> =
+                collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
+            for exec_result in &results {
+                patches.extend(exec_result.pending_patches.iter().cloned());
+            }
+
+            let tool_messages: Vec<Message> = results
+                .iter()
+                .filter(|r| r.pending_interaction.is_none())
+                .flat_map(|r| {
+                    let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+                    for reminder in &r.reminders {
+                        msgs.push(Message::system(format!(
+                            "<system-reminder>{}</system-reminder>",
+                            reminder
+                        )));
+                    }
+                    msgs
+                })
+                .collect();
+
+            // Persist pending interaction state via AgentState, or clear it when resuming.
+            if let Some(ref interaction) = pending_interaction {
+                let patch = set_agent_pending_interaction(&state, interaction.clone());
+                if !patch.patch().is_empty() {
+                    patches.push(patch);
+                }
+            } else if state
+                .get(AGENT_STATE_PATH)
+                .and_then(|v| v.get("pending_interaction"))
+                .is_some()
+            {
+                let patch = clear_agent_pending_interaction(&state);
+                if !patch.patch().is_empty() {
+                    patches.push(patch);
+                }
+            }
+
+            let has_new_patches = !patches.is_empty();
+            session = session.with_patches(patches).with_messages(tool_messages);
+
+            // Emit non-pending tool results (pending ones pause the run).
+            for exec_result in &results {
+                if exec_result.pending_interaction.is_none() {
+                    yield AgentEvent::ToolCallDone {
+                        id: exec_result.execution.call.id.clone(),
+                        result: exec_result.execution.result.clone(),
+                        patch: exec_result.execution.patch.clone(),
+                    };
+                }
+            }
+
+            // Emit state snapshot when we mutated state (tool patches or AgentState pending/clear).
+            if has_new_patches {
+                match session.rebuild_state() {
+                    Ok(snapshot) => {
+                        yield AgentEvent::StateSnapshot { snapshot };
+                    }
+                    Err(e) => {
+                        yield AgentEvent::Error { message: e.to_string() };
+                        return;
                     }
                 }
-                // End with Pending state (not Done, not Error)
+            }
+
+            // If there are pending interactions, pause the loop.
+            // Client must respond and start a new run to continue.
+            if pending_interaction.is_some() {
                 return;
             }
-
-            // Emit tool results and collect patches/messages
-            let patches = collect_patches(&results.iter().map(|r| r.execution.clone()).collect::<Vec<_>>());
-            let mut tool_messages = Vec::new();
-
-            for exec_result in &results {
-                yield AgentEvent::ToolCallDone {
-                    id: exec_result.execution.call.id.clone(),
-                    result: exec_result.execution.result.clone(),
-                    patch: exec_result.execution.patch.clone(),
-                };
-                tool_messages.push(tool_response(&exec_result.execution.call.id, &exec_result.execution.result));
-                for r in &exec_result.reminders {
-                    tool_messages.push(Message::system(format!(
-                        "<system-reminder>{}</system-reminder>",
-                        r
-                    )));
-                }
-            }
-
-            session = session.with_patches(patches).with_messages(tool_messages);
 
             rounds += 1;
             if rounds >= config.max_rounds {
@@ -1297,6 +1591,14 @@ pub enum AgentLoopError {
     StateError(String),
     /// Max rounds exceeded.
     MaxRoundsExceeded(usize),
+    /// Pending user interaction; execution should pause until the client responds.
+    ///
+    /// The returned `session` includes any patches applied up to the point where the
+    /// interaction was requested (including persisting the pending interaction).
+    PendingInteraction {
+        session: Session,
+        interaction: Interaction,
+    },
 }
 
 impl std::fmt::Display for AgentLoopError {
@@ -1305,6 +1607,11 @@ impl std::fmt::Display for AgentLoopError {
             Self::LlmError(e) => write!(f, "LLM error: {}", e),
             Self::StateError(e) => write!(f, "State error: {}", e),
             Self::MaxRoundsExceeded(n) => write!(f, "Max rounds ({}) exceeded", n),
+            Self::PendingInteraction { interaction, .. } => write!(
+                f,
+                "Pending interaction: {} ({})",
+                interaction.id, interaction.action
+            ),
         }
     }
 }
@@ -2154,20 +2461,24 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
 
-            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+            let err = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
                 .await
-                .unwrap();
+                .unwrap_err();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
-            // Pending tool should return pending status
-            assert!(
-                msg.content.contains("pending")
-                    || msg.content.contains("Pending")
-                    || msg.content.contains("Waiting"),
-                "Expected pending in message, got: {}",
-                msg.content
-            );
+            let (session, interaction) = match err {
+                AgentLoopError::PendingInteraction {
+                    session,
+                    interaction,
+                } => (session, interaction),
+                other => panic!("Expected PendingInteraction error, got: {:?}", other),
+            };
+
+            assert_eq!(interaction.id, "confirm_1");
+            assert_eq!(interaction.action, "confirm");
+            assert_eq!(session.message_count(), 0);
+
+            let state = session.rebuild_state().unwrap();
+            assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
         });
     }
 
@@ -2306,19 +2617,27 @@ mod tests {
             let config = AgentConfig::new("gpt-4")
                 .with_plugin(Arc::new(PendingPhasePlugin) as Arc<dyn AgentPlugin>);
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let err = execute_tools_with_config(session, &result, &tools, &config)
                 .await
-                .unwrap();
+                .unwrap_err();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
-            assert!(
-                msg.content.contains("pending")
-                    || msg.content.contains("Pending")
-                    || msg.content.contains("Waiting"),
-                "Expected pending in message, got: {}",
-                msg.content
-            );
+            let (session, interaction) = match err {
+                AgentLoopError::PendingInteraction {
+                    session,
+                    interaction,
+                } => (session, interaction),
+                other => panic!("Expected PendingInteraction error, got: {:?}", other),
+            };
+
+            assert_eq!(interaction.id, "confirm_1");
+            assert_eq!(interaction.action, "confirm");
+
+            // Pending tool execution should not add tool messages yet.
+            assert_eq!(session.message_count(), 0);
+
+            // Pending interaction should be persisted via AgentState.
+            let state = session.rebuild_state().unwrap();
+            assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
         });
     }
 

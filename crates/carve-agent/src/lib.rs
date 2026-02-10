@@ -163,11 +163,11 @@ pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentToo
 pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
     AgentOsWiringError, AgentRegistry, AgentRegistryError, CompositeAgentRegistry,
-    InMemoryAgentRegistry, ModelDefinition, ModelRegistry, ModelRegistryError,
-    CompositeModelRegistry, InMemoryModelRegistry, SkillsConfig, SkillsMode, ToolRegistry,
-    ToolRegistryError, CompositeToolRegistry, InMemoryToolRegistry, ProviderRegistry,
-    ProviderRegistryError, CompositeProviderRegistry, InMemoryProviderRegistry,
-    PluginRegistry, PluginRegistryError, CompositePluginRegistry, InMemoryPluginRegistry,
+    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
+    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
+    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry,
+    ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    ProviderRegistryError, SkillsConfig, SkillsMode, ToolRegistry, ToolRegistryError,
 };
 
 // Loop exports
@@ -184,7 +184,9 @@ pub use plugin::AgentPlugin;
 pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types exports
-pub use state_types::{Interaction, InteractionResponse, ToolPermissionBehavior};
+pub use state_types::{
+    AgentState, Interaction, InteractionResponse, ToolPermissionBehavior, AGENT_STATE_PATH,
+};
 
 // Plugins and extension traits
 pub use plugins::{

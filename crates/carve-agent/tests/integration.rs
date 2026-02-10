@@ -2693,6 +2693,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 #[test]
 fn test_agent_loop_error_all_variants() {
     use carve_agent::AgentLoopError;
+    use carve_agent::{Interaction, Session};
 
     // LlmError
     let llm_err = AgentLoopError::LlmError("API rate limit exceeded".to_string());
@@ -2708,6 +2709,14 @@ fn test_agent_loop_error_all_variants() {
     let max_rounds_err = AgentLoopError::MaxRoundsExceeded(15);
     let display = max_rounds_err.to_string();
     assert!(display.contains("15") || display.contains("Max") || display.contains("exceeded"));
+
+    // PendingInteraction
+    let pending_err = AgentLoopError::PendingInteraction {
+        session: Session::new("s"),
+        interaction: Interaction::new("int_1", "confirm"),
+    };
+    let display = pending_err.to_string();
+    assert!(display.contains("int_1") || display.contains("Pending"));
 }
 
 // ============================================================================

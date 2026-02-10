@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 /// State path for reminders.
 pub const REMINDER_STATE_PATH: &str = "reminders";
@@ -124,32 +123,44 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
-        Some((REMINDER_STATE_PATH, json!({ "items": [] })))
-    }
-
     async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
         use crate::phase::Phase;
 
-        match phase {
-            Phase::BeforeInference => {
-                // Inject any stored reminders as session context
-                if let Some(state) = step.get::<Value>(REMINDER_STATE_PATH) {
-                    if let Some(items) = state.get("items").and_then(|v| v.as_array()) {
-                        for item in items {
-                            if let Some(text) = item.as_str() {
-                                step.session(format!("Reminder: {}", text));
-                            }
-                        }
-                    }
-                }
+        if phase != Phase::BeforeInference {
+            return;
+        }
 
-                // Clear reminders after injection if configured
-                if self.clear_after_llm_request {
-                    step.set(REMINDER_STATE_PATH, json!({ "items": [] }));
-                }
-            }
-            _ => {}
+        // Read reminders from session state
+        let state = match step.session.rebuild_state() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let reminders: Vec<String> = state
+            .get(REMINDER_STATE_PATH)
+            .and_then(|v| v.get("items"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if reminders.is_empty() {
+            return;
+        }
+
+        for text in &reminders {
+            step.session(format!("Reminder: {}", text));
+        }
+
+        // Clear reminders from session state via pending patch
+        if self.clear_after_llm_request {
+            let ctx = Context::new(&state, "reminder_clear", "plugin:reminder");
+            let rs = ctx.state::<ReminderState>(REMINDER_STATE_PATH);
+            rs.set_items(Vec::new());
+            step.pending_patches.push(ctx.take_patch());
         }
     }
 }
@@ -241,14 +252,9 @@ mod tests {
     }
 
     #[test]
-    fn test_reminder_plugin_initial_data() {
+    fn test_reminder_plugin_no_initial_data() {
         let plugin = ReminderPlugin::new();
-        let data = plugin.initial_data();
-
-        assert!(data.is_some());
-        let (path, value) = data.unwrap();
-        assert_eq!(path, "reminders");
-        assert_eq!(value["items"], json!([]));
+        assert!(plugin.initial_data().is_none());
     }
 
     #[test]
@@ -263,17 +269,87 @@ mod tests {
         use crate::session::Session;
 
         let plugin = ReminderPlugin::new();
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "reminders": { "items": ["Test reminder"] } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        assert!(!step.session_context.is_empty());
+        assert!(step.session_context[0].contains("Test reminder"));
+    }
+
+    #[tokio::test]
+    async fn test_reminder_plugin_generates_clear_patch() {
+        use crate::phase::{Phase, StepContext};
+        use crate::session::Session;
+
+        let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        // Should have injected reminders as session context
+        assert_eq!(step.session_context.len(), 2);
+        assert!(step.session_context[0].contains("Reminder A"));
+        assert!(step.session_context[1].contains("Reminder B"));
+
+        // Should have generated a pending patch to clear reminders
+        assert_eq!(step.pending_patches.len(), 1);
+        let patch = &step.pending_patches[0];
+        assert!(!patch.patch().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reminder_plugin_no_clear_when_disabled() {
+        use crate::phase::{Phase, StepContext};
+        use crate::session::Session;
+
+        let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
+        let session =
+            Session::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        assert!(!step.session_context.is_empty());
+        // No pending patches when clearing is disabled
+        assert!(step.pending_patches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reminder_plugin_empty_reminders() {
+        use crate::phase::{Phase, StepContext};
+        use crate::session::Session;
+
+        let plugin = ReminderPlugin::new();
+        let session = Session::with_initial_state("test", json!({ "reminders": { "items": [] } }));
+        let mut step = StepContext::new(&session, vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+
+        assert!(step.session_context.is_empty());
+        assert!(step.pending_patches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_reminder_plugin_no_state() {
+        use crate::phase::{Phase, StepContext};
+        use crate::session::Session;
+
+        let plugin = ReminderPlugin::new();
         let session = Session::new("test");
         let mut step = StepContext::new(&session, vec![]);
 
-        // Set up reminder data
-        step.set(REMINDER_STATE_PATH, json!({ "items": ["Test reminder"] }));
-
-        // Call on_phase with BeforeInference
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
-        // Should have injected reminder as session context
-        assert!(!step.session_context.is_empty());
-        assert!(step.session_context[0].contains("Test reminder"));
+        assert!(step.session_context.is_empty());
+        assert!(step.pending_patches.is_empty());
     }
 }
