@@ -164,7 +164,7 @@ async fn test_ai_sdk_sse_and_persists_session() {
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(
         text.contains(r#""type":"start""#),
-        "missing message-start: {text}"
+        "missing start event: {text}"
     );
     assert!(
         text.contains(r#""type":"text-start""#),

@@ -136,7 +136,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
     // Protocol correctness.
     assert!(
         text.contains(r#""type":"start""#),
-        "missing message-start"
+        "missing start event"
     );
     assert!(
         text.contains(r#""type":"text-start""#),

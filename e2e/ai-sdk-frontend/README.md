@@ -1,15 +1,15 @@
 # AI SDK Frontend E2E Example
 
-Next.js frontend using Vercel AI SDK (`@ai-sdk/react`) to chat with `carve-agentos-server`.
+Next.js frontend using Vercel AI SDK v6 (`@ai-sdk/react`) to chat with `carve-agentos-server`.
 
 ## Architecture
 
 ```
 Browser (useChat) → Next.js API Route → carve-agentos-server → LLM
-                    (protocol bridge)
+                    (SSE passthrough)
 ```
 
-The server emits standard SSE (`data: {"type":"text-delta","delta":"..."}`), while `useChat` expects the [Data Stream Protocol](https://sdk.vercel.ai/docs/ai-sdk-ui/stream-protocol#data-stream-protocol) (`0:"..."`). The Next.js API route at `app/api/chat/route.ts` bridges the two protocols using a `TransformStream` (`lib/stream-adapter.ts`).
+The server emits [AI SDK v6 UI Message Stream](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) events as SSE (`data: {"type":"text-delta","id":"txt_0","delta":"..."}`). The Next.js API route at `app/api/chat/route.ts` passes the SSE stream through directly with the `X-Vercel-AI-UI-Message-Stream: v1` header.
 
 ## Prerequisites
 
@@ -64,4 +64,4 @@ BACKEND_URL=http://localhost:9090 npm run dev
 1. Open http://localhost:3001
 2. Type a message (e.g. "What is 2+2?")
 3. Confirm streaming response appears token-by-token
-4. Check browser DevTools Network tab: the `/api/chat` request should return `Content-Type: text/plain; charset=utf-8` with `X-Vercel-AI-Data-Stream: v1` header
+4. Check browser DevTools Network tab: the `/api/chat` request should return `Content-Type: text/event-stream` with `X-Vercel-AI-UI-Message-Stream: v1` header

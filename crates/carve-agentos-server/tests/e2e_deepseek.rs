@@ -82,7 +82,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     assert!(
         text.contains(r#""type":"start""#),
-        "missing message-start"
+        "missing start event"
     );
     assert!(
         text.contains(r#""type":"text-start""#),
