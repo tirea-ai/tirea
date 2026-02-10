@@ -18,6 +18,8 @@ pub use registry::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Session);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillsMode {
     Disabled,
@@ -716,8 +718,7 @@ impl AgentOs {
         &self,
         agent_id: &str,
         session: Session,
-    ) -> Result<(Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Session), AgentOsResolveError>
-    {
+    ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let def = self
             .agents
             .get(agent_id)

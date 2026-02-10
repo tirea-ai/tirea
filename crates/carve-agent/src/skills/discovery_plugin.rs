@@ -119,7 +119,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         if let Ok(state) = step.session.rebuild_state() {
             if let Some(skills_value) = state.get(SKILLS_STATE_PATH).cloned() {
                 if let Ok(parsed) = serde_json::from_value::<SkillState>(skills_value) {
-                    active.extend(parsed.active.into_iter());
+                    active.extend(parsed.active);
                 }
             }
         }

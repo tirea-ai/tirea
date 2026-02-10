@@ -549,7 +549,7 @@ impl AgentEvent {
                     message_id.clone(),
                     activity_type.clone(),
                     value_to_map(content),
-                    replace.clone(),
+                    *replace,
                 )]
             }
             AgentEvent::ActivityDelta {

@@ -28,6 +28,13 @@ pub struct SkillRegistryWarning {
     pub reason: String,
 }
 
+type DiscoveryResult = (
+    Vec<SkillMeta>,
+    HashMap<String, PathBuf>,
+    HashMap<String, String>,
+    Vec<SkillRegistryWarning>,
+);
+
 #[derive(Debug, thiserror::Error)]
 pub enum SkillRegistryError {
     #[error("unknown skill: {0}")]
@@ -212,17 +219,7 @@ impl SkillRegistry for FsSkillRegistry {
     }
 }
 
-fn discover_under_root(
-    root: &Path,
-) -> Result<
-    (
-        Vec<SkillMeta>,
-        HashMap<String, PathBuf>,
-        HashMap<String, String>,
-        Vec<SkillRegistryWarning>,
-    ),
-    SkillRegistryError,
-> {
+fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryError> {
     let mut metas: Vec<SkillMeta> = Vec::new();
     let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
     let mut docs_by_id: HashMap<String, String> = HashMap::new();

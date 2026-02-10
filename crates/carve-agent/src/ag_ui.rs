@@ -89,20 +89,15 @@ pub struct BaseEventFields {
 // ============================================================================
 
 /// Role for text messages.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     Developer,
     System,
+    #[default]
     Assistant,
     User,
     Tool,
-}
-
-impl Default for MessageRole {
-    fn default() -> Self {
-        Self::Assistant
-    }
 }
 
 // ============================================================================

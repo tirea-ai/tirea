@@ -7,6 +7,8 @@ use crate::{CarveResult, Op, Patch, Path};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
+type CollectHook<'a> = Arc<dyn Fn(&Op) + Send + Sync + 'a>;
+
 /// Collector for patch operations.
 ///
 /// `PatchSink` collects operations that will be combined into a `Patch`.
@@ -19,7 +21,7 @@ use std::sync::{Arc, Mutex};
 /// In single-threaded usage, the lock overhead is minimal.
 pub struct PatchSink<'a> {
     ops: &'a Mutex<Vec<Op>>,
-    on_collect: Option<Arc<dyn Fn(&Op) + Send + Sync + 'a>>,
+    on_collect: Option<CollectHook<'a>>,
 }
 
 impl<'a> PatchSink<'a> {
@@ -36,10 +38,7 @@ impl<'a> PatchSink<'a> {
     ///
     /// The hook is invoked after each operation is collected.
     #[doc(hidden)]
-    pub fn new_with_hook(
-        ops: &'a Mutex<Vec<Op>>,
-        hook: Arc<dyn Fn(&Op) + Send + Sync + 'a>,
-    ) -> Self {
+    pub fn new_with_hook(ops: &'a Mutex<Vec<Op>>, hook: CollectHook<'a>) -> Self {
         Self {
             ops,
             on_collect: Some(hook),
