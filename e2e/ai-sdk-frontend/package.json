@@ -1,0 +1,22 @@
+{
+  "name": "ai-sdk-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^1",
+    "ai": "^4",
+    "next": "15",
+    "react": "19",
+    "react-dom": "19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
