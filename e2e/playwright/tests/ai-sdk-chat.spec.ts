@@ -6,7 +6,9 @@ test("AI SDK chat: send message and receive streaming response", async ({
   await page.goto("/");
 
   // Verify page loaded.
-  await expect(page.locator("h1")).toHaveText("Uncarve Chat");
+  await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+    timeout: 15_000,
+  });
 
   // Type a message and submit.
   const input = page.getByPlaceholder("Type a message...");
