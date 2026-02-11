@@ -1,0 +1,23 @@
+{
+  "name": "copilotkit-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3002",
+    "build": "next build",
+    "start": "next start -p 3002"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "^1",
+    "@copilotkit/react-ui": "^1",
+    "@copilotkit/runtime": "^1",
+    "next": "15",
+    "react": "19",
+    "react-dom": "19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
