@@ -133,4 +133,109 @@ mod tests {
         let fallback = enc.fallback_finished("th", "r");
         assert!(fallback.is_some());
     }
+
+    #[test]
+    fn test_agui_encoder_stopped_after_error() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        let error = AgentEvent::Error {
+            message: "LLM failed".to_string(),
+        };
+        let out = enc.on_agent_event(&error);
+        assert!(!out.is_empty()); // Should emit the error event
+
+        // After error, all subsequent events should be ignored
+        let text = AgentEvent::TextDelta {
+            delta: "ignored".to_string(),
+        };
+        let out2 = enc.on_agent_event(&text);
+        assert!(out2.is_empty());
+
+        // Fallback should also be None since we stopped
+        assert!(enc.fallback_finished("th", "r").is_none());
+    }
+
+    #[test]
+    fn test_agui_encoder_text_then_finish() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        let text = AgentEvent::TextDelta {
+            delta: "hello".to_string(),
+        };
+        let out = enc.on_agent_event(&text);
+        assert!(!out.is_empty());
+
+        let finish = AgentEvent::RunFinish {
+            thread_id: "th".to_string(),
+            run_id: "r".to_string(),
+            result: None,
+        };
+        let out2 = enc.on_agent_event(&finish);
+        // Should include TEXT_MESSAGE_END and RUN_FINISHED
+        assert!(out2.len() >= 2);
+
+        // No fallback needed
+        assert!(enc.fallback_finished("th", "r").is_none());
+    }
+
+    #[test]
+    fn test_agui_encoder_multiple_pending_all_skipped() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        for i in 0..5 {
+            let pending = AgentEvent::Pending {
+                interaction: Interaction::new(&format!("i{}", i), "action"),
+            };
+            let out = enc.on_agent_event(&pending);
+            assert!(out.is_empty());
+        }
+
+        // Fallback should still work since no RunFinish was emitted
+        assert!(enc.fallback_finished("th", "r").is_some());
+    }
+
+    #[test]
+    fn test_ai_sdk_encoder_ignores_after_finish() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // Finish the stream
+        let _ = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+        });
+
+        // Subsequent events should be empty
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "late".to_string(),
+        });
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_agui_encoder_tool_call_flow() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        let start = AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        };
+        let out = enc.on_agent_event(&start);
+        assert!(!out.is_empty());
+
+        let delta = AgentEvent::ToolCallDelta {
+            id: "tc-1".to_string(),
+            args_delta: r#"{"q":"rust"}"#.to_string(),
+        };
+        let out = enc.on_agent_event(&delta);
+        assert!(!out.is_empty());
+
+        let ready = AgentEvent::ToolCallReady {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+            arguments: serde_json::json!({"q": "rust"}),
+        };
+        let out = enc.on_agent_event(&ready);
+        assert!(!out.is_empty());
+    }
 }

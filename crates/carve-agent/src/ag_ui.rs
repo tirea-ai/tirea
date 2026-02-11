@@ -6391,4 +6391,1158 @@ mod tests {
         assert_eq!(request.context[0].description, "Tasks");
         assert_eq!(request.context[1].value, "Bob");
     }
+
+    // ========================================================================
+    // Session Merging & Deduplication Tests
+    // ========================================================================
+
+    #[test]
+    fn test_session_has_message_id_finds_existing() {
+        let session = Session::new("s1").with_message(crate::types::Message {
+            id: Some("msg-42".to_string()),
+            role: crate::types::Role::User,
+            content: "hello".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+        assert!(super::session_has_message_id(&session, "msg-42"));
+        assert!(!super::session_has_message_id(&session, "msg-99"));
+    }
+
+    #[test]
+    fn test_session_has_message_id_ignores_none_ids() {
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("no id on this one"));
+        // Message without id should not match any id
+        assert!(!super::session_has_message_id(&session, ""));
+        assert!(!super::session_has_message_id(&session, "anything"));
+    }
+
+    #[test]
+    fn test_session_has_tool_call_id_finds_existing() {
+        let session = Session::new("s1").with_message(crate::types::Message {
+            id: None,
+            role: crate::types::Role::Tool,
+            content: "result".to_string(),
+            tool_calls: None,
+            tool_call_id: Some("tc-1".to_string()),
+        });
+        assert!(super::session_has_tool_call_id(&session, "tc-1"));
+        assert!(!super::session_has_tool_call_id(&session, "tc-2"));
+    }
+
+    #[test]
+    fn test_session_has_tool_call_id_ignores_none() {
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("no tool_call_id"));
+        assert!(!super::session_has_tool_call_id(&session, "tc-1"));
+    }
+
+    #[test]
+    fn test_apply_agui_request_deduplicates_by_message_id() {
+        // Session has a message with id "m1"
+        let session = Session::new("s1").with_message(crate::types::Message {
+            id: Some("m1".to_string()),
+            role: crate::types::Role::User,
+            content: "original".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        // Request contains the same id "m1" plus a new "m2"
+        let mut msg1 = AGUIMessage::user("duplicate");
+        msg1.id = Some("m1".to_string());
+        let mut msg2 = AGUIMessage::assistant("new");
+        msg2.id = Some("m2".to_string());
+
+        let request = RunAgentRequest::new("t1", "r1").with_messages(vec![msg1, msg2]);
+        let result = super::apply_agui_request_to_session(session, &request);
+
+        // Should have original m1 + new m2
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[0].content, "original"); // not overwritten
+        assert_eq!(result.messages[1].id.as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn test_apply_agui_request_deduplicates_tool_by_tool_call_id() {
+        // Session already has a tool result for "tc-1"
+        let session = Session::new("s1").with_message(crate::types::Message {
+            id: None,
+            role: crate::types::Role::Tool,
+            content: "existing result".to_string(),
+            tool_calls: None,
+            tool_call_id: Some("tc-1".to_string()),
+        });
+
+        // Request contains a tool message with same tool_call_id "tc-1" and a new "tc-2"
+        let request = RunAgentRequest::new("t1", "r1").with_messages(vec![
+            AGUIMessage::tool("dup result", "tc-1"),
+            AGUIMessage::tool("new result", "tc-2"),
+        ]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        assert_eq!(result.messages.len(), 2); // original tc-1 + new tc-2
+        assert_eq!(result.messages[0].tool_call_id.as_deref(), Some("tc-1"));
+        assert_eq!(result.messages[0].content, "existing result");
+        assert_eq!(result.messages[1].tool_call_id.as_deref(), Some("tc-2"));
+    }
+
+    #[test]
+    fn test_apply_agui_request_idempotent_double_apply() {
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_state(json!({"counter": 1}))
+            .with_messages(vec![
+                AGUIMessage::user("hello"),
+                AGUIMessage::assistant("hi"),
+            ]);
+
+        // First apply: seeds
+        let s1 = super::apply_agui_request_to_session(session, &request);
+        assert_eq!(s1.messages.len(), 2);
+
+        // Second apply: should not duplicate (messages have no IDs, so user/assistant without
+        // id or tool_call_id are skipped by the dedup logic)
+        let s2 = super::apply_agui_request_to_session(s1, &request);
+        assert_eq!(s2.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_apply_agui_request_skips_user_messages_without_id() {
+        // Non-empty session (not seeding path)
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("existing"));
+
+        // Request with user message that has no id or tool_call_id — can't be deduplicated
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("no-id message"));
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        // User messages without id should be skipped (no safe dedup key)
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_agui_request_no_new_messages_returns_original() {
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("existing"));
+
+        // All messages in request already exist
+        let mut msg = AGUIMessage::user("existing");
+        msg.id = Some("m1".to_string());
+        let request = RunAgentRequest::new("t1", "r1").with_message(msg);
+
+        // Pre-populate session with m1
+        let session = session.with_message(crate::types::Message {
+            id: Some("m1".to_string()),
+            role: crate::types::Role::User,
+            content: "existing".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        let result = super::apply_agui_request_to_session(session.clone(), &request);
+        assert_eq!(result.messages.len(), session.messages.len());
+    }
+
+    #[test]
+    fn test_apply_agui_request_mixed_message_types() {
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("existing"));
+
+        let mut user_msg = AGUIMessage::user("question");
+        user_msg.id = Some("u1".to_string());
+        let mut assistant_msg = AGUIMessage::assistant("answer");
+        assistant_msg.id = Some("a1".to_string());
+        let tool_msg = AGUIMessage::tool(r#"{"ok": true}"#, "tc-99");
+
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![user_msg, assistant_msg, tool_msg]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        // Original 1 + 3 new (all have stable dedup keys)
+        assert_eq!(result.messages.len(), 4);
+    }
+
+    #[test]
+    fn test_should_seed_empty_session_with_request_state() {
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1").with_state(json!({"x": 1}));
+        assert!(super::should_seed_session_from_request(&session, &request));
+    }
+
+    #[test]
+    fn test_should_seed_empty_session_with_request_messages() {
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("hi"));
+        assert!(super::should_seed_session_from_request(&session, &request));
+    }
+
+    #[test]
+    fn test_should_not_seed_when_request_empty() {
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1");
+        // No state, no messages — nothing to seed
+        assert!(!super::should_seed_session_from_request(&session, &request));
+    }
+
+    #[test]
+    fn test_should_not_seed_when_session_has_patches() {
+        use carve_state::{Patch, TrackedPatch};
+        let mut session = Session::new("s1");
+        session.patches.push(TrackedPatch::new(Patch::new()));
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_state(json!({"x": 1}));
+        assert!(!super::should_seed_session_from_request(&session, &request));
+    }
+
+    // ========================================================================
+    // Frontend Tool Merge Collision Tests
+    // ========================================================================
+
+    #[test]
+    fn test_merge_frontend_tools_multiple_tools() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("addTask", "Add a task"))
+            .with_tool(AGUIToolDef::frontend("deleteTask", "Delete a task"))
+            .with_tool(AGUIToolDef::frontend("toggleTask", "Toggle a task"));
+
+        super::merge_frontend_tools(&mut tools, &request);
+        assert_eq!(tools.len(), 3);
+        assert!(tools.contains_key("addTask"));
+        assert!(tools.contains_key("deleteTask"));
+        assert!(tools.contains_key("toggleTask"));
+    }
+
+    #[test]
+    fn test_merge_frontend_tools_empty_request() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1");
+        super::merge_frontend_tools(&mut tools, &request);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_merge_frontend_tools_only_backend_tools_ignored() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::backend("search", "Search the web"))
+            .with_tool(AGUIToolDef::backend("fetch", "Fetch a URL"));
+
+        super::merge_frontend_tools(&mut tools, &request);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_merge_frontend_tools_stub_has_default_parameters_when_none() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("notify", "Send notification"));
+        // No .with_parameters() — should get default schema
+
+        super::merge_frontend_tools(&mut tools, &request);
+        let desc = tools["notify"].descriptor();
+        assert_eq!(desc.parameters["type"], "object");
+        assert!(desc.parameters["properties"].is_object());
+    }
+
+    #[test]
+    fn test_frontend_backend_tool_same_name_backend_first() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        // Pre-populate with a backend tool
+        tools.insert(
+            "doStuff".to_string(),
+            Arc::new(super::FrontendToolStub {
+                descriptor: crate::traits::tool::ToolDescriptor::new(
+                    "doStuff",
+                    "doStuff",
+                    "Backend version",
+                ),
+            }),
+        );
+
+        // Request has a frontend tool with same name
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("doStuff", "Frontend version"));
+
+        super::merge_frontend_tools(&mut tools, &request);
+        // Backend tool should be preserved
+        assert_eq!(tools["doStuff"].descriptor().description, "Backend version");
+    }
+
+    // ========================================================================
+    // Context Addendum Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_build_context_addendum_with_null_value() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![AGUIContextEntry {
+            description: "Nullable field".into(),
+            value: Value::Null,
+        }];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        assert!(addendum.contains("Nullable field"));
+        assert!(addendum.contains("null"));
+    }
+
+    #[test]
+    fn test_build_context_addendum_with_nested_object() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![AGUIContextEntry {
+            description: "Config".into(),
+            value: json!({"theme": {"dark": true, "colors": ["red", "blue"]}}),
+        }];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        assert!(addendum.contains("Config"));
+        assert!(addendum.contains("dark"));
+        assert!(addendum.contains("red"));
+    }
+
+    #[test]
+    fn test_build_context_addendum_with_boolean_value() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![AGUIContextEntry {
+            description: "Feature flag".into(),
+            value: json!(true),
+        }];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        assert!(addendum.contains("Feature flag"));
+        assert!(addendum.contains("true"));
+    }
+
+    #[test]
+    fn test_build_context_addendum_with_number_value() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![AGUIContextEntry {
+            description: "Counter".into(),
+            value: json!(42),
+        }];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        assert!(addendum.contains("[Counter]: 42"));
+    }
+
+    #[test]
+    fn test_build_context_addendum_string_value_not_double_quoted() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![AGUIContextEntry {
+            description: "Name".into(),
+            value: json!("Alice"),
+        }];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        // String values should be used directly, not JSON-serialized with extra quotes
+        assert!(addendum.contains("[Name]: Alice"));
+        assert!(!addendum.contains("[Name]: \"Alice\""));
+    }
+
+    #[test]
+    fn test_build_context_addendum_multiple_entries_formatted() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![
+            AGUIContextEntry {
+                description: "A".into(),
+                value: json!("val_a"),
+            },
+            AGUIContextEntry {
+                description: "B".into(),
+                value: json!("val_b"),
+            },
+            AGUIContextEntry {
+                description: "C".into(),
+                value: json!("val_c"),
+            },
+        ];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        // All entries should be present on separate lines
+        let lines: Vec<&str> = addendum.lines().collect();
+        assert!(lines.iter().any(|l| l.contains("[A]: val_a")));
+        assert!(lines.iter().any(|l| l.contains("[B]: val_b")));
+        assert!(lines.iter().any(|l| l.contains("[C]: val_c")));
+    }
+
+    // ========================================================================
+    // SSE / NDJSON Format Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sse_format_contains_data_prefix_and_double_newline() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::TextDelta {
+            delta: "hello".to_string(),
+        };
+        let lines = adapter.to_sse(&event);
+        for line in &lines {
+            assert!(line.starts_with("data: "), "SSE line must start with 'data: '");
+            assert!(line.ends_with("\n\n"), "SSE line must end with double newline");
+        }
+    }
+
+    #[test]
+    fn test_ndjson_format_ends_with_single_newline() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::TextDelta {
+            delta: "hello".to_string(),
+        };
+        let lines = adapter.to_ndjson(&event);
+        for line in &lines {
+            assert!(line.ends_with('\n'), "NDJSON line must end with newline");
+            assert!(!line.ends_with("\n\n"), "NDJSON must not have double newline");
+        }
+    }
+
+    #[test]
+    fn test_sse_content_with_special_characters() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::TextDelta {
+            delta: "line1\nline2\ttab \"quotes\"".to_string(),
+        };
+        let lines = adapter.to_sse(&event);
+        // Should still produce valid SSE (JSON handles escaping)
+        assert!(!lines.is_empty());
+        for line in &lines {
+            // The JSON inside should parse correctly
+            let json_str = line
+                .strip_prefix("data: ")
+                .unwrap()
+                .strip_suffix("\n\n")
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+            // Should be a valid AG-UI event
+            assert!(parsed.get("type").is_some());
+        }
+    }
+
+    #[test]
+    fn test_sse_empty_text_delta() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::TextDelta {
+            delta: "".to_string(),
+        };
+        let lines = adapter.to_sse(&event);
+        // Even empty delta should produce valid SSE events
+        for line in &lines {
+            assert!(line.starts_with("data: "));
+            let json_str = line
+                .strip_prefix("data: ")
+                .unwrap()
+                .strip_suffix("\n\n")
+                .unwrap();
+            assert!(serde_json::from_str::<Value>(json_str).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_to_json_produces_parseable_json() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        };
+        let jsons = adapter.to_json(&event);
+        for j in &jsons {
+            let parsed: Value = serde_json::from_str(j).unwrap();
+            assert!(parsed.get("type").is_some());
+        }
+    }
+
+    #[test]
+    fn test_sse_unicode_content() {
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = crate::stream::AgentEvent::TextDelta {
+            delta: "你好世界 🌍 émojis ñ".to_string(),
+        };
+        let lines = adapter.to_sse(&event);
+        assert!(!lines.is_empty());
+        for line in &lines {
+            let json_str = line
+                .strip_prefix("data: ")
+                .unwrap()
+                .strip_suffix("\n\n")
+                .unwrap();
+            let parsed: Value = serde_json::from_str(json_str).unwrap();
+            if let Some(delta) = parsed.get("delta") {
+                assert!(delta.as_str().unwrap().contains("你好世界"));
+            }
+        }
+    }
+
+    // ========================================================================
+    // AgentEvent → AG-UI Conversion Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agui_text_then_tool_ends_text_stream() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        // Start text
+        let text_events = crate::stream::AgentEvent::TextDelta {
+            delta: "thinking...".into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(text_events.len(), 2); // TEXT_MESSAGE_START + TEXT_MESSAGE_CONTENT
+
+        // Tool call should end text first
+        let tool_events = crate::stream::AgentEvent::ToolCallStart {
+            id: "tc-1".into(),
+            name: "search".into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(tool_events.len(), 2); // TEXT_MESSAGE_END + TOOL_CALL_START
+        assert!(matches!(tool_events[0], AGUIEvent::TextMessageEnd { .. }));
+        assert!(matches!(tool_events[1], AGUIEvent::ToolCallStart { .. }));
+    }
+
+    #[test]
+    fn test_agui_tool_without_prior_text_no_text_end() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        let events = crate::stream::AgentEvent::ToolCallStart {
+            id: "tc-1".into(),
+            name: "search".into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        // No text was started, so just TOOL_CALL_START
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
+    }
+
+    #[test]
+    fn test_agui_multiple_text_deltas_only_one_start() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        let e1 = crate::stream::AgentEvent::TextDelta { delta: "a".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e1.len(), 2); // START + CONTENT
+
+        let e2 = crate::stream::AgentEvent::TextDelta { delta: "b".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e2.len(), 1); // Just CONTENT, no duplicate START
+
+        let e3 = crate::stream::AgentEvent::TextDelta { delta: "c".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e3.len(), 1);
+    }
+
+    #[test]
+    fn test_agui_run_finish_ends_active_text_and_emits_finished() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        // Start text stream
+        let _ = crate::stream::AgentEvent::TextDelta { delta: "hi".into() }
+            .to_ag_ui_events(&mut ctx);
+
+        // RunFinish should end text then emit RUN_FINISHED
+        let events = crate::stream::AgentEvent::RunFinish {
+            thread_id: "th".into(),
+            run_id: "run".into(),
+            result: None,
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
+        assert!(matches!(events[1], AGUIEvent::RunFinished { .. }));
+    }
+
+    #[test]
+    fn test_agui_run_finish_without_text_just_finished() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        let events = crate::stream::AgentEvent::RunFinish {
+            thread_id: "th".into(),
+            run_id: "run".into(),
+            result: Some(json!({"response": "done"})),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AGUIEvent::RunFinished { .. }));
+    }
+
+    #[test]
+    fn test_agui_tool_call_delta_produces_tool_call_args() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::ToolCallDelta {
+            id: "tc-1".into(),
+            args_delta: r#"{"q":"#.into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::ToolCallArgs {
+            tool_call_id,
+            delta,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(tool_call_id, "tc-1");
+            assert_eq!(delta, r#"{"q":"#);
+        } else {
+            panic!("Expected ToolCallArgs");
+        }
+    }
+
+    #[test]
+    fn test_agui_tool_call_ready_produces_tool_call_end() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::ToolCallReady {
+            id: "tc-1".into(),
+            name: "search".into(),
+            arguments: json!({"query": "rust"}),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], AGUIEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn test_agui_tool_call_done_produces_tool_call_result() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::ToolCallDone {
+            id: "tc-1".into(),
+            result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
+            patch: None,
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::ToolCallResult {
+            tool_call_id,
+            content,
+            message_id,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(tool_call_id, "tc-1");
+            assert!(content.contains("found 42 results"));
+            assert!(message_id.starts_with("result_"));
+        } else {
+            panic!("Expected ToolCallResult");
+        }
+    }
+
+    #[test]
+    fn test_agui_error_produces_run_error() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::Error {
+            message: "LLM timeout".into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+            assert_eq!(message, "LLM timeout");
+            assert!(code.is_none());
+        } else {
+            panic!("Expected RunError");
+        }
+    }
+
+    #[test]
+    fn test_agui_aborted_produces_run_error_with_code() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::Aborted {
+            reason: "cancelled by user".into(),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(events.len(), 1);
+        if let AGUIEvent::RunError { message, code, .. } = &events[0] {
+            assert_eq!(message, "cancelled by user");
+            assert_eq!(code.as_deref(), Some("ABORTED"));
+        } else {
+            panic!("Expected RunError with ABORTED code");
+        }
+    }
+
+    #[test]
+    fn test_agui_inference_complete_ignored() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let events = crate::stream::AgentEvent::InferenceComplete {
+            model: "gpt-4".into(),
+            usage: None,
+            duration_ms: 1234,
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_agui_pending_interaction_produces_tool_call_sequence() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        let interaction = Interaction::new("int-1", "tool:addTask")
+            .with_parameters(json!({"title": "New task"}));
+
+        let events = crate::stream::AgentEvent::Pending { interaction }
+            .to_ag_ui_events(&mut ctx);
+        // Should produce TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
+        assert!(matches!(events[1], AGUIEvent::ToolCallArgs { .. }));
+        assert!(matches!(events[2], AGUIEvent::ToolCallEnd { .. }));
+    }
+
+    #[test]
+    fn test_agui_pending_after_text_ends_text_first() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        // Start text
+        let _ = crate::stream::AgentEvent::TextDelta { delta: "hi".into() }
+            .to_ag_ui_events(&mut ctx);
+
+        // Pending should close text first
+        let interaction = Interaction::new("int-1", "tool:x");
+        let events = crate::stream::AgentEvent::Pending { interaction }
+            .to_ag_ui_events(&mut ctx);
+
+        // TEXT_MESSAGE_END + 3 tool call events
+        assert_eq!(events.len(), 4);
+        assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
+    }
+
+    #[test]
+    fn test_agui_step_events_produce_correct_names() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        let start1 = crate::stream::AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        let end1 = crate::stream::AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+
+        if let AGUIEvent::StepStarted { step_name, .. } = &start1[0] {
+            assert_eq!(step_name, "step_1");
+        }
+        if let AGUIEvent::StepFinished { step_name, .. } = &end1[0] {
+            assert_eq!(step_name, "step_1");
+        }
+
+        // Second step
+        let start2 = crate::stream::AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
+            assert_eq!(step_name, "step_2");
+        }
+    }
+
+    #[test]
+    fn test_agui_full_text_then_tool_then_text_flow() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+
+        // Text phase 1
+        let e1 = crate::stream::AgentEvent::TextDelta { delta: "Let me search".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e1.len(), 2); // START + CONTENT
+
+        // Tool call
+        let e2 = crate::stream::AgentEvent::ToolCallStart { id: "tc".into(), name: "search".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e2.len(), 2); // END text + TOOL_CALL_START
+
+        let e3 = crate::stream::AgentEvent::ToolCallReady {
+            id: "tc".into(), name: "search".into(), arguments: json!({}),
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(e3.len(), 1); // TOOL_CALL_END
+
+        let e4 = crate::stream::AgentEvent::ToolCallDone {
+            id: "tc".into(),
+            result: crate::traits::tool::ToolResult::success("test", "results"),
+            patch: None,
+        }
+        .to_ag_ui_events(&mut ctx);
+        assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
+
+        // Text phase 2 — should get a new TEXT_MESSAGE_START
+        let e5 = crate::stream::AgentEvent::TextDelta { delta: "Found it!".into() }
+            .to_ag_ui_events(&mut ctx);
+        assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
+        assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
+    }
+
+    // ========================================================================
+    // Interaction to AG-UI Events Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_interaction_to_agui_events_minimal() {
+        let interaction = Interaction::new("i1", "confirm");
+        let events = interaction.to_ag_ui_events();
+        assert_eq!(events.len(), 3);
+
+        if let AGUIEvent::ToolCallStart {
+            tool_call_id,
+            tool_call_name,
+            ..
+        } = &events[0]
+        {
+            assert_eq!(tool_call_id, "i1");
+            assert_eq!(tool_call_name, "confirm");
+        }
+
+        // Args should contain all interaction fields
+        if let AGUIEvent::ToolCallArgs { delta, .. } = &events[1] {
+            let parsed: Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(parsed["id"], "i1");
+        }
+    }
+
+    #[test]
+    fn test_interaction_to_agui_events_with_parameters() {
+        let interaction = Interaction::new("i2", "tool:doStuff")
+            .with_parameters(json!({"key": "value", "count": 5}));
+        let events = interaction.to_ag_ui_events();
+
+        if let AGUIEvent::ToolCallArgs { delta, .. } = &events[1] {
+            let parsed: Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(parsed["parameters"]["key"], "value");
+            assert_eq!(parsed["parameters"]["count"], 5);
+        }
+    }
+
+    #[test]
+    fn test_interaction_to_agui_events_with_unicode_message() {
+        let interaction = Interaction::new("i3", "notify")
+            .with_message("确认执行此操作？");
+        let events = interaction.to_ag_ui_events();
+
+        if let AGUIEvent::ToolCallArgs { delta, .. } = &events[1] {
+            let parsed: Value = serde_json::from_str(delta).unwrap();
+            assert_eq!(parsed["message"], "确认执行此操作？");
+        }
+    }
+
+    // ========================================================================
+    // ToolExecutionLocation Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agui_tool_def_frontend_omits_execute_field() {
+        let tool = AGUIToolDef::frontend("addTask", "Add a task");
+        let json = serde_json::to_value(&tool).unwrap();
+        // Frontend is default — execute field should be skipped
+        assert!(json.get("execute").is_none());
+    }
+
+    #[test]
+    fn test_agui_tool_def_backend_includes_execute_field() {
+        let tool = AGUIToolDef::backend("search", "Search");
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["execute"], "backend");
+    }
+
+    #[test]
+    fn test_agui_tool_def_deserialization_without_execute_defaults_to_frontend() {
+        let json = json!({"name": "copy", "description": "Copy text"});
+        let tool: AGUIToolDef = serde_json::from_value(json).unwrap();
+        assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+        assert!(tool.is_frontend());
+    }
+
+    #[test]
+    fn test_agui_tool_def_deserialization_with_execute_backend() {
+        let json = json!({"name": "search", "description": "Search", "execute": "backend"});
+        let tool: AGUIToolDef = serde_json::from_value(json).unwrap();
+        assert_eq!(tool.execute, ToolExecutionLocation::Backend);
+        assert!(!tool.is_frontend());
+    }
+
+    // ========================================================================
+    // RequestError Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_error_internal() {
+        let err = RequestError::internal("database connection failed");
+        assert_eq!(err.code, "INTERNAL_ERROR");
+    }
+
+    // ========================================================================
+    // Full-Feature Integration Test (all options active)
+    // ========================================================================
+
+    #[test]
+    fn test_run_agent_stream_with_request_applies_all_options() {
+        // This test verifies that run_agent_stream_with_request correctly applies
+        // all request options: model override, system prompt, frontend tools,
+        // context addendum, and interaction responses — by inspecting the
+        // config/session state that would be passed to the inner loop.
+
+        // We can't easily run the full async stream without an LLM, but we CAN
+        // test the config/session preparation logic by replicating the same
+        // code path that run_agent_stream_with_request follows.
+
+        let config = AgentConfig::new("base-model").with_system_prompt("base prompt");
+        let session = Session::new("t1");
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+
+        let request = RunAgentRequest::new("t1", "run-1")
+            .with_model("override-model")
+            .with_system_prompt("override prompt")
+            .with_state(json!({"counter": 0}))
+            .with_messages(vec![
+                AGUIMessage::user("hello"),
+                AGUIMessage::tool(r#"true"#, "perm_1"),
+            ])
+            .with_tool(AGUIToolDef::frontend("addTask", "Add a task")
+                .with_parameters(json!({"type": "object", "properties": {"title": {"type": "string"}}})))
+            .with_tool(AGUIToolDef::backend("search", "Search the web"));
+
+        // Add context
+        let mut request = request;
+        request.context = vec![
+            AGUIContextEntry {
+                description: "Tasks".into(),
+                value: json!([{"title": "Review PR"}]),
+            },
+        ];
+
+        // Replicate the config/session preparation from run_agent_stream_with_request
+        let mut config = config;
+        let session = super::apply_agui_request_to_session(session, &request);
+
+        if let Some(model) = request.model.clone() {
+            config.model = model;
+        }
+        if let Some(prompt) = request.system_prompt.clone() {
+            config.system_prompt = prompt;
+        }
+        if let Some(addendum) = super::build_context_addendum(&request) {
+            config.system_prompt.push_str(&addendum);
+        }
+
+        let response_plugin = InteractionResponsePlugin::from_request(&request);
+        let frontend_plugin = FrontendToolPlugin::from_request(&request);
+
+        super::merge_frontend_tools(&mut tools, &request);
+
+        // Verify model override
+        assert_eq!(config.model, "override-model");
+
+        // Verify system prompt override + context addendum
+        assert!(config.system_prompt.starts_with("override prompt"));
+        assert!(config.system_prompt.contains("Tasks"));
+        assert!(config.system_prompt.contains("Review PR"));
+
+        // Verify session was seeded
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.rebuild_state().unwrap()["counter"], 0);
+
+        // Verify frontend tools merged
+        assert!(tools.contains_key("addTask"));
+        assert!(!tools.contains_key("search")); // backend, not merged
+
+        // Verify interaction response plugin picked up the tool message
+        assert!(response_plugin.has_responses());
+        assert!(response_plugin.is_approved("perm_1"));
+
+        // Verify frontend tool plugin knows about addTask
+        assert!(frontend_plugin.is_frontend_tool("addTask"));
+        assert!(!frontend_plugin.is_frontend_tool("search"));
+    }
+
+    // ========================================================================
+    // AGUIContext Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_context_new_message_id_unique() {
+        let mut ctx = AGUIContext::new("th".into(), "run-123".into());
+        let id1 = ctx.new_message_id();
+        let id2 = ctx.new_message_id();
+        let id3 = ctx.new_message_id();
+        assert_ne!(id1, id2);
+        assert_ne!(id2, id3);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_context_start_text_idempotent() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        assert!(ctx.start_text());  // first time → true
+        assert!(!ctx.start_text()); // already started → false
+        assert!(!ctx.start_text()); // still started → false
+    }
+
+    #[test]
+    fn test_context_end_text_without_start() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        assert!(!ctx.end_text()); // wasn't started → false
+    }
+
+    #[test]
+    fn test_context_step_counter_increments() {
+        let mut ctx = AGUIContext::new("th".into(), "run".into());
+        assert_eq!(ctx.next_step_name(), "step_1");
+        assert_eq!(ctx.next_step_name(), "step_2");
+        assert_eq!(ctx.next_step_name(), "step_3");
+        assert_eq!(ctx.current_step_name(), "step_3");
+    }
+
+    #[test]
+    fn test_context_current_step_before_any_step() {
+        let ctx = AGUIContext::new("th".into(), "run".into());
+        // Before any step, should return step_0
+        assert_eq!(ctx.current_step_name(), "step_0");
+    }
+
+    // ========================================================================
+    // RunAgentRequest Validation Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_request_validate_empty_thread_id() {
+        let request = RunAgentRequest::new("", "run-1");
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_request_validate_empty_run_id() {
+        let request = RunAgentRequest::new("thread-1", "");
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_request_validate_both_empty() {
+        let request = RunAgentRequest::new("", "");
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn test_request_validate_valid() {
+        let request = RunAgentRequest::new("thread-1", "run-1");
+        assert!(request.validate().is_ok());
+    }
+
+    // ========================================================================
+    // Request Tool Queries
+    // ========================================================================
+
+    #[test]
+    fn test_request_frontend_backend_tools_separation() {
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("addTask", "Add"))
+            .with_tool(AGUIToolDef::frontend("deleteTask", "Delete"))
+            .with_tool(AGUIToolDef::backend("search", "Search"))
+            .with_tool(AGUIToolDef::backend("fetch", "Fetch"));
+
+        assert_eq!(request.frontend_tools().len(), 2);
+        assert_eq!(request.backend_tools().len(), 2);
+        assert!(request.is_frontend_tool("addTask"));
+        assert!(request.is_frontend_tool("deleteTask"));
+        assert!(!request.is_frontend_tool("search"));
+        assert!(!request.is_frontend_tool("nonexistent"));
+    }
+
+    #[test]
+    fn test_request_last_user_message() {
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![
+                AGUIMessage::system("system prompt"),
+                AGUIMessage::user("first question"),
+                AGUIMessage::assistant("answer"),
+                AGUIMessage::user("follow-up"),
+            ]);
+        assert_eq!(request.last_user_message(), Some("follow-up"));
+    }
+
+    #[test]
+    fn test_request_last_user_message_none() {
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::system("only system"));
+        assert_eq!(request.last_user_message(), None);
+    }
+
+    // ========================================================================
+    // Request Deserialization with Extra Fields
+    // ========================================================================
+
+    #[test]
+    fn test_request_deserialization_tolerates_extra_fields() {
+        let json = json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [],
+            "unknownField": "ignored",
+            "anotherExtra": 42
+        });
+        // Should not panic — extra fields should be silently ignored
+        let request: RunAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.thread_id, "t1");
+    }
+
+    #[test]
+    fn test_request_deserialization_full_payload() {
+        let json = json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "tool", "content": "result", "toolCallId": "tc-1"}
+            ],
+            "tools": [
+                {"name": "addTask", "description": "Add", "parameters": {"type": "object"}},
+                {"name": "search", "description": "Search", "execute": "backend"}
+            ],
+            "context": [
+                {"description": "Tasks", "value": [1, 2]}
+            ],
+            "state": {"counter": 5},
+            "parentRunId": "parent-1",
+            "model": "gpt-4",
+            "systemPrompt": "You are helpful",
+            "config": {"temperature": 0.7}
+        });
+
+        let request: RunAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.messages.len(), 2);
+        assert_eq!(request.tools.len(), 2);
+        assert_eq!(request.context.len(), 1);
+        assert_eq!(request.state, Some(json!({"counter": 5})));
+        assert_eq!(request.parent_run_id.as_deref(), Some("parent-1"));
+        assert_eq!(request.model.as_deref(), Some("gpt-4"));
+        assert_eq!(request.system_prompt.as_deref(), Some("You are helpful"));
+        assert_eq!(request.config, Some(json!({"temperature": 0.7})));
+        assert!(request.is_frontend_tool("addTask"));
+        assert!(!request.is_frontend_tool("search"));
+    }
+
+    // ========================================================================
+    // AGUIEvent Serialization Round-Trip Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agui_event_round_trip_run_started() {
+        let event = AGUIEvent::run_started("t1", "r1", Some("p1".into()));
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_agui_event_round_trip_tool_call_result() {
+        let event = AGUIEvent::tool_call_result("msg_1", "tc_1", r#"{"ok": true}"#);
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_agui_event_round_trip_state_delta() {
+        let event = AGUIEvent::state_delta(vec![
+            json!({"op": "replace", "path": "/counter", "value": 5}),
+        ]);
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_agui_event_round_trip_custom() {
+        let event = AGUIEvent::custom("my_event", json!({"data": [1, 2, 3]}));
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
+    fn test_agui_event_with_timestamp_round_trip() {
+        let event = AGUIEvent::text_message_content("m1", "hi").with_timestamp(1700000000000);
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
 }
