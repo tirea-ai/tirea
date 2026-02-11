@@ -724,6 +724,8 @@ pub struct AGUIContext {
     step_counter: u32,
     /// Whether text message stream has started.
     text_started: bool,
+    /// Whether text has ever been ended (used to detect restarts).
+    text_ever_ended: bool,
     /// Current step name.
     current_step: Option<String>,
 }
@@ -739,6 +741,7 @@ impl AGUIContext {
             message_id,
             step_counter: 0,
             text_started: false,
+            text_ever_ended: false,
             current_step: None,
         }
     }
@@ -759,16 +762,33 @@ impl AGUIContext {
     }
 
     /// Mark text stream as started.
+    ///
+    /// If text was previously ended, a new `message_id` is generated so that
+    /// each TEXT_MESSAGE_START / TEXT_MESSAGE_END cycle uses a unique ID.
+    /// This prevents CopilotKit / AG-UI runtimes from confusing reopened
+    /// message IDs with already-ended ones (which causes "text-end for
+    /// missing text part" errors on the frontend).
     pub fn start_text(&mut self) -> bool {
         let was_started = self.text_started;
         self.text_started = true;
-        !was_started
+        if !was_started {
+            // Generate a fresh message_id when restarting text after a prior end.
+            if self.text_ever_ended {
+                self.new_message_id();
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// Mark text stream as ended and return whether it was active.
     pub fn end_text(&mut self) -> bool {
         let was_started = self.text_started;
         self.text_started = false;
+        if was_started {
+            self.text_ever_ended = true;
+        }
         was_started
     }
 
@@ -5626,6 +5646,29 @@ mod tests {
         assert!(!ctx.text_started);
     }
 
+    #[test]
+    fn test_agui_context_text_restart_generates_new_message_id() {
+        let mut ctx = AGUIContext::new("t1".into(), "r1".into());
+
+        // First text cycle uses the initial message_id.
+        let id1 = ctx.message_id.clone();
+        assert!(ctx.start_text());
+        assert_eq!(ctx.message_id, id1, "first start keeps initial id");
+        assert!(ctx.end_text());
+
+        // Second text cycle must generate a fresh message_id to prevent
+        // CopilotKit "text-end for missing text part" errors.
+        assert!(ctx.start_text());
+        let id2 = ctx.message_id.clone();
+        assert_ne!(id1, id2, "restarted text must use a new message_id");
+        assert!(ctx.end_text());
+
+        // Third cycle also gets a fresh id.
+        assert!(ctx.start_text());
+        let id3 = ctx.message_id.clone();
+        assert_ne!(id2, id3, "each text cycle gets a unique message_id");
+    }
+
     // ========================================================================
     // ToolExecutionLocation Tests (MEDIUM)
     // ========================================================================
@@ -7337,10 +7380,23 @@ mod tests {
         }, &mut ctx);
         assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
 
-        // Text phase 2 — should get a new TEXT_MESSAGE_START
+        // Text phase 2 — should get a new TEXT_MESSAGE_START with a different message_id
         let e5 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "Found it!".into() }, &mut ctx);
         assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
         assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
+
+        // Verify the second text phase uses a different message_id than the first.
+        let msg_id_2 = if let AGUIEvent::TextMessageStart { message_id, .. } = &e5[0] {
+            message_id.clone()
+        } else {
+            panic!("expected TextMessageStart");
+        };
+        let msg_id_1 = if let AGUIEvent::TextMessageStart { message_id, .. } = &e1[0] {
+            message_id.clone()
+        } else {
+            panic!("expected TextMessageStart");
+        };
+        assert_ne!(msg_id_1, msg_id_2, "each text cycle must use a unique message_id");
     }
 
     // ========================================================================
