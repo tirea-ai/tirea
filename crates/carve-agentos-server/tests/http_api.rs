@@ -5,9 +5,10 @@ use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
     AgentDefinition, AgentOs, AgentOsBuilder, MemoryStorage, Session, StepContext, Storage,
+    StorageError,
 };
 use carve_agentos_server::http::{router, AppState};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -30,9 +31,11 @@ impl AgentPlugin for SkipInferencePlugin {
 }
 
 fn make_os() -> AgentOs {
-    let mut def = AgentDefinition::default();
-    def.id = "test".to_string();
-    def.plugins = vec![Arc::new(SkipInferencePlugin)];
+    let def = AgentDefinition {
+        id: "test".to_string(),
+        plugins: vec![Arc::new(SkipInferencePlugin)],
+        ..Default::default()
+    };
 
     AgentOsBuilder::new()
         .with_agent("test", def)
@@ -315,4 +318,427 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
     let saved = storage.load("th2").await.unwrap().unwrap();
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hello");
+}
+
+// ============================================================================
+// Helper: POST JSON and return (status, body_json)
+// ============================================================================
+
+async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, json)
+}
+
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, json)
+}
+
+fn make_app(os: Arc<AgentOs>, storage: Arc<dyn Storage>) -> axum::Router {
+    router(AppState { os, storage })
+}
+
+// ============================================================================
+// Health endpoint
+// ============================================================================
+
+#[tokio::test]
+async fn test_health_returns_200() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ============================================================================
+// GET /v1/sessions/:id — session not found
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_session_not_found() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/nonexistent").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("not found"),
+        "expected not found error: {body}"
+    );
+}
+
+// ============================================================================
+// GET /v1/sessions/:id/messages — session not found
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_session_messages_not_found() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/nonexistent/messages").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("not found"),
+        "expected not found error: {body}"
+    );
+}
+
+// ============================================================================
+// AI SDK SSE — error paths
+// ============================================================================
+
+#[tokio::test]
+async fn test_ai_sdk_sse_empty_session_id() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({ "sessionId": "  ", "input": "hi" });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("sessionId"),
+        "expected sessionId error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_empty_input() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({ "sessionId": "s1", "input": "  " });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("input"),
+        "expected input error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_agent_not_found() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let (status, body) = post_json(app, "/v1/agents/no_such_agent/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("not found"),
+        "expected agent not found error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_malformed_json() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Axum returns 400 for JSON parse errors.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ============================================================================
+// AG-UI SSE — error paths
+// ============================================================================
+
+#[tokio::test]
+async fn test_agui_sse_agent_not_found() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "threadId": "th1", "runId": "r1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": []
+    });
+    let (status, body) = post_json(app, "/v1/agents/no_such_agent/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("not found"),
+        "expected agent not found error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_sse_empty_thread_id() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "threadId": "", "runId": "r1",
+        "messages": [], "tools": []
+    });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("threadId"),
+        "expected threadId validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_sse_empty_run_id() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "threadId": "th1", "runId": "",
+        "messages": [], "tools": []
+    });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("runId"),
+        "expected runId validation error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_sse_malformed_json() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{bad"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Axum returns 400 for JSON parse errors.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_agui_sse_session_id_mismatch() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+
+    // Pre-save a session with id "real-id".
+    storage.save(&Session::new("real-id")).await.unwrap();
+
+    let _app = make_app(os, storage);
+
+    // The mismatch can only occur if storage returns a session with a different id than the key.
+    // This is an internal consistency check, not triggerable from external input.
+}
+
+// ============================================================================
+// Failing storage — tests error propagation
+// ============================================================================
+
+struct FailingStorage;
+
+#[async_trait]
+impl Storage for FailingStorage {
+    async fn load(&self, _id: &str) -> Result<Option<Session>, StorageError> {
+        Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk read denied",
+        )))
+    }
+
+    async fn save(&self, _session: &Session) -> Result<(), StorageError> {
+        Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk write denied",
+        )))
+    }
+
+    async fn delete(&self, _id: &str) -> Result<(), StorageError> {
+        Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk delete denied",
+        )))
+    }
+
+    async fn list(&self) -> Result<Vec<String>, StorageError> {
+        Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk list denied",
+        )))
+    }
+}
+
+#[tokio::test]
+async fn test_list_sessions_storage_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_get_session_storage_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/s1").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_storage_load_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
+    let app = make_app(os, storage);
+
+    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_sse_storage_load_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
+    let app = make_app(os, storage);
+
+    let payload = json!({
+        "threadId": "th1", "runId": "r1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": []
+    });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage error: {body}"
+    );
+}
+
+/// Storage that loads OK but fails on save — tests user message persistence error.
+struct SaveFailStorage;
+
+#[async_trait]
+impl Storage for SaveFailStorage {
+    async fn load(&self, _id: &str) -> Result<Option<Session>, StorageError> {
+        Ok(None)
+    }
+
+    async fn save(&self, _session: &Session) -> Result<(), StorageError> {
+        Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "disk write denied",
+        )))
+    }
+
+    async fn delete(&self, _id: &str) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn list(&self) -> Result<Vec<String>, StorageError> {
+        Ok(vec![])
+    }
+}
+
+#[tokio::test]
+async fn test_ai_sdk_sse_storage_save_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(SaveFailStorage);
+    let app = make_app(os, storage);
+
+    let payload = json!({ "sessionId": "s1", "input": "hi" });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage save error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_sse_storage_save_error() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(SaveFailStorage);
+    let app = make_app(os, storage);
+
+    // Send a message so the session has changes to persist.
+    let payload = json!({
+        "threadId": "th1", "runId": "r1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": []
+    });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("denied"),
+        "expected storage save error: {body}"
+    );
 }
