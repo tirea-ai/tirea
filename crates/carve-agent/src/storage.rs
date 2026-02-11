@@ -19,6 +19,10 @@ pub enum StorageError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// Invalid session ID (path traversal, control chars, etc.).
+    #[error("Invalid session id: {0}")]
+    InvalidId(String),
 }
 
 /// Storage backend trait for session persistence.
@@ -54,15 +58,37 @@ impl FileStorage {
         }
     }
 
-    fn session_path(&self, id: &str) -> PathBuf {
-        self.base_path.join(format!("{}.json", id))
+    fn session_path(&self, id: &str) -> Result<PathBuf, StorageError> {
+        Self::validate_session_id(id)?;
+        Ok(self.base_path.join(format!("{}.json", id)))
+    }
+
+    /// Validate that a session ID is safe for use as a filename.
+    /// Rejects path separators, `..`, and control characters.
+    fn validate_session_id(id: &str) -> Result<(), StorageError> {
+        if id.is_empty() {
+            return Err(StorageError::InvalidId(
+                "session id cannot be empty".to_string(),
+            ));
+        }
+        if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
+            return Err(StorageError::InvalidId(format!(
+                "session id contains invalid characters: {id:?}"
+            )));
+        }
+        if id.chars().any(|c| c.is_control()) {
+            return Err(StorageError::InvalidId(format!(
+                "session id contains control characters: {id:?}"
+            )));
+        }
+        Ok(())
     }
 }
 
 #[async_trait]
 impl Storage for FileStorage {
     async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
 
         if !path.exists() {
             return Ok(None);
@@ -81,7 +107,7 @@ impl Storage for FileStorage {
             tokio::fs::create_dir_all(&self.base_path).await?;
         }
 
-        let path = self.session_path(&session.id);
+        let path = self.session_path(&session.id)?;
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
@@ -91,7 +117,7 @@ impl Storage for FileStorage {
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
 
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
@@ -459,7 +485,17 @@ mod tests {
     #[test]
     fn test_file_storage_session_path() {
         let storage = FileStorage::new("/base/path");
-        let path = storage.session_path("my-session");
+        let path = storage.session_path("my-session").unwrap();
         assert_eq!(path.to_string_lossy(), "/base/path/my-session.json");
+    }
+
+    #[test]
+    fn test_file_storage_rejects_path_traversal() {
+        let storage = FileStorage::new("/base/path");
+        assert!(storage.session_path("../../etc/passwd").is_err());
+        assert!(storage.session_path("foo/bar").is_err());
+        assert!(storage.session_path("foo\\bar").is_err());
+        assert!(storage.session_path("").is_err());
+        assert!(storage.session_path("foo\0bar").is_err());
     }
 }

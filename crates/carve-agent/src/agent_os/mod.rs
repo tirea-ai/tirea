@@ -717,6 +717,15 @@ impl AgentOs {
         Ok(config)
     }
 
+    /// Check whether an agent with the given ID is registered.
+    pub fn validate_agent(&self, agent_id: &str) -> Result<(), AgentOsResolveError> {
+        if self.agents.get(agent_id).is_some() {
+            Ok(())
+        } else {
+            Err(AgentOsResolveError::AgentNotFound(agent_id.to_string()))
+        }
+    }
+
     pub fn resolve(
         &self,
         agent_id: &str,
@@ -749,7 +758,13 @@ impl AgentOs {
         session: Session,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
         let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream(client, cfg, session, tools, RunContext::default()))
+        Ok(run_loop_stream(
+            client,
+            cfg,
+            session,
+            tools,
+            RunContext::default(),
+        ))
     }
 
     pub fn run_stream_with_context(
@@ -769,7 +784,9 @@ impl AgentOs {
         run_ctx: RunContext,
     ) -> Result<StreamWithSession, AgentOsResolveError> {
         let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream_with_session(client, cfg, session, tools, run_ctx))
+        Ok(run_loop_stream_with_session(
+            client, cfg, session, tools, run_ctx,
+        ))
     }
 
     pub fn run_stream_with_checkpoints(

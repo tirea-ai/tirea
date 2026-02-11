@@ -123,4 +123,3 @@ mod tests {
         assert!(enc.fallback_finished("th", "r").is_none());
     }
 }
-

@@ -6,11 +6,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
-use carve_agent::{apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage};
+use carve_agent::{
+    apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage,
+};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
+use tracing;
 use uuid::Uuid;
 
 use crate::protocol::{AgUiEncoder, AiSdkEncoder};
@@ -55,14 +58,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions", get(list_sessions))
         .route("/v1/sessions/:id", get(get_session))
         .route("/v1/sessions/:id/messages", get(get_session_messages))
-        .route(
-            "/v1/agents/:agent_id/runs/ai-sdk/sse",
-            post(run_ai_sdk_sse),
-        )
-        .route(
-            "/v1/agents/:agent_id/runs/ag-ui/sse",
-            post(run_ag_ui_sse),
-        )
+        .route("/v1/agents/:agent_id/runs/ai-sdk/sse", post(run_ai_sdk_sse))
+        .route("/v1/agents/:agent_id/runs/ag-ui/sse", post(run_ag_ui_sse))
         .with_state(state)
 }
 
@@ -131,11 +128,19 @@ async fn run_ai_sdk_sse(
     Json(req): Json<AiSdkRunRequest>,
 ) -> Result<Response, ApiError> {
     if req.session_id.trim().is_empty() {
-        return Err(ApiError::BadRequest("sessionId cannot be empty".to_string()));
+        return Err(ApiError::BadRequest(
+            "sessionId cannot be empty".to_string(),
+        ));
     }
     if req.input.trim().is_empty() {
         return Err(ApiError::BadRequest("input cannot be empty".to_string()));
     }
+
+    // Validate agent exists before mutating session state.
+    st.os.validate_agent(&agent_id).map_err(|e| match e {
+        carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
+        other => ApiError::BadRequest(other.to_string()),
+    })?;
 
     let session_id = req.session_id.clone();
     let input = req.input.clone();
@@ -185,7 +190,11 @@ async fn run_ai_sdk_sse(
                 break;
             }
             if let Ok(json) = serde_json::to_string(&e) {
-                if tx.send(Bytes::from(format!("data: {}\n\n", json))).await.is_err() {
+                if tx
+                    .send(Bytes::from(format!("data: {}\n\n", json)))
+                    .await
+                    .is_err()
+                {
                     output_closed = true;
                 }
             }
@@ -200,7 +209,11 @@ async fn run_ai_sdk_sse(
                 .unwrap_or_default(),
             );
             if let Ok(json) = serde_json::to_string(&run_info) {
-                if tx.send(Bytes::from(format!("data: {}\n\n", json))).await.is_err() {
+                if tx
+                    .send(Bytes::from(format!("data: {}\n\n", json)))
+                    .await
+                    .is_err()
+                {
                     output_closed = true;
                 }
             }
@@ -208,11 +221,15 @@ async fn run_ai_sdk_sse(
 
         while let Some(ev) = events.next().await {
             if output_closed {
-                continue;
+                break;
             }
             for ui in enc.on_agent_event(&ev) {
                 if let Ok(json) = serde_json::to_string(&ui) {
-                    if tx.send(Bytes::from(format!("data: {}\n\n", json))).await.is_err() {
+                    if tx
+                        .send(Bytes::from(format!("data: {}\n\n", json)))
+                        .await
+                        .is_err()
+                    {
                         output_closed = true;
                         break;
                     }
@@ -228,10 +245,14 @@ async fn run_ai_sdk_sse(
         let storage = storage.clone();
         tokio::spawn(async move {
             while let Some(cp) = checkpoints.recv().await {
-                let _ = storage.save(&cp.session).await;
+                if let Err(e) = storage.save(&cp.session).await {
+                    tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                }
             }
             if let Ok(final_session) = final_session.await {
-                let _ = storage.save(&final_session).await;
+                if let Err(e) = storage.save(&final_session).await {
+                    tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                }
             }
         });
     }
@@ -252,6 +273,12 @@ async fn run_ag_ui_sse(
 ) -> Result<Response, ApiError> {
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
+    // Validate agent exists before mutating session state.
+    st.os.validate_agent(&agent_id).map_err(|e| match e {
+        carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
+        other => ApiError::BadRequest(other.to_string()),
+    })?;
 
     let base = st
         .storage
@@ -286,16 +313,18 @@ async fn run_ag_ui_sse(
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
 
-    let (client, cfg, tools, session) = st
-        .os
-        .resolve(&agent_id, session)
-        .map_err(|e| match e {
-            carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
-            other => ApiError::BadRequest(other.to_string()),
-        })?;
+    let (client, cfg, tools, session) = st.os.resolve(&agent_id, session).map_err(|e| match e {
+        carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
+        other => ApiError::BadRequest(other.to_string()),
+    })?;
 
-    let stream_with_checkpoints =
-        carve_agent::run_agent_events_with_request_checkpoints(client, cfg, session, tools, req.clone());
+    let stream_with_checkpoints = carve_agent::run_agent_events_with_request_checkpoints(
+        client,
+        cfg,
+        session,
+        tools,
+        req.clone(),
+    );
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
     let storage = st.storage.clone();
@@ -307,12 +336,16 @@ async fn run_ag_ui_sse(
 
         while let Some(ev) = inner.next().await {
             if output_closed {
-                continue;
+                break;
             }
 
             for ag in enc.on_agent_event(&ev) {
                 if let Ok(json) = serde_json::to_string(&ag) {
-                    if tx.send(Bytes::from(format!("data: {}\n\n", json))).await.is_err() {
+                    if tx
+                        .send(Bytes::from(format!("data: {}\n\n", json)))
+                        .await
+                        .is_err()
+                    {
                         output_closed = true;
                         break;
                     }
@@ -336,10 +369,14 @@ async fn run_ag_ui_sse(
         let storage = storage.clone();
         tokio::spawn(async move {
             while let Some(cp) = checkpoints.recv().await {
-                let _ = storage.save(&cp.session).await;
+                if let Err(e) = storage.save(&cp.session).await {
+                    tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                }
             }
             if let Ok(final_session) = final_session.await {
-                let _ = storage.save(&final_session).await;
+                if let Err(e) = storage.save(&final_session).await {
+                    tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                }
             }
         });
     }

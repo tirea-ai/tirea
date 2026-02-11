@@ -6,6 +6,7 @@ use carve_agent::{
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing;
 use uuid::Uuid;
 
 use crate::protocol::{AgUiEncoder, AiSdkEncoder};
@@ -43,7 +44,11 @@ impl NatsGateway {
         nats_url: &str,
     ) -> Result<Self, NatsGatewayError> {
         let client = async_nats::connect(nats_url).await?;
-        Ok(Self { os, storage, client })
+        Ok(Self {
+            os,
+            storage,
+            client,
+        })
     }
 
     pub async fn serve(self) -> Result<(), NatsGatewayError> {
@@ -56,13 +61,17 @@ impl NatsGateway {
                 Some(msg) = sub_agui.next() => {
                     let this = this.clone();
                     tokio::spawn(async move {
-                        let _ = this.handle_agui(msg).await;
+                        if let Err(e) = this.handle_agui(msg).await {
+                            tracing::error!(error = %e, "nats agui handler failed");
+                        }
                     });
                 }
                 Some(msg) = sub_aisdk.next() => {
                     let this = this.clone();
                     tokio::spawn(async move {
-                        let _ = this.handle_aisdk(msg).await;
+                        if let Err(e) = this.handle_aisdk(msg).await {
+                            tracing::error!(error = %e, "nats aisdk handler failed");
+                        }
                     });
                 }
                 else => break,
@@ -71,7 +80,10 @@ impl NatsGateway {
         Ok(())
     }
 
-    async fn handle_agui(self: Arc<Self>, msg: async_nats::Message) -> Result<(), NatsGatewayError> {
+    async fn handle_agui(
+        self: Arc<Self>,
+        msg: async_nats::Message,
+    ) -> Result<(), NatsGatewayError> {
         #[derive(Debug, Deserialize)]
         struct Req {
             #[serde(rename = "agentId")]
@@ -156,10 +168,14 @@ impl NatsGateway {
             let storage = self.storage.clone();
             tokio::spawn(async move {
                 while let Some(cp) = checkpoints.recv().await {
-                    let _ = storage.save(&cp.session).await;
+                    if let Err(e) = storage.save(&cp.session).await {
+                        tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                    }
                 }
                 if let Ok(final_session) = final_session.await {
-                    let _ = storage.save(&final_session).await;
+                    if let Err(e) = storage.save(&final_session).await {
+                        tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                    }
                 }
             });
         }
@@ -168,7 +184,10 @@ impl NatsGateway {
             for ag in enc.on_agent_event(&ev) {
                 let _ = self
                     .client
-                    .publish(reply.clone(), serde_json::to_vec(&ag).unwrap_or_default().into())
+                    .publish(
+                        reply.clone(),
+                        serde_json::to_vec(&ag).unwrap_or_default().into(),
+                    )
                     .await;
             }
         }
@@ -176,14 +195,20 @@ impl NatsGateway {
         if let Some(fallback) = enc.fallback_finished(&req.request.thread_id, &req.request.run_id) {
             let _ = self
                 .client
-                .publish(reply.clone(), serde_json::to_vec(&fallback).unwrap_or_default().into())
+                .publish(
+                    reply.clone(),
+                    serde_json::to_vec(&fallback).unwrap_or_default().into(),
+                )
                 .await;
         }
 
         Ok(())
     }
 
-    async fn handle_aisdk(self: Arc<Self>, msg: async_nats::Message) -> Result<(), NatsGatewayError> {
+    async fn handle_aisdk(
+        self: Arc<Self>,
+        msg: async_nats::Message,
+    ) -> Result<(), NatsGatewayError> {
         #[derive(Debug, Deserialize)]
         struct Req {
             #[serde(rename = "agentId")]
@@ -234,26 +259,30 @@ impl NatsGateway {
             parent_run_id: None,
         };
 
-        let stream_with_checkpoints = match self
-            .os
-            .run_stream_with_checkpoints(&req.agent_id, session, run_ctx)
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let err = UIStreamEvent::error(e.to_string());
-                let _ = self
-                    .client
-                    .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
-                    .await;
-                return Ok(());
-            }
-        };
+        let stream_with_checkpoints =
+            match self
+                .os
+                .run_stream_with_checkpoints(&req.agent_id, session, run_ctx)
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let err = UIStreamEvent::error(e.to_string());
+                    let _ = self
+                        .client
+                        .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
+                        .await;
+                    return Ok(());
+                }
+            };
 
         let mut enc = AiSdkEncoder::new(run_id.clone());
         for e in enc.prologue() {
             let _ = self
                 .client
-                .publish(reply.clone(), serde_json::to_vec(&e).unwrap_or_default().into())
+                .publish(
+                    reply.clone(),
+                    serde_json::to_vec(&e).unwrap_or_default().into(),
+                )
                 .await;
         }
 
@@ -263,10 +292,14 @@ impl NatsGateway {
             let storage = self.storage.clone();
             tokio::spawn(async move {
                 while let Some(cp) = checkpoints.recv().await {
-                    let _ = storage.save(&cp.session).await;
+                    if let Err(e) = storage.save(&cp.session).await {
+                        tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                    }
                 }
                 if let Ok(final_session) = final_session.await {
-                    let _ = storage.save(&final_session).await;
+                    if let Err(e) = storage.save(&final_session).await {
+                        tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                    }
                 }
             });
         }
@@ -276,7 +309,10 @@ impl NatsGateway {
             for ui in enc.on_agent_event(&ev) {
                 let _ = self
                     .client
-                    .publish(reply.clone(), serde_json::to_vec(&ui).unwrap_or_default().into())
+                    .publish(
+                        reply.clone(),
+                        serde_json::to_vec(&ui).unwrap_or_default().into(),
+                    )
                     .await;
             }
         }

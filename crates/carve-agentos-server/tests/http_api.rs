@@ -11,8 +11,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tower::ServiceExt;
 use tokio::sync::{Notify, RwLock};
+use tower::ServiceExt;
 
 struct SkipInferencePlugin;
 
@@ -98,7 +98,12 @@ async fn test_sessions_query_endpoints() {
 
     let resp = app
         .clone()
-        .oneshot(Request::builder().uri("/v1/sessions").body(axum::body::Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/sessions")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -154,10 +159,22 @@ async fn test_ai_sdk_sse_and_persists_session() {
 
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
-    assert!(text.contains(r#""type":"message-start""#), "missing message-start: {text}");
-    assert!(text.contains(r#""type":"text-start""#), "missing text-start: {text}");
-    assert!(text.contains(r#""type":"text-end""#), "missing text-end: {text}");
-    assert!(text.contains(r#""type":"finish""#), "missing finish: {text}");
+    assert!(
+        text.contains(r#""type":"message-start""#),
+        "missing message-start: {text}"
+    );
+    assert!(
+        text.contains(r#""type":"text-start""#),
+        "missing text-start: {text}"
+    );
+    assert!(
+        text.contains(r#""type":"text-end""#),
+        "missing text-end: {text}"
+    );
+    assert!(
+        text.contains(r#""type":"finish""#),
+        "missing finish: {text}"
+    );
 
     let saved = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(saved.id, "t1");

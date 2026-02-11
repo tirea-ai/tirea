@@ -69,7 +69,9 @@ trait ChatStreamProvider: Send + Sync {
         model: &str,
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
-    ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>>;
+    ) -> genai::Result<
+        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+    >;
 }
 
 #[async_trait]
@@ -79,7 +81,9 @@ impl ChatStreamProvider for Client {
         model: &str,
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
-    ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>> {
+    ) -> genai::Result<
+        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+    > {
         let resp = self.exec_chat_stream(model, chat_req, options).await?;
         Ok(Box::pin(resp.stream))
     }

@@ -142,10 +142,10 @@ pub use ui_stream::{
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    apply_agui_request_to_session, run_agent_events_with_request, run_agent_stream,
-    run_agent_events_with_request_checkpoints, run_agent_stream_sse, run_agent_stream_sse_with_parent, run_agent_stream_with_parent,
-    AGUIContext, AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
-    ToolExecutionLocation,
+    apply_agui_request_to_session, run_agent_events_with_request,
+    run_agent_events_with_request_checkpoints, run_agent_stream, run_agent_stream_sse,
+    run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIEvent,
+    AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

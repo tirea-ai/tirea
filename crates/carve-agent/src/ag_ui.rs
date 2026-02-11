@@ -66,6 +66,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 use crate::state_types::{Interaction, InteractionResponse};
 
@@ -730,7 +731,8 @@ pub struct AGUIContext {
 impl AGUIContext {
     /// Create a new AG-UI context.
     pub fn new(thread_id: String, run_id: String) -> Self {
-        let message_id = format!("msg_{}", &run_id[..8.min(run_id.len())]);
+        let run_id_prefix: String = run_id.chars().take(8).collect();
+        let message_id = format!("msg_{run_id_prefix}");
         Self {
             thread_id,
             run_id,
@@ -772,23 +774,10 @@ impl AGUIContext {
 
     /// Generate a new message ID.
     pub fn new_message_id(&mut self) -> String {
-        self.message_id = format!(
-            "msg_{}_{}",
-            &self.run_id[..8.min(self.run_id.len())],
-            uuid_simple()
-        );
+        let run_id_prefix: String = self.run_id.chars().take(8).collect();
+        self.message_id = format!("msg_{run_id_prefix}_{}", Uuid::new_v4().simple());
         self.message_id.clone()
     }
-}
-
-/// Generate a simple unique identifier.
-fn uuid_simple() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{:x}", nanos & 0xFFFFFFFF)
 }
 
 // ============================================================================
@@ -1281,10 +1270,11 @@ fn session_has_message_id(session: &Session, id: &str) -> bool {
 }
 
 fn session_has_tool_call_id(session: &Session, tool_call_id: &str) -> bool {
-    session
-        .messages
-        .iter()
-        .any(|m| m.tool_call_id.as_deref().is_some_and(|tid| tid == tool_call_id))
+    session.messages.iter().any(|m| {
+        m.tool_call_id
+            .as_deref()
+            .is_some_and(|tid| tid == tool_call_id)
+    })
 }
 
 /// Apply request messages/state into an existing session, in an idempotent way.
@@ -1298,7 +1288,6 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
         return seed_session_from_request(session, request);
     }
 
-    let session = session;
     let mut new_msgs: Vec<crate::types::Message> = Vec::new();
 
     for msg in &request.messages {
@@ -1657,8 +1646,8 @@ impl AgentPlugin for FrontendToolPlugin {
 // AG-UI Run Agent Stream
 // ============================================================================
 
-use crate::r#loop::{run_loop_stream, run_loop_stream_with_session, AgentConfig, RunContext};
 use crate::r#loop::run_loop_stream_with_checkpoints;
+use crate::r#loop::{run_loop_stream, run_loop_stream_with_session, AgentConfig, RunContext};
 use crate::session::Session;
 use crate::stream::AgentEvent;
 use crate::traits::tool::Tool;
@@ -1744,6 +1733,7 @@ pub fn run_agent_stream_with_parent(
             match &event {
                 AgentEvent::Error { message } => {
                     yield AGUIEvent::run_error(message.clone(), None);
+                    yield AGUIEvent::run_finished(&thread_id, &run_id, None);
                     return;
                 }
                 AgentEvent::Pending { .. } => {
@@ -5796,13 +5786,13 @@ mod tests {
             .any(|e| matches!(e, AGUIEvent::RunError { .. }));
         assert!(has_error, "Should have RunError when LLM fails");
 
-        // run_agent_stream returns immediately after Error — no RunFinished
+        // AG-UI protocol: RunFinished must always be emitted, even after RunError.
         let has_finished = events
             .iter()
             .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
         assert!(
-            !has_finished,
-            "RunFinished should NOT be emitted when run ends with RunError"
+            has_finished,
+            "RunFinished MUST be emitted after RunError per AG-UI protocol"
         );
     }
 

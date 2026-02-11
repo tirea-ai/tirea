@@ -56,12 +56,14 @@ fn build_os(cfg: Option<Config>) -> AgentOs {
     }
 
     for a in agents {
-        let mut def = AgentDefinition::default();
-        def.id = a.id.clone();
+        let mut def = AgentDefinition {
+            id: a.id.clone(),
+            system_prompt: a.system_prompt,
+            ..Default::default()
+        };
         if let Some(model) = a.model {
             def.model = model;
         }
-        def.system_prompt = a.system_prompt;
         if let Some(max_rounds) = a.max_rounds {
             def.max_rounds = max_rounds;
         }
@@ -117,7 +119,11 @@ async fn main() {
         let os = os.clone();
         let storage = storage.clone();
         tokio::spawn(async move {
-            let gateway = match carve_agentos_server::nats::NatsGateway::connect(os, storage, &nats_url).await {
+            let gateway = match carve_agentos_server::nats::NatsGateway::connect(
+                os, storage, &nats_url,
+            )
+            .await
+            {
                 Ok(g) => g,
                 Err(e) => {
                     eprintln!("nats connect failed: {}", e);
