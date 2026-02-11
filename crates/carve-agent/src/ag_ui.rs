@@ -60,7 +60,7 @@
 //!
 //! let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
 //! let event = AgentEvent::TextDelta { delta: "Hello".into() };
-//! let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+//! let ag_ui_events = carve_agent::agent_event_to_agui(&event, &mut ctx);
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -836,7 +836,7 @@ impl AgUiAdapter {
 
     /// Convert an AgentEvent to AGUIEvent(s).
     pub fn convert(&mut self, event: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
-        event.to_ag_ui_events(&mut self.ctx)
+        crate::stream::agent_event_to_agui(event, &mut self.ctx)
     }
 
     /// Convert an AgentEvent to JSON strings.
@@ -1840,7 +1840,7 @@ pub fn run_agent_stream_with_parent(
             }
 
             // Uniform conversion — RunStart/RunFinish included.
-            let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+            let ag_ui_events = crate::stream::agent_event_to_agui(&event, &mut ctx);
             for ag_event in ag_ui_events {
                 yield ag_event;
             }
@@ -6123,7 +6123,7 @@ mod tests {
                 }
                 _ => {}
             }
-            let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+            let ag_ui_events = crate::stream::agent_event_to_agui(&event, &mut ctx);
             all_events.extend(ag_ui_events);
         }
 
@@ -6168,7 +6168,7 @@ mod tests {
             if let AgentEvent::RunFinish { .. } = event {
                 emitted_run_finished = true;
             }
-            all_events.extend(event.to_ag_ui_events(&mut ctx));
+            all_events.extend(crate::stream::agent_event_to_agui(&event, &mut ctx));
         }
 
         // Fallback: emit RunFinished if not emitted
@@ -6878,18 +6878,16 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let text_events = crate::stream::AgentEvent::TextDelta {
+        let text_events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta {
             delta: "thinking...".into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(text_events.len(), 2); // TEXT_MESSAGE_START + TEXT_MESSAGE_CONTENT
 
         // Tool call should end text first
-        let tool_events = crate::stream::AgentEvent::ToolCallStart {
+        let tool_events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart {
             id: "tc-1".into(),
             name: "search".into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(tool_events.len(), 2); // TEXT_MESSAGE_END + TOOL_CALL_START
         assert!(matches!(tool_events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(tool_events[1], AGUIEvent::ToolCallStart { .. }));
@@ -6899,11 +6897,10 @@ mod tests {
     fn test_agui_tool_without_prior_text_no_text_end() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let events = crate::stream::AgentEvent::ToolCallStart {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart {
             id: "tc-1".into(),
             name: "search".into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         // No text was started, so just TOOL_CALL_START
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -6913,16 +6910,13 @@ mod tests {
     fn test_agui_multiple_text_deltas_only_one_start() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let e1 = crate::stream::AgentEvent::TextDelta { delta: "a".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "a".into() }, &mut ctx);
         assert_eq!(e1.len(), 2); // START + CONTENT
 
-        let e2 = crate::stream::AgentEvent::TextDelta { delta: "b".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "b".into() }, &mut ctx);
         assert_eq!(e2.len(), 1); // Just CONTENT, no duplicate START
 
-        let e3 = crate::stream::AgentEvent::TextDelta { delta: "c".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e3 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "c".into() }, &mut ctx);
         assert_eq!(e3.len(), 1);
     }
 
@@ -6931,16 +6925,14 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text stream
-        let _ = crate::stream::AgentEvent::TextDelta { delta: "hi".into() }
-            .to_ag_ui_events(&mut ctx);
+        let _ = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() }, &mut ctx);
 
         // RunFinish should end text then emit RUN_FINISHED
-        let events = crate::stream::AgentEvent::RunFinish {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::RunFinish {
             thread_id: "th".into(),
             run_id: "run".into(),
             result: None,
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(events[1], AGUIEvent::RunFinished { .. }));
@@ -6950,12 +6942,12 @@ mod tests {
     fn test_agui_run_finish_without_text_just_finished() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let events = crate::stream::AgentEvent::RunFinish {
+        let ev = crate::stream::AgentEvent::RunFinish {
             thread_id: "th".into(),
             run_id: "run".into(),
             result: Some(json!({"response": "done"})),
-        }
-        .to_ag_ui_events(&mut ctx);
+        };
+        let events = crate::stream::agent_event_to_agui(&ev, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::RunFinished { .. }));
     }
@@ -6963,11 +6955,10 @@ mod tests {
     #[test]
     fn test_agui_tool_call_delta_produces_tool_call_args() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::ToolCallDelta {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDelta {
             id: "tc-1".into(),
             args_delta: r#"{"q":"#.into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallArgs {
             tool_call_id,
@@ -6985,12 +6976,12 @@ mod tests {
     #[test]
     fn test_agui_tool_call_ready_produces_tool_call_end() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::ToolCallReady {
+        let ev = crate::stream::AgentEvent::ToolCallReady {
             id: "tc-1".into(),
             name: "search".into(),
             arguments: json!({"query": "rust"}),
-        }
-        .to_ag_ui_events(&mut ctx);
+        };
+        let events = crate::stream::agent_event_to_agui(&ev, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallEnd { .. }));
     }
@@ -6998,12 +6989,11 @@ mod tests {
     #[test]
     fn test_agui_tool_call_done_produces_tool_call_result() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::ToolCallDone {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDone {
             id: "tc-1".into(),
             result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
             patch: None,
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallResult {
             tool_call_id,
@@ -7023,10 +7013,9 @@ mod tests {
     #[test]
     fn test_agui_error_produces_run_error() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::Error {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Error {
             message: "LLM timeout".into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "LLM timeout");
@@ -7039,10 +7028,9 @@ mod tests {
     #[test]
     fn test_agui_aborted_produces_run_error_with_code() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::Aborted {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Aborted {
             reason: "cancelled by user".into(),
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "cancelled by user");
@@ -7055,12 +7043,11 @@ mod tests {
     #[test]
     fn test_agui_inference_complete_ignored() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::AgentEvent::InferenceComplete {
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::InferenceComplete {
             model: "gpt-4".into(),
             usage: None,
             duration_ms: 1234,
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert!(events.is_empty());
     }
 
@@ -7070,8 +7057,7 @@ mod tests {
         let interaction = Interaction::new("int-1", "tool:addTask")
             .with_parameters(json!({"title": "New task"}));
 
-        let events = crate::stream::AgentEvent::Pending { interaction }
-            .to_ag_ui_events(&mut ctx);
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Pending { interaction }, &mut ctx);
         // Should produce TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -7084,13 +7070,11 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let _ = crate::stream::AgentEvent::TextDelta { delta: "hi".into() }
-            .to_ag_ui_events(&mut ctx);
+        let _ = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() }, &mut ctx);
 
         // Pending should close text first
         let interaction = Interaction::new("int-1", "tool:x");
-        let events = crate::stream::AgentEvent::Pending { interaction }
-            .to_ag_ui_events(&mut ctx);
+        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Pending { interaction }, &mut ctx);
 
         // TEXT_MESSAGE_END + 3 tool call events
         assert_eq!(events.len(), 4);
@@ -7101,8 +7085,8 @@ mod tests {
     fn test_agui_step_events_produce_correct_names() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let start1 = crate::stream::AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
-        let end1 = crate::stream::AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+        let start1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
+        let end1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepEnd, &mut ctx);
 
         if let AGUIEvent::StepStarted { step_name, .. } = &start1[0] {
             assert_eq!(step_name, "step_1");
@@ -7112,7 +7096,7 @@ mod tests {
         }
 
         // Second step
-        let start2 = crate::stream::AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        let start2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
         if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -7123,32 +7107,28 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Text phase 1
-        let e1 = crate::stream::AgentEvent::TextDelta { delta: "Let me search".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "Let me search".into() }, &mut ctx);
         assert_eq!(e1.len(), 2); // START + CONTENT
 
         // Tool call
-        let e2 = crate::stream::AgentEvent::ToolCallStart { id: "tc".into(), name: "search".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart { id: "tc".into(), name: "search".into() }, &mut ctx);
         assert_eq!(e2.len(), 2); // END text + TOOL_CALL_START
 
-        let e3 = crate::stream::AgentEvent::ToolCallReady {
+        let ev3 = crate::stream::AgentEvent::ToolCallReady {
             id: "tc".into(), name: "search".into(), arguments: json!({}),
-        }
-        .to_ag_ui_events(&mut ctx);
+        };
+        let e3 = crate::stream::agent_event_to_agui(&ev3, &mut ctx);
         assert_eq!(e3.len(), 1); // TOOL_CALL_END
 
-        let e4 = crate::stream::AgentEvent::ToolCallDone {
+        let e4 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDone {
             id: "tc".into(),
             result: crate::traits::tool::ToolResult::success("test", "results"),
             patch: None,
-        }
-        .to_ag_ui_events(&mut ctx);
+        }, &mut ctx);
         assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
 
         // Text phase 2 — should get a new TEXT_MESSAGE_START
-        let e5 = crate::stream::AgentEvent::TextDelta { delta: "Found it!".into() }
-            .to_ag_ui_events(&mut ctx);
+        let e5 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "Found it!".into() }, &mut ctx);
         assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
         assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
     }

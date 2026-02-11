@@ -1,6 +1,6 @@
 use carve_agent::{
-    execute_single_tool, AGUIContext, AGUIEvent, AgentEvent, FsSkillRegistry, Session,
-    SkillSubsystem, ToolCall, ToolDescriptor,
+    agent_event_to_agui, execute_single_tool, AGUIContext, AGUIEvent, AgentEvent, FsSkillRegistry,
+    Session, SkillSubsystem, ToolCall, ToolDescriptor,
 };
 use serde_json::json;
 use std::fs;
@@ -52,10 +52,10 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     };
 
     let mut events = Vec::new();
-    events.extend(start.to_ag_ui_events(&mut agui_ctx));
-    events.extend(delta.to_ag_ui_events(&mut agui_ctx));
-    events.extend(ready.to_ag_ui_events(&mut agui_ctx));
-    events.extend(done.to_ag_ui_events(&mut agui_ctx));
+    events.extend(agent_event_to_agui(&start, &mut agui_ctx));
+    events.extend(agent_event_to_agui(&delta, &mut agui_ctx));
+    events.extend(agent_event_to_agui(&ready, &mut agui_ctx));
+    events.extend(agent_event_to_agui(&done, &mut agui_ctx));
 
     assert!(events
         .iter()

@@ -703,7 +703,7 @@ impl AiSdkAdapter {
 
     /// Convert an AgentEvent to UIStreamEvent(s).
     pub fn convert(&self, event: &crate::stream::AgentEvent) -> Vec<UIStreamEvent> {
-        event.to_ui_events(&self.text_id)
+        crate::stream::agent_event_to_ui(event, &self.text_id)
     }
 
     /// Convert an AgentEvent to JSON strings.

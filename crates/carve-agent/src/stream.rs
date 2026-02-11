@@ -1,12 +1,15 @@
 //! Streaming response handling for LLM responses.
 //!
-//! This module provides three event systems:
-//! - `AgentEvent`: The internal event type for the agent loop
-//! - `UIStreamEvent`: AI SDK v6 compatible events for frontend integration
-//! - `AGUIEvent`: AG-UI protocol compatible events for CopilotKit integration
+//! This module provides the internal event types for the agent loop:
+//! - `AgentEvent`: Protocol-agnostic events emitted by the agent
+//! - `StreamCollector` / `StreamResult`: Helpers for collecting stream chunks
 //!
-//! Use `AgentEvent::to_ui_events()` to convert to AI SDK format.
-//! Use `AgentEvent::to_ag_ui_events()` to convert to AG-UI format.
+//! Protocol-specific conversion is provided as standalone functions:
+//! - `agent_event_to_ui()`: Convert to AI SDK v6 UIStreamEvents
+//! - `agent_event_to_agui()`: Convert to AG-UI protocol events
+//!
+//! Stateful encoders that manage stream lifecycle (prologue, epilogue, etc.)
+//! live in `carve-agentos-server::protocol`.
 
 use crate::ag_ui::{AGUIContext, AGUIEvent};
 use crate::state_types::Interaction;
@@ -218,9 +221,8 @@ impl StreamResult {
 
 /// Agent loop events for streaming execution.
 ///
-/// These events represent the internal agent loop state.
-/// - For AI SDK v6 compatible events, use `to_ui_events()` to convert to `UIStreamEvent`.
-/// - For AG-UI compatible events, use `to_ag_ui_events()` to convert to `AGUIEvent`.
+/// These events represent the protocol-agnostic internal agent loop state.
+/// Use [`agent_event_to_ui`] or [`agent_event_to_agui`] for protocol conversion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -344,247 +346,224 @@ impl AgentEvent {
             .to_string()
     }
 
-    /// Convert this event to AI SDK v6 compatible UI stream events.
-    ///
-    /// Some internal events map to multiple UI events. For example,
-    /// `ToolCallDone` produces `tool-output-available`.
-    pub fn to_ui_events(&self, text_id: &str) -> Vec<UIStreamEvent> {
-        match self {
-            // Lifecycle events - AI SDK doesn't have direct equivalents
-            AgentEvent::RunStart { .. } => vec![],
-            AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish_with_reason("stop")],
+}
 
-            // Text events
-            AgentEvent::TextDelta { delta } => {
-                vec![UIStreamEvent::text_delta(text_id, delta)]
-            }
+/// Convert an AgentEvent to AI SDK v6 compatible UI stream events.
+///
+/// This is a stateless conversion of a single event. For full stream lifecycle
+/// management (prologue, epilogue, text_id tracking), use `AiSdkEncoder` in
+/// `carve-agentos-server::protocol`.
+pub fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
+    match ev {
+        AgentEvent::RunStart { .. } => vec![],
+        AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish_with_reason("stop")],
 
-            // Tool events
-            AgentEvent::ToolCallStart { id, name } => {
-                vec![UIStreamEvent::tool_input_start(id, name)]
-            }
-            AgentEvent::ToolCallDelta { id, args_delta } => {
-                vec![UIStreamEvent::tool_input_delta(id, args_delta)]
-            }
-            AgentEvent::ToolCallReady {
+        AgentEvent::TextDelta { delta } => {
+            vec![UIStreamEvent::text_delta(text_id, delta)]
+        }
+
+        AgentEvent::ToolCallStart { id, name } => {
+            vec![UIStreamEvent::tool_input_start(id, name)]
+        }
+        AgentEvent::ToolCallDelta { id, args_delta } => {
+            vec![UIStreamEvent::tool_input_delta(id, args_delta)]
+        }
+        AgentEvent::ToolCallReady {
+            id,
+            name,
+            arguments,
+        } => {
+            vec![UIStreamEvent::tool_input_available(
                 id,
                 name,
-                arguments,
-            } => {
-                vec![UIStreamEvent::tool_input_available(
-                    id,
-                    name,
-                    arguments.clone(),
-                )]
-            }
-            AgentEvent::ToolCallDone { id, result, .. } => {
-                vec![UIStreamEvent::tool_output_available(id, result.to_json())]
-            }
-            // Step events
-            AgentEvent::StepStart => {
-                vec![UIStreamEvent::start_step()]
-            }
-            AgentEvent::StepEnd => {
-                vec![UIStreamEvent::finish_step()]
-            }
-
-            // State events - use custom data events for AI SDK
-            AgentEvent::StateSnapshot { snapshot } => {
-                vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
-            }
-            AgentEvent::StateDelta { delta } => {
-                vec![UIStreamEvent::data(
-                    "state-delta",
-                    Value::Array(delta.clone()),
-                )]
-            }
-            AgentEvent::MessagesSnapshot { messages } => {
-                vec![UIStreamEvent::data(
-                    "messages-snapshot",
-                    Value::Array(messages.clone()),
-                )]
-            }
-
-            // Activity events - use custom data events for AI SDK
-            AgentEvent::ActivitySnapshot {
-                message_id,
-                activity_type,
-                content,
-                replace,
-            } => {
-                let payload = serde_json::json!({
-                    "messageId": message_id,
-                    "activityType": activity_type,
-                    "content": content,
-                    "replace": replace,
-                });
-                vec![UIStreamEvent::data("activity-snapshot", payload)]
-            }
-            AgentEvent::ActivityDelta {
-                message_id,
-                activity_type,
-                patch,
-            } => {
-                let payload = serde_json::json!({
-                    "messageId": message_id,
-                    "activityType": activity_type,
-                    "patch": patch,
-                });
-                vec![UIStreamEvent::data("activity-delta", payload)]
-            }
-
-            // Interaction events
-            AgentEvent::Pending { interaction } => {
-                vec![UIStreamEvent::data(
-                    "interaction",
-                    serde_json::to_value(interaction).unwrap_or_default(),
-                )]
-            }
-
-            // Completion events
-            AgentEvent::Aborted { reason } => {
-                vec![UIStreamEvent::abort(reason)]
-            }
-            AgentEvent::Error { message } => {
-                vec![UIStreamEvent::error(message)]
-            }
-            AgentEvent::InferenceComplete { .. } => vec![],
+                arguments.clone(),
+            )]
         }
+        AgentEvent::ToolCallDone { id, result, .. } => {
+            vec![UIStreamEvent::tool_output_available(id, result.to_json())]
+        }
+
+        AgentEvent::StepStart => vec![UIStreamEvent::start_step()],
+        AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
+
+        AgentEvent::StateSnapshot { snapshot } => {
+            vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
+        }
+        AgentEvent::StateDelta { delta } => {
+            vec![UIStreamEvent::data(
+                "state-delta",
+                Value::Array(delta.clone()),
+            )]
+        }
+        AgentEvent::MessagesSnapshot { messages } => {
+            vec![UIStreamEvent::data(
+                "messages-snapshot",
+                Value::Array(messages.clone()),
+            )]
+        }
+
+        AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } => {
+            let payload = serde_json::json!({
+                "messageId": message_id,
+                "activityType": activity_type,
+                "content": content,
+                "replace": replace,
+            });
+            vec![UIStreamEvent::data("activity-snapshot", payload)]
+        }
+        AgentEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+        } => {
+            let payload = serde_json::json!({
+                "messageId": message_id,
+                "activityType": activity_type,
+                "patch": patch,
+            });
+            vec![UIStreamEvent::data("activity-delta", payload)]
+        }
+
+        AgentEvent::Pending { interaction } => {
+            vec![UIStreamEvent::data(
+                "interaction",
+                serde_json::to_value(interaction).unwrap_or_default(),
+            )]
+        }
+
+        AgentEvent::Aborted { reason } => vec![UIStreamEvent::abort(reason)],
+        AgentEvent::Error { message } => vec![UIStreamEvent::error(message)],
+        AgentEvent::InferenceComplete { .. } => vec![],
     }
+}
 
-    /// Convert this event to AG-UI protocol compatible events.
-    ///
-    /// AG-UI events follow the specification at <https://docs.ag-ui.com/concepts/events>
-    pub fn to_ag_ui_events(&self, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
-        match self {
-            // Lifecycle events
-            AgentEvent::RunStart {
+/// Convert an AgentEvent to AG-UI protocol compatible events.
+///
+/// This is a stateless conversion that uses `AGUIContext` for tracking text
+/// message state. For full stream lifecycle management (pending event filtering,
+/// fallback finish), use `AgUiEncoder` in `carve-agentos-server::protocol`.
+pub fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
+    match ev {
+        AgentEvent::RunStart {
+            thread_id,
+            run_id,
+            parent_run_id,
+        } => {
+            vec![AGUIEvent::run_started(
                 thread_id,
                 run_id,
-                parent_run_id,
-            } => {
-                vec![AGUIEvent::run_started(
-                    thread_id,
-                    run_id,
-                    parent_run_id.clone(),
-                )]
-            }
-            AgentEvent::RunFinish {
-                thread_id,
-                run_id,
-                result,
-            } => {
-                let mut events = vec![];
-                // End text stream if active
-                if ctx.end_text() {
-                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
-                }
-                events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
-                events
-            }
-
-            // Text events
-            AgentEvent::TextDelta { delta } => {
-                let mut events = vec![];
-                // Start text message if not started
-                if ctx.start_text() {
-                    events.push(AGUIEvent::text_message_start(&ctx.message_id));
-                }
-                events.push(AGUIEvent::text_message_content(&ctx.message_id, delta));
-                events
-            }
-
-            // Tool events
-            AgentEvent::ToolCallStart { id, name } => {
-                let mut events = vec![];
-                // End text stream before tool call
-                if ctx.end_text() {
-                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
-                }
-                events.push(AGUIEvent::tool_call_start(
-                    id,
-                    name,
-                    Some(ctx.message_id.clone()),
-                ));
-                events
-            }
-            AgentEvent::ToolCallDelta { id, args_delta } => {
-                vec![AGUIEvent::tool_call_args(id, args_delta)]
-            }
-            AgentEvent::ToolCallReady { id, .. } => {
-                vec![AGUIEvent::tool_call_end(id)]
-            }
-            AgentEvent::ToolCallDone { id, result, .. } => {
-                let result_msg_id = format!("result_{}", id);
-                let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
-                vec![AGUIEvent::tool_call_result(&result_msg_id, id, content)]
-            }
-            // Step events
-            AgentEvent::StepStart => {
-                vec![AGUIEvent::step_started(ctx.next_step_name())]
-            }
-            AgentEvent::StepEnd => {
-                vec![AGUIEvent::step_finished(ctx.current_step_name())]
-            }
-
-            // State events
-            AgentEvent::StateSnapshot { snapshot } => {
-                vec![AGUIEvent::state_snapshot(snapshot.clone())]
-            }
-            AgentEvent::StateDelta { delta } => {
-                vec![AGUIEvent::state_delta(delta.clone())]
-            }
-            AgentEvent::MessagesSnapshot { messages } => {
-                vec![AGUIEvent::messages_snapshot(messages.clone())]
-            }
-
-            // Activity events
-            AgentEvent::ActivitySnapshot {
-                message_id,
-                activity_type,
-                content,
-                replace,
-            } => {
-                vec![AGUIEvent::activity_snapshot(
-                    message_id.clone(),
-                    activity_type.clone(),
-                    value_to_map(content),
-                    *replace,
-                )]
-            }
-            AgentEvent::ActivityDelta {
-                message_id,
-                activity_type,
-                patch,
-            } => {
-                vec![AGUIEvent::activity_delta(
-                    message_id.clone(),
-                    activity_type.clone(),
-                    patch.clone(),
-                )]
-            }
-
-            // Interaction events
-            AgentEvent::Pending { interaction } => {
-                let mut events = vec![];
-                // End text stream if active
-                if ctx.end_text() {
-                    events.push(AGUIEvent::text_message_end(&ctx.message_id));
-                }
-                // Convert interaction to AG-UI tool call events
-                events.extend(interaction.to_ag_ui_events());
-                events
-            }
-
-            // Completion events
-            AgentEvent::Aborted { reason } => {
-                vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
-            }
-            AgentEvent::Error { message } => {
-                vec![AGUIEvent::run_error(message, None)]
-            }
-            AgentEvent::InferenceComplete { .. } => vec![],
+                parent_run_id.clone(),
+            )]
         }
+        AgentEvent::RunFinish {
+            thread_id,
+            run_id,
+            result,
+        } => {
+            let mut events = vec![];
+            if ctx.end_text() {
+                events.push(AGUIEvent::text_message_end(&ctx.message_id));
+            }
+            events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+            events
+        }
+
+        AgentEvent::TextDelta { delta } => {
+            let mut events = vec![];
+            if ctx.start_text() {
+                events.push(AGUIEvent::text_message_start(&ctx.message_id));
+            }
+            events.push(AGUIEvent::text_message_content(&ctx.message_id, delta));
+            events
+        }
+
+        AgentEvent::ToolCallStart { id, name } => {
+            let mut events = vec![];
+            if ctx.end_text() {
+                events.push(AGUIEvent::text_message_end(&ctx.message_id));
+            }
+            events.push(AGUIEvent::tool_call_start(
+                id,
+                name,
+                Some(ctx.message_id.clone()),
+            ));
+            events
+        }
+        AgentEvent::ToolCallDelta { id, args_delta } => {
+            vec![AGUIEvent::tool_call_args(id, args_delta)]
+        }
+        AgentEvent::ToolCallReady { id, .. } => {
+            vec![AGUIEvent::tool_call_end(id)]
+        }
+        AgentEvent::ToolCallDone { id, result, .. } => {
+            let result_msg_id = format!("result_{}", id);
+            let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
+            vec![AGUIEvent::tool_call_result(&result_msg_id, id, content)]
+        }
+
+        AgentEvent::StepStart => {
+            vec![AGUIEvent::step_started(ctx.next_step_name())]
+        }
+        AgentEvent::StepEnd => {
+            vec![AGUIEvent::step_finished(ctx.current_step_name())]
+        }
+
+        AgentEvent::StateSnapshot { snapshot } => {
+            vec![AGUIEvent::state_snapshot(snapshot.clone())]
+        }
+        AgentEvent::StateDelta { delta } => {
+            vec![AGUIEvent::state_delta(delta.clone())]
+        }
+        AgentEvent::MessagesSnapshot { messages } => {
+            vec![AGUIEvent::messages_snapshot(messages.clone())]
+        }
+
+        AgentEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+        } => {
+            vec![AGUIEvent::activity_snapshot(
+                message_id.clone(),
+                activity_type.clone(),
+                value_to_map(content),
+                *replace,
+            )]
+        }
+        AgentEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+        } => {
+            vec![AGUIEvent::activity_delta(
+                message_id.clone(),
+                activity_type.clone(),
+                patch.clone(),
+            )]
+        }
+
+        AgentEvent::Pending { interaction } => {
+            let mut events = vec![];
+            if ctx.end_text() {
+                events.push(AGUIEvent::text_message_end(&ctx.message_id));
+            }
+            events.extend(interaction.to_ag_ui_events());
+            events
+        }
+
+        AgentEvent::Aborted { reason } => {
+            vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
+        }
+        AgentEvent::Error { message } => {
+            vec![AGUIEvent::run_error(message, None)]
+        }
+        AgentEvent::InferenceComplete { .. } => vec![],
     }
 }
 
@@ -1259,7 +1238,7 @@ mod tests {
         let event = AgentEvent::TextDelta {
             delta: "Hello".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"text-delta""#));
@@ -1271,7 +1250,7 @@ mod tests {
             id: "call_1".to_string(),
             name: "search".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"tool-input-start""#));
@@ -1284,7 +1263,7 @@ mod tests {
             name: "search".to_string(),
             arguments: json!({"query": "rust"}),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"tool-input-available""#));
@@ -1299,7 +1278,7 @@ mod tests {
             result,
             patch: None,
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"tool-output-available""#));
@@ -1309,7 +1288,7 @@ mod tests {
     #[test]
     fn test_agent_event_to_ui_events_step_start() {
         let event = AgentEvent::StepStart;
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"start-step""#));
@@ -1318,7 +1297,7 @@ mod tests {
     #[test]
     fn test_agent_event_to_ui_events_step_end() {
         let event = AgentEvent::StepEnd;
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"finish-step""#));
@@ -1331,7 +1310,7 @@ mod tests {
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final answer"})),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"finish""#));
@@ -1342,7 +1321,7 @@ mod tests {
         let event = AgentEvent::Aborted {
             reason: "User cancelled".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"abort""#));
@@ -1354,7 +1333,7 @@ mod tests {
         let event = AgentEvent::Error {
             message: "Something went wrong".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"error""#));
@@ -1369,7 +1348,7 @@ mod tests {
             content: json!({"progress": 0.7}),
             replace: Some(true),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"data-activity-snapshot""#));
@@ -1384,7 +1363,7 @@ mod tests {
             content: json!({"progress": 0.4}),
             replace: Some(true),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""replace":true"#));
     }
@@ -1397,7 +1376,7 @@ mod tests {
             content: json!({"progress": 0.7}),
             replace: Some(true),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         match &ui_events[0] {
             UIStreamEvent::Data { data, .. } => {
@@ -1417,7 +1396,7 @@ mod tests {
             activity_type: "progress".to_string(),
             patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.9})],
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         match &ui_events[0] {
             UIStreamEvent::Data { data, .. } => {
@@ -1437,7 +1416,7 @@ mod tests {
             activity_type: "progress".to_string(),
             patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.9})],
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
         assert!(json.contains(r#""type":"data-activity-delta""#));
@@ -1451,7 +1430,7 @@ mod tests {
             activity_type: "progress".to_string(),
             patch: vec![json!({"op": "replace", "path": "/progress", "value": 1.0})],
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         match &ui_events[0] {
             UIStreamEvent::Data { data, .. } => {
                 assert!(data.get("replace").is_none());
@@ -1471,7 +1450,7 @@ mod tests {
         };
 
         let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         match &events[0] {
             AGUIEvent::ActivitySnapshot { content, .. } => {
@@ -1492,7 +1471,7 @@ mod tests {
         };
 
         let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         match &events[0] {
             AGUIEvent::ActivitySnapshot { content, .. } => {
@@ -1656,7 +1635,7 @@ mod tests {
         // Convert all events to UI events
         let all_ui_events: Vec<UIStreamEvent> = events
             .iter()
-            .flat_map(|e| e.to_ui_events("txt_0"))
+            .flat_map(|e| agent_event_to_ui(e, "txt_0"))
             .collect();
 
         // Verify UI events contain expected types
@@ -1695,7 +1674,7 @@ mod tests {
         let event = AgentEvent::Error {
             message: "Connection timeout".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         assert!(
             matches!(&ui_events[0], UIStreamEvent::Error { error_text } if error_text == "Connection timeout")
@@ -1707,7 +1686,7 @@ mod tests {
         let event = AgentEvent::Aborted {
             reason: "User cancelled".to_string(),
         };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         assert!(
             matches!(&ui_events[0], UIStreamEvent::Abort { reason } if reason.as_deref() == Some("User cancelled"))
@@ -1746,7 +1725,7 @@ mod tests {
             patch: Some(patch),
         };
 
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         assert!(matches!(
             ui_events[0],
@@ -1762,7 +1741,7 @@ mod tests {
             patch: None,
         };
 
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         if let UIStreamEvent::ToolOutputAvailable { output, .. } = &ui_events[0] {
             assert!(output["status"].as_str() == Some("error"));
@@ -1787,7 +1766,7 @@ mod tests {
         let interaction = Interaction::new("perm_1", "confirm").with_message("Allow action?");
 
         let event = AgentEvent::Pending { interaction };
-        let ui_events = event.to_ui_events("txt_0");
+        let ui_events = agent_event_to_ui(&event, "txt_0");
 
         assert_eq!(ui_events.len(), 1);
         if let UIStreamEvent::Data { data_type, data } = &ui_events[0] {
@@ -1808,7 +1787,7 @@ mod tests {
 
         let event = AgentEvent::Pending { interaction };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+        let ag_ui_events = agent_event_to_agui(&event, &mut ctx);
 
         // Should produce 3 tool call events
         assert_eq!(ag_ui_events.len(), 3);
@@ -1827,7 +1806,7 @@ mod tests {
         // Start text streaming
         ctx.start_text();
 
-        let ag_ui_events = event.to_ag_ui_events(&mut ctx);
+        let ag_ui_events = agent_event_to_agui(&event, &mut ctx);
 
         // Should include TextMessageEnd before tool call events
         assert_eq!(ag_ui_events.len(), 4);
@@ -1844,7 +1823,7 @@ mod tests {
             replace: Some(true),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ActivitySnapshot { content, .. } = &events[0] {
             assert_eq!(content.get("value"), Some(&json!("ok")));
@@ -1861,7 +1840,7 @@ mod tests {
             patch: vec![json!({"op": "replace", "path": "/status", "value": "done"})],
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ActivityDelta { .. }));
     }
@@ -1878,7 +1857,7 @@ mod tests {
             parent_run_id: Some("parent".into()),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunStarted {
             thread_id,
@@ -1903,7 +1882,7 @@ mod tests {
         let delta = AgentEvent::TextDelta {
             delta: "hello".into(),
         };
-        let _ = delta.to_ag_ui_events(&mut ctx);
+        let _ = agent_event_to_agui(&delta, &mut ctx);
 
         // RunFinish should emit TextMessageEnd THEN RunFinished
         let finish = AgentEvent::RunFinish {
@@ -1911,7 +1890,7 @@ mod tests {
             run_id: "r1".into(),
             result: None,
         };
-        let events = finish.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&finish, &mut ctx);
         assert_eq!(events.len(), 2);
         assert!(
             matches!(&events[0], AGUIEvent::TextMessageEnd { .. }),
@@ -1935,7 +1914,7 @@ mod tests {
             run_id: "r1".into(),
             result: Some(json!({"ok": true})),
         };
-        let events = finish.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&finish, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AGUIEvent::RunFinished { .. }));
     }
@@ -1946,7 +1925,7 @@ mod tests {
             message: "LLM timeout".into(),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "LLM timeout");
@@ -1962,7 +1941,7 @@ mod tests {
             reason: "user cancelled".into(),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "user cancelled");
@@ -1980,7 +1959,7 @@ mod tests {
             duration_ms: 100,
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert!(events.is_empty());
     }
 
@@ -1990,7 +1969,7 @@ mod tests {
             snapshot: json!({"count": 42}),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::StateSnapshot { snapshot, .. } = &events[0] {
             assert_eq!(snapshot["count"], 42);
@@ -2006,7 +1985,7 @@ mod tests {
             delta: patch.clone(),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::StateDelta { delta, .. } = &events[0] {
             assert_eq!(delta.len(), 1);
@@ -2023,7 +2002,7 @@ mod tests {
             messages: msgs.clone(),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AGUIEvent::MessagesSnapshot { .. }));
     }
@@ -2032,7 +2011,7 @@ mod tests {
     fn test_ag_ui_step_started_finished_pairing() {
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-        let start_events = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
+        let start_events = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
         assert_eq!(start_events.len(), 1);
         let step_name = if let AGUIEvent::StepStarted { step_name, .. } = &start_events[0] {
             step_name.clone()
@@ -2040,7 +2019,7 @@ mod tests {
             panic!("Expected StepStarted");
         };
 
-        let end_events = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+        let end_events = agent_event_to_agui(&AgentEvent::StepEnd, &mut ctx);
         assert_eq!(end_events.len(), 1);
         if let AGUIEvent::StepFinished {
             step_name: end_name,
@@ -2061,12 +2040,12 @@ mod tests {
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
         // Step 1
-        let s1 = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
-        let _ = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+        let s1 = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
+        let _ = agent_event_to_agui(&AgentEvent::StepEnd, &mut ctx);
 
         // Step 2
-        let s2 = AgentEvent::StepStart.to_ag_ui_events(&mut ctx);
-        let _ = AgentEvent::StepEnd.to_ag_ui_events(&mut ctx);
+        let s2 = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
+        let _ = agent_event_to_agui(&AgentEvent::StepEnd, &mut ctx);
 
         let name1 = if let AGUIEvent::StepStarted { step_name, .. } = &s1[0] {
             step_name.clone()
@@ -2128,7 +2107,7 @@ mod tests {
         ];
 
         for event in &agent_events {
-            all_events.extend(event.to_ag_ui_events(&mut ctx));
+            all_events.extend(agent_event_to_agui(&event, &mut ctx));
         }
 
         // Classify events by type name for ordering verification
@@ -2212,7 +2191,7 @@ mod tests {
             run_id: "r1".into(),
             parent_run_id: None,
         };
-        let events = event.to_ui_events("txt_0");
+        let events = agent_event_to_ui(&event, "txt_0");
         assert!(
             events.is_empty(),
             "RunStart should not produce AI SDK events"
@@ -2226,7 +2205,7 @@ mod tests {
             usage: None,
             duration_ms: 100,
         };
-        let events = event.to_ui_events("txt_0");
+        let events = agent_event_to_ui(&event, "txt_0");
         assert!(
             events.is_empty(),
             "InferenceComplete should not produce AI SDK events"
@@ -2238,7 +2217,7 @@ mod tests {
         let event = AgentEvent::StateSnapshot {
             snapshot: json!({"count": 1}),
         };
-        let events = event.to_ui_events("txt_0");
+        let events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(events.len(), 1);
         if let UIStreamEvent::Data { data_type, data } = &events[0] {
             assert_eq!(data_type, "data-state-snapshot");
@@ -2253,7 +2232,7 @@ mod tests {
         let event = AgentEvent::StateDelta {
             delta: vec![json!({"op": "add", "path": "/x", "value": 1})],
         };
-        let events = event.to_ui_events("txt_0");
+        let events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(events.len(), 1);
         if let UIStreamEvent::Data { data_type, data } = &events[0] {
             assert_eq!(data_type, "data-state-delta");
@@ -2268,7 +2247,7 @@ mod tests {
         let event = AgentEvent::MessagesSnapshot {
             messages: vec![json!({"role": "user", "content": "hi"})],
         };
-        let events = event.to_ui_events("txt_0");
+        let events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(events.len(), 1);
         if let UIStreamEvent::Data { data_type, .. } = &events[0] {
             assert_eq!(data_type, "data-messages-snapshot");
@@ -2289,7 +2268,7 @@ mod tests {
             id: "c1".into(),
             name: "search".into(),
         };
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], AGUIEvent::ToolCallStart { .. }),
@@ -2306,7 +2285,7 @@ mod tests {
         let event = AgentEvent::Pending {
             interaction: Interaction::new("int_1", "confirm"),
         };
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         // Should be exactly 3 tool call events (no TextMessageEnd prefix)
         assert_eq!(
             events.len(),
@@ -2327,7 +2306,7 @@ mod tests {
             patch: None,
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
-        let events = event.to_ag_ui_events(&mut ctx);
+        let events = agent_event_to_agui(&event, &mut ctx);
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallResult {
             tool_call_id,
@@ -2646,7 +2625,7 @@ mod tests {
 
         let all_ui: Vec<UIStreamEvent> = agent_events
             .iter()
-            .flat_map(|e| e.to_ui_events("txt_0"))
+            .flat_map(|e| agent_event_to_ui(e, "txt_0"))
             .collect();
 
         let type_names: Vec<&str> = all_ui

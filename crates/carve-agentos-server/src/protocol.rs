@@ -1,6 +1,6 @@
 use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
 use carve_agent::ui_stream::{AiSdkAdapter, UIStreamEvent};
-use carve_agent::AgentEvent;
+use carve_agent::{agent_event_to_agui, agent_event_to_ui, AgentEvent};
 
 pub struct AiSdkEncoder {
     adapter: AiSdkAdapter,
@@ -32,7 +32,7 @@ impl AiSdkEncoder {
             ];
         }
 
-        ev.to_ui_events(self.adapter.text_id())
+        agent_event_to_ui(ev, self.adapter.text_id())
     }
 }
 
@@ -72,7 +72,7 @@ impl AgUiEncoder {
             _ => {}
         }
 
-        ev.to_ag_ui_events(&mut self.ctx)
+        agent_event_to_agui(ev, &mut self.ctx)
     }
 
     /// Emit a fallback RUN_FINISHED if the inner stream ended without one.
