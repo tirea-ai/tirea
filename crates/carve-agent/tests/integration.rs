@@ -5176,7 +5176,11 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     use carve_agent::ag_ui::InteractionResponsePlugin;
 
-    let session = Session::new("test");
+    // Session must have a persisted pending interaction matching the denied ID.
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
+    );
 
     // Create plugin with denied interaction
     let plugin = InteractionResponsePlugin::new(
@@ -5212,7 +5216,11 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     use carve_agent::ag_ui::InteractionResponsePlugin;
 
-    let session = Session::new("test");
+    // Session must have a persisted pending interaction matching the approved ID.
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
+    );
 
     // Create plugin with approved interaction
     let plugin = InteractionResponsePlugin::new(
@@ -5276,8 +5284,13 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     assert!(response_request.is_interaction_approved(&interaction.id));
 
     // Step 3: Second run - InteractionResponsePlugin processes approval
+    // The session must have the pending interaction persisted (as the real loop does).
+    let session2 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+    );
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session2, vec![]);
     step2.set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5728,10 +5741,15 @@ async fn test_permission_flow_denial_e2e() {
 
     assert!(response_request.is_interaction_denied(&interaction.id));
 
-    // Phase 3: On resume, tool should be blocked
+    // Phase 3: On resume, tool should be blocked.
+    // The session must have the pending interaction persisted (as the real loop does).
+    let session2 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+    );
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
 
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&session2, vec![]);
     let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
     step2.tool = Some(ToolContext::new(&tool_call2));
 
@@ -5797,8 +5815,12 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
 
-    // Verify first tool (approved)
-    let mut resume1 = StepContext::new(&session, vec![]);
+    // Verify first tool (approved) — session has its pending interaction persisted.
+    let session_r1 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
+    );
+    let mut resume1 = StepContext::new(&session_r1, vec![]);
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
     resume1.tool = Some(ToolContext::new(&resume_call1));
     response_plugin
@@ -5806,8 +5828,12 @@ async fn test_permission_flow_multiple_tools_mixed() {
         .await;
     assert!(!resume1.tool_blocked(), "First tool should not be blocked");
 
-    // Verify second tool (denied)
-    let mut resume2 = StepContext::new(&session, vec![]);
+    // Verify second tool (denied) — session has its pending interaction persisted.
+    let session_r2 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
+    );
+    let mut resume2 = StepContext::new(&session_r2, vec![]);
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
     resume2.tool = Some(ToolContext::new(&resume_call2));
     response_plugin
@@ -6134,7 +6160,11 @@ async fn test_resume_flow_with_denial() {
     let plugin = InteractionResponsePlugin::from_request(&request);
     assert!(plugin.is_denied(interaction_id));
 
-    let session = Session::new("test");
+    // Session must have the pending interaction persisted.
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
+    );
     let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
@@ -6160,10 +6190,12 @@ async fn test_resume_flow_multiple_responses() {
     assert!(plugin.is_denied("perm_2"));
     assert!(plugin.is_approved("perm_3"));
 
-    let session = Session::new("test");
-
-    // Test each tool
+    // Test each tool — each needs a session with a matching persisted pending interaction.
     for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -6193,17 +6225,20 @@ async fn test_resume_flow_partial_responses() {
     assert!(!plugin.is_approved("perm_2")); // No response
     assert!(!plugin.is_denied("perm_2")); // No response
 
-    let session = Session::new("test");
-
-    // Responded tool should not be blocked
-    let mut step1 = StepContext::new(&session, vec![]);
+    // Responded tool should not be blocked — session has matching pending interaction.
+    let session1 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
+    );
+    let mut step1 = StepContext::new(&session1, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
     plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
     assert!(!step1.tool_blocked());
 
-    // Non-responded tool - plugin doesn't affect it
-    let mut step2 = StepContext::new(&session, vec![]);
+    // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
+    let session2 = Session::new("test");
+    let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
     plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
@@ -6247,8 +6282,13 @@ async fn test_plugin_interaction_frontend_and_response() {
     assert!(step1.tool_pending(), "Frontend tool should be pending");
     assert!(!step1.tool_blocked());
 
-    // Test 2: Previously pending tool should be allowed (response plugin approves)
-    let mut step2 = StepContext::new(&session, vec![]);
+    // Test 2: Previously pending tool should be allowed (response plugin approves).
+    // Session must have a persisted pending interaction matching the approved ID.
+    let session2 = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
+    );
+    let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
 
@@ -6275,7 +6315,11 @@ async fn test_plugin_interaction_execution_order() {
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
     let response_plugin = InteractionResponsePlugin::from_request(&request);
 
-    let session = Session::new("test");
+    // Session must have a persisted pending interaction matching the denied ID.
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
+    );
     let mut step = StepContext::new(&session, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
     step.tool = Some(ToolContext::new(&call));
@@ -6784,9 +6828,7 @@ async fn test_multiple_interaction_responses() {
     assert!(plugin.is_denied("perm_write"));
     assert!(plugin.is_approved("perm_exec"));
 
-    let session = Session::new("test");
-
-    // Verify each tool gets correct treatment
+    // Verify each tool gets correct treatment — each needs a session with matching pending interaction.
     let test_cases = vec![
         ("perm_read", false), // approved, not blocked
         ("perm_write", true), // denied, blocked
@@ -6794,6 +6836,10 @@ async fn test_multiple_interaction_responses() {
     ];
 
     for (id, should_block) in test_cases {
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));

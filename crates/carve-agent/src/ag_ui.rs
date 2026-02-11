@@ -1484,6 +1484,41 @@ impl AgentPlugin for InteractionResponsePlugin {
         let is_frontend_denied = self.is_denied(&frontend_interaction_id);
         let is_permission_denied = self.is_denied(&permission_interaction_id);
 
+        // Only act if the client is responding to an interaction we actually match.
+        let has_response = is_frontend_approved
+            || is_permission_approved
+            || is_frontend_denied
+            || is_permission_denied;
+        if !has_response {
+            return;
+        }
+
+        // Verify that the server actually has a persisted pending interaction whose ID
+        // matches one of the IDs the client claims to be responding to.  Without this
+        // check a malicious client could pre-approve arbitrary tool names by injecting
+        // approved IDs in a fresh request that has no outstanding pending interaction.
+        let persisted_id = step
+            .session
+            .rebuild_state()
+            .ok()
+            .and_then(|s| {
+                s.get(crate::state_types::AGENT_STATE_PATH)?
+                    .get("pending_interaction")?
+                    .get("id")?
+                    .as_str()
+                    .map(String::from)
+            });
+
+        let id_matches = persisted_id
+            .as_deref()
+            .map(|id| id == frontend_interaction_id || id == permission_interaction_id)
+            .unwrap_or(false);
+
+        if !id_matches {
+            // No matching persisted pending interaction — ignore the client's response.
+            return;
+        }
+
         if is_frontend_denied || is_permission_denied {
             // Interaction was denied - block the tool
             step.confirm();
@@ -1495,7 +1530,6 @@ impl AgentPlugin for InteractionResponsePlugin {
             step.confirm();
             clear_agent_pending_interaction(step);
         }
-        // If no response found for this tool, let other plugins handle it
     }
 }
 
@@ -4766,7 +4800,11 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        // Session must have a persisted pending interaction matching the denied ID.
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with denied permission interaction
@@ -4791,7 +4829,11 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        // Session must have a persisted pending interaction matching the approved ID.
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
         // Create plugin with approved permission interaction
@@ -4816,7 +4858,11 @@ mod tests {
         use crate::session::Session;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
+        // Session must have a persisted pending interaction matching the frontend tool call ID.
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": "call_copy_1", "action": "confirm" } } }),
+        );
         let mut step = StepContext::new(&session, vec![]);
 
         // FrontendToolPlugin uses the tool call ID as interaction ID
@@ -4830,6 +4876,58 @@ mod tests {
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         // Should NOT block (approved by matching call ID)
+        assert!(!step.tool_blocked());
+    }
+
+    #[tokio::test]
+    async fn test_interaction_response_plugin_ignores_without_pending_interaction() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // Session has NO persisted pending interaction.
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+
+        // Client claims to have approved "permission_delete_file" — but there is no
+        // matching pending interaction on the server, so this must be ignored.
+        let plugin =
+            InteractionResponsePlugin::new(vec!["permission_delete_file".to_string()], vec![]);
+
+        let call = ToolCall::new("call_1", "delete_file", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // Plugin should have done nothing — tool is neither confirmed nor blocked.
+        assert!(!step.tool_blocked());
+        // Pending stays false because no plugin set it yet (PermissionPlugin runs separately).
+        assert!(!step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_interaction_response_plugin_ignores_mismatched_pending_id() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // Server has a pending interaction for a DIFFERENT tool.
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        // Client tries to approve "permission_delete_file" — does not match the pending ID.
+        let plugin =
+            InteractionResponsePlugin::new(vec!["permission_delete_file".to_string()], vec![]);
+
+        let call = ToolCall::new("call_1", "delete_file", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // Plugin should have done nothing — IDs don't match.
         assert!(!step.tool_blocked());
     }
 
