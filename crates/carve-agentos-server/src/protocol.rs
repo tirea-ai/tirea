@@ -20,14 +20,17 @@ impl AgUiEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
-        // After an error, only allow RunFinish through (to emit a terminal event).
-        if self.stopped && !matches!(ev, AgentEvent::RunFinish { .. }) {
+        // After an error (RUN_ERROR), suppress all further events including
+        // RunFinish — the RUN_ERROR is already the terminal event and sending
+        // RUN_FINISHED after it violates the AG-UI protocol.
+        if self.stopped {
             return Vec::new();
         }
 
         match ev {
             AgentEvent::Error { .. } => {
                 self.stopped = true;
+                self.emitted_run_finished = true; // RUN_ERROR is terminal
             }
             AgentEvent::RunFinish { .. } => {
                 self.emitted_run_finished = true;
@@ -292,25 +295,22 @@ mod tests {
         let out = enc.on_agent_event(&error);
         assert!(!out.is_empty()); // Should emit the error event
 
-        // After error, non-terminal events should be ignored
+        // After error, all events should be suppressed (including RunFinish)
+        // because RUN_ERROR is already the terminal event in AG-UI.
         let out2 = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "ignored".to_string(),
         });
         assert!(out2.is_empty());
 
-        // But RunFinish should still get through (terminal event)
         let out3 = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "th".to_string(),
             run_id: "r".to_string(),
             result: None,
             stop_reason: None,
         });
-        assert!(!out3.is_empty());
-        assert!(out3
-            .iter()
-            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+        assert!(out3.is_empty()); // Suppressed — RUN_ERROR was already terminal
 
-        // Fallback should be empty since RunFinish was emitted
+        // Fallback should be empty since error was already terminal
         assert!(enc.fallback_finished("th", "r").is_empty());
     }
 

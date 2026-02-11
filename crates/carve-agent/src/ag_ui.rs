@@ -1344,19 +1344,25 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
             continue;
         }
 
-        if let Some(id) = msg.id.as_deref() {
-            if !session_has_message_id(&session, id) {
-                new_msgs.push(core_message_from_ag_ui(msg));
-            }
-            continue;
-        }
-
+        // For tool messages, dedup by tool_call_id FIRST.  CopilotKit echoes
+        // back tool results with client-assigned IDs (e.g. "result_call_00_...")
+        // that differ from the backend's internal IDs.  If we only checked by
+        // message id, duplicates would slip through and appear after the final
+        // assistant text, causing "tool must follow tool_calls" LLM errors.
         if msg.role == MessageRole::Tool {
             if let Some(tool_call_id) = msg.tool_call_id.as_deref() {
                 if !session_has_tool_call_id(&session, tool_call_id) {
                     new_msgs.push(core_message_from_ag_ui(msg));
                 }
             }
+            continue;
+        }
+
+        if let Some(id) = msg.id.as_deref() {
+            if !session_has_message_id(&session, id) {
+                new_msgs.push(core_message_from_ag_ui(msg));
+            }
+            continue;
         }
     }
 
