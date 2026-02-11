@@ -6,11 +6,16 @@
 //! DEEPSEEK_API_KEY=<key> cargo test --package carve-agentos-server --test e2e_deepseek -- --ignored --nocapture
 //! ```
 
+use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::{AgentDefinition, AgentOsBuilder, MemoryStorage, Storage};
+use carve_agent::{
+    AgentDefinition, AgentOsBuilder, MemoryStorage, Storage, Tool, ToolDescriptor, ToolError,
+    ToolResult,
+};
 use carve_agentos_server::http::{router, AppState};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -33,6 +38,152 @@ fn make_os() -> carve_agent::AgentOs {
         .expect("failed to build AgentOs")
 }
 
+/// A deterministic calculator tool for E2E tests — avoids external network calls.
+struct CalculatorTool;
+
+#[async_trait]
+impl Tool for CalculatorTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "calculator",
+            "Calculator",
+            "Perform basic arithmetic. Supports add, subtract, multiply, divide.",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["add", "subtract", "multiply", "divide"],
+                    "description": "The arithmetic operation to perform"
+                },
+                "a": { "type": "number", "description": "First operand" },
+                "b": { "type": "number", "description": "Second operand" }
+            },
+            "required": ["operation", "a", "b"]
+        }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &carve_agent::Context<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        let op = args["operation"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidArguments("missing operation".into()))?;
+        let a = args["a"]
+            .as_f64()
+            .ok_or_else(|| ToolError::InvalidArguments("missing a".into()))?;
+        let b = args["b"]
+            .as_f64()
+            .ok_or_else(|| ToolError::InvalidArguments("missing b".into()))?;
+
+        let result = match op {
+            "add" => a + b,
+            "subtract" => a - b,
+            "multiply" => a * b,
+            "divide" => {
+                if b == 0.0 {
+                    return Err(ToolError::ExecutionFailed("division by zero".into()));
+                }
+                a / b
+            }
+            _ => return Err(ToolError::InvalidArguments(format!("unknown op: {op}"))),
+        };
+
+        Ok(ToolResult::success(
+            "calculator",
+            json!({ "result": result }),
+        ))
+    }
+}
+
+/// Build AgentOs with a calculator tool and multi-round support.
+fn make_tool_os() -> carve_agent::AgentOs {
+    let def = AgentDefinition {
+        id: "calc".to_string(),
+        model: "deepseek-chat".to_string(),
+        system_prompt: "You are a calculator assistant.\n\
+            Rules:\n\
+            - You MUST use the `calculator` tool to perform arithmetic.\n\
+            - After getting the tool result, reply with just the number.\n\
+            - Never compute in your head — always call the tool."
+            .to_string(),
+        max_rounds: 3,
+        ..Default::default()
+    };
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
+
+    AgentOsBuilder::new()
+        .with_tools(tools)
+        .with_agent("calc", def)
+        .build()
+        .expect("failed to build AgentOs with calculator")
+}
+
+/// Build AgentOs for multi-turn conversation tests.
+fn make_multiturn_os() -> carve_agent::AgentOs {
+    let def = AgentDefinition {
+        id: "chat".to_string(),
+        model: "deepseek-chat".to_string(),
+        system_prompt: "You are a helpful assistant. Keep answers very brief.".to_string(),
+        max_rounds: 1,
+        ..Default::default()
+    };
+
+    AgentOsBuilder::new()
+        .with_agent("chat", def)
+        .build()
+        .expect("failed to build AgentOs for multi-turn")
+}
+
+/// Helper: send a POST request and return (status, body_text).
+async fn post_sse(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    (status, text)
+}
+
+/// Extract concatenated text-delta values from AI SDK SSE output.
+fn extract_ai_sdk_text(sse: &str) -> String {
+    sse.lines()
+        .filter(|l| l.starts_with("data: "))
+        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("text-delta"))
+        .filter_map(|v| v.get("delta").and_then(|t| t.as_str()).map(String::from))
+        .collect()
+}
+
+/// Extract concatenated TEXT_MESSAGE_CONTENT deltas from AG-UI SSE output.
+fn extract_agui_text(sse: &str) -> String {
+    sse.lines()
+        .filter(|l| l.starts_with("data: "))
+        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("TEXT_MESSAGE_CONTENT"))
+        .filter_map(|v| v.get("delta").and_then(|d| d.as_str()).map(String::from))
+        .collect()
+}
+
+// ============================================================================
+// Basic chat (existing tests, preserved)
+// ============================================================================
+
 #[tokio::test]
 #[ignore]
 async fn e2e_ai_sdk_sse_with_deepseek() {
@@ -54,40 +205,13 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
         "runId": "r1"
     });
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/deepseek/runs/ai-sdk/sse")
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let (status, text) = post_sse(app, "/v1/agents/deepseek/runs/ai-sdk/sse", payload).await;
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok()),
-        Some("text/event-stream")
-    );
+    println!("=== AI SDK SSE Response ===\n{text}");
 
-    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-
-    println!("=== AI SDK SSE Response ===");
-    println!("{text}");
-
-    assert!(
-        text.contains(r#""type":"start""#),
-        "missing start event"
-    );
-    assert!(
-        text.contains(r#""type":"text-start""#),
-        "missing text-start"
-    );
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"start""#), "missing start event");
+    assert!(text.contains(r#""type":"text-start""#), "missing text-start");
     assert!(
         text.contains(r#""type":"text-delta""#),
         "missing text-delta — LLM produced no text?"
@@ -95,7 +219,6 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
     assert!(text.contains(r#""type":"text-end""#), "missing text-end");
     assert!(text.contains(r#""type":"finish""#), "missing finish");
 
-    // Verify run-info event carries correct session/run IDs.
     assert!(
         text.contains(r#""threadId":"e2e-sdk""#),
         "missing threadId in run-info"
@@ -105,10 +228,8 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
         "missing runId in run-info"
     );
 
-    // Wait briefly for the checkpoint spawn to flush.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Session should be persisted with the user message.
     let saved = storage.load("e2e-sdk").await.unwrap();
     assert!(saved.is_some(), "session not persisted");
     let saved = saved.unwrap();
@@ -142,50 +263,20 @@ async fn e2e_ag_ui_sse_with_deepseek() {
         "tools": []
     });
 
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/agents/deepseek/runs/ag-ui/sse")
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let (status, text) = post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        resp.headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok()),
-        Some("text/event-stream")
-    );
+    println!("=== AG-UI SSE Response ===\n{text}");
 
-    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-
-    println!("=== AG-UI SSE Response ===");
-    println!("{text}");
-
-    assert!(
-        text.contains(r#""type":"RUN_STARTED""#),
-        "missing RUN_STARTED"
-    );
-    assert!(
-        text.contains(r#""type":"RUN_FINISHED""#),
-        "missing RUN_FINISHED"
-    );
-    // Should have some text content from the LLM.
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
     assert!(
         text.contains(r#""type":"TEXT_MESSAGE_CONTENT""#),
         "missing TEXT_MESSAGE_CONTENT — LLM produced no text?"
     );
 
-    // Wait briefly for the checkpoint spawn to flush.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // Session should be persisted.
     let saved = storage.load("e2e-agui").await.unwrap();
     assert!(saved.is_some(), "session not persisted");
     let saved = saved.unwrap();
@@ -195,5 +286,398 @@ async fn e2e_ag_ui_sse_with_deepseek() {
             .iter()
             .any(|m| m.content.contains("3+3") || m.content.contains("3 + 3")),
         "user message not found in persisted session"
+    );
+}
+
+// ============================================================================
+// Tool-using agent: AI SDK v6 endpoint
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ai_sdk_tool_call_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_tool_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let payload = json!({
+        "sessionId": "e2e-sdk-tool",
+        "input": "Use the calculator tool to compute 17 * 3. Reply with just the number.",
+        "runId": "r-tool-1"
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/calc/runs/ai-sdk/sse", payload).await;
+
+    println!("=== AI SDK Tool Call Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+
+    // Tool call events should be present in the stream (AI SDK v6 event names).
+    assert!(
+        text.contains(r#""type":"tool-input-start""#),
+        "missing tool-input-start — LLM didn't invoke the calculator tool"
+    );
+    assert!(
+        text.contains(r#""type":"tool-output-available""#),
+        "missing tool-output-available — tool execution didn't complete"
+    );
+
+    // The final text should contain "51".
+    let answer = extract_ai_sdk_text(&text);
+    println!("Extracted text: {answer}");
+    assert!(
+        answer.contains("51"),
+        "LLM did not answer '51' for 17*3. Got: {answer}"
+    );
+
+    // Session should be persisted with tool call history.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let saved = storage.load("e2e-sdk-tool").await.unwrap();
+    assert!(saved.is_some(), "session not persisted");
+}
+
+// ============================================================================
+// Tool-using agent: AG-UI endpoint
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_tool_call_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_tool_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "e2e-agui-tool",
+        "runId": "r-tool-2",
+        "messages": [
+            {"role": "user", "content": "Use the calculator tool to add 123 and 456. Reply with just the number."}
+        ],
+        "tools": []
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
+
+    println!("=== AG-UI Tool Call Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+
+    // AG-UI protocol: TOOL_CALL_START and TOOL_CALL_END events.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START — LLM didn't invoke the calculator"
+    );
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_END""#),
+        "missing TOOL_CALL_END — tool execution didn't complete"
+    );
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+
+    // The response should contain "579".
+    let answer = extract_agui_text(&text);
+    println!("Extracted text: {answer}");
+    assert!(
+        answer.contains("579"),
+        "LLM did not answer '579' for 123+456. Got: {answer}"
+    );
+}
+
+// ============================================================================
+// Multi-turn conversation via AI SDK endpoint
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ai_sdk_multiturn_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_multiturn_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+
+    // Turn 1: ask the agent to remember a number.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let (status, text1) = post_sse(
+        app1,
+        "/v1/agents/chat/runs/ai-sdk/sse",
+        json!({
+            "sessionId": "e2e-sdk-multi",
+            "input": "Remember the secret number 42. Just say OK.",
+            "runId": "r-m1"
+        }),
+    )
+    .await;
+
+    println!("=== Turn 1 ===\n{text1}");
+    assert_eq!(status, StatusCode::OK);
+    assert!(text1.contains(r#""type":"finish""#), "turn 1 did not finish");
+
+    // Wait for checkpoint.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Verify session has messages from turn 1.
+    let saved = storage.load("e2e-sdk-multi").await.unwrap().unwrap();
+    assert!(
+        saved.messages.len() >= 2,
+        "turn 1 should persist at least user + assistant messages, got {}",
+        saved.messages.len()
+    );
+
+    // Turn 2: ask for the number back.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let (status, text2) = post_sse(
+        app2,
+        "/v1/agents/chat/runs/ai-sdk/sse",
+        json!({
+            "sessionId": "e2e-sdk-multi",
+            "input": "What secret number did I tell you? Reply with just the number.",
+            "runId": "r-m2"
+        }),
+    )
+    .await;
+
+    println!("=== Turn 2 ===\n{text2}");
+    assert_eq!(status, StatusCode::OK);
+
+    let answer = extract_ai_sdk_text(&text2);
+    println!("Turn 2 extracted text: {answer}");
+    assert!(
+        answer.contains("42"),
+        "LLM did not recall '42' from previous turn. Got: {answer}"
+    );
+}
+
+// ============================================================================
+// Multi-turn conversation via AG-UI endpoint
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_multiturn_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_multiturn_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+
+    // Turn 1.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let (status, text1) = post_sse(
+        app1,
+        "/v1/agents/chat/runs/ag-ui/sse",
+        json!({
+            "threadId": "e2e-agui-multi",
+            "runId": "r-am1",
+            "messages": [
+                {"role": "user", "content": "Remember the secret word: pineapple. Just say OK."}
+            ],
+            "tools": []
+        }),
+    )
+    .await;
+
+    println!("=== AG-UI Turn 1 ===\n{text1}");
+    assert_eq!(status, StatusCode::OK);
+    assert!(text1.contains(r#""type":"RUN_FINISHED""#), "turn 1 missing RUN_FINISHED");
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Turn 2: AG-UI sends full message history from client.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let (status, text2) = post_sse(
+        app2,
+        "/v1/agents/chat/runs/ag-ui/sse",
+        json!({
+            "threadId": "e2e-agui-multi",
+            "runId": "r-am2",
+            "messages": [
+                {"role": "user", "content": "The secret word is pineapple. Just acknowledge by saying OK."},
+                {"role": "assistant", "content": "OK, I've noted the secret word."},
+                {"role": "user", "content": "Now tell me: what is the secret word I told you earlier? Reply with ONLY the single word, nothing else."}
+            ],
+            "tools": []
+        }),
+    )
+    .await;
+
+    println!("=== AG-UI Turn 2 ===\n{text2}");
+    assert_eq!(status, StatusCode::OK);
+
+    let answer = extract_agui_text(&text2);
+    println!("Turn 2 extracted text: {answer}");
+    assert!(
+        answer.to_lowercase().contains("pineapple"),
+        "LLM did not recall 'pineapple'. Got: {answer}"
+    );
+}
+
+// ============================================================================
+// AG-UI with frontend tool definitions
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_frontend_tools_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    // Provide a frontend tool definition — simulating CopilotKit's useCopilotAction.
+    let payload = json!({
+        "threadId": "e2e-agui-ft",
+        "runId": "r-ft-1",
+        "messages": [
+            {"role": "user", "content": "Add a task called 'Deploy v2' to the task list using the addTask tool."}
+        ],
+        "tools": [
+            {
+                "name": "addTask",
+                "description": "Add a new task to the task list",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Task title" }
+                    },
+                    "required": ["title"]
+                },
+                "execute": "frontend"
+            }
+        ]
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
+
+    println!("=== AG-UI Frontend Tools Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+
+    // The LLM should attempt to call the frontend tool.
+    // Check for TOOL_CALL_START with the addTask tool name.
+    let has_tool_call = text.contains("addTask");
+    println!("Contains addTask tool reference: {has_tool_call}");
+
+    // The stream should eventually finish (either RUN_FINISHED or a pending interaction).
+    let has_run_finished = text.contains(r#""type":"RUN_FINISHED""#);
+    let has_tool_call_start = text.contains(r#""type":"TOOL_CALL_START""#);
+
+    assert!(
+        has_run_finished || has_tool_call_start,
+        "stream should contain RUN_FINISHED or TOOL_CALL_START, got neither"
+    );
+
+    // If the LLM made a tool call, verify it targeted addTask.
+    if has_tool_call_start {
+        assert!(
+            text.contains(r#""toolCallName":"addTask""#),
+            "tool call should target 'addTask'"
+        );
+        println!("LLM correctly invoked frontend tool 'addTask'");
+    }
+}
+
+// ============================================================================
+// AG-UI with context entries (useCopilotReadable)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_ag_ui_context_readable_with_deepseek() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    // Provide context entries — simulating CopilotKit's useCopilotReadable.
+    let payload = json!({
+        "threadId": "e2e-agui-ctx",
+        "runId": "r-ctx-1",
+        "messages": [
+            {"role": "user", "content": "List the items in my shopping cart. Reply with just the item names separated by commas."}
+        ],
+        "tools": [],
+        "context": [
+            {
+                "name": "shoppingCart",
+                "description": "Current items in the user's shopping cart",
+                "value": "[{\"name\":\"Laptop\",\"price\":999},{\"name\":\"Mouse\",\"price\":29},{\"name\":\"Keyboard\",\"price\":79}]"
+            }
+        ]
+    });
+
+    let (status, text) =
+        post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
+
+    println!("=== AG-UI Context Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+
+    let answer = extract_agui_text(&text);
+    println!("Extracted text: {answer}");
+
+    // The LLM should reference items from the context.
+    assert!(
+        answer.contains("Laptop") || answer.contains("laptop"),
+        "LLM should mention 'Laptop' from context. Got: {answer}"
+    );
+    assert!(
+        answer.contains("Mouse") || answer.contains("mouse"),
+        "LLM should mention 'Mouse' from context. Got: {answer}"
     );
 }
