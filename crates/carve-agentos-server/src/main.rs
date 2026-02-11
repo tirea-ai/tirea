@@ -1,4 +1,4 @@
-use carve_agent::{AgentDefinition, AgentOs, AgentOsBuilder, FileStorage};
+use carve_agent::{AgentDefinition, AgentOs, AgentOsBuilder, FileStorage, ModelDefinition};
 use carve_agentos_server::http::{self, AppState};
 use clap::Parser;
 use serde::Deserialize;
@@ -19,6 +19,11 @@ struct Args {
 
     #[arg(long, env = "AGENTOS_NATS_URL")]
     nats_url: Option<String>,
+
+    /// TensorZero gateway URL (e.g. http://localhost:4000/openai/v1/).
+    /// When set, all model calls are routed through TensorZero for observability.
+    #[arg(long, env = "TENSORZERO_URL")]
+    tensorzero_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,7 +41,7 @@ struct AgentConfigFile {
     parallel_tools: Option<bool>,
 }
 
-fn build_os(cfg: Option<Config>) -> AgentOs {
+fn build_os(cfg: Option<Config>, tensorzero_url: Option<String>) -> AgentOs {
     let mut builder = AgentOsBuilder::new();
 
     let agents = match cfg {
@@ -55,14 +60,28 @@ fn build_os(cfg: Option<Config>) -> AgentOs {
         std::process::exit(2);
     }
 
+    // When TensorZero URL is provided, register a custom provider and model mapping.
+    if let Some(tz_url) = &tensorzero_url {
+        let endpoint = tz_url.clone();
+        let tz_client = genai::Client::builder()
+            .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
+                t.endpoint = genai::resolver::Endpoint::from_owned(&*endpoint);
+                t.auth = genai::resolver::AuthData::from_single("tensorzero");
+                Ok(t)
+            })
+            .build();
+        builder = builder.with_provider("tz", tz_client);
+        eprintln!("TensorZero provider registered at {tz_url}");
+    }
+
     for a in agents {
         let mut def = AgentDefinition {
             id: a.id.clone(),
             system_prompt: a.system_prompt,
             ..Default::default()
         };
-        if let Some(model) = a.model {
-            def.model = model;
+        if let Some(model) = &a.model {
+            def.model = model.clone();
         }
         if let Some(max_rounds) = a.max_rounds {
             def.max_rounds = max_rounds;
@@ -70,6 +89,18 @@ fn build_os(cfg: Option<Config>) -> AgentOs {
         if let Some(parallel) = a.parallel_tools {
             def.parallel_tools = parallel;
         }
+
+        // Map each agent's model through TensorZero when configured.
+        if tensorzero_url.is_some() {
+            if let Some(model) = &a.model {
+                builder = builder.with_model(
+                    model,
+                    ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
+                );
+                eprintln!("  model '{model}' → TensorZero agent_chat");
+            }
+        }
+
         builder = builder.with_agent(a.id, def);
     }
 
@@ -107,7 +138,7 @@ async fn main() {
         None => None,
     };
 
-    let os = Arc::new(build_os(cfg));
+    let os = Arc::new(build_os(cfg, args.tensorzero_url));
     let storage = Arc::new(FileStorage::new(args.storage_dir));
 
     let app = http::router(AppState {
