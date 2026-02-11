@@ -1,6 +1,6 @@
 import {
   CopilotRuntime,
-  createCopilotEndpointSingleRoute,
+  createCopilotEndpoint,
 } from "@copilotkit/runtime/v2";
 import { HttpAgent } from "@ag-ui/client";
 
@@ -16,11 +16,19 @@ const runtime = new CopilotRuntime({
   },
 });
 
-const app = createCopilotEndpointSingleRoute({
+const app = createCopilotEndpoint({
   runtime,
   basePath: "/api/copilotkit",
 });
 
-export async function POST(req: Request) {
-  return app.fetch(req);
+async function handler(req: Request) {
+  const res = await app.fetch(req);
+  // Re-wrap the response to ensure Next.js handles streaming correctly.
+  return new Response(res.body, {
+    status: res.status,
+    headers: Object.fromEntries(res.headers.entries()),
+  });
 }
+
+export const POST = handler;
+export const GET = handler;

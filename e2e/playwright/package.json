@@ -1,0 +1,13 @@
+{
+  "name": "e2e-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:ai-sdk": "playwright test --project=ai-sdk",
+    "test:copilotkit": "playwright test --project=copilotkit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1"
+  }
+}
