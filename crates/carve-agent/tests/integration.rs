@@ -2032,6 +2032,7 @@ fn test_agent_event_all_variants() {
         thread_id: "t1".to_string(),
         run_id: "r1".to_string(),
         result: Some(serde_json::json!({"response": "Final response"})),
+        stop_reason: None,
     };
     match finish {
         AgentEvent::RunFinish { result, .. } => {
@@ -2705,10 +2706,13 @@ fn test_agent_loop_error_all_variants() {
     let display = state_err.to_string();
     assert!(display.contains("State") || display.contains("rebuild"));
 
-    // MaxRoundsExceeded
-    let max_rounds_err = AgentLoopError::MaxRoundsExceeded(15);
-    let display = max_rounds_err.to_string();
-    assert!(display.contains("15") || display.contains("Max") || display.contains("exceeded"));
+    // Stopped
+    let stopped_err = AgentLoopError::Stopped {
+        session: Box::new(Session::new("s")),
+        reason: carve_agent::StopReason::MaxRoundsReached,
+    };
+    let display = stopped_err.to_string();
+    assert!(display.contains("stopped") || display.contains("Stopped") || display.contains("MaxRoundsReached"));
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
@@ -8289,6 +8293,7 @@ fn test_multiple_text_messages() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "First message"})),
+        stop_reason: None,
     };
     events.extend(agent_event_to_agui(&finish1, &mut ctx));
 
@@ -9305,6 +9310,7 @@ fn test_run_started_is_first_event() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Hello"})),
+        stop_reason: None,
     };
     events.extend(agent_event_to_agui(&finish, &mut ctx));
 
@@ -9488,6 +9494,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: Some(serde_json::json!({"response": "Hello"})),
+            stop_reason: None,
         },
     ]
     .iter()
@@ -11276,6 +11283,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(json!({"ok": true})),
+        stop_reason: None,
     };
     let events = agent_event_to_agui(&finish, &mut ctx);
 
@@ -11323,6 +11331,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Response"})),
+        stop_reason: None,
     };
     let events = agent_event_to_agui(&finish, &mut ctx);
 

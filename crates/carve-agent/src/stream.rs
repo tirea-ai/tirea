@@ -242,6 +242,9 @@ pub enum AgentEvent {
         run_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
+        /// Why the agent loop stopped. `None` for pauses (e.g. pending interaction).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<crate::stop::StopReason>,
     },
 
     // ========================================================================
@@ -464,6 +467,7 @@ pub fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEv
             thread_id,
             run_id,
             result,
+            ..
         } => {
             let mut events = vec![];
             if ctx.end_text() {
@@ -730,6 +734,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final response"})),
+            stop_reason: None,
         };
         if let AgentEvent::RunFinish { result, .. } = &event {
             assert_eq!(AgentEvent::extract_response(result), "Final response");
@@ -1309,6 +1314,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final answer"})),
+            stop_reason: None,
         };
         let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
@@ -1629,6 +1635,7 @@ mod tests {
                 thread_id: "t1".to_string(),
                 run_id: "r1".to_string(),
                 result: Some(json!({"response": "Found 3 results."})),
+                stop_reason: None,
             },
         ];
 
@@ -1889,6 +1896,7 @@ mod tests {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: None,
+            stop_reason: None,
         };
         let events = agent_event_to_agui(&finish, &mut ctx);
         assert_eq!(events.len(), 2);
@@ -1913,6 +1921,7 @@ mod tests {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: Some(json!({"ok": true})),
+            stop_reason: None,
         };
         let events = agent_event_to_agui(&finish, &mut ctx);
         assert_eq!(events.len(), 1);
@@ -2103,6 +2112,7 @@ mod tests {
                 thread_id: "t1".into(),
                 run_id: "r1".into(),
                 result: None,
+                stop_reason: None,
             },
         ];
 
@@ -2620,6 +2630,7 @@ mod tests {
                 thread_id: "t".into(),
                 run_id: "r".into(),
                 result: None,
+                stop_reason: None,
             },
         ];
 

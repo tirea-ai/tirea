@@ -867,10 +867,10 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
                 );
             }
         }
-        Err(AgentLoopError::MaxRoundsExceeded(rounds)) => {
+        Err(AgentLoopError::Stopped { reason, .. }) => {
             println!(
-                "✅ MaxRoundsExceeded error thrown after {} rounds (expected!)",
-                rounds
+                "✅ Agent stopped with reason: {:?} (expected!)",
+                reason
             );
         }
         Err(e) => {

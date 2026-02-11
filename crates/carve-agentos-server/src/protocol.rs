@@ -1,4 +1,5 @@
 use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+use carve_agent::stop::StopReason;
 use carve_agent::ui_stream::{AiSdkAdapter, UIStreamEvent};
 use carve_agent::{agent_event_to_agui, agent_event_to_ui, AgentEvent};
 
@@ -24,11 +25,25 @@ impl AiSdkEncoder {
             return Vec::new();
         }
 
-        if matches!(ev, AgentEvent::RunFinish { .. }) {
+        if let AgentEvent::RunFinish { stop_reason, .. } = ev {
             self.finished = true;
+            let finish_reason = match stop_reason {
+                Some(StopReason::NaturalEnd)
+                | Some(StopReason::ContentMatched(_))
+                | Some(StopReason::PluginRequested) => "stop",
+                Some(StopReason::MaxRoundsReached)
+                | Some(StopReason::TimeoutReached)
+                | Some(StopReason::TokenBudgetExceeded) => "length",
+                Some(StopReason::ToolCalled(_)) => "tool-calls",
+                Some(StopReason::Cancelled) => "other",
+                Some(StopReason::ConsecutiveErrorsExceeded)
+                | Some(StopReason::LoopDetected) => "error",
+                Some(StopReason::Custom(_)) => "other",
+                None => "stop",
+            };
             return vec![
                 self.adapter.text_end(),
-                UIStreamEvent::finish_with_reason("stop"),
+                UIStreamEvent::finish_with_reason(finish_reason),
             ];
         }
 
@@ -102,6 +117,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "run_1".to_string(),
             result: None,
+            stop_reason: None,
         });
         assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
         assert!(matches!(out[1], UIStreamEvent::Finish { .. }));
@@ -122,6 +138,7 @@ mod tests {
             thread_id: "th".to_string(),
             run_id: "r".to_string(),
             result: None,
+            stop_reason: None,
         };
         let out = enc.on_agent_event(&finish);
         assert!(!out.is_empty());
@@ -172,6 +189,7 @@ mod tests {
             thread_id: "th".to_string(),
             run_id: "r".to_string(),
             result: None,
+            stop_reason: None,
         };
         let out2 = enc.on_agent_event(&finish);
         // Should include TEXT_MESSAGE_END and RUN_FINISHED
@@ -206,6 +224,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "run_1".to_string(),
             result: None,
+            stop_reason: None,
         });
 
         // Subsequent events should be empty

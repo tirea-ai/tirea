@@ -95,6 +95,7 @@ pub mod prelude;
 pub mod session;
 pub mod skills;
 pub mod state_types;
+pub mod stop;
 pub mod storage;
 pub mod stream;
 mod tool_filter;
@@ -189,6 +190,12 @@ pub use r#loop::{
     run_round, run_step, tool_map, tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError,
     RoundResult, RunContext, SessionCheckpoint, SessionCheckpointReason, StreamWithCheckpoints,
     StreamWithSession,
+};
+
+// Stop condition exports
+pub use stop::{
+    check_stop_conditions, ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds,
+    StopCheckContext, StopCondition, StopOnTool, StopReason, Timeout, TokenBudget,
 };
 
 // Plugin exports

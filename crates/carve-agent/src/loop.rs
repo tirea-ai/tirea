@@ -46,6 +46,7 @@ use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
+use crate::stop::{check_stop_conditions, StopCheckContext, StopCondition, StopReason};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::Message;
@@ -56,10 +57,12 @@ use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 #[async_trait]
@@ -120,6 +123,12 @@ pub struct AgentDefinition {
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
     pub excluded_tools: Option<Vec<String>>,
+    /// Composable stop conditions checked after each tool-call round.
+    ///
+    /// When empty, a default [`crate::stop::MaxRounds`] condition is created
+    /// from `max_rounds`. When non-empty, `max_rounds` is ignored and only
+    /// these conditions are checked.
+    pub stop_conditions: Vec<Arc<dyn StopCondition>>,
 }
 
 /// Backwards-compatible alias.
@@ -134,6 +143,11 @@ pub struct RunContext {
     pub run_id: Option<String>,
     /// Parent run ID for nested/sub-agent runs.
     pub parent_run_id: Option<String>,
+    /// Cancellation token for cooperative loop termination.
+    ///
+    /// When cancelled, the loop stops at the next check point and emits
+    /// `RunFinish` with `StopReason::Cancelled`.
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 impl Default for AgentDefinition {
@@ -154,6 +168,7 @@ impl Default for AgentDefinition {
             policy_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
+            stop_conditions: Vec::new(),
         }
     }
 }
@@ -175,6 +190,10 @@ impl std::fmt::Debug for AgentDefinition {
             .field("policy_ids", &self.policy_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
+            .field(
+                "stop_conditions",
+                &format!("[{} conditions]", self.stop_conditions.len()),
+            )
             .finish()
     }
 }
@@ -278,6 +297,23 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_excluded_tools(mut self, tools: Vec<String>) -> Self {
         self.excluded_tools = Some(tools);
+        self
+    }
+
+    /// Add a stop condition.
+    ///
+    /// When any stop conditions are set, the `max_rounds` field is ignored
+    /// and only explicit stop conditions are checked.
+    #[must_use]
+    pub fn with_stop_condition(mut self, condition: impl StopCondition + 'static) -> Self {
+        self.stop_conditions.push(Arc::new(condition));
+        self
+    }
+
+    /// Set all stop conditions, replacing any previously set.
+    #[must_use]
+    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopCondition>>) -> Self {
+        self.stop_conditions = conditions;
         self
     }
 
@@ -962,7 +998,86 @@ async fn execute_single_tool_with_phases(
     }
 }
 
-/// Run the full agent loop until completion or max rounds.
+// ---------------------------------------------------------------------------
+// Loop State Tracking
+// ---------------------------------------------------------------------------
+
+/// Internal state tracked across loop iterations for stop condition evaluation.
+struct LoopState {
+    rounds: usize,
+    total_input_tokens: usize,
+    total_output_tokens: usize,
+    consecutive_errors: usize,
+    start_time: Instant,
+    /// Tool call names per round (most recent last), capped at 20 entries.
+    tool_call_history: VecDeque<Vec<String>>,
+}
+
+impl LoopState {
+    fn new() -> Self {
+        Self {
+            rounds: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            consecutive_errors: 0,
+            start_time: Instant::now(),
+            tool_call_history: VecDeque::new(),
+        }
+    }
+
+    fn update_from_response(&mut self, result: &StreamResult) {
+        if let Some(ref usage) = result.usage {
+            self.total_input_tokens += usage.prompt_tokens.unwrap_or(0) as usize;
+            self.total_output_tokens += usage.completion_tokens.unwrap_or(0) as usize;
+        }
+    }
+
+    fn record_tool_round(&mut self, tool_calls: &[crate::types::ToolCall], error_count: usize) {
+        let mut names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
+        names.sort();
+        if self.tool_call_history.len() >= 20 {
+            self.tool_call_history.pop_front();
+        }
+        self.tool_call_history.push_back(names);
+
+        if error_count > 0 && error_count == tool_calls.len() {
+            self.consecutive_errors += 1;
+        } else {
+            self.consecutive_errors = 0;
+        }
+    }
+
+    fn to_check_context<'a>(
+        &'a self,
+        result: &'a StreamResult,
+        session: &'a Session,
+    ) -> StopCheckContext<'a> {
+        StopCheckContext {
+            rounds: self.rounds,
+            total_input_tokens: self.total_input_tokens,
+            total_output_tokens: self.total_output_tokens,
+            consecutive_errors: self.consecutive_errors,
+            elapsed: self.start_time.elapsed(),
+            last_tool_calls: &result.tool_calls,
+            last_text: &result.text,
+            tool_call_history: &self.tool_call_history,
+            session,
+        }
+    }
+}
+
+/// Build the effective stop conditions for a run.
+///
+/// If the user explicitly configured stop conditions, use those.
+/// Otherwise, create a default `MaxRounds` from `config.max_rounds`.
+fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopCondition>> {
+    if !config.stop_conditions.is_empty() {
+        return config.stop_conditions.clone();
+    }
+    vec![Arc::new(crate::stop::MaxRounds(config.max_rounds))]
+}
+
+/// Run the full agent loop until completion or a stop condition is met.
 ///
 /// Returns the final session and the last response text.
 pub async fn run_loop(
@@ -971,7 +1086,8 @@ pub async fn run_loop(
     mut session: Session,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, String), AgentLoopError> {
-    let mut rounds = 0;
+    let mut loop_state = LoopState::new();
+    let stop_conditions = effective_stop_conditions(config);
     let mut last_text = String::new();
     let mut plugin_data = PluginRuntimeData::new(&config.plugins);
 
@@ -1075,6 +1191,7 @@ pub async fn run_loop(
             tool_calls,
             usage,
         };
+        loop_state.update_from_response(&result);
         last_text = result.text.clone();
 
         // Phase: AfterInference
@@ -1181,16 +1298,28 @@ pub async fn run_loop(
             });
         }
 
-        rounds += 1;
-        if rounds >= config.max_rounds {
-            emit_session_end(
+        // Track tool round metrics for stop condition evaluation.
+        let error_count = results
+            .iter()
+            .filter(|r| r.execution.result.is_error())
+            .count();
+        loop_state.record_tool_round(&result.tool_calls, error_count);
+        loop_state.rounds += 1;
+
+        // Check stop conditions.
+        let stop_ctx = loop_state.to_check_context(&result, &session);
+        if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
+            session = emit_session_end(
                 session,
                 &mut plugin_data,
                 &tool_descriptors,
                 &config.plugins,
             )
             .await;
-            return Err(AgentLoopError::MaxRoundsExceeded(config.max_rounds));
+            return Err(AgentLoopError::Stopped {
+                session: Box::new(session),
+                reason,
+            });
         }
     }
 
@@ -1324,7 +1453,9 @@ fn run_loop_stream_impl_with_provider(
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut session = session;
-    let mut rounds = 0;
+    let mut loop_state = LoopState::new();
+    let stop_conditions = effective_stop_conditions(&config);
+    let cancel_token = run_ctx.cancellation_token.clone();
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
@@ -1350,6 +1481,23 @@ fn run_loop_stream_impl_with_provider(
         };
 
         loop {
+            // Check cancellation at the top of each iteration.
+            if let Some(ref token) = cancel_token {
+                if token.is_cancelled() {
+                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                    yield AgentEvent::RunFinish {
+                        thread_id: session.id.clone(),
+                        run_id: run_id.clone(),
+                        result: None,
+                        stop_reason: Some(StopReason::Cancelled),
+                    };
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
+                }
+            }
+
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let (messages, filtered_tools, skip_inference, tracing_span) = {
                 let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
@@ -1378,6 +1526,7 @@ fn run_loop_stream_impl_with_provider(
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
+                    stop_reason: Some(StopReason::PluginRequested),
                 };
                 if let Some(tx) = final_session_tx.take() {
                     let _ = tx.send(session);
@@ -1428,6 +1577,7 @@ fn run_loop_stream_impl_with_provider(
                         thread_id: session.id.clone(),
                         run_id: run_id.clone(),
                         result: None,
+                        stop_reason: None,
                     };
                     if let Some(tx) = final_session_tx.take() {
                         let _ = tx.send(session);
@@ -1479,6 +1629,7 @@ fn run_loop_stream_impl_with_provider(
                             thread_id: session.id.clone(),
                             run_id: run_id.clone(),
                             result: None,
+                            stop_reason: None,
                         };
                         if let Some(tx) = final_session_tx.take() {
                             let _ = tx.send(session);
@@ -1489,6 +1640,7 @@ fn run_loop_stream_impl_with_provider(
             }
 
             let result = collector.finish();
+            loop_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
 
             yield AgentEvent::InferenceComplete {
@@ -1550,6 +1702,7 @@ fn run_loop_stream_impl_with_provider(
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
                     result: result_value,
+                    stop_reason: Some(StopReason::NaturalEnd),
                 };
                 if let Some(tx) = final_session_tx.take() {
                     let _ = tx.send(session);
@@ -1576,6 +1729,7 @@ fn run_loop_stream_impl_with_provider(
                         thread_id: session.id.clone(),
                         run_id: run_id.clone(),
                         result: None,
+                        stop_reason: None,
                     };
                     if let Some(tx) = final_session_tx.take() {
                         let _ = tx.send(session);
@@ -1653,6 +1807,7 @@ fn run_loop_stream_impl_with_provider(
                         thread_id,
                         run_id: run_id.clone(),
                         result: None,
+                        stop_reason: None,
                     };
                     // No session available to persist; close receiver.
                     drop(final_session_tx.take());
@@ -1692,6 +1847,7 @@ fn run_loop_stream_impl_with_provider(
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
+                    stop_reason: None, // Pause, not a stop
                 };
                 if let Some(tx) = final_session_tx.take() {
                     let _ = tx.send(session);
@@ -1699,14 +1855,23 @@ fn run_loop_stream_impl_with_provider(
                 return;
             }
 
-            rounds += 1;
-            if rounds >= config.max_rounds {
+            // Track tool round metrics for stop condition evaluation.
+            let error_count = results
+                .iter()
+                .filter(|r| r.execution.result.is_error())
+                .count();
+            loop_state.record_tool_round(&result.tool_calls, error_count);
+            loop_state.rounds += 1;
+
+            // Check stop conditions.
+            let stop_ctx = loop_state.to_check_context(&result, &session);
+            if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
                 session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                yield AgentEvent::Error { message: format!("Max rounds ({}) exceeded", config.max_rounds) };
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
+                    stop_reason: Some(reason),
                 };
                 if let Some(tx) = final_session_tx.take() {
                     let _ = tx.send(session);
@@ -1768,8 +1933,15 @@ pub enum AgentLoopError {
     LlmError(String),
     #[error("State error: {0}")]
     StateError(String),
-    #[error("Max rounds ({0}) exceeded")]
-    MaxRoundsExceeded(usize),
+    /// The agent loop terminated normally due to a stop condition.
+    ///
+    /// This is not an error but a structured stop with a reason. The session
+    /// is included so callers can inspect final state.
+    #[error("Agent stopped: {reason:?}")]
+    Stopped {
+        session: Box<Session>,
+        reason: StopReason,
+    },
     /// Pending user interaction; execution should pause until the client responds.
     ///
     /// The returned `session` includes any patches applied up to the point where the
@@ -1917,8 +2089,11 @@ mod tests {
         let err = AgentLoopError::LlmError("timeout".to_string());
         assert!(err.to_string().contains("timeout"));
 
-        let err = AgentLoopError::MaxRoundsExceeded(10);
-        assert!(err.to_string().contains("10"));
+        let err = AgentLoopError::Stopped {
+            session: Box::new(Session::new("test")),
+            reason: StopReason::MaxRoundsReached,
+        };
+        assert!(err.to_string().contains("MaxRoundsReached"));
     }
 
     #[test]
@@ -3095,6 +3270,7 @@ mod tests {
         let ctx = RunContext {
             run_id: Some("my-run".into()),
             parent_run_id: Some("parent-run".into()),
+            cancellation_token: None,
         };
         assert_eq!(ctx.run_id.as_deref(), Some("my-run"));
         assert_eq!(ctx.parent_run_id.as_deref(), Some("parent-run"));
@@ -3105,6 +3281,7 @@ mod tests {
         let ctx = RunContext {
             run_id: Some("r1".into()),
             parent_run_id: None,
+            cancellation_token: None,
         };
         let cloned = ctx.clone();
         assert_eq!(cloned.run_id, ctx.run_id);

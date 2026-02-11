@@ -166,6 +166,7 @@ async fn run_ai_sdk_sse(
     let run_ctx = RunContext {
         run_id: Some(run_id.clone()),
         parent_run_id: None,
+        cancellation_token: None,
     };
 
     let stream_with_checkpoints = st

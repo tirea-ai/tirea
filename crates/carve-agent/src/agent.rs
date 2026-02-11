@@ -779,14 +779,21 @@ mod tests {
         let handle = SubAgentHandle {
             agent_id: "a".into(),
             session_id: "s".into(),
-            join: tokio::spawn(async { Err(AgentLoopError::MaxRoundsExceeded(5)) }),
+            join: tokio::spawn(async {
+                Err(AgentLoopError::Stopped {
+                    session: Box::new(Session::new("s")),
+                    reason: crate::stop::StopReason::MaxRoundsReached,
+                })
+            }),
             cancel: CancellationToken::new(),
         };
 
         let err = handle.wait().await.unwrap_err();
         match err {
-            AgentLoopError::MaxRoundsExceeded(5) => {}
-            other => panic!("Expected MaxRoundsExceeded(5), got: {:?}", other),
+            AgentLoopError::Stopped { reason, .. } => {
+                assert_eq!(reason, crate::stop::StopReason::MaxRoundsReached);
+            }
+            other => panic!("Expected Stopped(MaxRoundsReached), got: {:?}", other),
         }
     }
 
@@ -1557,6 +1564,7 @@ mod tests {
         let ctx = RunContext {
             run_id: Some("external-run-id".into()),
             parent_run_id: Some("parent-run-id".into()),
+            cancellation_token: None,
         };
         let events =
             collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
@@ -1632,6 +1640,7 @@ mod tests {
         let ctx = RunContext {
             run_id: Some("consistent-id".into()),
             parent_run_id: None,
+            cancellation_token: None,
         };
         let events =
             collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;

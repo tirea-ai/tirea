@@ -109,6 +109,7 @@ pub fn run_ai_sdk_sse_with_hook(
         RunContext {
             run_id: Some(run_id),
             parent_run_id,
+            cancellation_token: None,
         },
     );
 
