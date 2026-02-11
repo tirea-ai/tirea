@@ -111,8 +111,10 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let ids: Vec<String> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(ids, vec!["s1".to_string()]);
+    let page: carve_agent::SessionListPage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.items, vec!["s1".to_string()]);
+    assert_eq!(page.total, 1);
+    assert!(!page.has_more);
 
     let resp = app
         .clone()
@@ -167,13 +169,11 @@ async fn test_ai_sdk_sse_and_persists_session() {
         text.contains(r#""type":"start""#),
         "missing start event: {text}"
     );
+    // text-start/text-end are lazy — only emitted when TextDelta events occur.
+    // This test skips inference, so no text is produced.
     assert!(
-        text.contains(r#""type":"text-start""#),
-        "missing text-start: {text}"
-    );
-    assert!(
-        text.contains(r#""type":"text-end""#),
-        "missing text-end: {text}"
+        !text.contains(r#""type":"text-start""#),
+        "unexpected text-start without text content: {text}"
     );
     assert!(
         text.contains(r#""type":"finish""#),

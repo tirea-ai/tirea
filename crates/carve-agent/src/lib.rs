@@ -115,15 +115,15 @@ pub use traits::reminder::SystemReminder;
 pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Type exports
-pub use types::{Message, Role, ToolCall, Visibility};
+pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
 
 // Session exports
 pub use session::{Session, SessionMetadata};
 
 // Storage exports
 pub use storage::{
-    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, SortOrder, Storage,
-    StorageError,
+    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, SessionListPage,
+    SessionListQuery, SortOrder, Storage, StorageError,
 };
 #[cfg(feature = "postgres")]
 pub use storage::PostgresStorage;
@@ -147,7 +147,8 @@ pub use skills::{
 
 // UI Stream exports (AI SDK v6 compatible)
 pub use ui_stream::{
-    AiSdkAdapter, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
+    AiSdkAdapter, AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole,
+    UIStreamEvent,
 };
 
 // AI SDK SSE exports

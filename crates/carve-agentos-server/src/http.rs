@@ -8,7 +8,7 @@ use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
     apply_agui_request_to_session, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
-    RunContext, Session, SortOrder, Storage, Visibility,
+    RunContext, Session, SessionListPage, SessionListQuery, SortOrder, Storage, Visibility,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -68,9 +68,28 @@ async fn health() -> impl IntoResponse {
     StatusCode::OK
 }
 
-async fn list_sessions(State(st): State<AppState>) -> Result<Json<Vec<String>>, ApiError> {
+fn default_session_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionListParams {
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default = "default_session_limit")]
+    limit: usize,
+}
+
+async fn list_sessions(
+    State(st): State<AppState>,
+    Query(params): Query<SessionListParams>,
+) -> Result<Json<SessionListPage>, ApiError> {
+    let query = SessionListQuery {
+        offset: params.offset.unwrap_or(0),
+        limit: params.limit.clamp(1, 200),
+    };
     st.storage
-        .list()
+        .list_paginated(&query)
         .await
         .map(Json)
         .map_err(|e| ApiError::Internal(e.to_string()))
@@ -108,6 +127,9 @@ struct MessageQueryParams {
     /// Filter by visibility: "all" (default, user-visible only), "internal", or omit for no filter.
     #[serde(default)]
     visibility: Option<String>,
+    /// Filter by run ID.
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 async fn get_session_messages(
@@ -132,6 +154,7 @@ async fn get_session_messages(
         limit,
         order,
         visibility,
+        run_id: params.run_id,
     };
     st.storage
         .load_messages(&id, &query)
@@ -398,7 +421,7 @@ async fn run_ag_ui_sse(
         }
 
         if !output_closed {
-            if let Some(fallback) = enc.fallback_finished(&req.thread_id, &req.run_id) {
+            for fallback in enc.fallback_finished(&req.thread_id, &req.run_id) {
                 if let Ok(json) = serde_json::to_string(&fallback) {
                     let _ = tx.send(Bytes::from(format!("data: {}\n\n", json))).await;
                 }

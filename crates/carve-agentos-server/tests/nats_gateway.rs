@@ -221,14 +221,8 @@ async fn test_nats_aisdk_happy_path() {
         all.contains("\"type\":\"start\""),
         "missing start in: {all}"
     );
-    assert!(
-        all.contains("\"type\":\"text-start\""),
-        "missing text-start in: {all}"
-    );
-    assert!(
-        all.contains("\"type\":\"text-end\""),
-        "missing text-end in: {all}"
-    );
+    // text-start/text-end are lazy — only emitted when TextDelta events occur.
+    // This test skips inference, so no text is produced.
     assert!(
         all.contains("\"type\":\"finish\""),
         "missing finish in: {all}"

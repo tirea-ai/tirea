@@ -772,6 +772,11 @@ impl AGUIContext {
         was_started
     }
 
+    /// Whether a text stream is currently open.
+    pub fn is_text_open(&self) -> bool {
+        self.text_started
+    }
+
     /// Generate a new message ID.
     pub fn new_message_id(&mut self) -> String {
         let run_id_prefix: String = self.run_id.chars().take(8).collect();
@@ -1249,6 +1254,7 @@ fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
         tool_calls: None,
         tool_call_id: msg.tool_call_id.clone(),
         visibility: crate::types::Visibility::default(),
+        metadata: None,
     }
 }
 
@@ -6516,6 +6522,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             visibility: crate::types::Visibility::default(),
+            metadata: None,
         });
         assert!(super::session_has_message_id(&session, "msg-42"));
         assert!(!super::session_has_message_id(&session, "msg-99"));
@@ -6539,6 +6546,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("tc-1".to_string()),
             visibility: crate::types::Visibility::default(),
+            metadata: None,
         });
         assert!(super::session_has_tool_call_id(&session, "tc-1"));
         assert!(!super::session_has_tool_call_id(&session, "tc-2"));
@@ -6561,6 +6569,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             visibility: crate::types::Visibility::default(),
+            metadata: None,
         });
 
         // Request contains the same id "m1" plus a new "m2"
@@ -6588,6 +6597,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("tc-1".to_string()),
             visibility: crate::types::Visibility::default(),
+            metadata: None,
         });
 
         // Request contains a tool message with same tool_call_id "tc-1" and a new "tc-2"
@@ -6656,6 +6666,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: None,
             visibility: crate::types::Visibility::default(),
+            metadata: None,
         });
 
         let result = super::apply_agui_request_to_session(session.clone(), &request);

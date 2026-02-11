@@ -192,7 +192,7 @@ impl NatsGateway {
             }
         }
 
-        if let Some(fallback) = enc.fallback_finished(&req.request.thread_id, &req.request.run_id) {
+        for fallback in enc.fallback_finished(&req.request.thread_id, &req.request.run_id) {
             let _ = self
                 .client
                 .publish(

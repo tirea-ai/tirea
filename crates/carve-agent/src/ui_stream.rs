@@ -761,6 +761,223 @@ impl Default for AiSdkAdapter {
     }
 }
 
+// ============================================================================
+// AI SDK Encoder (stateful text lifecycle tracking)
+// ============================================================================
+
+/// Stateful encoder for AI SDK v6 UI Message Stream protocol.
+///
+/// Tracks text block lifecycle (open/close) across tool calls, ensuring
+/// `text-start` and `text-end` are always properly paired. This mirrors the
+/// pattern used by [`AGUIContext`](crate::ag_ui::AGUIContext) for AG-UI.
+///
+/// # Text lifecycle rules
+///
+/// - `TextDelta` with text closed → prepend `text-start`, open text
+/// - `ToolCallStart` with text open → prepend `text-end`, close text
+/// - `RunFinish` with text open → prepend `text-end` before `finish`
+/// - `Error`/`Aborted` → terminal, no `text-end` needed
+#[derive(Debug)]
+pub struct AiSdkEncoder {
+    message_id: String,
+    run_id: String,
+    text_open: bool,
+    text_counter: u32,
+    finished: bool,
+}
+
+impl AiSdkEncoder {
+    /// Create a new encoder for the given run.
+    pub fn new(run_id: String) -> Self {
+        let message_id = format!("msg_{}", &run_id[..8.min(run_id.len())]);
+        Self {
+            message_id,
+            run_id,
+            text_open: false,
+            text_counter: 0,
+            finished: false,
+        }
+    }
+
+    /// Current text block ID (e.g. `txt_0`, `txt_1`, ...).
+    fn text_id(&self) -> String {
+        format!("txt_{}", self.text_counter)
+    }
+
+    /// Emit `text-start` and mark text as open. Returns the new text ID.
+    fn open_text(&mut self) -> UIStreamEvent {
+        self.text_open = true;
+        UIStreamEvent::text_start(self.text_id())
+    }
+
+    /// Emit `text-end` for the current text block and mark text as closed.
+    /// Increments the counter so the next text block gets a fresh ID.
+    fn close_text(&mut self) -> UIStreamEvent {
+        let event = UIStreamEvent::text_end(self.text_id());
+        self.text_open = false;
+        self.text_counter += 1;
+        event
+    }
+
+    /// Get the message ID.
+    pub fn message_id(&self) -> &str {
+        &self.message_id
+    }
+
+    /// Get the run ID.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// Emit the stream prologue: `message-start`.
+    ///
+    /// Unlike the old adapter, this does NOT emit `text-start` here —
+    /// text blocks are opened lazily when the first `TextDelta` arrives.
+    pub fn prologue(&self) -> Vec<UIStreamEvent> {
+        vec![UIStreamEvent::message_start(&self.message_id)]
+    }
+
+    /// Convert an `AgentEvent` to UI stream events with proper text lifecycle.
+    pub fn on_agent_event(&mut self, ev: &crate::stream::AgentEvent) -> Vec<UIStreamEvent> {
+        use crate::stream::AgentEvent;
+
+        if self.finished {
+            return Vec::new();
+        }
+
+        match ev {
+            AgentEvent::TextDelta { delta } => {
+                let mut events = Vec::new();
+                if !self.text_open {
+                    events.push(self.open_text());
+                }
+                events.push(UIStreamEvent::text_delta(self.text_id(), delta));
+                events
+            }
+
+            AgentEvent::ToolCallStart { id, name } => {
+                let mut events = Vec::new();
+                if self.text_open {
+                    events.push(self.close_text());
+                }
+                events.push(UIStreamEvent::tool_input_start(id, name));
+                events
+            }
+            AgentEvent::ToolCallDelta { id, args_delta } => {
+                vec![UIStreamEvent::tool_input_delta(id, args_delta)]
+            }
+            AgentEvent::ToolCallReady {
+                id,
+                name,
+                arguments,
+            } => {
+                vec![UIStreamEvent::tool_input_available(
+                    id,
+                    name,
+                    arguments.clone(),
+                )]
+            }
+            AgentEvent::ToolCallDone { id, result, .. } => {
+                vec![UIStreamEvent::tool_output_available(id, result.to_json())]
+            }
+
+            AgentEvent::RunFinish { stop_reason, .. } => {
+                self.finished = true;
+                let mut events = Vec::new();
+                if self.text_open {
+                    events.push(self.close_text());
+                }
+                let finish_reason = Self::map_stop_reason(stop_reason.as_ref());
+                events.push(UIStreamEvent::finish_with_reason(finish_reason));
+                events
+            }
+
+            AgentEvent::Error { message } => {
+                self.finished = true;
+                // Terminal — no text-end needed (matches AG-UI behavior).
+                self.text_open = false;
+                vec![UIStreamEvent::error(message)]
+            }
+            AgentEvent::Aborted { reason } => {
+                self.finished = true;
+                self.text_open = false;
+                vec![UIStreamEvent::abort(reason)]
+            }
+
+            AgentEvent::StepStart => vec![UIStreamEvent::start_step()],
+            AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
+            AgentEvent::RunStart { .. } | AgentEvent::InferenceComplete { .. } => vec![],
+
+            AgentEvent::StateSnapshot { snapshot } => {
+                vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
+            }
+            AgentEvent::StateDelta { delta } => {
+                vec![UIStreamEvent::data(
+                    "state-delta",
+                    serde_json::Value::Array(delta.clone()),
+                )]
+            }
+            AgentEvent::MessagesSnapshot { messages } => {
+                vec![UIStreamEvent::data(
+                    "messages-snapshot",
+                    serde_json::Value::Array(messages.clone()),
+                )]
+            }
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "content": content,
+                    "replace": replace,
+                });
+                vec![UIStreamEvent::data("activity-snapshot", payload)]
+            }
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "patch": patch,
+                });
+                vec![UIStreamEvent::data("activity-delta", payload)]
+            }
+            AgentEvent::Pending { interaction } => {
+                vec![UIStreamEvent::data(
+                    "interaction",
+                    serde_json::to_value(interaction).unwrap_or_default(),
+                )]
+            }
+        }
+    }
+
+    fn map_stop_reason(reason: Option<&crate::stop::StopReason>) -> &'static str {
+        use crate::stop::StopReason;
+        match reason {
+            Some(StopReason::NaturalEnd)
+            | Some(StopReason::ContentMatched(_))
+            | Some(StopReason::PluginRequested) => "stop",
+            Some(StopReason::MaxRoundsReached)
+            | Some(StopReason::TimeoutReached)
+            | Some(StopReason::TokenBudgetExceeded) => "length",
+            Some(StopReason::ToolCalled(_)) => "tool-calls",
+            Some(StopReason::Cancelled) => "other",
+            Some(StopReason::ConsecutiveErrorsExceeded) | Some(StopReason::LoopDetected) => {
+                "error"
+            }
+            Some(StopReason::Custom(_)) => "other",
+            None => "stop",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1711,5 +1928,173 @@ mod tests {
             types,
             vec!["start", "text-start", "text-delta", "text-delta", "text-end", "finish"]
         );
+    }
+
+    // ========================================================================
+    // AiSdkEncoder Tests (stateful text lifecycle)
+    // ========================================================================
+
+    #[test]
+    fn test_encoder_prologue_no_text_start() {
+        let enc = AiSdkEncoder::new("run_1".to_string());
+        let pro = enc.prologue();
+        assert_eq!(pro.len(), 1);
+        assert!(matches!(pro[0], UIStreamEvent::MessageStart { .. }));
+    }
+
+    #[test]
+    fn test_encoder_text_delta_opens_text() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], UIStreamEvent::TextStart { .. }));
+        assert!(matches!(out[1], UIStreamEvent::TextDelta { .. }));
+
+        // Second text delta should NOT re-open
+        let out2 = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: " there".to_string(),
+        });
+        assert_eq!(out2.len(), 1);
+        assert!(matches!(out2[0], UIStreamEvent::TextDelta { .. }));
+    }
+
+    #[test]
+    fn test_encoder_tool_closes_text() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // Open text
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        // Tool call should close text
+        let out = enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        });
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
+        assert!(matches!(out[1], UIStreamEvent::ToolInputStart { .. }));
+    }
+
+    #[test]
+    fn test_encoder_tool_without_text_no_text_end() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        let out = enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        });
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::ToolInputStart { .. }));
+    }
+
+    #[test]
+    fn test_encoder_text_tool_text_increments_text_id() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // txt_0
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "a".to_string(),
+        });
+        let json = serde_json::to_string(&out[0]).unwrap();
+        assert!(json.contains("txt_0"));
+
+        // Tool closes txt_0
+        enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "x".to_string(),
+        });
+
+        // txt_1
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "b".to_string(),
+        });
+        let json = serde_json::to_string(&out[0]).unwrap();
+        assert!(json.contains("txt_1"));
+    }
+
+    #[test]
+    fn test_encoder_finish_closes_text() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
+        assert!(matches!(out[1], UIStreamEvent::Finish { .. }));
+    }
+
+    #[test]
+    fn test_encoder_finish_without_text() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::Finish { .. }));
+    }
+
+    #[test]
+    fn test_encoder_error_no_text_end() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        let out = enc.on_agent_event(&AgentEvent::Error {
+            message: "boom".to_string(),
+        });
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::Error { .. }));
+
+        // After error, nothing
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "x".to_string(),
+        });
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_encoder_ignores_after_finish() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "late".to_string(),
+        });
+        assert!(out.is_empty());
     }
 }

@@ -1,55 +1,8 @@
 use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-use carve_agent::stop::StopReason;
-use carve_agent::ui_stream::{AiSdkAdapter, UIStreamEvent};
-use carve_agent::{agent_event_to_agui, agent_event_to_ui, AgentEvent};
+use carve_agent::{agent_event_to_agui, AgentEvent};
 
-pub struct AiSdkEncoder {
-    adapter: AiSdkAdapter,
-    finished: bool,
-}
-
-impl AiSdkEncoder {
-    pub fn new(run_id: String) -> Self {
-        Self {
-            adapter: AiSdkAdapter::new(run_id),
-            finished: false,
-        }
-    }
-
-    pub fn prologue(&self) -> [UIStreamEvent; 2] {
-        [self.adapter.message_start(), self.adapter.text_start()]
-    }
-
-    pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<UIStreamEvent> {
-        if self.finished {
-            return Vec::new();
-        }
-
-        if let AgentEvent::RunFinish { stop_reason, .. } = ev {
-            self.finished = true;
-            let finish_reason = match stop_reason {
-                Some(StopReason::NaturalEnd)
-                | Some(StopReason::ContentMatched(_))
-                | Some(StopReason::PluginRequested) => "stop",
-                Some(StopReason::MaxRoundsReached)
-                | Some(StopReason::TimeoutReached)
-                | Some(StopReason::TokenBudgetExceeded) => "length",
-                Some(StopReason::ToolCalled(_)) => "tool-calls",
-                Some(StopReason::Cancelled) => "other",
-                Some(StopReason::ConsecutiveErrorsExceeded)
-                | Some(StopReason::LoopDetected) => "error",
-                Some(StopReason::Custom(_)) => "other",
-                None => "stop",
-            };
-            return vec![
-                self.adapter.text_end(),
-                UIStreamEvent::finish_with_reason(finish_reason),
-            ];
-        }
-
-        agent_event_to_ui(ev, self.adapter.text_id())
-    }
-}
+// Re-export the canonical AiSdkEncoder from carve-agent.
+pub use carve_agent::AiSdkEncoder;
 
 pub struct AgUiEncoder {
     ctx: AGUIContext,
@@ -81,8 +34,13 @@ impl AgUiEncoder {
             // Skip Pending events: their interaction-to-tool-call conversion
             // is redundant in AG-UI — the LLM's own TOOL_CALL events already
             // inform the client about frontend tool calls.
+            // However, we must still close any open text stream.
             AgentEvent::Pending { .. } => {
-                return Vec::new();
+                let mut events = Vec::new();
+                if self.ctx.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
+                }
+                return events;
             }
             _ => {}
         }
@@ -90,14 +48,20 @@ impl AgUiEncoder {
         agent_event_to_agui(ev, &mut self.ctx)
     }
 
-    /// Emit a fallback RUN_FINISHED if the inner stream ended without one.
+    /// Emit fallback events if the inner stream ended without a RUN_FINISHED.
+    /// Closes any open text stream before emitting RUN_FINISHED.
     /// This covers pending interactions (frontend tools, permissions) where
     /// the inner loop exits via PendingInteraction error without RunFinish.
-    pub fn fallback_finished(&self, thread_id: &str, run_id: &str) -> Option<AGUIEvent> {
+    pub fn fallback_finished(&mut self, thread_id: &str, run_id: &str) -> Vec<AGUIEvent> {
         if self.stopped || self.emitted_run_finished {
-            return None;
+            return Vec::new();
         }
-        Some(AGUIEvent::run_finished(thread_id, run_id, None))
+        let mut events = Vec::new();
+        if self.ctx.end_text() {
+            events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
+        }
+        events.push(AGUIEvent::run_finished(thread_id, run_id, None));
+        events
     }
 }
 
@@ -105,13 +69,29 @@ impl AgUiEncoder {
 mod tests {
     use super::*;
     use carve_agent::state_types::Interaction;
+    use carve_agent::stop::StopReason;
+    use carve_agent::UIStreamEvent;
 
     #[test]
-    fn test_ai_sdk_encoder_prologue_and_finish() {
-        let mut enc = AiSdkEncoder::new("run_1".to_string());
+    fn test_ai_sdk_encoder_prologue_only_message_start() {
+        let enc = AiSdkEncoder::new("run_1".to_string());
         let pro = enc.prologue();
+        // Prologue emits only message-start; text-start is lazy.
+        assert_eq!(pro.len(), 1);
         assert!(matches!(pro[0], UIStreamEvent::MessageStart { .. }));
-        assert!(matches!(pro[1], UIStreamEvent::TextStart { .. }));
+    }
+
+    #[test]
+    fn test_ai_sdk_encoder_text_then_finish() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hello".to_string(),
+        });
+        // First text delta should open text: [text-start, text-delta]
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], UIStreamEvent::TextStart { .. }));
+        assert!(matches!(out[1], UIStreamEvent::TextDelta { .. }));
 
         let out = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".to_string(),
@@ -119,17 +99,105 @@ mod tests {
             result: None,
             stop_reason: None,
         });
+        // Should close text then finish: [text-end, finish]
+        assert_eq!(out.len(), 2);
         assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
         assert!(matches!(out[1], UIStreamEvent::Finish { .. }));
     }
 
     #[test]
-    fn test_agui_encoder_skips_pending_events() {
+    fn test_ai_sdk_encoder_finish_without_text_no_text_end() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+        // No text was opened, so no text-end — just finish.
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::Finish { .. }));
+    }
+
+    #[test]
+    fn test_ai_sdk_encoder_text_tool_text_flow() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // First text opens txt_0
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+        assert_eq!(out.len(), 2); // text-start + text-delta
+
+        // Tool call closes txt_0
+        let out = enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        });
+        assert_eq!(out.len(), 2); // text-end + tool-input-start
+        assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
+        assert!(matches!(out[1], UIStreamEvent::ToolInputStart { .. }));
+
+        // Text after tool opens txt_1
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "result".to_string(),
+        });
+        assert_eq!(out.len(), 2); // text-start + text-delta
+
+        // Finish closes txt_1
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "t".to_string(),
+            run_id: "run_1".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+        assert_eq!(out.len(), 2); // text-end + finish
+    }
+
+    #[test]
+    fn test_ai_sdk_encoder_tool_without_prior_text_no_text_end() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        let out = enc.on_agent_event(&AgentEvent::ToolCallStart {
+            id: "tc-1".to_string(),
+            name: "search".to_string(),
+        });
+        // No text was open, so no text-end — just tool-input-start.
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::ToolInputStart { .. }));
+    }
+
+    #[test]
+    fn test_ai_sdk_encoder_error_no_text_end() {
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // Open text
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        // Error is terminal — no text-end
+        let out = enc.on_agent_event(&AgentEvent::Error {
+            message: "boom".to_string(),
+        });
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::Error { .. }));
+
+        // After error, nothing emitted
+        let out = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "late".to_string(),
+        });
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_agui_encoder_skips_pending_without_text() {
         let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
         let pending = AgentEvent::Pending {
             interaction: Interaction::new("i1", "x"),
         };
-        // Pending events should produce no AG-UI events (redundant with LLM tool calls)
+        // Pending without open text produces nothing.
         let out = enc.on_agent_event(&pending);
         assert!(out.is_empty());
 
@@ -142,7 +210,49 @@ mod tests {
         };
         let out = enc.on_agent_event(&finish);
         assert!(!out.is_empty());
-        assert!(enc.fallback_finished("th", "r").is_none());
+        assert!(enc.fallback_finished("th", "r").is_empty());
+    }
+
+    #[test]
+    fn test_agui_encoder_pending_closes_open_text() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        // Open text
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        // Pending should close text even though it skips the interaction events
+        let out = enc.on_agent_event(&AgentEvent::Pending {
+            interaction: Interaction::new("i1", "x"),
+        });
+        assert_eq!(out.len(), 1);
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+    }
+
+    #[test]
+    fn test_agui_encoder_text_pending_fallback_closes_text() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        // Open text
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "thinking...".to_string(),
+        });
+
+        // Pending closes text
+        let out = enc.on_agent_event(&AgentEvent::Pending {
+            interaction: Interaction::new("i1", "confirm"),
+        });
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+
+        // Fallback should only emit RUN_FINISHED (text already closed)
+        let fallback = enc.fallback_finished("th", "r");
+        assert_eq!(fallback.len(), 1);
+        assert!(matches!(fallback[0], AGUIEvent::RunFinished { .. }));
     }
 
     #[test]
@@ -151,7 +261,24 @@ mod tests {
 
         // No RunFinish emitted — fallback should emit one
         let fallback = enc.fallback_finished("th", "r");
-        assert!(fallback.is_some());
+        assert_eq!(fallback.len(), 1);
+        assert!(matches!(fallback[0], AGUIEvent::RunFinished { .. }));
+    }
+
+    #[test]
+    fn test_agui_encoder_fallback_closes_open_text() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        // Open text without closing
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "interrupted".to_string(),
+        });
+
+        // Fallback should close text before emitting RUN_FINISHED
+        let fallback = enc.fallback_finished("th", "r");
+        assert_eq!(fallback.len(), 2);
+        assert!(matches!(fallback[0], AGUIEvent::TextMessageEnd { .. }));
+        assert!(matches!(fallback[1], AGUIEvent::RunFinished { .. }));
     }
 
     #[test]
@@ -165,73 +292,72 @@ mod tests {
         assert!(!out.is_empty()); // Should emit the error event
 
         // After error, all subsequent events should be ignored
-        let text = AgentEvent::TextDelta {
+        let out2 = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "ignored".to_string(),
-        };
-        let out2 = enc.on_agent_event(&text);
+        });
         assert!(out2.is_empty());
 
-        // Fallback should also be None since we stopped
-        assert!(enc.fallback_finished("th", "r").is_none());
+        // Fallback should also be empty since we stopped
+        assert!(enc.fallback_finished("th", "r").is_empty());
     }
 
     #[test]
     fn test_agui_encoder_text_then_finish() {
         let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
 
-        let text = AgentEvent::TextDelta {
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "hello".to_string(),
-        };
-        let out = enc.on_agent_event(&text);
-        assert!(!out.is_empty());
+        });
 
-        let finish = AgentEvent::RunFinish {
+        let out = enc.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "th".to_string(),
             run_id: "r".to_string(),
             result: None,
             stop_reason: None,
-        };
-        let out2 = enc.on_agent_event(&finish);
+        });
         // Should include TEXT_MESSAGE_END and RUN_FINISHED
-        assert!(out2.len() >= 2);
+        assert!(out.len() >= 2);
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
+        assert!(out
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
 
         // No fallback needed
-        assert!(enc.fallback_finished("th", "r").is_none());
+        assert!(enc.fallback_finished("th", "r").is_empty());
     }
 
     #[test]
-    fn test_agui_encoder_multiple_pending_all_skipped() {
+    fn test_agui_encoder_multiple_pending_all_close_text() {
         let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
 
-        for i in 0..5 {
-            let pending = AgentEvent::Pending {
-                interaction: Interaction::new(&format!("i{}", i), "action"),
-            };
-            let out = enc.on_agent_event(&pending);
-            assert!(out.is_empty());
-        }
-
-        // Fallback should still work since no RunFinish was emitted
-        assert!(enc.fallback_finished("th", "r").is_some());
-    }
-
-    #[test]
-    fn test_ai_sdk_encoder_ignores_after_finish() {
-        let mut enc = AiSdkEncoder::new("run_1".to_string());
-
-        // Finish the stream
-        let _ = enc.on_agent_event(&AgentEvent::RunFinish {
-            thread_id: "t".to_string(),
-            run_id: "run_1".to_string(),
-            result: None,
-            stop_reason: None,
-        });
-
-        // Subsequent events should be empty
-        let out = enc.on_agent_event(&AgentEvent::TextDelta {
-            delta: "late".to_string(),
+        // First pending without text — nothing
+        let out = enc.on_agent_event(&AgentEvent::Pending {
+            interaction: Interaction::new("i0", "action"),
         });
         assert!(out.is_empty());
+
+        // Open text
+        let _ = enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        // Second pending with open text — closes it
+        let out = enc.on_agent_event(&AgentEvent::Pending {
+            interaction: Interaction::new("i1", "action"),
+        });
+        assert_eq!(out.len(), 1);
+
+        // Third pending without text — nothing again
+        let out = enc.on_agent_event(&AgentEvent::Pending {
+            interaction: Interaction::new("i2", "action"),
+        });
+        assert!(out.is_empty());
+
+        // Fallback should work since no RunFinish was emitted
+        let fallback = enc.fallback_finished("th", "r");
+        assert_eq!(fallback.len(), 1); // Just RUN_FINISHED, text already closed
     }
 
     #[test]

@@ -32,15 +32,15 @@ use crate::r#loop::{
 };
 use crate::session::Session;
 use crate::traits::tool::Tool;
-use crate::ui_stream::AiSdkAdapter;
+use crate::ui_stream::{AiSdkAdapter, AiSdkEncoder};
 use genai::Client;
 
 /// Result of [`run_ai_sdk_sse`]: a stream of SSE-formatted JSON strings plus
 /// checkpoint and final-session channels for persistence.
 pub struct AiSdkSseStream {
     /// Stream of SSE data lines (`data: {json}\n\n`), including the
-    /// `message-start`, `text-start`, event conversions, `text-end`, and
-    /// the framework-emitted `finish`.
+    /// `message-start`, lazily-opened `text-start`/`text-end` pairs around
+    /// text content, and the framework-emitted `finish`.
     pub events: Pin<Box<dyn Stream<Item = String> + Send>>,
 
     /// Intermediate session checkpoints for crash-recovery persistence.
@@ -62,14 +62,14 @@ pub type EventHook = Box<dyn Fn(&crate::stream::AgentEvent) + Send>;
 
 /// Run the carve-agent loop and produce an AI SDK v6 SSE event stream.
 ///
-/// This wraps [`run_loop_stream_with_checkpoints`] and applies [`AiSdkAdapter`]
+/// This wraps [`run_loop_stream_with_checkpoints`] and applies [`AiSdkEncoder`]
 /// conversion, emitting the full AI SDK v6 framing:
 ///
 /// 1. `message-start`
-/// 2. `text-start`
+/// 2. `text-start` (lazy, on first `TextDelta`)
 /// 3. Converted agent events (text-delta, tool-input-*, tool-output-*, etc.)
-/// 4. `text-end`
-/// 5. `finish` (emitted by framework's `RunFinish`)
+///    with automatic `text-end`/`text-start` around tool calls
+/// 4. `text-end` + `finish` (on `RunFinish`)
 ///
 /// The returned [`AiSdkSseStream`] also exposes `checkpoints` and
 /// `final_session` for the caller to implement persistence.
@@ -95,7 +95,6 @@ pub fn run_ai_sdk_sse_with_hook(
     event_hook: Option<EventHook>,
 ) -> AiSdkSseStream {
     let adapter = AiSdkAdapter::new(run_id.clone());
-    let adapter_clone = adapter.clone();
 
     let StreamWithCheckpoints {
         events: mut agent_events,
@@ -107,35 +106,32 @@ pub fn run_ai_sdk_sse_with_hook(
         session,
         tools,
         RunContext {
-            run_id: Some(run_id),
+            run_id: Some(run_id.clone()),
             parent_run_id,
             cancellation_token: None,
         },
     );
 
     let sse_stream = async_stream::stream! {
-        // AI SDK v6 protocol framing: message-start + text-start.
-        if let Ok(json) = serde_json::to_string(&adapter_clone.message_start()) {
-            yield format!("data: {}\n\n", json);
-        }
-        if let Ok(json) = serde_json::to_string(&adapter_clone.text_start()) {
-            yield format!("data: {}\n\n", json);
+        let mut enc = AiSdkEncoder::new(run_id);
+
+        // AI SDK v6 protocol framing: message-start (text-start is lazy).
+        for e in enc.prologue() {
+            if let Ok(json) = serde_json::to_string(&e) {
+                yield format!("data: {}\n\n", json);
+            }
         }
 
         while let Some(ev) = agent_events.next().await {
             if let Some(ref hook) = event_hook {
                 hook(&ev);
             }
-            for json_line in adapter_clone.to_json(&ev) {
-                yield format!("data: {}\n\n", json_line);
+            for ui_event in enc.on_agent_event(&ev) {
+                if let Ok(json) = serde_json::to_string(&ui_event) {
+                    yield format!("data: {}\n\n", json);
+                }
             }
         }
-
-        // text-end is UI protocol framing (not emitted by framework).
-        if let Ok(json) = serde_json::to_string(&adapter_clone.text_end()) {
-            yield format!("data: {}\n\n", json);
-        }
-        // NOTE: finish is already emitted by RunFinish → to_ui_events().
     };
 
     AiSdkSseStream {
