@@ -8125,4 +8125,888 @@ mod tests {
         let should = super::should_seed_session_from_request(&session, &request);
         assert!(!should, "null state alone should not trigger seeding");
     }
+
+    // ========================================================================
+    // Text Message Role Validation Tests
+    // (ref: ag-ui-protocol Python SDK test_text_roles.py)
+    // ========================================================================
+
+    #[test]
+    fn test_text_message_start_default_role_is_assistant() {
+        let event = AGUIEvent::text_message_start("msg_1");
+        if let AGUIEvent::TextMessageStart { role, .. } = &event {
+            assert_eq!(*role, MessageRole::Assistant);
+        } else {
+            panic!("Expected TextMessageStart");
+        }
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""role":"assistant""#));
+    }
+
+    #[test]
+    fn test_message_role_default_is_assistant() {
+        let role: MessageRole = Default::default();
+        assert_eq!(role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn test_message_role_allowed_roles_serialize() {
+        // All AG-UI valid roles: developer, system, assistant, user, tool
+        let roles = vec![
+            (MessageRole::Developer, "developer"),
+            (MessageRole::System, "system"),
+            (MessageRole::Assistant, "assistant"),
+            (MessageRole::User, "user"),
+            (MessageRole::Tool, "tool"),
+        ];
+        for (role, expected) in roles {
+            let json = serde_json::to_string(&role).unwrap();
+            assert_eq!(json, format!("\"{}\"", expected));
+        }
+    }
+
+    #[test]
+    fn test_message_role_roundtrip_all_variants() {
+        for role in [
+            MessageRole::Developer,
+            MessageRole::System,
+            MessageRole::Assistant,
+            MessageRole::User,
+            MessageRole::Tool,
+        ] {
+            let json = serde_json::to_string(&role).unwrap();
+            let back: MessageRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, role);
+        }
+    }
+
+    #[test]
+    fn test_message_role_invalid_string_rejected() {
+        let result = serde_json::from_str::<MessageRole>("\"invalid\"");
+        assert!(result.is_err(), "Invalid role string should fail deserialization");
+    }
+
+    #[test]
+    fn test_message_role_empty_string_rejected() {
+        let result = serde_json::from_str::<MessageRole>("\"\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_text_message_chunk_role_is_optional() {
+        let chunk = AGUIEvent::text_message_chunk(Some("msg_1".into()), None, Some("hi".into()));
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(!json.contains("role"), "role should be omitted when None");
+    }
+
+    #[test]
+    fn test_text_message_chunk_with_role() {
+        let chunk = AGUIEvent::text_message_chunk(
+            Some("msg_1".into()),
+            Some(MessageRole::User),
+            Some("hi".into()),
+        );
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(json.contains(r#""role":"user""#));
+    }
+
+    #[test]
+    fn test_text_message_start_role_serialization_in_event() {
+        // TextMessageStart always serializes role
+        let event = AGUIEvent::TextMessageStart {
+            message_id: "msg_1".into(),
+            role: MessageRole::System,
+            base: BaseEventFields::default(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""role":"system""#));
+        // Round-trip
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::TextMessageStart { role, .. } = back {
+            assert_eq!(role, MessageRole::System);
+        } else {
+            panic!("Unexpected variant");
+        }
+    }
+
+    #[test]
+    fn test_text_message_workflow_roles_preserved() {
+        // start → content → end should all carry the same message_id
+        let msg_id = "msg_role_test";
+        let start = AGUIEvent::TextMessageStart {
+            message_id: msg_id.into(),
+            role: MessageRole::Developer,
+            base: BaseEventFields::default(),
+        };
+        let content = AGUIEvent::text_message_content(msg_id, "hello");
+        let end = AGUIEvent::text_message_end(msg_id);
+
+        let start_json = serde_json::to_string(&start).unwrap();
+        let content_json = serde_json::to_string(&content).unwrap();
+        let end_json = serde_json::to_string(&end).unwrap();
+
+        // All reference the same messageId
+        for json in [&start_json, &content_json, &end_json] {
+            assert!(json.contains(r#""messageId":"msg_role_test""#));
+        }
+        // Only start has role
+        assert!(start_json.contains(r#""role":"developer""#));
+    }
+
+    // ========================================================================
+    // State Delta — Full JSON Patch Operations (RFC 6902)
+    // (ref: ag-ui-protocol TS SDK state-events.test.ts)
+    // ========================================================================
+
+    #[test]
+    fn test_state_delta_add_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/name", "value": "Alice"}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "add");
+            assert_eq!(delta[0]["value"], "Alice");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_remove_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "remove", "path": "/obsolete"}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "remove");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_replace_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "replace", "path": "/count", "value": 42}),
+        ]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "replace");
+            assert_eq!(delta[0]["value"], 42);
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_move_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "move", "from": "/old", "path": "/new"}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "move");
+            assert_eq!(delta[0]["from"], "/old");
+            assert_eq!(delta[0]["path"], "/new");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_copy_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "copy", "from": "/source", "path": "/dest"}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "copy");
+            assert_eq!(delta[0]["from"], "/source");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_test_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "test", "path": "/enabled", "value": true}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["op"], "test");
+            assert_eq!(delta[0]["value"], true);
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_all_operations_combined() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/a", "value": 1}),
+            json!({"op": "remove", "path": "/b"}),
+            json!({"op": "replace", "path": "/c", "value": "new"}),
+            json!({"op": "move", "from": "/d", "path": "/e"}),
+            json!({"op": "copy", "from": "/f", "path": "/g"}),
+            json!({"op": "test", "path": "/h", "value": true}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta.len(), 6);
+            let ops: Vec<&str> = delta.iter().map(|d| d["op"].as_str().unwrap()).collect();
+            assert_eq!(ops, vec!["add", "remove", "replace", "move", "copy", "test"]);
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_array_append_with_dash() {
+        // "-" is the JSON Pointer for appending to an array
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/items/-", "value": "new_item"}),
+        ]);
+        let json = serde_json::to_string(&delta).unwrap();
+        assert!(json.contains("/items/-"));
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["path"], "/items/-");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_array_index_operation() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/items/2", "value": "inserted"}),
+            json!({"op": "remove", "path": "/items/0"}),
+        ]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["path"], "/items/2");
+            assert_eq!(delta[1]["path"], "/items/0");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_special_chars_in_path() {
+        // JSON Pointer escapes: ~0 = ~, ~1 = /
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/a~1b", "value": "slash"}),
+            json!({"op": "add", "path": "/c~0d", "value": "tilde"}),
+        ]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["path"], "/a~1b");
+            assert_eq!(delta[1]["path"], "/c~0d");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_complex_value() {
+        let delta = AGUIEvent::state_delta(vec![
+            json!({"op": "add", "path": "/user", "value": {"name": "Bob", "tags": ["admin", "user"], "active": true}}),
+        ]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert_eq!(delta[0]["value"]["name"], "Bob");
+            assert_eq!(delta[0]["value"]["tags"][0], "admin");
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_empty_delta_array() {
+        let delta = AGUIEvent::state_delta(vec![]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = back {
+            assert!(delta.is_empty());
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    // ========================================================================
+    // State Snapshot — Special Value Boundary Tests
+    // (ref: ag-ui-protocol TS SDK state-events.test.ts)
+    // ========================================================================
+
+    #[test]
+    fn test_state_snapshot_null_value() {
+        let event = AGUIEvent::state_snapshot(json!({"value": null}));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert!(snapshot["value"].is_null());
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_empty_string() {
+        let event = AGUIEvent::state_snapshot(json!({"name": ""}));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["name"], "");
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_zero_and_negative() {
+        let event = AGUIEvent::state_snapshot(json!({"zero": 0, "neg": -42, "neg_float": -3.14}));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["zero"], 0);
+            assert_eq!(snapshot["neg"], -42);
+            assert_eq!(snapshot["neg_float"], -3.14);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_boolean_values() {
+        let event = AGUIEvent::state_snapshot(json!({"t": true, "f": false}));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["t"], true);
+            assert_eq!(snapshot["f"], false);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_empty_object_and_array() {
+        let event = AGUIEvent::state_snapshot(json!({"obj": {}, "arr": []}));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["obj"], json!({}));
+            assert_eq!(snapshot["arr"], json!([]));
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_deeply_nested() {
+        let event = AGUIEvent::state_snapshot(json!({
+            "a": {"b": {"c": {"d": {"e": {"f": 42}}}}}
+        }));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["a"]["b"]["c"]["d"]["e"]["f"], 42);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_iso_date_string() {
+        let event = AGUIEvent::state_snapshot(json!({
+            "created_at": "2026-02-12T12:00:00Z"
+        }));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["created_at"], "2026-02-12T12:00:00Z");
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_mixed_types() {
+        let event = AGUIEvent::state_snapshot(json!({
+            "str": "hello",
+            "num": 42,
+            "float": 3.14,
+            "bool": true,
+            "null_val": null,
+            "arr": [1, "two", null, true],
+            "obj": {"nested": "value"}
+        }));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["str"], "hello");
+            assert_eq!(snapshot["num"], 42);
+            assert_eq!(snapshot["float"], 3.14);
+            assert_eq!(snapshot["bool"], true);
+            assert!(snapshot["null_val"].is_null());
+            assert_eq!(snapshot["arr"].as_array().unwrap().len(), 4);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_unicode_keys_and_values() {
+        let event = AGUIEvent::state_snapshot(json!({
+            "名前": "太郎",
+            "emoji": "🎉🚀",
+            "chinese": "你好世界"
+        }));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["名前"], "太郎");
+            assert_eq!(snapshot["emoji"], "🎉🚀");
+            assert_eq!(snapshot["chinese"], "你好世界");
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_state_snapshot_large_number() {
+        let event = AGUIEvent::state_snapshot(json!({
+            "big": 9007199254740991_i64,
+            "small": -9007199254740991_i64
+        }));
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
+            assert_eq!(snapshot["big"], 9007199254740991_i64);
+            assert_eq!(snapshot["small"], -9007199254740991_i64);
+        } else {
+            panic!("Expected StateSnapshot");
+        }
+    }
+
+    // ========================================================================
+    // Activity Event Integration Tests
+    // (ref: ag-ui-protocol TS SDK activity-events.test.ts)
+    // ========================================================================
+
+    #[test]
+    fn test_activity_snapshot_roundtrip() {
+        let mut content = std::collections::HashMap::new();
+        content.insert("status".to_string(), json!("processing"));
+        content.insert("progress".to_string(), json!(75));
+
+        let event = AGUIEvent::activity_snapshot("msg_1", "progress", content, None);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivitySnapshot {
+            message_id,
+            activity_type,
+            content,
+            replace,
+            ..
+        } = back
+        {
+            assert_eq!(message_id, "msg_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(content["status"], "processing");
+            assert_eq!(content["progress"], 75);
+            assert!(replace.is_none());
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_with_replace_true() {
+        let content = std::collections::HashMap::new();
+        let event = AGUIEvent::activity_snapshot("msg_1", "status", content, Some(true));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""replace":true"#));
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivitySnapshot { replace, .. } = back {
+            assert_eq!(replace, Some(true));
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_with_replace_false() {
+        let content = std::collections::HashMap::new();
+        let event = AGUIEvent::activity_snapshot("msg_1", "status", content, Some(false));
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivitySnapshot { replace, .. } = back {
+            assert_eq!(replace, Some(false));
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    #[test]
+    fn test_activity_delta_roundtrip() {
+        let event = AGUIEvent::activity_delta(
+            "msg_1",
+            "progress",
+            vec![
+                json!({"op": "replace", "path": "/progress", "value": 90}),
+                json!({"op": "add", "path": "/log/-", "value": "step completed"}),
+            ],
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivityDelta {
+            message_id,
+            activity_type,
+            patch,
+            ..
+        } = back
+        {
+            assert_eq!(message_id, "msg_1");
+            assert_eq!(activity_type, "progress");
+            assert_eq!(patch.len(), 2);
+            assert_eq!(patch[0]["op"], "replace");
+            assert_eq!(patch[1]["op"], "add");
+            assert_eq!(patch[1]["path"], "/log/-");
+        } else {
+            panic!("Expected ActivityDelta");
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_empty_content() {
+        let content = std::collections::HashMap::new();
+        let event = AGUIEvent::activity_snapshot("msg_1", "idle", content, None);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivitySnapshot { content, .. } = back {
+            assert!(content.is_empty());
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    #[test]
+    fn test_activity_delta_empty_patch() {
+        let event = AGUIEvent::activity_delta("msg_1", "status", vec![]);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::ActivityDelta { patch, .. } = back {
+            assert!(patch.is_empty());
+        } else {
+            panic!("Expected ActivityDelta");
+        }
+    }
+
+    #[test]
+    fn test_activity_snapshot_complex_content() {
+        let mut content = std::collections::HashMap::new();
+        content.insert("nested".to_string(), json!({"a": {"b": [1, 2, 3]}}));
+        content.insert("tags".to_string(), json!(["research", "coding"]));
+
+        let event = AGUIEvent::activity_snapshot("msg_1", "task", content, None);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::ActivitySnapshot { content, .. } = back {
+            assert_eq!(content["nested"]["a"]["b"][2], 3);
+            assert_eq!(content["tags"][0], "research");
+        } else {
+            panic!("Expected ActivitySnapshot");
+        }
+    }
+
+    // ========================================================================
+    // MessagesSnapshot Integration Tests
+    // (ref: ag-ui-protocol TS SDK message-events.test.ts)
+    // ========================================================================
+
+    #[test]
+    fn test_messages_snapshot_multi_message_conversation() {
+        let messages = vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "assistant", "content": "Hi there!"}),
+            json!({"role": "user", "content": "What's the weather?"}),
+            json!({"role": "assistant", "content": "Let me check.", "toolCalls": [
+                {"id": "call_1", "name": "get_weather", "arguments": "{\"city\": \"NYC\"}"}
+            ]}),
+            json!({"role": "tool", "content": "72°F sunny", "toolCallId": "call_1"}),
+        ];
+        let event = AGUIEvent::messages_snapshot(messages);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
+            assert_eq!(messages.len(), 5);
+            assert_eq!(messages[0]["role"], "user");
+            assert_eq!(messages[3]["toolCalls"][0]["name"], "get_weather");
+            assert_eq!(messages[4]["toolCallId"], "call_1");
+        } else {
+            panic!("Expected MessagesSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_messages_snapshot_empty() {
+        let event = AGUIEvent::messages_snapshot(vec![]);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
+            assert!(messages.is_empty());
+        } else {
+            panic!("Expected MessagesSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_messages_snapshot_with_nested_tool_call_args() {
+        let messages = vec![
+            json!({"role": "assistant", "content": "", "toolCalls": [
+                {"id": "c1", "name": "create_plan", "arguments": "{\"plan\":{\"title\":\"Trip\",\"items\":[{\"name\":\"Hotel\",\"cost\":100}]}}"}
+            ]}),
+        ];
+        let event = AGUIEvent::messages_snapshot(messages);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: AGUIEvent = serde_json::from_str(&json).unwrap();
+        if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
+            let args_str = messages[0]["toolCalls"][0]["arguments"].as_str().unwrap();
+            let args: Value = serde_json::from_str(args_str).unwrap();
+            assert_eq!(args["plan"]["title"], "Trip");
+            assert_eq!(args["plan"]["items"][0]["cost"], 100);
+        } else {
+            panic!("Expected MessagesSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_messages_snapshot_with_unicode_content() {
+        let messages = vec![
+            json!({"role": "user", "content": "你好世界 🌍"}),
+            json!({"role": "assistant", "content": "こんにちは！ 🎉"}),
+        ];
+        let event = AGUIEvent::messages_snapshot(messages);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
+            assert_eq!(messages[0]["content"], "你好世界 🌍");
+            assert_eq!(messages[1]["content"], "こんにちは！ 🎉");
+        } else {
+            panic!("Expected MessagesSnapshot");
+        }
+    }
+
+    #[test]
+    fn test_messages_snapshot_undefined_vs_empty_tool_calls() {
+        // tool_calls absent vs empty array
+        let messages = vec![
+            json!({"role": "assistant", "content": "no tools"}),
+            json!({"role": "assistant", "content": "empty tools", "toolCalls": []}),
+        ];
+        let event = AGUIEvent::messages_snapshot(messages);
+        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
+            assert!(messages[0].get("toolCalls").is_none());
+            assert_eq!(messages[1]["toolCalls"].as_array().unwrap().len(), 0);
+        } else {
+            panic!("Expected MessagesSnapshot");
+        }
+    }
+
+    // ========================================================================
+    // Backwards Compatibility — Extra Fields Tolerance
+    // (ref: ag-ui-protocol TS SDK backwards-compatibility.test.ts)
+    // ========================================================================
+
+    #[test]
+    fn test_event_deserialization_tolerates_extra_fields() {
+        // Future protocol versions may add new fields; we must not reject them
+        let json = r#"{"type":"RUN_STARTED","threadId":"t1","runId":"r1","futureField":"should_be_ignored","newNested":{"a":1}}"#;
+        let event: AGUIEvent = serde_json::from_str(json).unwrap();
+        if let AGUIEvent::RunStarted { thread_id, run_id, .. } = event {
+            assert_eq!(thread_id, "t1");
+            assert_eq!(run_id, "r1");
+        } else {
+            panic!("Expected RunStarted");
+        }
+    }
+
+    #[test]
+    fn test_text_message_start_tolerates_extra_fields() {
+        let json = r#"{"type":"TEXT_MESSAGE_START","messageId":"m1","role":"assistant","extraField":true}"#;
+        let event: AGUIEvent = serde_json::from_str(json).unwrap();
+        if let AGUIEvent::TextMessageStart { message_id, role, .. } = event {
+            assert_eq!(message_id, "m1");
+            assert_eq!(role, MessageRole::Assistant);
+        } else {
+            panic!("Expected TextMessageStart");
+        }
+    }
+
+    #[test]
+    fn test_tool_call_result_tolerates_extra_fields() {
+        let json = r#"{"type":"TOOL_CALL_RESULT","messageId":"m1","toolCallId":"tc1","content":"result","futureRole":"executor"}"#;
+        let event: AGUIEvent = serde_json::from_str(json).unwrap();
+        if let AGUIEvent::ToolCallResult { tool_call_id, content, .. } = event {
+            assert_eq!(tool_call_id, "tc1");
+            assert_eq!(content, "result");
+        } else {
+            panic!("Expected ToolCallResult");
+        }
+    }
+
+    #[test]
+    fn test_state_delta_tolerates_extra_fields() {
+        let json = r#"{"type":"STATE_DELTA","delta":[{"op":"add","path":"/x","value":1}],"metadata":{"source":"agent"}}"#;
+        let event: AGUIEvent = serde_json::from_str(json).unwrap();
+        if let AGUIEvent::StateDelta { delta, .. } = event {
+            assert_eq!(delta.len(), 1);
+        } else {
+            panic!("Expected StateDelta");
+        }
+    }
+
+    // ========================================================================
+    // AGUIMessage — Multimodal Content Tests
+    // (ref: ag-ui-protocol TS SDK multimodal-messages.test.ts)
+    // Note: Our Message type uses String content, not multimodal arrays.
+    // These tests verify AGUIMessage handles content strings correctly
+    // and documents the boundary of our current multimodal support.
+    // ========================================================================
+
+    #[test]
+    fn test_aguimessage_with_base64_encoded_content() {
+        // Simulate embedded binary data as base64 string in content
+        let b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQA=";
+        let msg = AGUIMessage::user(b64);
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: AGUIMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, b64);
+    }
+
+    #[test]
+    fn test_aguimessage_with_json_array_content() {
+        // AG-UI protocol spec allows multimodal content as JSON array string
+        let multimodal = r#"[{"type":"text","text":"Hello"},{"type":"binary","source":{"data":"base64data"}}]"#;
+        let msg = AGUIMessage::user(multimodal);
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: AGUIMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.content, multimodal);
+        // Verify the content can be parsed as JSON array
+        let parsed: Vec<Value> = serde_json::from_str(&back.content).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["type"], "text");
+    }
+
+    #[test]
+    fn test_run_agent_request_deserialization_with_multimodal_message() {
+        // RunAgentRequest should handle messages with various content formats
+        let json = r#"{
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [
+                {"role": "user", "content": "Look at this image: data:image/png;base64,abc123"},
+                {"role": "assistant", "content": "I can see the image."}
+            ]
+        }"#;
+        let request: RunAgentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.messages.len(), 2);
+        assert!(request.messages[0].content.contains("base64"));
+    }
+
+    // ========================================================================
+    // Event Ordering and Lifecycle Tests
+    // (ref: ag-ui-protocol docs/concepts/events.mdx)
+    // ========================================================================
+
+    #[test]
+    fn test_event_lifecycle_mandatory_order() {
+        // Verify: RunStarted must come first, RunFinished must come last
+        let events = vec![
+            AGUIEvent::run_started("t1", "r1", None),
+            AGUIEvent::step_started("step_1"),
+            AGUIEvent::text_message_start("msg_1"),
+            AGUIEvent::text_message_content("msg_1", "Hello"),
+            AGUIEvent::text_message_end("msg_1"),
+            AGUIEvent::step_finished("step_1"),
+            AGUIEvent::run_finished("t1", "r1", None),
+        ];
+
+        // First event must be RunStarted
+        assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+        // Last event must be RunFinished
+        assert!(matches!(&events[events.len() - 1], AGUIEvent::RunFinished { .. }));
+    }
+
+    #[test]
+    fn test_event_text_start_content_end_grouping() {
+        // Text events must be grouped by messageId: start → content* → end
+        let msg_id = "msg_group";
+        let events = vec![
+            AGUIEvent::text_message_start(msg_id),
+            AGUIEvent::text_message_content(msg_id, "Hello "),
+            AGUIEvent::text_message_content(msg_id, "world"),
+            AGUIEvent::text_message_end(msg_id),
+        ];
+        // All events reference the same messageId
+        for event in &events {
+            let mid = match event {
+                AGUIEvent::TextMessageStart { message_id, .. } => message_id,
+                AGUIEvent::TextMessageContent { message_id, .. } => message_id,
+                AGUIEvent::TextMessageEnd { message_id, .. } => message_id,
+                _ => panic!("Unexpected event type"),
+            };
+            assert_eq!(mid, msg_id);
+        }
+    }
+
+    #[test]
+    fn test_event_tool_call_start_args_end_grouping() {
+        // Tool call events must be grouped by toolCallId
+        let tool_id = "call_1";
+        let events = vec![
+            AGUIEvent::tool_call_start(tool_id, "get_weather", None),
+            AGUIEvent::tool_call_args(tool_id, r#"{"city":"#),
+            AGUIEvent::tool_call_args(tool_id, r#""NYC"}"#),
+            AGUIEvent::tool_call_end(tool_id),
+            AGUIEvent::tool_call_result("result_msg", tool_id, r#"{"temp": 72}"#),
+        ];
+        for event in &events {
+            let tid = match event {
+                AGUIEvent::ToolCallStart { tool_call_id, .. } => tool_call_id,
+                AGUIEvent::ToolCallArgs { tool_call_id, .. } => tool_call_id,
+                AGUIEvent::ToolCallEnd { tool_call_id, .. } => tool_call_id,
+                AGUIEvent::ToolCallResult { tool_call_id, .. } => tool_call_id,
+                _ => panic!("Unexpected event type"),
+            };
+            assert_eq!(tid, tool_id);
+        }
+    }
+
+    #[test]
+    fn test_event_error_instead_of_finished() {
+        // RunError replaces RunFinished on failure
+        let events = vec![
+            AGUIEvent::run_started("t1", "r1", None),
+            AGUIEvent::run_error("Something went wrong", Some("INTERNAL_ERROR".into())),
+        ];
+        assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
+        assert!(matches!(&events[1], AGUIEvent::RunError { .. }));
+        if let AGUIEvent::RunError { code, .. } = &events[1] {
+            assert_eq!(code.as_deref(), Some("INTERNAL_ERROR"));
+        }
+    }
+
+    #[test]
+    fn test_event_step_pairing() {
+        // Steps must be paired: StepStarted → StepFinished with same step_name
+        let events = vec![
+            AGUIEvent::step_started("step_1"),
+            AGUIEvent::step_finished("step_1"),
+            AGUIEvent::step_started("step_2"),
+            AGUIEvent::step_finished("step_2"),
+        ];
+        // Verify pairing
+        assert!(matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1"));
+        assert!(matches!(&events[1], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1"));
+        assert!(matches!(&events[2], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_2"));
+        assert!(matches!(&events[3], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_2"));
+    }
+
 }

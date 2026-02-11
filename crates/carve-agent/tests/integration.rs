@@ -12380,3 +12380,209 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
         "__replay_tool_calls should not be set without tool calls"
     );
 }
+
+// ============================================================================
+// HITL Replay E2E Integration Tests
+// ============================================================================
+
+/// Test: Full HITL flow — PermissionPlugin suspends → client approves →
+/// InteractionResponsePlugin detects approval in SessionStart →
+/// schedules __replay_tool_calls with correct tool call data
+#[tokio::test]
+async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    // Phase 1: PermissionPlugin creates pending interaction
+    let session = Session::new("test");
+    let permission_plugin = PermissionPlugin;
+    let mut step1 = StepContext::new(&session, vec![]);
+    step1.set(
+        "permissions",
+        json!({ "default_behavior": "ask", "tools": {} }),
+    );
+    let call = ToolCall::new("call_add", "add_trips", json!({"destination": "Beijing"}));
+    step1.tool = Some(ToolContext::new(&call));
+
+    permission_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .await;
+    assert!(step1.tool_pending(), "PermissionPlugin should create pending");
+
+    let interaction = step1
+        .tool
+        .as_ref()
+        .unwrap()
+        .pending_interaction
+        .clone()
+        .unwrap();
+
+    // Phase 2: Simulate persisted session with pending_interaction + placeholder
+    let persisted_session = Session::with_initial_state(
+        "test",
+        json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": interaction.id,
+                    "action": "confirm"
+                }
+            }
+        }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new(&interaction.id, "add_trips", json!({"destination": "Beijing"}))],
+    ))
+    .with_message(carve_agent::types::Message::tool(
+        &interaction.id,
+        "Tool 'add_trips' is awaiting approval. Execution paused.",
+    ));
+
+    // Phase 3: Client approves via AG-UI tool message
+    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", &interaction.id));
+    assert!(approve_request.is_interaction_approved(&interaction.id));
+
+    // Phase 4: InteractionResponsePlugin processes approval in SessionStart
+    let response_plugin = InteractionResponsePlugin::from_request(&approve_request);
+    let mut step2 = StepContext::new(&persisted_session, vec![]);
+    response_plugin
+        .on_phase(Phase::SessionStart, &mut step2)
+        .await;
+
+    // Verify: __replay_tool_calls is set with correct tool call
+    let replay: Vec<ToolCall> = step2
+        .get("__replay_tool_calls")
+        .expect("__replay_tool_calls should be set after approval");
+    assert_eq!(replay.len(), 1, "Should schedule exactly one tool call");
+    assert_eq!(replay[0].name, "add_trips");
+    assert_eq!(replay[0].id, interaction.id);
+    assert_eq!(replay[0].arguments["destination"], "Beijing");
+}
+
+/// Test: HITL replay — denial path does NOT schedule replay
+#[tokio::test]
+async fn test_hitl_replay_denial_does_not_schedule() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_call_add";
+
+    let persisted_session = Session::with_initial_state(
+        "test",
+        json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": pending_id,
+                    "action": "confirm"
+                }
+            }
+        }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new(pending_id, "add_trips", json!({}))],
+    ));
+
+    // Client denies
+    let deny_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("false", pending_id));
+    assert!(!deny_request.is_interaction_approved(pending_id));
+
+    let response_plugin = InteractionResponsePlugin::from_request(&deny_request);
+    let mut step = StepContext::new(&persisted_session, vec![]);
+    response_plugin
+        .on_phase(Phase::SessionStart, &mut step)
+        .await;
+
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(
+        replay.is_none() || replay.as_ref().map_or(true, |v| v.is_empty()),
+        "Denial should NOT schedule tool replay"
+    );
+}
+
+/// Test: HITL replay — multiple tool calls, only first is scheduled
+#[tokio::test]
+async fn test_hitl_replay_picks_first_tool_call() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_multi";
+
+    let persisted_session = Session::with_initial_state(
+        "test",
+        json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": pending_id,
+                    "action": "confirm"
+                }
+            }
+        }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![
+            ToolCall::new(pending_id, "tool_a", json!({"a": 1})),
+            ToolCall::new("other_id", "tool_b", json!({"b": 2})),
+        ],
+    ));
+
+    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", pending_id));
+
+    let response_plugin = InteractionResponsePlugin::from_request(&approve_request);
+    let mut step = StepContext::new(&persisted_session, vec![]);
+    response_plugin
+        .on_phase(Phase::SessionStart, &mut step)
+        .await;
+
+    let replay: Vec<ToolCall> = step
+        .get("__replay_tool_calls")
+        .expect("Should schedule replay");
+    assert_eq!(replay.len(), 1, "Should only schedule the first tool call");
+    assert_eq!(replay[0].name, "tool_a");
+}
+
+/// Test: HITL replay — SessionStart + BeforeToolExecute phases are independent
+#[tokio::test]
+async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_phase_test";
+
+    let session = Session::with_initial_state(
+        "test",
+        json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": pending_id,
+                    "action": "confirm"
+                }
+            }
+        }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new(pending_id, "some_tool", json!({}))],
+    ));
+
+    let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+        .with_message(AGUIMessage::tool("true", pending_id));
+    let response_plugin = InteractionResponsePlugin::from_request(&approve_request);
+
+    // SessionStart sets __replay_tool_calls
+    let mut step1 = StepContext::new(&session, vec![]);
+    response_plugin
+        .on_phase(Phase::SessionStart, &mut step1)
+        .await;
+    assert!(step1.get::<Vec<ToolCall>>("__replay_tool_calls").is_some());
+
+    // BeforeToolExecute on different step context (independent)
+    let mut step2 = StepContext::new(&session, vec![]);
+    let call = ToolCall::new(pending_id, "some_tool", json!({}));
+    step2.tool = Some(ToolContext::new(&call));
+    response_plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .await;
+    // Tool should be allowed (approved)
+    assert!(!step2.tool_blocked(), "Approved tool should not be blocked in BeforeToolExecute");
+}
