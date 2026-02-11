@@ -944,14 +944,27 @@ impl AGUIMessage {
     }
 }
 
+/// AG-UI context entry from frontend readable values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AGUIContextEntry {
+    /// Human-readable description of the context.
+    pub description: String,
+    /// The context value (serialized as JSON string).
+    pub value: Value,
+}
+
 /// Tool execution location.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolExecutionLocation {
     /// Tool executes on the backend (server-side).
-    #[default]
     Backend,
     /// Tool executes on the frontend (client-side).
+    ///
+    /// This is the default because tools sent in the AG-UI request body are
+    /// frontend-registered (e.g. via CopilotKit `useCopilotAction`) and should
+    /// be executed by the client, not the server.
+    #[default]
     Frontend,
 }
 
@@ -967,12 +980,12 @@ pub struct AGUIToolDef {
     pub parameters: Option<Value>,
     /// Where the tool executes (frontend or backend).
     /// Frontend tools are executed by the client and results sent back.
-    #[serde(default, skip_serializing_if = "is_default_backend")]
+    #[serde(default, skip_serializing_if = "is_default_frontend")]
     pub execute: ToolExecutionLocation,
 }
 
-fn is_default_backend(loc: &ToolExecutionLocation) -> bool {
-    *loc == ToolExecutionLocation::Backend
+fn is_default_frontend(loc: &ToolExecutionLocation) -> bool {
+    *loc == ToolExecutionLocation::Frontend
 }
 
 impl AGUIToolDef {
@@ -1022,6 +1035,9 @@ pub struct RunAgentRequest {
     /// Available tools.
     #[serde(default)]
     pub tools: Vec<AGUIToolDef>,
+    /// Frontend readable context entries.
+    #[serde(default)]
+    pub context: Vec<AGUIContextEntry>,
     /// Initial state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
@@ -1047,6 +1063,7 @@ impl RunAgentRequest {
             run_id: run_id.into(),
             messages: Vec::new(),
             tools: Vec::new(),
+            context: Vec::new(),
             state: None,
             parent_run_id: None,
             model: None,
@@ -1642,6 +1659,81 @@ impl AgentPlugin for FrontendToolPlugin {
     }
 }
 
+/// Stub `Tool` implementation for frontend-defined tools.
+///
+/// This provides a `ToolDescriptor` so the LLM knows the tool exists, but execution
+/// is intercepted by `FrontendToolPlugin` before `execute` is ever called.
+struct FrontendToolStub {
+    descriptor: crate::traits::tool::ToolDescriptor,
+}
+
+impl FrontendToolStub {
+    fn from_agui_def(def: &AGUIToolDef) -> Self {
+        let parameters = def
+            .parameters
+            .clone()
+            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+        Self {
+            descriptor: crate::traits::tool::ToolDescriptor::new(
+                &def.name,
+                &def.name,
+                &def.description,
+            )
+            .with_parameters(parameters),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::traits::tool::Tool for FrontendToolStub {
+    fn descriptor(&self) -> crate::traits::tool::ToolDescriptor {
+        self.descriptor.clone()
+    }
+
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &carve_state::Context<'_>,
+    ) -> Result<crate::traits::tool::ToolResult, crate::traits::tool::ToolError> {
+        // Should never be reached – FrontendToolPlugin intercepts before execution.
+        Err(crate::traits::tool::ToolError::Internal(
+            "frontend tool stub should not be executed directly".into(),
+        ))
+    }
+}
+
+/// Convert frontend tool definitions from an AG-UI request into `Arc<dyn Tool>` stubs
+/// and merge them into the provided tools map.
+fn merge_frontend_tools(
+    tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
+    request: &RunAgentRequest,
+) {
+    for def in request.frontend_tools() {
+        tools
+            .entry(def.name.clone())
+            .or_insert_with(|| Arc::new(FrontendToolStub::from_agui_def(def)));
+    }
+}
+
+/// Build a context string from AG-UI context entries to append to the system prompt.
+fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
+    if request.context.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for entry in &request.context {
+        let value_str = match &entry.value {
+            Value::String(s) => s.clone(),
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        parts.push(format!("[{}]: {}", entry.description, value_str));
+    }
+    Some(format!(
+        "\n\nThe following context is available from the frontend:\n{}",
+        parts.join("\n")
+    ))
+}
+
 // ============================================================================
 // AG-UI Run Agent Stream
 // ============================================================================
@@ -1726,7 +1818,6 @@ pub fn run_agent_stream_with_parent(
             parent_run_id: parent_run_id.clone(),
         };
         let mut inner_stream = run_loop_stream(client, config, session, tools, run_ctx);
-        let mut has_pending = false;
         let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
@@ -1736,15 +1827,14 @@ pub fn run_agent_stream_with_parent(
                     yield AGUIEvent::run_finished(&thread_id, &run_id, None);
                     return;
                 }
-                AgentEvent::Pending { .. } => {
-                    has_pending = true;
-                }
-                // When pending, suppress RunFinish — run stays open for client interaction.
-                AgentEvent::RunFinish { .. } if has_pending => {
-                    continue;
-                }
                 AgentEvent::RunFinish { .. } => {
                     emitted_run_finished = true;
+                }
+                // Skip Pending events: their interaction-to-tool-call conversion
+                // is redundant in AG-UI — the LLM's own TOOL_CALL events already
+                // inform the client about frontend tool calls.
+                AgentEvent::Pending { .. } => {
+                    continue;
                 }
                 _ => {}
             }
@@ -1756,8 +1846,10 @@ pub fn run_agent_stream_with_parent(
             }
         }
 
-        // Fallback: emit RUN_FINISHED if inner stream ended without one
-        if !has_pending && !emitted_run_finished {
+        // Fallback: emit RUN_FINISHED if inner stream ended without one.
+        // This covers pending interactions (frontend tools, permissions) where
+        // the inner loop exits via PendingInteraction error without RunFinish.
+        if !emitted_run_finished {
             yield AGUIEvent::run_finished(&thread_id, &run_id, None);
         }
     })
@@ -1846,7 +1938,7 @@ pub fn run_agent_stream_with_request(
     client: Client,
     config: AgentConfig,
     session: Session,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    mut tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     let mut config = config;
@@ -1860,6 +1952,11 @@ pub fn run_agent_stream_with_request(
         config.system_prompt = prompt;
     }
 
+    // Append frontend readable context to the system prompt.
+    if let Some(addendum) = build_context_addendum(&request) {
+        config.system_prompt.push_str(&addendum);
+    }
+
     // Create interaction response plugin if there are responses in the request
     // This handles resuming from a pending state
     let response_plugin = InteractionResponsePlugin::from_request(&request);
@@ -1871,8 +1968,10 @@ pub fn run_agent_stream_with_request(
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
     let has_frontend_tools = !frontend_plugin.frontend_tools.is_empty();
 
-    // Add frontend tool plugin to config if needed
+    // Add frontend tool stubs so the LLM sees their definitions,
+    // and add the plugin to intercept execution.
     if has_frontend_tools {
+        merge_frontend_tools(&mut tools, &request);
         config = config.with_plugin(Arc::new(frontend_plugin));
     }
 
@@ -1897,7 +1996,7 @@ pub fn run_agent_events_with_request(
     client: Client,
     config: AgentConfig,
     session: Session,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    mut tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithSession {
     let mut config = config;
@@ -1911,6 +2010,11 @@ pub fn run_agent_events_with_request(
         config.system_prompt = prompt;
     }
 
+    // Append frontend readable context to the system prompt.
+    if let Some(addendum) = build_context_addendum(&request) {
+        config.system_prompt.push_str(&addendum);
+    }
+
     // Create interaction response plugin if there are responses in the request
     // This handles resuming from a pending state.
     let response_plugin = InteractionResponsePlugin::from_request(&request);
@@ -1921,6 +2025,7 @@ pub fn run_agent_events_with_request(
     // Create frontend tool plugin if there are frontend tools.
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
     if !frontend_plugin.frontend_tools.is_empty() {
+        merge_frontend_tools(&mut tools, &request);
         config = config.with_plugin(Arc::new(frontend_plugin));
     }
 
@@ -1937,7 +2042,7 @@ pub fn run_agent_events_with_request_checkpoints(
     client: Client,
     config: AgentConfig,
     session: Session,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    mut tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithCheckpoints {
     let mut config = config;
@@ -1951,6 +2056,11 @@ pub fn run_agent_events_with_request_checkpoints(
         config.system_prompt = prompt;
     }
 
+    // Append frontend readable context to the system prompt.
+    if let Some(addendum) = build_context_addendum(&request) {
+        config.system_prompt.push_str(&addendum);
+    }
+
     // Create interaction response plugin if there are responses in the request.
     let response_plugin = InteractionResponsePlugin::from_request(&request);
     if response_plugin.has_responses() {
@@ -1960,6 +2070,7 @@ pub fn run_agent_events_with_request_checkpoints(
     // Create frontend tool plugin if there are frontend tools.
     let frontend_plugin = FrontendToolPlugin::from_request(&request);
     if !frontend_plugin.frontend_tools.is_empty() {
+        merge_frontend_tools(&mut tools, &request);
         config = config.with_plugin(Arc::new(frontend_plugin));
     }
 
@@ -3722,7 +3833,7 @@ mod tests {
     fn test_tool_execution_location_default() {
         assert_eq!(
             ToolExecutionLocation::default(),
-            ToolExecutionLocation::Backend
+            ToolExecutionLocation::Frontend
         );
     }
 
@@ -3764,22 +3875,22 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_tool_def_serialization_frontend() {
+    fn test_ag_ui_tool_def_serialization_frontend_omits_execute() {
         let tool = AGUIToolDef::frontend("copyToClipboard", "Copy text");
         let json = serde_json::to_string(&tool).unwrap();
 
-        // Frontend tools should include execute field
-        assert!(json.contains(r#""execute":"frontend""#));
+        // Frontend tools should omit execute field (it's the default)
+        assert!(!json.contains("execute"));
         assert!(json.contains(r#""name":"copyToClipboard""#));
     }
 
     #[test]
-    fn test_ag_ui_tool_def_serialization_backend_omits_execute() {
+    fn test_ag_ui_tool_def_serialization_backend_includes_execute() {
         let tool = AGUIToolDef::backend("search", "Search");
         let json = serde_json::to_string(&tool).unwrap();
 
-        // Backend tools should omit execute field (it's the default)
-        assert!(!json.contains("execute"));
+        // Backend tools should include execute field
+        assert!(json.contains(r#""execute":"backend""#));
     }
 
     #[test]
@@ -3794,9 +3905,9 @@ mod tests {
     fn test_ag_ui_tool_def_deserialization_without_execute() {
         let json = r#"{"name":"test","description":"Test"}"#;
         let tool: AGUIToolDef = serde_json::from_str(json).unwrap();
-        // Should default to backend
-        assert_eq!(tool.execute, ToolExecutionLocation::Backend);
-        assert!(!tool.is_frontend());
+        // Should default to frontend (AG-UI tools without execute field are frontend tools)
+        assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
+        assert!(tool.is_frontend());
     }
 
     #[test]
@@ -3840,21 +3951,24 @@ mod tests {
             "runId": "r1",
             "messages": [],
             "tools": [
-                {"name": "search", "description": "Search the web"},
+                {"name": "search", "description": "Search the web", "execute": "backend"},
                 {"name": "copyToClipboard", "description": "Copy text", "execute": "frontend"},
-                {"name": "showDialog", "description": "Show dialog", "execute": "frontend", "parameters": {"type": "object"}}
+                {"name": "showDialog", "description": "Show dialog", "execute": "frontend", "parameters": {"type": "object"}},
+                {"name": "addTask", "description": "Add a task"}
             ]
         }"#;
 
         let request: RunAgentRequest = serde_json::from_str(json).unwrap();
 
-        assert_eq!(request.tools.len(), 3);
+        assert_eq!(request.tools.len(), 4);
         assert!(!request.is_frontend_tool("search"));
         assert!(request.is_frontend_tool("copyToClipboard"));
         assert!(request.is_frontend_tool("showDialog"));
+        // Tools without execute field default to frontend
+        assert!(request.is_frontend_tool("addTask"));
 
         let frontend = request.frontend_tools();
-        assert_eq!(frontend.len(), 2);
+        assert_eq!(frontend.len(), 3);
     }
 
     #[test]
@@ -5117,7 +5231,7 @@ mod tests {
     #[test]
     fn test_aguitooldef_default_execution_location() {
         let location = ToolExecutionLocation::default();
-        assert_eq!(location, ToolExecutionLocation::Backend);
+        assert_eq!(location, ToolExecutionLocation::Frontend);
     }
 
     // ========================================================================
@@ -5412,9 +5526,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_execution_location_default_is_backend() {
+    fn test_tool_execution_location_default_is_frontend() {
         let location = ToolExecutionLocation::default();
-        assert_eq!(location, ToolExecutionLocation::Backend);
+        assert_eq!(location, ToolExecutionLocation::Frontend);
     }
 
     // ========================================================================
@@ -5967,16 +6081,14 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_ag_ui_adapter_pending_suppresses_run_finished_in_stream() {
+    fn test_ag_ui_adapter_skips_pending_emits_run_finished() {
         // Simulate what run_agent_stream_with_parent does:
-        // When Pending is emitted, has_pending = true, and RunFinish is suppressed.
+        // Pending events are skipped (redundant with LLM tool calls),
+        // but RunFinish is always emitted for AG-UI clients.
         use crate::stream::AgentEvent;
 
-        // We test the logic manually since we can't easily make run_agent_stream_with_parent
-        // produce Pending without real tool execution.
         let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all_events = Vec::new();
-        let mut has_pending = false;
         let mut emitted_run_finished = false;
 
         let agent_events = vec![
@@ -6002,15 +6114,12 @@ mod tests {
                     all_events.push(AGUIEvent::run_error(message.clone(), None));
                     break;
                 }
-                AgentEvent::Pending { .. } => {
-                    has_pending = true;
-                }
-                AgentEvent::RunFinish { .. } if has_pending => {
-                    // Suppress RunFinish when pending
-                    continue;
-                }
                 AgentEvent::RunFinish { .. } => {
                     emitted_run_finished = true;
+                }
+                // Skip Pending events (same as production code)
+                AgentEvent::Pending { .. } => {
+                    continue;
                 }
                 _ => {}
             }
@@ -6018,24 +6127,26 @@ mod tests {
             all_events.extend(ag_ui_events);
         }
 
-        // RunFinished should NOT be in the events
+        // RunFinished SHOULD be in the events
         assert!(
-            !all_events
+            all_events
                 .iter()
                 .any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
-            "RunFinished must be suppressed when pending interaction exists"
+            "RunFinished must be emitted"
         );
-        assert!(!emitted_run_finished);
+        assert!(emitted_run_finished);
 
         // RunStarted should be first
         assert!(matches!(&all_events[0], AGUIEvent::RunStarted { .. }));
 
-        // Should have tool call events from the Pending interaction
+        // Pending tool call events should NOT be present (they're skipped)
+        let tool_calls: Vec<_> = all_events
+            .iter()
+            .filter(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
+            .collect();
         assert!(
-            all_events
-                .iter()
-                .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-            "Pending should emit ToolCallStart"
+            tool_calls.is_empty(),
+            "Pending interaction tool calls should be skipped in AG-UI stream"
         );
     }
 
@@ -6044,7 +6155,6 @@ mod tests {
         // Simulate fallback: inner stream ends without RunFinish
         let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all_events = Vec::new();
-        let has_pending = false;
         let mut emitted_run_finished = false;
 
         // Only RunStart, no RunFinish
@@ -6062,7 +6172,7 @@ mod tests {
         }
 
         // Fallback: emit RunFinished if not emitted
-        if !has_pending && !emitted_run_finished {
+        if !emitted_run_finished {
             all_events.push(AGUIEvent::run_finished("t", "r", None));
         }
 
@@ -6184,5 +6294,101 @@ mod tests {
             state["existing"], true,
             "Session's original state should be preserved when request.state is None"
         );
+    }
+
+    #[test]
+    fn test_build_context_addendum_empty() {
+        let request = RunAgentRequest::new("t1", "r1");
+        assert!(super::build_context_addendum(&request).is_none());
+    }
+
+    #[test]
+    fn test_build_context_addendum_with_entries() {
+        let mut request = RunAgentRequest::new("t1", "r1");
+        request.context = vec![
+            super::AGUIContextEntry {
+                description: "Current task list".into(),
+                value: serde_json::json!([{"title": "Review PR"}, {"title": "Write tests"}]),
+            },
+            super::AGUIContextEntry {
+                description: "User name".into(),
+                value: serde_json::json!("Alice"),
+            },
+        ];
+        let addendum = super::build_context_addendum(&request).unwrap();
+        assert!(addendum.contains("Current task list"));
+        assert!(addendum.contains("Review PR"));
+        assert!(addendum.contains("User name"));
+        assert!(addendum.contains("Alice"));
+    }
+
+    #[test]
+    fn test_merge_frontend_tools() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(
+                AGUIToolDef::frontend("addTask", "Add a task")
+                    .with_parameters(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    })),
+            )
+            .with_tool(AGUIToolDef::backend("search", "Search the web"));
+
+        super::merge_frontend_tools(&mut tools, &request);
+
+        // Only frontend tools should be added
+        assert_eq!(tools.len(), 1);
+        assert!(tools.contains_key("addTask"));
+
+        let desc = tools["addTask"].descriptor();
+        assert_eq!(desc.id, "addTask");
+        assert_eq!(desc.description, "Add a task");
+        assert!(desc.parameters["properties"]["title"]["type"] == "string");
+    }
+
+    #[test]
+    fn test_merge_frontend_tools_does_not_overwrite_existing() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        // Pre-populate with a backend tool named "addTask"
+        tools.insert(
+            "addTask".to_string(),
+            Arc::new(super::FrontendToolStub {
+                descriptor: crate::traits::tool::ToolDescriptor::new(
+                    "addTask",
+                    "addTask",
+                    "Original description",
+                ),
+            }),
+        );
+
+        let request = RunAgentRequest::new("t1", "r1").with_tool(
+            AGUIToolDef::frontend("addTask", "New description"),
+        );
+
+        super::merge_frontend_tools(&mut tools, &request);
+
+        // Should keep original
+        assert_eq!(tools["addTask"].descriptor().description, "Original description");
+    }
+
+    #[test]
+    fn test_context_deserialization() {
+        let json = serde_json::json!({
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [],
+            "context": [
+                {"description": "Tasks", "value": [1, 2, 3]},
+                {"description": "Name", "value": "Bob"}
+            ]
+        });
+        let request: RunAgentRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(request.context.len(), 2);
+        assert_eq!(request.context[0].description, "Tasks");
+        assert_eq!(request.context[1].value, "Bob");
     }
 }

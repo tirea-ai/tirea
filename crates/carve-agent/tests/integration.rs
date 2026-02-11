@@ -8148,8 +8148,8 @@ fn test_agui_tool_def_backend() {
     assert_eq!(tool.execute, ToolExecutionLocation::Backend);
 
     let json = serde_json::to_string(&tool).unwrap();
-    // Backend is default, so execute field is omitted in serialization
-    assert!(!json.contains(r#""execute""#));
+    // Backend is NOT the default (Frontend is), so execute field IS included
+    assert!(json.contains(r#""execute":"backend""#));
 }
 
 /// Test: Frontend tool definition
@@ -8162,7 +8162,8 @@ fn test_agui_tool_def_frontend() {
     assert_eq!(tool.execute, ToolExecutionLocation::Frontend);
 
     let json = serde_json::to_string(&tool).unwrap();
-    assert!(json.contains(r#""execute":"frontend""#));
+    // Frontend is the default, so execute field is omitted
+    assert!(!json.contains(r#""execute""#));
 }
 
 /// Test: Tool with JSON Schema parameters
@@ -8197,7 +8198,8 @@ fn test_agui_tool_def_full_serialization() {
     let json = serde_json::to_string(&tool).unwrap();
     assert!(json.contains(r#""name":"readFile""#));
     assert!(json.contains(r#""description":"Read a file from disk""#));
-    assert!(json.contains(r#""execute":"frontend""#));
+    // Frontend is default, so execute is omitted
+    assert!(!json.contains(r#""execute""#));
     assert!(json.contains(r#""parameters""#));
 }
 
@@ -10291,13 +10293,13 @@ fn test_tool_execution_location() {
     assert_eq!(backend_tool.execute, ToolExecutionLocation::Backend);
     assert_eq!(frontend_tool.execute, ToolExecutionLocation::Frontend);
 
-    // Backend tools don't serialize execute field (it's the default)
+    // Backend tools DO serialize execute field (Frontend is the default)
     let backend_json = serde_json::to_string(&backend_tool).unwrap();
-    assert!(!backend_json.contains(r#""execute""#));
+    assert!(backend_json.contains(r#""execute":"backend""#));
 
-    // Frontend tools do serialize execute field
+    // Frontend tools don't serialize execute field (it's the default)
     let frontend_json = serde_json::to_string(&frontend_tool).unwrap();
-    assert!(frontend_json.contains(r#""execute":"frontend""#));
+    assert!(!frontend_json.contains(r#""execute""#));
 }
 
 // ============================================================================

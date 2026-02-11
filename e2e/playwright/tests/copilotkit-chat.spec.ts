@@ -59,13 +59,7 @@ test.describe("CopilotKit Chat", () => {
     );
   });
 
-  // The tests below require the backend agent to support CopilotKit's tool-calling
-  // and readable-context protocols. Our carve-agentos-server is a simple LLM passthrough
-  // that forwards messages via AG-UI but doesn't process CopilotKit-injected tools/context.
-  // The frontend hooks (useCopilotReadable, useCopilotAction) are correctly registered —
-  // these tests will pass once the backend supports tool execution.
-
-  test.skip("useCopilotReadable: agent can read task list state", async ({
+  test("useCopilotReadable: agent can read task list state", async ({
     page,
   }) => {
     await sendChatMessage(
@@ -79,7 +73,7 @@ test.describe("CopilotKit Chat", () => {
     await expect(msg).toContainText("Write tests");
   });
 
-  test.skip("useCopilotAction (addTask): agent adds a task via frontend action", async ({
+  test("useCopilotAction (addTask): agent adds a task via frontend action", async ({
     page,
   }) => {
     await sendChatMessage(
@@ -87,14 +81,16 @@ test.describe("CopilotKit Chat", () => {
       'Add a new task called "Deploy v2" to the task list.'
     );
 
+    // Wait for the action log to reflect the add.
     const actionLog = page.getByTestId("action-log");
     await expect(actionLog).toContainText("Added:", { timeout: 45_000 });
 
+    // Verify the new task appears.
     const taskList = page.getByTestId("task-list");
     await expect(taskList).toContainText("Deploy v2", { timeout: 5_000 });
   });
 
-  test.skip("useCopilotAction (toggleTask): agent completes a task", async ({
+  test("useCopilotAction (toggleTask): agent completes a task", async ({
     page,
   }) => {
     await sendChatMessage(page, 'Mark the task "Review PR" as completed.');
@@ -102,6 +98,7 @@ test.describe("CopilotKit Chat", () => {
     const actionLog = page.getByTestId("action-log");
     await expect(actionLog).toContainText("Toggled:", { timeout: 45_000 });
 
+    // Verify the task span has data-completed="true".
     const taskSpan = page.locator(
       '[data-testid="task-list"] span:has-text("Review PR")'
     );
@@ -110,7 +107,7 @@ test.describe("CopilotKit Chat", () => {
     });
   });
 
-  test.skip("useCopilotAction (deleteTask): agent deletes a task", async ({
+  test("useCopilotAction (deleteTask): agent deletes a task", async ({
     page,
   }) => {
     await sendChatMessage(
@@ -121,6 +118,7 @@ test.describe("CopilotKit Chat", () => {
     const actionLog = page.getByTestId("action-log");
     await expect(actionLog).toContainText("Deleted:", { timeout: 45_000 });
 
+    // Verify task is removed.
     const taskList = page.getByTestId("task-list");
     await expect(taskList).not.toContainText("Write tests", { timeout: 5_000 });
   });

@@ -35,7 +35,6 @@ impl AiSdkEncoder {
 
 pub struct AgUiEncoder {
     ctx: AGUIContext,
-    has_pending: bool,
     emitted_run_finished: bool,
     stopped: bool,
 }
@@ -44,7 +43,6 @@ impl AgUiEncoder {
     pub fn new(thread_id: String, run_id: String) -> Self {
         Self {
             ctx: AGUIContext::new(thread_id, run_id),
-            has_pending: false,
             emitted_run_finished: false,
             stopped: false,
         }
@@ -59,15 +57,14 @@ impl AgUiEncoder {
             AgentEvent::Error { .. } => {
                 self.stopped = true;
             }
-            AgentEvent::Pending { .. } => {
-                self.has_pending = true;
-            }
-            AgentEvent::RunFinish { .. } if self.has_pending => {
-                // When pending, suppress RunFinish — run stays open for client interaction.
-                return Vec::new();
-            }
             AgentEvent::RunFinish { .. } => {
                 self.emitted_run_finished = true;
+            }
+            // Skip Pending events: their interaction-to-tool-call conversion
+            // is redundant in AG-UI — the LLM's own TOOL_CALL events already
+            // inform the client about frontend tool calls.
+            AgentEvent::Pending { .. } => {
+                return Vec::new();
             }
             _ => {}
         }
@@ -75,8 +72,11 @@ impl AgUiEncoder {
         ev.to_ag_ui_events(&mut self.ctx)
     }
 
+    /// Emit a fallback RUN_FINISHED if the inner stream ended without one.
+    /// This covers pending interactions (frontend tools, permissions) where
+    /// the inner loop exits via PendingInteraction error without RunFinish.
     pub fn fallback_finished(&self, thread_id: &str, run_id: &str) -> Option<AGUIEvent> {
-        if self.stopped || self.has_pending || self.emitted_run_finished {
+        if self.stopped || self.emitted_run_finished {
             return None;
         }
         Some(AGUIEvent::run_finished(thread_id, run_id, None))
@@ -105,21 +105,32 @@ mod tests {
     }
 
     #[test]
-    fn test_agui_encoder_suppresses_run_finish_when_pending() {
+    fn test_agui_encoder_skips_pending_events() {
         let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
         let pending = AgentEvent::Pending {
             interaction: Interaction::new("i1", "x"),
         };
+        // Pending events should produce no AG-UI events (redundant with LLM tool calls)
         let out = enc.on_agent_event(&pending);
-        assert!(!out.is_empty());
+        assert!(out.is_empty());
 
+        // RunFinish should still work normally
         let finish = AgentEvent::RunFinish {
             thread_id: "th".to_string(),
             run_id: "r".to_string(),
             result: None,
         };
         let out = enc.on_agent_event(&finish);
-        assert!(out.is_empty());
+        assert!(!out.is_empty());
         assert!(enc.fallback_finished("th", "r").is_none());
+    }
+
+    #[test]
+    fn test_agui_encoder_fallback_finished_when_no_run_finish() {
+        let mut enc = AgUiEncoder::new("th".to_string(), "r".to_string());
+
+        // No RunFinish emitted — fallback should emit one
+        let fallback = enc.fallback_finished("th", "r");
+        assert!(fallback.is_some());
     }
 }
