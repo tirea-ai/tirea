@@ -1816,6 +1816,7 @@ pub fn run_agent_stream_with_parent(
         let run_ctx = RunContext {
             run_id: Some(run_id.clone()),
             parent_run_id: parent_run_id.clone(),
+            cancellation_token: None,
         };
         let mut inner_stream = run_loop_stream(client, config, session, tools, run_ctx);
         let mut emitted_run_finished = false;
@@ -2032,6 +2033,7 @@ pub fn run_agent_events_with_request(
     let run_ctx = RunContext {
         run_id: Some(request.run_id.clone()),
         parent_run_id: request.parent_run_id.clone(),
+        cancellation_token: None,
     };
 
     run_loop_stream_with_session(client, config, session, tools, run_ctx)
@@ -2077,6 +2079,7 @@ pub fn run_agent_events_with_request_checkpoints(
     let run_ctx = RunContext {
         run_id: Some(request.run_id.clone()),
         parent_run_id: request.parent_run_id.clone(),
+        cancellation_token: None,
     };
 
     run_loop_stream_with_checkpoints(client, config, session, tools, run_ctx)
@@ -2502,6 +2505,7 @@ mod tests {
             thread_id: "thread_1".to_string(),
             run_id: "run_123".to_string(),
             result: Some(serde_json::json!({"response": "Hello World"})),
+            stop_reason: None,
         };
         let outputs3 = adapter.convert(&event3);
         assert!(outputs3
@@ -2722,6 +2726,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(json!({"answer": 42})),
+            stop_reason: None,
         };
         let outputs = adapter.convert(&event);
         assert!(outputs
@@ -2813,6 +2818,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Found 5 results!"})),
+            stop_reason: None,
         });
         all_events.extend(events);
 
@@ -3104,6 +3110,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Hello, how can I help?"})),
+            stop_reason: None,
         }));
 
         // Should have: START, CONTENT, CONTENT, END, RUN_FINISHED
@@ -3258,6 +3265,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Step 2"})),
+            stop_reason: None,
         });
         total_events += events.len();
 
@@ -3708,6 +3716,7 @@ mod tests {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "full response"})),
+            stop_reason: None,
         }));
 
         // Verify order: START, CONTENT*5, END, RUN_FINISHED
@@ -5986,6 +5995,7 @@ mod tests {
             thread_id: "t".into(),
             run_id: "r".into(),
             result: None,
+            stop_reason: None,
         }));
 
         let type_names: Vec<&str> = all
@@ -6043,6 +6053,7 @@ mod tests {
             thread_id: "t".into(),
             run_id: "r".into(),
             result: None,
+            stop_reason: None,
         }));
 
         // Verify step pairing
@@ -6105,6 +6116,7 @@ mod tests {
                 thread_id: "t".into(),
                 run_id: "r".into(),
                 result: None,
+                stop_reason: None,
             },
         ];
 
@@ -6932,6 +6944,7 @@ mod tests {
             thread_id: "th".into(),
             run_id: "run".into(),
             result: None,
+            stop_reason: None,
         }, &mut ctx);
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
@@ -6946,6 +6959,7 @@ mod tests {
             thread_id: "th".into(),
             run_id: "run".into(),
             result: Some(json!({"response": "done"})),
+            stop_reason: None,
         };
         let events = crate::stream::agent_event_to_agui(&ev, &mut ctx);
         assert_eq!(events.len(), 1);
