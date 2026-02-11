@@ -1315,6 +1315,15 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
     let mut new_msgs: Vec<crate::types::Message> = Vec::new();
 
     for msg in &request.messages {
+        // Skip assistant messages — our backend generates these during the agent
+        // loop with its own message IDs.  AG-UI clients echo them back with
+        // client-assigned IDs (e.g. from TEXT_MESSAGE_START.messageId) that
+        // differ from the session's internal IDs, causing duplicates that
+        // corrupt the conversation history sent to the LLM.
+        if msg.role == MessageRole::Assistant {
+            continue;
+        }
+
         if let Some(id) = msg.id.as_deref() {
             if !session_has_message_id(&session, id) {
                 new_msgs.push(core_message_from_ag_ui(msg));
@@ -6572,10 +6581,10 @@ mod tests {
             metadata: None,
         });
 
-        // Request contains the same id "m1" plus a new "m2"
+        // Request contains the same id "m1" plus a new user "m2"
         let mut msg1 = AGUIMessage::user("duplicate");
         msg1.id = Some("m1".to_string());
-        let mut msg2 = AGUIMessage::assistant("new");
+        let mut msg2 = AGUIMessage::user("new question");
         msg2.id = Some("m2".to_string());
 
         let request = RunAgentRequest::new("t1", "r1").with_messages(vec![msg1, msg2]);
@@ -6688,8 +6697,9 @@ mod tests {
             .with_messages(vec![user_msg, assistant_msg, tool_msg]);
 
         let result = super::apply_agui_request_to_session(session, &request);
-        // Original 1 + 3 new (all have stable dedup keys)
-        assert_eq!(result.messages.len(), 4);
+        // Original 1 + user(u1) + tool(tc-99); assistant(a1) is skipped
+        // (backend generates assistant messages itself)
+        assert_eq!(result.messages.len(), 3);
     }
 
     #[test]
@@ -6723,6 +6733,77 @@ mod tests {
         let request = RunAgentRequest::new("t1", "r1")
             .with_state(json!({"x": 1}));
         assert!(!super::should_seed_session_from_request(&session, &request));
+    }
+
+    #[test]
+    fn test_apply_agui_request_skips_assistant_in_nonseed() {
+        // Non-empty session — backend already has its own assistant message
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("hello"))
+            .with_message(crate::types::Message::assistant("Hi there!"));
+
+        // CopilotKit echoes back the assistant with its own ID (different from ours)
+        let mut assistant = AGUIMessage::assistant("Hi there!");
+        assistant.id = Some("ck_assistant_1".to_string());
+
+        let mut user2 = AGUIMessage::user("follow-up");
+        user2.id = Some("ck_user_2".to_string());
+
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![assistant, user2]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        // Should only add user2, not the duplicate assistant
+        assert_eq!(result.messages.len(), 3);
+        assert_eq!(result.messages[2].content, "follow-up");
+    }
+
+    #[test]
+    fn test_apply_agui_request_seed_accepts_assistant() {
+        // Empty session — seeding path accepts all messages including assistant
+        let session = Session::new("s1");
+
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![
+                AGUIMessage::user("hello"),
+                AGUIMessage::assistant("Hi there!"),
+                AGUIMessage::user("follow-up"),
+            ]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        // Seeding: all messages accepted
+        assert_eq!(result.messages.len(), 3);
+    }
+
+    #[test]
+    fn test_apply_agui_request_prevents_tool_call_corruption() {
+        // Session has an assistant message with tool_calls (from agent loop)
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("add a task"))
+            .with_message(crate::types::Message::assistant_with_tool_calls(
+                "",
+                vec![crate::types::ToolCall::new("tc-1", "addTask", json!({"title": "test"}))],
+            ));
+
+        // CopilotKit sends back the assistant (with its own ID, no tool_calls)
+        // plus the tool result and a new user message
+        let mut ck_assistant = AGUIMessage::assistant("");
+        ck_assistant.id = Some("ck_a1".to_string());
+        let tool_result = AGUIMessage::tool(r#"{"ok": true}"#, "tc-1");
+        let mut user2 = AGUIMessage::user("what next?");
+        user2.id = Some("ck_u2".to_string());
+
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![ck_assistant, tool_result, user2]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        // Should have: user, assistant+tool_calls, tool_result, user2
+        // The CopilotKit assistant (without tool_calls) is skipped
+        assert_eq!(result.messages.len(), 4);
+        // Verify the assistant message retains tool_calls
+        assert!(result.messages[1].tool_calls.is_some());
+        assert_eq!(result.messages[2].role, crate::types::Role::Tool);
+        assert_eq!(result.messages[3].content, "what next?");
     }
 
     // ========================================================================

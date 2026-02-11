@@ -20,7 +20,8 @@ impl AgUiEncoder {
     }
 
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
-        if self.stopped {
+        // After an error, only allow RunFinish through (to emit a terminal event).
+        if self.stopped && !matches!(ev, AgentEvent::RunFinish { .. }) {
             return Vec::new();
         }
 
@@ -291,13 +292,25 @@ mod tests {
         let out = enc.on_agent_event(&error);
         assert!(!out.is_empty()); // Should emit the error event
 
-        // After error, all subsequent events should be ignored
+        // After error, non-terminal events should be ignored
         let out2 = enc.on_agent_event(&AgentEvent::TextDelta {
             delta: "ignored".to_string(),
         });
         assert!(out2.is_empty());
 
-        // Fallback should also be empty since we stopped
+        // But RunFinish should still get through (terminal event)
+        let out3 = enc.on_agent_event(&AgentEvent::RunFinish {
+            thread_id: "th".to_string(),
+            run_id: "r".to_string(),
+            result: None,
+            stop_reason: None,
+        });
+        assert!(!out3.is_empty());
+        assert!(out3
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
+
+        // Fallback should be empty since RunFinish was emitted
         assert!(enc.fallback_finished("th", "r").is_empty());
     }
 
