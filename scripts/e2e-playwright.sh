@@ -13,6 +13,19 @@ fi
 
 export DEEPSEEK_API_KEY
 
+# Configurable ports (use high ports to avoid conflicts with dev services).
+BACKEND_PORT="${BACKEND_PORT:-8081}"
+AI_SDK_PORT="${AI_SDK_PORT:-3021}"
+COPILOTKIT_PORT="${COPILOTKIT_PORT:-3022}"
+
+# Check port availability before starting.
+for port in $BACKEND_PORT $AI_SDK_PORT $COPILOTKIT_PORT; do
+    if ss -tlnH "sport = :$port" 2>/dev/null | grep -q LISTEN; then
+        echo "ERROR: Port $port is already in use"
+        exit 1
+    fi
+done
+
 PIDS=()
 cleanup() {
     echo "Stopping services..."
@@ -28,15 +41,15 @@ echo "Building carve-agentos-server..."
 cargo build --package carve-agentos-server
 
 # Start backend.
-echo "Starting backend on :8081..."
+echo "Starting backend on :$BACKEND_PORT..."
 cargo run --package carve-agentos-server -- \
-    --http-addr 127.0.0.1:8081 \
+    --http-addr "127.0.0.1:$BACKEND_PORT" \
     --config e2e/ai-sdk-frontend/agent-config.json &
 PIDS+=($!)
 
 # Wait for backend.
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8081/health > /dev/null 2>&1; then
+    if curl -sf "http://localhost:$BACKEND_PORT/health" > /dev/null 2>&1; then
         echo "Backend ready."
         break
     fi
@@ -53,17 +66,17 @@ echo "Installing frontend dependencies..."
 (cd e2e/copilotkit-frontend && npm install --silent)
 
 # Start AI SDK frontend.
-echo "Starting AI SDK frontend on :3001..."
-(cd e2e/ai-sdk-frontend && BACKEND_URL=http://localhost:8081 npx next dev -p 3001) &
+echo "Starting AI SDK frontend on :$AI_SDK_PORT..."
+(cd e2e/ai-sdk-frontend && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$AI_SDK_PORT") &
 PIDS+=($!)
 
 # Start CopilotKit frontend.
-echo "Starting CopilotKit frontend on :3002..."
-(cd e2e/copilotkit-frontend && BACKEND_URL=http://localhost:8081 npx next dev -p 3002) &
+echo "Starting CopilotKit frontend on :$COPILOTKIT_PORT..."
+(cd e2e/copilotkit-frontend && BACKEND_URL="http://localhost:$BACKEND_PORT" npx next dev -p "$COPILOTKIT_PORT") &
 PIDS+=($!)
 
 # Wait for frontends.
-for port in 3001 3002; do
+for port in $AI_SDK_PORT $COPILOTKIT_PORT; do
     for i in $(seq 1 60); do
         if curl -sf "http://localhost:$port" > /dev/null 2>&1; then
             echo "Frontend on :$port ready."
@@ -82,4 +95,4 @@ echo "Installing Playwright..."
 (cd e2e/playwright && npm install --silent && npx playwright install chromium)
 
 echo "Running Playwright tests..."
-(cd e2e/playwright && npx playwright test --reporter=list)
+(cd e2e/playwright && AI_SDK_PORT="$AI_SDK_PORT" COPILOTKIT_PORT="$COPILOTKIT_PORT" npx playwright test --reporter=list)
