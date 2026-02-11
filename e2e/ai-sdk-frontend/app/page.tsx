@@ -1,10 +1,21 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
+import { useState, FormEvent } from "react";
 
 export default function Chat() {
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } =
-    useChat();
+  const { messages, sendMessage, status, error } = useChat();
+  const [input, setInput] = useState("");
+
+  const isLoading = status === "streaming" || status === "submitted";
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+    const text = input;
+    setInput("");
+    await sendMessage({ text });
+  };
 
   return (
     <main style={{ maxWidth: 640, margin: "2rem auto", fontFamily: "system-ui" }}>
@@ -40,7 +51,7 @@ export default function Chat() {
       <form onSubmit={handleSubmit} style={{ display: "flex", gap: "0.5rem" }}>
         <input
           value={input}
-          onChange={handleInputChange}
+          onChange={(e) => setInput(e.target.value)}
           placeholder="Type a message..."
           style={{
             flex: 1,

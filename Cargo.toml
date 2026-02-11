@@ -5,6 +5,7 @@ members = [
     "crates/carve-state-derive",
     "crates/carve-agent",
     "crates/carve-agentos-server",
+    "e2e/examples",
 ]
 
 [workspace.package]
