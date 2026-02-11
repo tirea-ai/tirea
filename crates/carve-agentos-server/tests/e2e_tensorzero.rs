@@ -649,6 +649,162 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 }
 
 // ============================================================================
+// AI SDK: error event via max rounds exceeded (TensorZero)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ai_sdk_error_max_rounds() {
+    if skip_unless_ready() {
+        return;
+    }
+
+    let def = AgentDefinition {
+        id: "limited".to_string(),
+        model: "deepseek".to_string(),
+        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
+            .to_string(),
+        max_rounds: 1,
+        ..Default::default()
+    };
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
+
+    let os = Arc::new(
+        AgentOsBuilder::new()
+            .with_provider("tz", make_tz_client())
+            .with_model(
+                "deepseek",
+                ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
+            )
+            .with_tools(tools)
+            .with_agent("limited", def)
+            .build()
+            .expect("failed to build limited AgentOs"),
+    );
+
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let (status, text) = post_sse(
+        app,
+        "/v1/agents/limited/runs/ai-sdk/sse",
+        json!({
+            "sessionId": "tz-sdk-error",
+            "input": "Use the calculator to add 1 and 2.",
+            "runId": "r-err-sdk"
+        }),
+    )
+    .await;
+
+    println!("=== TZ AI SDK Error Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"start""#), "missing start event");
+
+    assert!(
+        text.contains(r#""type":"error""#),
+        "missing error event — max rounds should trigger an error. Response:\n{text}"
+    );
+    assert!(
+        text.contains("Max rounds") || text.contains("max rounds"),
+        "error event should mention max rounds exceeded"
+    );
+
+    assert!(
+        text.contains(r#""type":"tool-input-start""#),
+        "missing tool-input-start — LLM should have called the tool before hitting max rounds"
+    );
+}
+
+// ============================================================================
+// AI SDK: Multi-step tool call (TensorZero)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ai_sdk_multistep_tool() {
+    if skip_unless_ready() {
+        return;
+    }
+
+    let os = Arc::new(make_tool_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os,
+        storage: storage.clone(),
+    });
+
+    let (status, text) = post_sse(
+        app,
+        "/v1/agents/calc/runs/ai-sdk/sse",
+        json!({
+            "sessionId": "tz-sdk-multistep",
+            "input": "Use the calculator to multiply 12 by 5. Reply with just the number.",
+            "runId": "r-ms-sdk"
+        }),
+    )
+    .await;
+
+    println!("=== TZ AI SDK Multi-Step Response ===\n{text}");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""type":"start""#), "missing start event");
+    assert!(text.contains(r#""type":"finish""#), "missing finish event");
+
+    let start_step_count = text.matches(r#""type":"start-step""#).count();
+    let finish_step_count = text.matches(r#""type":"finish-step""#).count();
+
+    println!("start-step count: {start_step_count}, finish-step count: {finish_step_count}");
+
+    assert!(
+        start_step_count >= 2,
+        "expected >= 2 start-step events, got {start_step_count}"
+    );
+    assert!(
+        finish_step_count >= 2,
+        "expected >= 2 finish-step events, got {finish_step_count}"
+    );
+
+    assert!(
+        text.contains(r#""type":"tool-input-start""#),
+        "missing tool-input-start"
+    );
+    assert!(
+        text.contains(r#""type":"tool-output-available""#),
+        "missing tool-output-available"
+    );
+
+    let answer = extract_ai_sdk_text(&text);
+    println!("Extracted text: {answer}");
+    assert!(
+        answer.contains("60"),
+        "LLM did not answer '60' for 12*5. Got: {answer}"
+    );
+
+    let events: Vec<String> = text
+        .lines()
+        .filter(|l| l.starts_with("data: "))
+        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
+        .filter_map(|v| {
+            let t = v.get("type")?.as_str()?;
+            match t {
+                "start" | "finish" | "start-step" | "finish-step" => Some(t.to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+
+    println!("Lifecycle event sequence: {events:?}");
+    assert_eq!(events.first().map(|s| s.as_str()), Some("start"));
+    assert_eq!(events.last().map(|s| s.as_str()), Some("finish"));
+}
+
+// ============================================================================
 // Multi-turn conversation via TensorZero (AG-UI)
 // ============================================================================
 
