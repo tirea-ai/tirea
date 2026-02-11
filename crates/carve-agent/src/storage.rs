@@ -4,6 +4,8 @@ use crate::session::Session;
 use crate::types::{Message, Visibility};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "postgres")]
+use std::collections::HashSet;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -34,6 +36,8 @@ pub struct MessageQuery {
     /// Filter by message visibility. `None` means return all messages.
     /// Default: `Some(Visibility::All)` (only user-visible messages).
     pub visibility: Option<Visibility>,
+    /// Filter by run ID. `None` means return messages from all runs.
+    pub run_id: Option<String>,
 }
 
 impl Default for MessageQuery {
@@ -44,6 +48,7 @@ impl Default for MessageQuery {
             limit: 50,
             order: SortOrder::Asc,
             visibility: Some(Visibility::All),
+            run_id: None,
         }
     }
 }
@@ -67,6 +72,32 @@ pub struct MessagePage {
     /// Cursor of the first item (use as `before` for next backward page).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_cursor: Option<i64>,
+}
+
+/// Pagination query for session lists.
+#[derive(Debug, Clone)]
+pub struct SessionListQuery {
+    /// Number of items to skip (0-based).
+    pub offset: usize,
+    /// Maximum number of items to return (clamped to 1..=200).
+    pub limit: usize,
+}
+
+impl Default for SessionListQuery {
+    fn default() -> Self {
+        Self {
+            offset: 0,
+            limit: 50,
+        }
+    }
+}
+
+/// Paginated session list response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListPage {
+    pub items: Vec<String>,
+    pub total: usize,
+    pub has_more: bool,
 }
 
 /// Paginate a slice of messages in memory.
@@ -108,6 +139,14 @@ pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> Message
         .enumerate()
         .filter(|(_, m)| match query.visibility {
             Some(vis) => m.visibility == vis,
+            None => true,
+        })
+        .filter(|(_, m)| match &query.run_id {
+            Some(rid) => m
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.run_id.as_deref())
+                == Some(rid.as_str()),
             None => true,
         })
         .map(|(i, m)| ((start + i) as i64, m))
@@ -197,6 +236,29 @@ pub trait Storage: Send + Sync {
             .await?
             .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
         Ok(session.messages.len())
+    }
+
+    /// List sessions with pagination.
+    ///
+    /// Default implementation calls `list()` and paginates in-memory.
+    async fn list_paginated(
+        &self,
+        query: &SessionListQuery,
+    ) -> Result<SessionListPage, StorageError> {
+        let mut all = self.list().await?;
+        all.sort();
+        let total = all.len();
+        let limit = query.limit.clamp(1, 200);
+        let offset = query.offset.min(total);
+        let end = (offset + limit + 1).min(total);
+        let slice = &all[offset..end];
+        let has_more = slice.len() > limit;
+        let items: Vec<String> = slice.iter().take(limit).cloned().collect();
+        Ok(SessionListPage {
+            items,
+            total,
+            has_more,
+        })
     }
 }
 
@@ -351,6 +413,9 @@ impl Storage for MemoryStorage {
 /// Stores session metadata in `agent_sessions` and messages in a separate
 /// `agent_messages` table for efficient cursor-based pagination.
 ///
+/// Messages are **append-only**: `save()` only inserts new messages (identified
+/// by `message_id`), never deletes existing ones.
+///
 /// ```sql
 /// CREATE TABLE IF NOT EXISTS agent_sessions (
 ///     id         TEXT PRIMARY KEY,
@@ -361,6 +426,9 @@ impl Storage for MemoryStorage {
 /// CREATE TABLE IF NOT EXISTS agent_messages (
 ///     seq        BIGSERIAL PRIMARY KEY,
 ///     session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+///     message_id TEXT,
+///     run_id     TEXT,
+///     step_index INTEGER,
 ///     data       JSONB NOT NULL,
 ///     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 /// );
@@ -414,11 +482,18 @@ impl PostgresStorage {
             CREATE TABLE IF NOT EXISTS {messages} (
                 seq        BIGSERIAL PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES {sessions}(id) ON DELETE CASCADE,
+                message_id TEXT,
+                run_id     TEXT,
+                step_index INTEGER,
                 data       JSONB NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
             CREATE INDEX IF NOT EXISTS idx_{messages}_session_seq
                 ON {messages} (session_id, seq);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_{messages}_message_id
+                ON {messages} (message_id) WHERE message_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_{messages}_session_run
+                ON {messages} (session_id, run_id) WHERE run_id IS NOT NULL;
             "#,
             sessions = self.table,
             messages = self.messages_table,
@@ -473,13 +548,9 @@ impl Storage for PostgresStorage {
     }
 
     async fn save(&self, session: &Session) -> Result<(), StorageError> {
-        // Serialize session with messages stripped out.
+        // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(session)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let messages_json = v
-            .as_object_mut()
-            .and_then(|obj| obj.remove("messages"))
-            .unwrap_or(serde_json::Value::Array(Vec::new()));
         if let Some(obj) = v.as_object_mut() {
             obj.insert(
                 "messages".to_string(),
@@ -487,14 +558,8 @@ impl Storage for PostgresStorage {
             );
         }
 
-        let messages_arr = messages_json.as_array().cloned().unwrap_or_default();
-
         // Use a transaction to keep sessions and messages consistent.
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(Self::sql_err)?;
+        let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Upsert session skeleton.
         let upsert_sql = format!(
@@ -513,26 +578,48 @@ impl Storage for PostgresStorage {
             .await
             .map_err(Self::sql_err)?;
 
-        // Delete existing messages and re-insert.
-        let delete_sql = format!(
-            "DELETE FROM {} WHERE session_id = $1",
-            self.messages_table
+        // Incremental append: only INSERT messages not yet persisted.
+        let existing_sql = format!(
+            "SELECT message_id FROM {} WHERE session_id = $1 AND message_id IS NOT NULL",
+            self.messages_table,
         );
-        sqlx::query(&delete_sql)
+        let existing_rows: Vec<(String,)> = sqlx::query_as(&existing_sql)
             .bind(&session.id)
-            .execute(&mut *tx)
+            .fetch_all(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
+        let existing_ids: HashSet<String> =
+            existing_rows.into_iter().map(|(id,)| id).collect();
 
-        if !messages_arr.is_empty() {
-            let insert_sql = format!(
-                "INSERT INTO {} (session_id, data) SELECT $1, unnest($2::jsonb[])",
-                self.messages_table
-            );
-            let json_array: Vec<serde_json::Value> = messages_arr;
+        let new_messages: Vec<&Message> = session
+            .messages
+            .iter()
+            .filter(|m| {
+                m.id.as_ref()
+                    .map_or(true, |id| !existing_ids.contains(id))
+            })
+            .collect();
+
+        let insert_sql = format!(
+            "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
+            self.messages_table,
+        );
+        for msg in &new_messages {
+            let data = serde_json::to_value(msg)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let message_id = msg.id.as_deref();
+            let (run_id, step_index) = msg
+                .metadata
+                .as_ref()
+                .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
+                .unwrap_or((None, None));
+
             sqlx::query(&insert_sql)
                 .bind(&session.id)
-                .bind(&json_array)
+                .bind(message_id)
+                .bind(run_id)
+                .bind(step_index)
+                .bind(&data)
                 .execute(&mut *tx)
                 .await
                 .map_err(Self::sql_err)?;
@@ -592,30 +679,41 @@ impl Storage for PostgresStorage {
             None => String::new(),
         };
 
+        // Run ID filter on the run_id column.
+        let run_clause = if query.run_id.is_some() {
+            " AND run_id = $4"
+        } else {
+            ""
+        };
+
+        // Build query with dynamic param offsets.
+        // Params: $1=session_id, $2=cursor, $3=limit, $4=run_id (opt), $N=before/after (opt).
+        let extra_param_idx = if query.run_id.is_some() { 5 } else { 4 };
+
         let (sql, cursor_val) = match query.order {
             SortOrder::Asc => {
                 let cursor = query.after.unwrap_or(-1);
                 let before_clause = if query.before.is_some() {
-                    "AND seq < $4"
+                    format!("AND seq < ${extra_param_idx}")
                 } else {
-                    ""
+                    String::new()
                 };
                 let sql = format!(
-                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq > $2{} {} ORDER BY seq ASC LIMIT $3",
-                    self.messages_table, vis_clause, before_clause,
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq > $2{}{} {} ORDER BY seq ASC LIMIT $3",
+                    self.messages_table, vis_clause, run_clause, before_clause,
                 );
                 (sql, cursor)
             }
             SortOrder::Desc => {
                 let cursor = query.before.unwrap_or(i64::MAX);
                 let after_clause = if query.after.is_some() {
-                    "AND seq > $4"
+                    format!("AND seq > ${extra_param_idx}")
                 } else {
-                    ""
+                    String::new()
                 };
                 let sql = format!(
-                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq < $2{} {} ORDER BY seq DESC LIMIT $3",
-                    self.messages_table, vis_clause, after_clause,
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq < $2{}{} {} ORDER BY seq DESC LIMIT $3",
+                    self.messages_table, vis_clause, run_clause, after_clause,
                 );
                 (sql, cursor)
             }
@@ -627,6 +725,9 @@ impl Storage for PostgresStorage {
                     .bind(session_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
+                if let Some(ref rid) = query.run_id {
+                    q = q.bind(rid);
+                }
                 if let Some(before) = query.before {
                     q = q.bind(before);
                 }
@@ -637,6 +738,9 @@ impl Storage for PostgresStorage {
                     .bind(session_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
+                if let Some(ref rid) = query.run_id {
+                    q = q.bind(rid);
+                }
                 if let Some(after) = query.after {
                     q = q.bind(after);
                 }
@@ -689,6 +793,41 @@ impl Storage for PostgresStorage {
             .await
             .map_err(Self::sql_err)?;
         Ok(row.0 as usize)
+    }
+
+    async fn list_paginated(
+        &self,
+        query: &SessionListQuery,
+    ) -> Result<SessionListPage, StorageError> {
+        let limit = query.limit.clamp(1, 200);
+        let fetch_limit = (limit + 1) as i64;
+        let offset = query.offset as i64;
+
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM {}", self.table);
+        let (total,): (i64,) = sqlx::query_as(&count_sql)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let sql = format!(
+            "SELECT id FROM {} ORDER BY id LIMIT $1 OFFSET $2",
+            self.table
+        );
+        let rows: Vec<(String,)> = sqlx::query_as(&sql)
+            .bind(fetch_limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let has_more = rows.len() > limit;
+        let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
+
+        Ok(SessionListPage {
+            items,
+            total: total as usize,
+            has_more,
+        })
     }
 }
 
@@ -1379,5 +1518,238 @@ mod tests {
         };
         let page = storage.load_messages("test-vis", &query).await.unwrap();
         assert_eq!(page.messages.len(), 6);
+    }
+
+    // ========================================================================
+    // Run ID filtering tests
+    // ========================================================================
+
+    use crate::types::MessageMetadata;
+
+    fn make_multi_run_session(id: &str) -> Session {
+        Session::new(id)
+            // User message (no run metadata)
+            .with_message(Message::user("hello"))
+            // Run A, step 0: assistant + tool
+            .with_message(
+                Message::assistant("thinking...").with_metadata(MessageMetadata {
+                    run_id: Some("run-a".to_string()),
+                    step_index: Some(0),
+                }),
+            )
+            .with_message(
+                Message::tool("tc1", "result").with_metadata(MessageMetadata {
+                    run_id: Some("run-a".to_string()),
+                    step_index: Some(0),
+                }),
+            )
+            // Run A, step 1: assistant final
+            .with_message(
+                Message::assistant("done").with_metadata(MessageMetadata {
+                    run_id: Some("run-a".to_string()),
+                    step_index: Some(1),
+                }),
+            )
+            // User follow-up (no run metadata)
+            .with_message(Message::user("more"))
+            // Run B, step 0
+            .with_message(
+                Message::assistant("ok").with_metadata(MessageMetadata {
+                    run_id: Some("run-b".to_string()),
+                    step_index: Some(0),
+                }),
+            )
+    }
+
+    #[test]
+    fn test_paginate_filter_by_run_id() {
+        let session = make_multi_run_session("t");
+
+        // Filter to run-a only
+        let query = MessageQuery {
+            run_id: Some("run-a".to_string()),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(page.messages[0].message.content, "thinking...");
+        assert_eq!(page.messages[2].message.content, "done");
+
+        // Filter to run-b only
+        let query = MessageQuery {
+            run_id: Some("run-b".to_string()),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0].message.content, "ok");
+
+        // No run filter: returns all 6
+        let query = MessageQuery {
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+        assert_eq!(page.messages.len(), 6);
+    }
+
+    #[test]
+    fn test_paginate_run_id_with_cursor() {
+        let session = make_multi_run_session("t");
+
+        // Filter run-a, after cursor 1 (skip first run-a msg at cursor 1)
+        let query = MessageQuery {
+            run_id: Some("run-a".to_string()),
+            after: Some(1),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+        assert_eq!(page.messages.len(), 2); // tool (cursor 2) + final (cursor 3)
+    }
+
+    #[test]
+    fn test_paginate_nonexistent_run_id() {
+        let session = make_multi_run_session("t");
+        let query = MessageQuery {
+            run_id: Some("run-z".to_string()),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+        assert!(page.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_load_messages_by_run_id() {
+        let storage = MemoryStorage::new();
+        let session = make_multi_run_session("test-run");
+        storage.save(&session).await.unwrap();
+
+        let query = MessageQuery {
+            run_id: Some("run-a".to_string()),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = storage.load_messages("test-run", &query).await.unwrap();
+        assert_eq!(page.messages.len(), 3);
+    }
+
+    #[test]
+    fn test_message_metadata_preserved_in_pagination() {
+        let session = make_multi_run_session("t");
+        let query = MessageQuery {
+            run_id: Some("run-a".to_string()),
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        // Metadata should be preserved on the returned messages.
+        let meta = page.messages[0].message.metadata.as_ref().unwrap();
+        assert_eq!(meta.run_id.as_deref(), Some("run-a"));
+        assert_eq!(meta.step_index, Some(0));
+    }
+
+    // ========================================================================
+    // Session list pagination tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_list_paginated_default() {
+        let storage = MemoryStorage::new();
+        for i in 0..5 {
+            storage
+                .save(&Session::new(format!("s-{i:02}")))
+                .await
+                .unwrap();
+        }
+        let page = storage
+            .list_paginated(&SessionListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 5);
+        assert_eq!(page.total, 5);
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_list_paginated_with_limit() {
+        let storage = MemoryStorage::new();
+        for i in 0..10 {
+            storage
+                .save(&Session::new(format!("s-{i:02}")))
+                .await
+                .unwrap();
+        }
+        let page = storage
+            .list_paginated(&SessionListQuery {
+                offset: 0,
+                limit: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 3);
+        assert_eq!(page.total, 10);
+        assert!(page.has_more);
+        // Items should be sorted.
+        assert_eq!(page.items, vec!["s-00", "s-01", "s-02"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_paginated_with_offset() {
+        let storage = MemoryStorage::new();
+        for i in 0..5 {
+            storage
+                .save(&Session::new(format!("s-{i:02}")))
+                .await
+                .unwrap();
+        }
+        let page = storage
+            .list_paginated(&SessionListQuery {
+                offset: 3,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.total, 5);
+        assert!(!page.has_more);
+        assert_eq!(page.items, vec!["s-03", "s-04"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_paginated_offset_beyond_total() {
+        let storage = MemoryStorage::new();
+        for i in 0..3 {
+            storage
+                .save(&Session::new(format!("s-{i:02}")))
+                .await
+                .unwrap();
+        }
+        let page = storage
+            .list_paginated(&SessionListQuery {
+                offset: 100,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert_eq!(page.total, 3);
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_list_paginated_empty() {
+        let storage = MemoryStorage::new();
+        let page = storage
+            .list_paginated(&SessionListQuery::default())
+            .await
+            .unwrap();
+        assert!(page.items.is_empty());
+        assert_eq!(page.total, 0);
+        assert!(!page.has_more);
     }
 }

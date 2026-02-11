@@ -49,7 +49,7 @@ use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
 use crate::stop::{check_stop_conditions, StopCheckContext, StopCondition, StopReason};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
-use crate::types::Message;
+use crate::types::{Message, MessageMetadata};
 use async_stream::stream;
 use async_trait::async_trait;
 use carve_state::{ActivityManager, Context, TrackedPatch};
@@ -452,6 +452,7 @@ struct AppliedToolResults {
 fn apply_tool_results_to_session(
     session: Session,
     results: &[ToolExecutionResult],
+    metadata: Option<MessageMetadata>,
 ) -> Result<AppliedToolResults, AgentLoopError> {
     let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
 
@@ -478,6 +479,12 @@ fn apply_tool_results_to_session(
                     "<system-reminder>{}</system-reminder>",
                     reminder
                 )));
+            }
+            // Attach run/step metadata to each message.
+            if let Some(ref meta) = metadata {
+                for msg in &mut msgs {
+                    msg.metadata = Some(meta.clone());
+                }
             }
             msgs
         })
@@ -768,7 +775,7 @@ pub async fn execute_tools_with_plugins(
         .await
     };
 
-    let applied = apply_tool_results_to_session(session, &results)?;
+    let applied = apply_tool_results_to_session(session, &results, None)?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
             session: Box::new(applied.session),
@@ -1274,7 +1281,7 @@ pub async fn run_loop(
             plugin_data.data = last.plugin_data.clone();
         }
 
-        let applied = match apply_tool_results_to_session(session, &results) {
+        let applied = match apply_tool_results_to_session(session, &results, None) {
             Ok(a) => a,
             Err(e) => {
                 // Session consumed; SessionEnd can't run with the original session.
@@ -1661,11 +1668,15 @@ fn run_loop_stream_impl_with_provider(
                 }
             }
 
-            // Add assistant message
+            // Add assistant message with run/step metadata.
+            let step_meta = MessageMetadata {
+                run_id: Some(run_id.clone()),
+                step_index: Some(loop_state.rounds as u32),
+            };
             session = if result.tool_calls.is_empty() {
-                session.with_message(assistant_message(&result.text))
+                session.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
             } else {
-                session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()))
+                session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta.clone()))
             };
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
@@ -1796,7 +1807,7 @@ fn run_loop_stream_impl_with_provider(
                 }
             }
             let thread_id = session.id.clone();
-            let applied = match apply_tool_results_to_session(session, &results) {
+            let applied = match apply_tool_results_to_session(session, &results, Some(step_meta)) {
                 Ok(a) => a,
                 Err(e) => {
                     // Session consumed by apply_tool_results_to_session; SessionEnd can't run.

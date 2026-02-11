@@ -31,10 +31,26 @@ impl Visibility {
     }
 }
 
+/// Optional metadata associating a message with a run and step.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageMetadata {
+    /// The run that produced this message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Step (round) index within the run (0-based).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<u32>,
+}
+
+/// Generate a time-ordered UUID v7 message identifier.
+fn gen_message_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 /// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    /// Optional stable message identifier.
+    /// Stable message identifier (UUID v7, auto-generated).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub role: Role,
@@ -49,18 +65,22 @@ pub struct Message {
     /// Internal messages (e.g. system reminders) are only sent to the LLM.
     #[serde(default, skip_serializing_if = "Visibility::is_default")]
     pub visibility: Visibility,
+    /// Optional run/step association metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MessageMetadata>,
 }
 
 impl Message {
     /// Create a system message.
     pub fn system(content: impl Into<String>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::System,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
+            metadata: None,
         }
     }
 
@@ -70,61 +90,73 @@ impl Message {
     /// that should be part of the LLM context but not exposed to end users.
     pub fn internal_system(content: impl Into<String>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::System,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::Internal,
+            metadata: None,
         }
     }
 
     /// Create a user message.
     pub fn user(content: impl Into<String>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::User,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
+            metadata: None,
         }
     }
 
     /// Create an assistant message.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::Assistant,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
             visibility: Visibility::All,
+            metadata: None,
         }
     }
 
     /// Create an assistant message with tool calls.
     pub fn assistant_with_tool_calls(content: impl Into<String>, calls: Vec<ToolCall>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::Assistant,
             content: content.into(),
             tool_calls: if calls.is_empty() { None } else { Some(calls) },
             tool_call_id: None,
             visibility: Visibility::All,
+            metadata: None,
         }
     }
 
     /// Create a tool response message.
     pub fn tool(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
-            id: None,
+            id: Some(gen_message_id()),
             role: Role::Tool,
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(call_id.into()),
             visibility: Visibility::All,
+            metadata: None,
         }
+    }
+
+    /// Attach run/step metadata to this message.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: MessageMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
     }
 }
 
@@ -160,8 +192,32 @@ mod tests {
         let msg = Message::user("Hello");
         assert_eq!(msg.role, Role::User);
         assert_eq!(msg.content, "Hello");
+        assert!(msg.id.is_some());
         assert!(msg.tool_calls.is_none());
         assert!(msg.tool_call_id.is_none());
+        assert!(msg.metadata.is_none());
+    }
+
+    #[test]
+    fn test_all_constructors_generate_uuid_v7_id() {
+        let msgs = vec![
+            Message::system("sys"),
+            Message::internal_system("internal"),
+            Message::user("usr"),
+            Message::assistant("asst"),
+            Message::assistant_with_tool_calls("tc", vec![]),
+            Message::tool("c1", "result"),
+        ];
+        for msg in &msgs {
+            let id = msg.id.as_ref().expect("message should have an id");
+            // UUID v7 format: 8-4-4-4-12 hex chars
+            assert_eq!(id.len(), 36, "id should be UUID format: {}", id);
+            assert_eq!(&id[14..15], "7", "UUID version should be 7: {}", id);
+        }
+        // All IDs should be unique
+        let ids: std::collections::HashSet<&str> =
+            msgs.iter().map(|m| m.id.as_deref().unwrap()).collect();
+        assert_eq!(ids.len(), msgs.len());
     }
 
     #[test]
@@ -189,9 +245,36 @@ mod tests {
         let msg = Message::user("test");
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"role\":\"user\""));
-        // tool_calls and tool_call_id should be omitted when None
+        // tool_calls, tool_call_id, metadata should be omitted when None/default
         assert!(!json.contains("tool_calls"));
         assert!(!json.contains("tool_call_id"));
+        assert!(!json.contains("metadata"));
+    }
+
+    #[test]
+    fn test_message_with_metadata_serialization() {
+        let msg = Message::user("test").with_metadata(MessageMetadata {
+            run_id: Some("run-1".to_string()),
+            step_index: Some(3),
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"run_id\":\"run-1\""));
+        assert!(json.contains("\"step_index\":3"));
+
+        // Round-trip
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        let meta = parsed.metadata.unwrap();
+        assert_eq!(meta.run_id.as_deref(), Some("run-1"));
+        assert_eq!(meta.step_index, Some(3));
+    }
+
+    #[test]
+    fn test_message_without_metadata_deserializes() {
+        // Old JSON without metadata field should deserialize fine
+        let json = r#"{"id":"abc","role":"user","content":"hello"}"#;
+        let msg: Message = serde_json::from_str(json).unwrap();
+        assert!(msg.metadata.is_none());
+        assert_eq!(msg.visibility, Visibility::All);
     }
 
     #[test]
