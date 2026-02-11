@@ -187,6 +187,132 @@ impl Storage for MemoryStorage {
     }
 }
 
+// ============================================================================
+// PostgreSQL Storage (feature = "postgres")
+// ============================================================================
+
+/// PostgreSQL-backed storage implementation.
+///
+/// Stores sessions as JSON in a table with the schema:
+///
+/// ```sql
+/// CREATE TABLE IF NOT EXISTS agent_sessions (
+///     id   TEXT PRIMARY KEY,
+///     data JSONB NOT NULL,
+///     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+/// );
+/// ```
+///
+/// The table is auto-created on first use (via `ensure_table()`), or you can
+/// create it yourself with a migration.
+#[cfg(feature = "postgres")]
+pub struct PostgresStorage {
+    pool: sqlx::PgPool,
+    table: String,
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresStorage {
+    /// Create a new PostgreSQL storage using the given connection pool.
+    ///
+    /// Sessions are stored in the `agent_sessions` table by default.
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            pool,
+            table: "agent_sessions".to_string(),
+        }
+    }
+
+    /// Create a new PostgreSQL storage with a custom table name.
+    pub fn with_table(pool: sqlx::PgPool, table: impl Into<String>) -> Self {
+        Self {
+            pool,
+            table: table.into(),
+        }
+    }
+
+    /// Ensure the storage table exists (idempotent).
+    pub async fn ensure_table(&self) -> Result<(), StorageError> {
+        let sql = format!(
+            r#"
+            CREATE TABLE IF NOT EXISTS {} (
+                id         TEXT PRIMARY KEY,
+                data       JSONB NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            "#,
+            self.table
+        );
+        sqlx::query(&sql)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl Storage for PostgresStorage {
+    async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
+        let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+
+        match row {
+            Some((v,)) => {
+                let session: Session = serde_json::from_value(v)
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                Ok(Some(session))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn save(&self, session: &Session) -> Result<(), StorageError> {
+        let v = serde_json::to_value(session)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let sql = format!(
+            r#"
+            INSERT INTO {} (id, data, updated_at)
+            VALUES ($1, $2, now())
+            ON CONFLICT (id) DO UPDATE
+            SET data = EXCLUDED.data, updated_at = now()
+            "#,
+            self.table
+        );
+        sqlx::query(&sql)
+            .bind(&session.id)
+            .bind(v)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
+        sqlx::query(&sql)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    async fn list(&self) -> Result<Vec<String>, StorageError> {
+        let sql = format!("SELECT id FROM {} ORDER BY id", self.table);
+        let rows: Vec<(String,)> = sqlx::query_as(&sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

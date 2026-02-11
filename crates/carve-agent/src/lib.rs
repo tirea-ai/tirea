@@ -83,6 +83,7 @@
 pub mod activity;
 pub mod ag_ui;
 pub mod agent;
+pub mod ai_sdk_sse;
 pub mod agent_os;
 pub mod convert;
 pub mod execute;
@@ -120,6 +121,8 @@ pub use session::{Session, SessionMetadata};
 
 // Storage exports
 pub use storage::{FileStorage, MemoryStorage, Storage, StorageError};
+#[cfg(feature = "postgres")]
+pub use storage::PostgresStorage;
 
 // Stream exports
 pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
@@ -139,6 +142,9 @@ pub use skills::{
 pub use ui_stream::{
     AiSdkAdapter, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
 };
+
+// AI SDK SSE exports
+pub use ai_sdk_sse::{AiSdkSseStream, EventHook, run_ai_sdk_sse, run_ai_sdk_sse_with_hook};
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
