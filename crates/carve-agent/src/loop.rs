@@ -474,7 +474,7 @@ fn apply_tool_results_to_session(
         .flat_map(|r| {
             let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
             for reminder in &r.reminders {
-                msgs.push(Message::system(format!(
+                msgs.push(Message::internal_system(format!(
                     "<system-reminder>{}</system-reminder>",
                     reminder
                 )));

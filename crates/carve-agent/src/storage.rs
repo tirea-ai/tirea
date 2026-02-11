@@ -1,9 +1,138 @@
 //! Storage backend trait for session persistence.
 
 use crate::session::Session;
+use crate::types::{Message, Visibility};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
+
+// ============================================================================
+// Pagination types
+// ============================================================================
+
+/// Sort order for paginated queries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+/// Cursor-based pagination parameters for messages.
+#[derive(Debug, Clone)]
+pub struct MessageQuery {
+    /// Return messages with cursor strictly greater than this value.
+    pub after: Option<i64>,
+    /// Return messages with cursor strictly less than this value.
+    pub before: Option<i64>,
+    /// Maximum number of messages to return (clamped to 1..=200).
+    pub limit: usize,
+    /// Sort order.
+    pub order: SortOrder,
+    /// Filter by message visibility. `None` means return all messages.
+    /// Default: `Some(Visibility::All)` (only user-visible messages).
+    pub visibility: Option<Visibility>,
+}
+
+impl Default for MessageQuery {
+    fn default() -> Self {
+        Self {
+            after: None,
+            before: None,
+            limit: 50,
+            order: SortOrder::Asc,
+            visibility: Some(Visibility::All),
+        }
+    }
+}
+
+/// A message paired with its storage-assigned cursor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageWithCursor {
+    pub cursor: i64,
+    #[serde(flatten)]
+    pub message: Message,
+}
+
+/// Paginated message response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagePage {
+    pub messages: Vec<MessageWithCursor>,
+    pub has_more: bool,
+    /// Cursor of the last item (use as `after` for next forward page).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<i64>,
+    /// Cursor of the first item (use as `before` for next backward page).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_cursor: Option<i64>,
+}
+
+/// Paginate a slice of messages in memory.
+///
+/// Cursor values correspond to the 0-based index in the original slice
+/// (not the filtered slice), so cursors remain stable across visibility filters.
+pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> MessagePage {
+    let total = messages.len();
+    if total == 0 {
+        return MessagePage {
+            messages: Vec::new(),
+            has_more: false,
+            next_cursor: None,
+            prev_cursor: None,
+        };
+    }
+
+    // Build (cursor, &Message) pairs filtered by after/before and visibility.
+    let start = query
+        .after
+        .map(|c| (c + 1).max(0) as usize)
+        .unwrap_or(0);
+    let end = query
+        .before
+        .map(|c| (c.max(0) as usize).min(total))
+        .unwrap_or(total);
+
+    if start >= total || start >= end {
+        return MessagePage {
+            messages: Vec::new(),
+            has_more: false,
+            next_cursor: None,
+            prev_cursor: None,
+        };
+    }
+
+    let mut items: Vec<(i64, &Message)> = messages[start..end]
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| match query.visibility {
+            Some(vis) => m.visibility == vis,
+            None => true,
+        })
+        .map(|(i, m)| ((start + i) as i64, m))
+        .collect();
+
+    if query.order == SortOrder::Desc {
+        items.reverse();
+    }
+
+    let has_more = items.len() > query.limit;
+    let limited: Vec<_> = items.into_iter().take(query.limit).collect();
+
+    MessagePage {
+        next_cursor: limited.last().map(|(c, _)| *c),
+        prev_cursor: limited.first().map(|(c, _)| *c),
+        messages: limited
+            .into_iter()
+            .map(|(c, m)| MessageWithCursor {
+                cursor: c,
+                message: m.clone(),
+            })
+            .collect(),
+        has_more,
+    }
+}
 
 /// Storage errors.
 #[derive(Debug, Error)]
@@ -43,6 +172,32 @@ pub trait Storage: Send + Sync {
 
     /// List all session IDs.
     async fn list(&self) -> Result<Vec<String>, StorageError>;
+
+    /// Load a paginated slice of messages for a session.
+    ///
+    /// Default implementation loads the full session and paginates in-memory.
+    async fn load_messages(
+        &self,
+        session_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        let session = self
+            .load(session_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
+        Ok(paginate_in_memory(&session.messages, query))
+    }
+
+    /// Get total message count for a session.
+    ///
+    /// Default implementation loads the full session and returns message count.
+    async fn message_count(&self, session_id: &str) -> Result<usize, StorageError> {
+        let session = self
+            .load(session_id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
+        Ok(session.messages.len())
+    }
 }
 
 /// File-based storage implementation.
@@ -193,55 +348,80 @@ impl Storage for MemoryStorage {
 
 /// PostgreSQL-backed storage implementation.
 ///
-/// Stores sessions as JSON in a table with the schema:
+/// Stores session metadata in `agent_sessions` and messages in a separate
+/// `agent_messages` table for efficient cursor-based pagination.
 ///
 /// ```sql
 /// CREATE TABLE IF NOT EXISTS agent_sessions (
-///     id   TEXT PRIMARY KEY,
-///     data JSONB NOT NULL,
+///     id         TEXT PRIMARY KEY,
+///     data       JSONB NOT NULL,
 ///     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+/// );
+///
+/// CREATE TABLE IF NOT EXISTS agent_messages (
+///     seq        BIGSERIAL PRIMARY KEY,
+///     session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+///     data       JSONB NOT NULL,
+///     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 /// );
 /// ```
 ///
-/// The table is auto-created on first use (via `ensure_table()`), or you can
-/// create it yourself with a migration.
+/// The tables are auto-created on first use (via `ensure_table()`), or you can
+/// create them yourself with a migration.
 #[cfg(feature = "postgres")]
 pub struct PostgresStorage {
     pool: sqlx::PgPool,
     table: String,
+    messages_table: String,
 }
 
 #[cfg(feature = "postgres")]
 impl PostgresStorage {
     /// Create a new PostgreSQL storage using the given connection pool.
     ///
-    /// Sessions are stored in the `agent_sessions` table by default.
+    /// Sessions are stored in the `agent_sessions` table by default,
+    /// messages in `agent_messages`.
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self {
             pool,
             table: "agent_sessions".to_string(),
+            messages_table: "agent_messages".to_string(),
         }
     }
 
     /// Create a new PostgreSQL storage with a custom table name.
+    ///
+    /// The messages table will be named `{table}_messages`.
     pub fn with_table(pool: sqlx::PgPool, table: impl Into<String>) -> Self {
+        let table = table.into();
+        let messages_table = format!("{}_messages", table);
         Self {
             pool,
-            table: table.into(),
+            table,
+            messages_table,
         }
     }
 
-    /// Ensure the storage table exists (idempotent).
+    /// Ensure the storage tables exist (idempotent).
     pub async fn ensure_table(&self) -> Result<(), StorageError> {
         let sql = format!(
             r#"
-            CREATE TABLE IF NOT EXISTS {} (
+            CREATE TABLE IF NOT EXISTS {sessions} (
                 id         TEXT PRIMARY KEY,
                 data       JSONB NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
+            );
+            CREATE TABLE IF NOT EXISTS {messages} (
+                seq        BIGSERIAL PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES {sessions}(id) ON DELETE CASCADE,
+                data       JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            CREATE INDEX IF NOT EXISTS idx_{messages}_session_seq
+                ON {messages} (session_id, seq);
             "#,
-            self.table
+            sessions = self.table,
+            messages = self.messages_table,
         );
         sqlx::query(&sql)
             .execute(&self.pool)
@@ -249,33 +429,75 @@ impl PostgresStorage {
             .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
+
+    fn sql_err(e: sqlx::Error) -> StorageError {
+        StorageError::Io(std::io::Error::other(e.to_string()))
+    }
 }
 
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl Storage for PostgresStorage {
     async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
+        // Load session skeleton (data has messages: []).
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(Self::sql_err)?;
 
-        match row {
-            Some((v,)) => {
-                let session: Session = serde_json::from_value(v)
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                Ok(Some(session))
-            }
-            None => Ok(None),
+        let Some((mut v,)) = row else {
+            return Ok(None);
+        };
+
+        // Load messages from separate table and inject into session JSON.
+        let msg_sql = format!(
+            "SELECT data FROM {} WHERE session_id = $1 ORDER BY seq",
+            self.messages_table
+        );
+        let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let messages: Vec<serde_json::Value> = msg_rows.into_iter().map(|(d,)| d).collect();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("messages".to_string(), serde_json::Value::Array(messages));
         }
+
+        let session: Session = serde_json::from_value(v)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(session))
     }
 
     async fn save(&self, session: &Session) -> Result<(), StorageError> {
-        let v = serde_json::to_value(session)
+        // Serialize session with messages stripped out.
+        let mut v = serde_json::to_value(session)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let sql = format!(
+        let messages_json = v
+            .as_object_mut()
+            .and_then(|obj| obj.remove("messages"))
+            .unwrap_or(serde_json::Value::Array(Vec::new()));
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert(
+                "messages".to_string(),
+                serde_json::Value::Array(Vec::new()),
+            );
+        }
+
+        let messages_arr = messages_json.as_array().cloned().unwrap_or_default();
+
+        // Use a transaction to keep sessions and messages consistent.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(Self::sql_err)?;
+
+        // Upsert session skeleton.
+        let upsert_sql = format!(
             r#"
             INSERT INTO {} (id, data, updated_at)
             VALUES ($1, $2, now())
@@ -284,22 +506,50 @@ impl Storage for PostgresStorage {
             "#,
             self.table
         );
-        sqlx::query(&sql)
+        sqlx::query(&upsert_sql)
             .bind(&session.id)
-            .bind(v)
-            .execute(&self.pool)
+            .bind(&v)
+            .execute(&mut *tx)
             .await
-            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(Self::sql_err)?;
+
+        // Delete existing messages and re-insert.
+        let delete_sql = format!(
+            "DELETE FROM {} WHERE session_id = $1",
+            self.messages_table
+        );
+        sqlx::query(&delete_sql)
+            .bind(&session.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+
+        if !messages_arr.is_empty() {
+            let insert_sql = format!(
+                "INSERT INTO {} (session_id, data) SELECT $1, unnest($2::jsonb[])",
+                self.messages_table
+            );
+            let json_array: Vec<serde_json::Value> = messages_arr;
+            sqlx::query(&insert_sql)
+                .bind(&session.id)
+                .bind(&json_array)
+                .execute(&mut *tx)
+                .await
+                .map_err(Self::sql_err)?;
+        }
+
+        tx.commit().await.map_err(Self::sql_err)?;
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(Self::sql_err)?;
         Ok(())
     }
 
@@ -308,8 +558,137 @@ impl Storage for PostgresStorage {
         let rows: Vec<(String,)> = sqlx::query_as(&sql)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(Self::sql_err)?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    async fn load_messages(
+        &self,
+        session_id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        // Check session exists.
+        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
+        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(session_id.to_string()));
+        }
+
+        let limit = query.limit.min(200).max(1);
+        // Fetch limit+1 rows to determine has_more.
+        let fetch_limit = (limit + 1) as i64;
+
+        // Visibility filter on JSONB data.
+        // Messages without a "visibility" field default to "all".
+        let vis_clause = match query.visibility {
+            Some(Visibility::All) => {
+                " AND COALESCE(data->>'visibility', 'all') = 'all'".to_string()
+            }
+            Some(Visibility::Internal) => " AND data->>'visibility' = 'internal'".to_string(),
+            None => String::new(),
+        };
+
+        let (sql, cursor_val) = match query.order {
+            SortOrder::Asc => {
+                let cursor = query.after.unwrap_or(-1);
+                let before_clause = if query.before.is_some() {
+                    "AND seq < $4"
+                } else {
+                    ""
+                };
+                let sql = format!(
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq > $2{} {} ORDER BY seq ASC LIMIT $3",
+                    self.messages_table, vis_clause, before_clause,
+                );
+                (sql, cursor)
+            }
+            SortOrder::Desc => {
+                let cursor = query.before.unwrap_or(i64::MAX);
+                let after_clause = if query.after.is_some() {
+                    "AND seq > $4"
+                } else {
+                    ""
+                };
+                let sql = format!(
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq < $2{} {} ORDER BY seq DESC LIMIT $3",
+                    self.messages_table, vis_clause, after_clause,
+                );
+                (sql, cursor)
+            }
+        };
+
+        let rows: Vec<(i64, serde_json::Value)> = match query.order {
+            SortOrder::Asc => {
+                let mut q = sqlx::query_as(&sql)
+                    .bind(session_id)
+                    .bind(cursor_val)
+                    .bind(fetch_limit);
+                if let Some(before) = query.before {
+                    q = q.bind(before);
+                }
+                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
+            }
+            SortOrder::Desc => {
+                let mut q = sqlx::query_as(&sql)
+                    .bind(session_id)
+                    .bind(cursor_val)
+                    .bind(fetch_limit);
+                if let Some(after) = query.after {
+                    q = q.bind(after);
+                }
+                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
+            }
+        };
+
+        let has_more = rows.len() > limit;
+        let limited: Vec<_> = rows.into_iter().take(limit).collect();
+
+        let messages: Vec<MessageWithCursor> = limited
+            .into_iter()
+            .map(|(seq, data)| {
+                let message: Message = serde_json::from_value(data)
+                    .unwrap_or_else(|_| Message::system("[deserialization error]"));
+                MessageWithCursor {
+                    cursor: seq,
+                    message,
+                }
+            })
+            .collect();
+
+        Ok(MessagePage {
+            next_cursor: messages.last().map(|m| m.cursor),
+            prev_cursor: messages.first().map(|m| m.cursor),
+            messages,
+            has_more,
+        })
+    }
+
+    async fn message_count(&self, session_id: &str) -> Result<usize, StorageError> {
+        // Check session exists.
+        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
+        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(session_id.to_string()));
+        }
+
+        let sql = format!(
+            "SELECT COUNT(*)::bigint FROM {} WHERE session_id = $1",
+            self.messages_table
+        );
+        let row: (i64,) = sqlx::query_as(&sql)
+            .bind(session_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        Ok(row.0 as usize)
     }
 }
 
@@ -623,5 +1002,382 @@ mod tests {
         assert!(storage.session_path("foo\\bar").is_err());
         assert!(storage.session_path("").is_err());
         assert!(storage.session_path("foo\0bar").is_err());
+    }
+
+    // ========================================================================
+    // Pagination tests
+    // ========================================================================
+
+    fn make_messages(n: usize) -> Vec<Message> {
+        (0..n)
+            .map(|i| Message::user(format!("msg-{}", i)))
+            .collect()
+    }
+
+    fn make_session_with_messages(id: &str, n: usize) -> Session {
+        let mut session = Session::new(id);
+        for msg in make_messages(n) {
+            session = session.with_message(msg);
+        }
+        session
+    }
+
+    #[test]
+    fn test_paginate_in_memory_basic() {
+        let msgs = make_messages(10);
+        let query = MessageQuery {
+            limit: 3,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.has_more);
+        assert_eq!(page.messages[0].cursor, 0);
+        assert_eq!(page.messages[1].cursor, 1);
+        assert_eq!(page.messages[2].cursor, 2);
+        assert_eq!(page.next_cursor, Some(2));
+        assert_eq!(page.prev_cursor, Some(0));
+    }
+
+    #[test]
+    fn test_paginate_in_memory_cursor_forward() {
+        let msgs = make_messages(10);
+        let query = MessageQuery {
+            after: Some(2),
+            limit: 3,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.has_more);
+        assert_eq!(page.messages[0].cursor, 3);
+        assert_eq!(page.messages[1].cursor, 4);
+        assert_eq!(page.messages[2].cursor, 5);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_cursor_backward() {
+        let msgs = make_messages(10);
+        let query = MessageQuery {
+            before: Some(8),
+            limit: 3,
+            order: SortOrder::Desc,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.has_more);
+        // Desc order: highest cursors first
+        assert_eq!(page.messages[0].cursor, 7);
+        assert_eq!(page.messages[1].cursor, 6);
+        assert_eq!(page.messages[2].cursor, 5);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_empty() {
+        let msgs: Vec<Message> = Vec::new();
+        let query = MessageQuery::default();
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert!(page.messages.is_empty());
+        assert!(!page.has_more);
+        assert_eq!(page.next_cursor, None);
+        assert_eq!(page.prev_cursor, None);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_beyond_end() {
+        let msgs = make_messages(5);
+        let query = MessageQuery {
+            after: Some(10),
+            limit: 3,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert!(page.messages.is_empty());
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_exact_fit() {
+        let msgs = make_messages(3);
+        let query = MessageQuery {
+            limit: 3,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 3);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_last_page() {
+        let msgs = make_messages(10);
+        let query = MessageQuery {
+            after: Some(7),
+            limit: 5,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 2);
+        assert!(!page.has_more);
+        assert_eq!(page.messages[0].cursor, 8);
+        assert_eq!(page.messages[1].cursor, 9);
+    }
+
+    #[test]
+    fn test_paginate_in_memory_after_and_before() {
+        let msgs = make_messages(10);
+        let query = MessageQuery {
+            after: Some(2),
+            before: Some(7),
+            limit: 10,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&msgs, &query);
+
+        assert_eq!(page.messages.len(), 4);
+        assert!(!page.has_more);
+        assert_eq!(page.messages[0].cursor, 3);
+        assert_eq!(page.messages[3].cursor, 6);
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_load_messages() {
+        let storage = MemoryStorage::new();
+        let session = make_session_with_messages("test-1", 10);
+        storage.save(&session).await.unwrap();
+
+        let query = MessageQuery {
+            limit: 3,
+            ..Default::default()
+        };
+        let page = storage.load_messages("test-1", &query).await.unwrap();
+
+        assert_eq!(page.messages.len(), 3);
+        assert!(page.has_more);
+        assert_eq!(page.messages[0].message.content, "msg-0");
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_load_messages_not_found() {
+        let storage = MemoryStorage::new();
+        let query = MessageQuery::default();
+        let result = storage.load_messages("nonexistent", &query).await;
+        assert!(matches!(result, Err(StorageError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_message_count() {
+        let storage = MemoryStorage::new();
+        let session = make_session_with_messages("test-1", 7);
+        storage.save(&session).await.unwrap();
+
+        let count = storage.message_count("test-1").await.unwrap();
+        assert_eq!(count, 7);
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_message_count_not_found() {
+        let storage = MemoryStorage::new();
+        let result = storage.message_count("nonexistent").await;
+        assert!(matches!(result, Err(StorageError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_load_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+        let session = make_session_with_messages("test-1", 10);
+        storage.save(&session).await.unwrap();
+
+        let query = MessageQuery {
+            after: Some(4),
+            limit: 3,
+            ..Default::default()
+        };
+        let page = storage.load_messages("test-1", &query).await.unwrap();
+
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(page.messages[0].cursor, 5);
+        assert_eq!(page.messages[0].message.content, "msg-5");
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_message_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path());
+        let session = make_session_with_messages("test-1", 5);
+        storage.save(&session).await.unwrap();
+
+        let count = storage.message_count("test-1").await.unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn test_message_page_serialization() {
+        let page = MessagePage {
+            messages: vec![MessageWithCursor {
+                cursor: 0,
+                message: Message::user("hello"),
+            }],
+            has_more: true,
+            next_cursor: Some(0),
+            prev_cursor: Some(0),
+        };
+        let json = serde_json::to_string(&page).unwrap();
+        assert!(json.contains("\"cursor\":0"));
+        assert!(json.contains("\"has_more\":true"));
+        assert!(json.contains("\"next_cursor\":0"));
+    }
+
+    // ========================================================================
+    // Visibility tests
+    // ========================================================================
+
+    fn make_mixed_visibility_session(id: &str) -> Session {
+        Session::new(id)
+            .with_message(Message::user("user-0"))
+            .with_message(Message::assistant("assistant-1"))
+            .with_message(Message::internal_system("reminder-2"))
+            .with_message(Message::user("user-3"))
+            .with_message(Message::internal_system("reminder-4"))
+            .with_message(Message::assistant("assistant-5"))
+    }
+
+    #[test]
+    fn test_paginate_visibility_all_default() {
+        let session = make_mixed_visibility_session("t");
+        // Default query filters to Visibility::All (user-visible only).
+        let query = MessageQuery {
+            limit: 50,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        // Should exclude 2 internal messages (at indices 2 and 4).
+        assert_eq!(page.messages.len(), 4);
+        assert_eq!(page.messages[0].message.content, "user-0");
+        assert_eq!(page.messages[1].message.content, "assistant-1");
+        assert_eq!(page.messages[2].message.content, "user-3");
+        assert_eq!(page.messages[3].message.content, "assistant-5");
+    }
+
+    #[test]
+    fn test_paginate_visibility_internal_only() {
+        let session = make_mixed_visibility_session("t");
+        let query = MessageQuery {
+            limit: 50,
+            visibility: Some(Visibility::Internal),
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        assert_eq!(page.messages.len(), 2);
+        assert_eq!(page.messages[0].message.content, "reminder-2");
+        assert_eq!(page.messages[1].message.content, "reminder-4");
+    }
+
+    #[test]
+    fn test_paginate_visibility_none_returns_all() {
+        let session = make_mixed_visibility_session("t");
+        let query = MessageQuery {
+            limit: 50,
+            visibility: None,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        // Should return all 6 messages.
+        assert_eq!(page.messages.len(), 6);
+    }
+
+    #[test]
+    fn test_paginate_visibility_cursors_stable() {
+        let session = make_mixed_visibility_session("t");
+        // With visibility=All, cursors should correspond to original indices.
+        let query = MessageQuery {
+            limit: 50,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        // Cursors should be 0, 1, 3, 5 (original indices, skipping internal at 2, 4).
+        assert_eq!(page.messages[0].cursor, 0);
+        assert_eq!(page.messages[1].cursor, 1);
+        assert_eq!(page.messages[2].cursor, 3);
+        assert_eq!(page.messages[3].cursor, 5);
+    }
+
+    #[test]
+    fn test_paginate_visibility_with_cursor_pagination() {
+        let session = make_mixed_visibility_session("t");
+        // Start after cursor 1 (assistant-1), visibility=All.
+        let query = MessageQuery {
+            after: Some(1),
+            limit: 2,
+            ..Default::default()
+        };
+        let page = paginate_in_memory(&session.messages, &query);
+
+        // Should return user-3 (cursor 3) and assistant-5 (cursor 5).
+        assert_eq!(page.messages.len(), 2);
+        assert_eq!(page.messages[0].cursor, 3);
+        assert_eq!(page.messages[0].message.content, "user-3");
+        assert_eq!(page.messages[1].cursor, 5);
+        assert_eq!(page.messages[1].message.content, "assistant-5");
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn test_internal_system_message_serialization() {
+        let msg = Message::internal_system("a reminder");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"visibility\":\"internal\""));
+
+        // Round-trip
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.visibility, Visibility::Internal);
+        assert_eq!(parsed.content, "a reminder");
+    }
+
+    #[test]
+    fn test_user_message_omits_visibility_in_json() {
+        let msg = Message::user("hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        // Default visibility should be skipped in serialization.
+        assert!(!json.contains("visibility"));
+
+        // Deserializing without visibility field should default to All.
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.visibility, Visibility::All);
+    }
+
+    #[tokio::test]
+    async fn test_memory_storage_load_messages_filters_visibility() {
+        let storage = MemoryStorage::new();
+        let session = make_mixed_visibility_session("test-vis");
+        storage.save(&session).await.unwrap();
+
+        // Default query (visibility = All)
+        let page = storage
+            .load_messages("test-vis", &MessageQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.messages.len(), 4);
+
+        // visibility = None (all messages)
+        let query = MessageQuery {
+            visibility: None,
+            ..Default::default()
+        };
+        let page = storage.load_messages("test-vis", &query).await.unwrap();
+        assert_eq!(page.messages.len(), 6);
     }
 }

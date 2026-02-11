@@ -115,13 +115,16 @@ pub use traits::reminder::SystemReminder;
 pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Type exports
-pub use types::{Message, Role, ToolCall};
+pub use types::{Message, Role, ToolCall, Visibility};
 
 // Session exports
 pub use session::{Session, SessionMetadata};
 
 // Storage exports
-pub use storage::{FileStorage, MemoryStorage, Storage, StorageError};
+pub use storage::{
+    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, SortOrder, Storage,
+    StorageError,
+};
 #[cfg(feature = "postgres")]
 pub use storage::PostgresStorage;
 

@@ -13,6 +13,24 @@ pub enum Role {
     Tool,
 }
 
+/// Message visibility — controls whether a message is exposed to external API consumers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Visible to both the user and the LLM.
+    #[default]
+    All,
+    /// Only visible to the LLM, hidden from external API consumers.
+    Internal,
+}
+
+impl Visibility {
+    /// Returns `true` if this is the default visibility (`All`).
+    pub fn is_default(&self) -> bool {
+        *self == Visibility::All
+    }
+}
+
 /// A message in the conversation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -27,6 +45,10 @@ pub struct Message {
     /// Tool call ID this message responds to (for tool role).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Message visibility. Defaults to `All` (visible everywhere).
+    /// Internal messages (e.g. system reminders) are only sent to the LLM.
+    #[serde(default, skip_serializing_if = "Visibility::is_default")]
+    pub visibility: Visibility,
 }
 
 impl Message {
@@ -38,6 +60,22 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            visibility: Visibility::All,
+        }
+    }
+
+    /// Create an internal system message (visible only to LLM, hidden from API consumers).
+    ///
+    /// Use this for plugin-injected reminders, system hints, and other messages
+    /// that should be part of the LLM context but not exposed to end users.
+    pub fn internal_system(content: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            role: Role::System,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            visibility: Visibility::Internal,
         }
     }
 
@@ -49,6 +87,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            visibility: Visibility::All,
         }
     }
 
@@ -60,6 +99,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            visibility: Visibility::All,
         }
     }
 
@@ -71,6 +111,7 @@ impl Message {
             content: content.into(),
             tool_calls: if calls.is_empty() { None } else { Some(calls) },
             tool_call_id: None,
+            visibility: Visibility::All,
         }
     }
 
@@ -82,6 +123,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(call_id.into()),
+            visibility: Visibility::All,
         }
     }
 }

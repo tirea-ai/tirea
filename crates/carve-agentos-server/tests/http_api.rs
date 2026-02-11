@@ -126,9 +126,10 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let msgs: Vec<carve_agent::Message> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0].content, "hello");
+    let page: carve_agent::MessagePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].message.content, "hello");
+    assert!(!page.has_more);
 }
 
 #[tokio::test]
@@ -740,5 +741,116 @@ async fn test_agui_sse_storage_save_error() {
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
         "expected storage save error: {body}"
+    );
+}
+
+// ============================================================================
+// Message pagination tests
+// ============================================================================
+
+fn make_session_with_n_messages(id: &str, n: usize) -> Session {
+    let mut session = Session::new(id);
+    for i in 0..n {
+        session = session.with_message(carve_agent::Message::user(format!("msg-{}", i)));
+    }
+    session
+}
+
+#[tokio::test]
+async fn test_messages_pagination_default_params() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let session = make_session_with_n_messages("s1", 5);
+    storage.save(&session).await.unwrap();
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/s1/messages").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 5);
+    assert!(!page.has_more);
+    assert_eq!(page.messages[0].message.content, "msg-0");
+    assert_eq!(page.messages[4].message.content, "msg-4");
+}
+
+#[tokio::test]
+async fn test_messages_pagination_with_limit() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let session = make_session_with_n_messages("s1", 10);
+    storage.save(&session).await.unwrap();
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/s1/messages?limit=3").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 3);
+    assert!(page.has_more);
+    assert_eq!(page.messages[0].cursor, 0);
+    assert_eq!(page.messages[2].cursor, 2);
+}
+
+#[tokio::test]
+async fn test_messages_pagination_cursor_forward() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let session = make_session_with_n_messages("s1", 10);
+    storage.save(&session).await.unwrap();
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/s1/messages?after=4&limit=3").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 3);
+    assert_eq!(page.messages[0].cursor, 5);
+    assert_eq!(page.messages[0].message.content, "msg-5");
+}
+
+#[tokio::test]
+async fn test_messages_pagination_desc_order() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let session = make_session_with_n_messages("s1", 10);
+    storage.save(&session).await.unwrap();
+    let app = make_app(os, storage);
+
+    let (status, body) =
+        get_json(app, "/v1/sessions/s1/messages?order=desc&before=8&limit=3").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 3);
+    // Desc order: highest cursors first
+    assert_eq!(page.messages[0].cursor, 7);
+    assert_eq!(page.messages[1].cursor, 6);
+    assert_eq!(page.messages[2].cursor, 5);
+}
+
+#[tokio::test]
+async fn test_messages_pagination_limit_clamped() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let session = make_session_with_n_messages("s1", 300);
+    storage.save(&session).await.unwrap();
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/s1/messages?limit=999").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    // limit should be clamped to 200
+    assert_eq!(page.messages.len(), 200);
+    assert!(page.has_more);
+}
+
+#[tokio::test]
+async fn test_messages_pagination_not_found() {
+    let os = Arc::new(make_os());
+    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let app = make_app(os, storage);
+
+    let (status, body) = get_json(app, "/v1/sessions/nonexistent/messages?limit=10").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("not found"),
+        "expected not found error: {body}"
     );
 }

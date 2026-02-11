@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -7,7 +7,8 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
-    apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage,
+    apply_agui_request_to_session, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
+    RunContext, Session, SortOrder, Storage, Visibility,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -90,19 +91,56 @@ async fn get_session(
     Ok(Json(session))
 }
 
+fn default_message_limit() -> usize {
+    50
+}
+
+#[derive(Debug, Deserialize)]
+struct MessageQueryParams {
+    #[serde(default)]
+    after: Option<i64>,
+    #[serde(default)]
+    before: Option<i64>,
+    #[serde(default = "default_message_limit")]
+    limit: usize,
+    #[serde(default)]
+    order: Option<String>,
+    /// Filter by visibility: "all" (default, user-visible only), "internal", or omit for no filter.
+    #[serde(default)]
+    visibility: Option<String>,
+}
+
 async fn get_session_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<Message>>, ApiError> {
-    let Some(session) = st
-        .storage
-        .load(&id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-    else {
-        return Err(ApiError::SessionNotFound(id));
+    Query(params): Query<MessageQueryParams>,
+) -> Result<Json<MessagePage>, ApiError> {
+    let limit = params.limit.clamp(1, 200);
+    let order = match params.order.as_deref() {
+        Some("desc") => SortOrder::Desc,
+        _ => SortOrder::Asc,
     };
-    Ok(Json(session.messages.clone()))
+    let visibility = match params.visibility.as_deref() {
+        Some("internal") => Some(Visibility::Internal),
+        Some("none") => None,
+        // Default: only user-visible messages
+        _ => Some(Visibility::All),
+    };
+    let query = MessageQuery {
+        after: params.after,
+        before: params.before,
+        limit,
+        order,
+        visibility,
+    };
+    st.storage
+        .load_messages(&id, &query)
+        .await
+        .map(Json)
+        .map_err(|e| match e {
+            carve_agent::StorageError::NotFound(_) => ApiError::SessionNotFound(id),
+            other => ApiError::Internal(other.to_string()),
+        })
 }
 
 #[derive(Debug, Clone, Deserialize)]
