@@ -494,12 +494,24 @@ fn apply_tool_results_to_session(
     }
     let mut state_changed = !patches.is_empty();
 
-    // Only add tool messages for non-pending executions.
+    // Add tool result messages for all executions.
+    // Pending tools get a placeholder result so the message sequence stays valid
+    // for LLMs that require tool results after every assistant tool_calls message.
     let tool_messages: Vec<Message> = results
         .iter()
-        .filter(|r| r.pending_interaction.is_none())
         .flat_map(|r| {
-            let mut msgs = vec![tool_response(&r.execution.call.id, &r.execution.result)];
+            let mut msgs = if r.pending_interaction.is_some() {
+                // Placeholder result keeps the message sequence valid while awaiting approval.
+                vec![Message::tool(
+                    &r.execution.call.id,
+                    format!(
+                        "Tool '{}' is awaiting approval. Execution paused.",
+                        r.execution.call.name
+                    ),
+                )]
+            } else {
+                vec![tool_response(&r.execution.call.id, &r.execution.result)]
+            };
             for reminder in &r.reminders {
                 msgs.push(Message::internal_system(format!(
                     "<system-reminder>{}</system-reminder>",
@@ -2844,7 +2856,12 @@ mod tests {
 
             assert_eq!(interaction.id, "confirm_1");
             assert_eq!(interaction.action, "confirm");
-            assert_eq!(session.message_count(), 0);
+
+            // Pending tool gets a placeholder tool result to keep message sequence valid.
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            assert_eq!(msg.role, crate::types::Role::Tool);
+            assert!(msg.content.contains("awaiting approval"));
 
             let state = session.rebuild_state().unwrap();
             assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
@@ -2999,8 +3016,11 @@ mod tests {
             assert_eq!(interaction.id, "confirm_1");
             assert_eq!(interaction.action, "confirm");
 
-            // Pending tool execution should not add tool messages yet.
-            assert_eq!(session.message_count(), 0);
+            // Pending tool gets a placeholder tool result to keep message sequence valid.
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            assert_eq!(msg.role, crate::types::Role::Tool);
+            assert!(msg.content.contains("awaiting approval"));
 
             // Pending interaction should be persisted via AgentState.
             let state = session.rebuild_state().unwrap();

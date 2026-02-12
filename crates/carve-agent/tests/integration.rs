@@ -5997,11 +5997,15 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     assert_eq!(interaction.action, "confirm");
     assert!(interaction.message.contains("increment"));
 
-    // No tool messages (tool didn't execute)
+    // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
     assert_eq!(
         suspended_session.message_count(),
-        0,
-        "No tool messages before approval"
+        1,
+        "Pending tool should have placeholder result"
+    );
+    assert!(
+        suspended_session.messages[0].content.contains("awaiting approval"),
+        "Placeholder should mention awaiting approval"
     );
 
     // pending_interaction persisted in session state
@@ -6086,13 +6090,13 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     .await
     .unwrap();
 
-    // Blocked tool should produce an error message (not execute)
+    // 1 placeholder from suspend + 1 blocked result from deny resume
     assert_eq!(
         resumed_session.message_count(),
-        1,
+        2,
         "Blocked tool should produce a message"
     );
-    let msg = &resumed_session.messages[0];
+    let msg = &resumed_session.messages[1];
     assert_eq!(msg.role, carve_agent::types::Role::Tool);
     assert!(
         msg.content.contains("denied") || msg.content.contains("blocked") || msg.content.contains("Error"),
@@ -6176,13 +6180,13 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     .await
     .unwrap();
 
-    // Tool should have executed: tool response message present
+    // 1 placeholder from suspend + 1 real result from approved resume
     assert_eq!(
         resumed_session.message_count(),
-        1,
+        2,
         "Tool response message should be present after approval"
     );
-    let msg = &resumed_session.messages[0];
+    let msg = &resumed_session.messages[1];
     assert_eq!(msg.role, carve_agent::types::Role::Tool);
     assert!(
         msg.content.contains("new_value"),

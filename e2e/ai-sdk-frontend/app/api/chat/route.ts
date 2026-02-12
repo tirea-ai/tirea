@@ -37,7 +37,7 @@ export async function POST(req: Request) {
   }
 
   const upstream = await fetch(
-    `${BACKEND_URL}/v1/agents/default/runs/ai-sdk/sse`,
+    `${BACKEND_URL}/v1/agents/${process.env.AGENT_ID ?? "travel"}/runs/ai-sdk/sse`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
