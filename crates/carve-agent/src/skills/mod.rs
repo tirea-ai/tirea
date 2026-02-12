@@ -8,6 +8,7 @@
 mod combined_plugin;
 mod composite_registry;
 mod discovery_plugin;
+mod embedded_registry;
 mod in_memory_registry;
 mod materialize;
 mod registry;
@@ -20,6 +21,7 @@ mod tools;
 pub use combined_plugin::SkillPlugin;
 pub use composite_registry::{CompositeSkillRegistry, CompositeSkillRegistryError};
 pub use discovery_plugin::SkillDiscoveryPlugin;
+pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillRegistry};
 pub use in_memory_registry::InMemorySkillRegistry;
 pub use registry::{
     FsSkillRegistry, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
