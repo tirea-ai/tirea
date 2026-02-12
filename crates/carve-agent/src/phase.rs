@@ -150,9 +150,9 @@ pub struct StepContext<'a> {
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
 
-    // === Plugin Data ===
-    /// Plugin data storage.
-    data: HashMap<String, Value>,
+    // === Scratchpad ===
+    /// Run-scoped, non-persistent scratchpad storage for phase communication.
+    scratchpad: HashMap<String, Value>,
 }
 
 impl<'a> StepContext<'a> {
@@ -169,7 +169,7 @@ impl<'a> StepContext<'a> {
             skip_inference: false,
             tracing_span: None,
             pending_patches: Vec::new(),
-            data: HashMap::new(),
+            scratchpad: HashMap::new(),
         }
     }
 
@@ -315,55 +315,67 @@ impl<'a> StepContext<'a> {
     }
 
     // =========================================================================
-    // Plugin Data
+    // Scratchpad
     // =========================================================================
 
-    /// Set plugin data.
+    /// Set a scratchpad value.
     ///
     /// Returns `true` when serialization succeeds and value is stored.
     /// Returns `false` when the value cannot be serialized.
     pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
         match serde_json::to_value(value) {
             Ok(v) => {
-                self.data.insert(key.to_string(), v);
+                self.scratchpad.insert(key.to_string(), v);
                 true
             }
             Err(err) => {
                 tracing::warn!(
                     key,
                     error = %err,
-                    "failed to serialize plugin data value"
+                    "failed to serialize scratchpad value"
                 );
                 false
             }
         }
     }
 
-    /// Get plugin data.
+    /// Get a scratchpad value.
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.data
+        self.scratchpad
             .get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
-    /// Check if plugin data exists.
+    /// Check if a scratchpad key exists.
     pub fn has(&self, key: &str) -> bool {
-        self.data.contains_key(key)
+        self.scratchpad.contains_key(key)
     }
 
-    /// Remove plugin data.
+    /// Remove a scratchpad value.
     pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.data.remove(key)
+        self.scratchpad.remove(key)
     }
 
-    /// Replace all plugin data with the provided map.
+    /// Replace all scratchpad data with the provided map.
+    pub fn set_scratchpad_map(&mut self, scratchpad: HashMap<String, Value>) {
+        self.scratchpad = scratchpad;
+    }
+
+    /// Clone all scratchpad data.
+    pub fn scratchpad_snapshot(&self) -> HashMap<String, Value> {
+        self.scratchpad.clone()
+    }
+
+    /// Deprecated: use `set_scratchpad_map`.
+    #[deprecated(since = "0.2.0", note = "Use `set_scratchpad_map` instead")]
     pub fn set_data_map(&mut self, data: HashMap<String, Value>) {
-        self.data = data;
+        self.set_scratchpad_map(data);
     }
 
-    /// Clone all plugin data.
+    /// Deprecated: use `scratchpad_snapshot`.
+    #[deprecated(since = "0.2.0", note = "Use `scratchpad_snapshot` instead")]
     pub fn data_snapshot(&self) -> HashMap<String, Value> {
-        self.data.clone()
+        self.scratchpad_snapshot()
     }
 
     // =========================================================================

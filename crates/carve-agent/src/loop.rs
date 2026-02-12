@@ -107,12 +107,12 @@ pub struct AgentDefinition {
     pub max_rounds: usize,
     /// Whether to execute tools in parallel.
     pub parallel_tools: bool,
-    /// Merge policy for plugin data produced by parallel tool execution.
+    /// Merge policy for scratchpad updates produced by parallel tool execution.
     ///
-    /// Plugin data keys are intentionally developer-defined. Components may share
+    /// Scratchpad keys are intentionally developer-defined. Components may share
     /// namespaces/keys by convention; this policy controls how same-key updates are
-    /// resolved when multiple parallel tool calls update plugin data in one round.
-    pub plugin_data_merge_policy: PluginDataMergePolicy,
+    /// resolved when multiple parallel tool calls update scratchpad in one round.
+    pub scratchpad_merge_policy: ScratchpadMergePolicy,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Plugins to run during the agent loop.
@@ -144,20 +144,24 @@ pub struct AgentDefinition {
     pub stop_condition_specs: Vec<StopConditionSpec>,
 }
 
-/// Conflict resolution policy for plugin data updates from parallel tools.
+/// Conflict resolution policy for scratchpad updates from parallel tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PluginDataMergePolicy {
+pub enum ScratchpadMergePolicy {
     /// Fail the run when parallel tool executions propose different values for the same key.
     Strict,
     /// Resolve conflicts by deterministic last-writer-wins in tool-call order.
     DeterministicLww,
 }
 
-impl Default for PluginDataMergePolicy {
+impl Default for ScratchpadMergePolicy {
     fn default() -> Self {
         Self::DeterministicLww
     }
 }
+
+/// Backward-compatible alias.
+#[deprecated(since = "0.2.0", note = "Use `ScratchpadMergePolicy` instead")]
+pub type PluginDataMergePolicy = ScratchpadMergePolicy;
 
 /// Backwards-compatible alias.
 pub type AgentConfig = AgentDefinition;
@@ -184,7 +188,7 @@ impl Default for AgentDefinition {
             system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
-            plugin_data_merge_policy: PluginDataMergePolicy::default(),
+            scratchpad_merge_policy: ScratchpadMergePolicy::default(),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -212,7 +216,7 @@ impl std::fmt::Debug for AgentDefinition {
             )
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
-            .field("plugin_data_merge_policy", &self.plugin_data_merge_policy)
+            .field("scratchpad_merge_policy", &self.scratchpad_merge_policy)
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
@@ -267,10 +271,18 @@ impl AgentDefinition {
         self
     }
 
-    /// Set plugin data merge policy for parallel tool execution.
+    /// Set scratchpad merge policy for parallel tool execution.
     #[must_use]
-    pub fn with_plugin_data_merge_policy(mut self, policy: PluginDataMergePolicy) -> Self {
-        self.plugin_data_merge_policy = policy;
+    pub fn with_scratchpad_merge_policy(mut self, policy: ScratchpadMergePolicy) -> Self {
+        self.scratchpad_merge_policy = policy;
+        self
+    }
+
+    /// Deprecated: use `with_scratchpad_merge_policy`.
+    #[deprecated(since = "0.2.0", note = "Use `with_scratchpad_merge_policy` instead")]
+    #[must_use]
+    pub fn with_plugin_data_merge_policy(mut self, policy: ScratchpadMergePolicy) -> Self {
+        self.scratchpad_merge_policy = policy;
         self
     }
 
@@ -387,14 +399,14 @@ async fn emit_phase(phase: Phase, step: &mut StepContext<'_>, plugins: &[Arc<dyn
 /// Emit SessionEnd phase and apply any resulting patches to the session.
 async fn emit_session_end(
     mut session: Session,
-    plugin_data: &mut PluginRuntimeData,
+    scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Session {
-    let mut step = plugin_data.new_step_context(&session, tool_descriptors.to_vec());
+    let mut step = scratchpad.new_step_context(&session, tool_descriptors.to_vec());
     emit_phase(Phase::SessionEnd, &mut step, plugins).await;
     let pending = std::mem::take(&mut step.pending_patches);
-    plugin_data.sync_from_step(&step);
+    scratchpad.sync_from_step(&step);
     if !pending.is_empty() {
         session = session.with_patches(pending);
     }
@@ -404,13 +416,13 @@ async fn emit_session_end(
 /// Build terminal error events after running SessionEnd cleanup.
 async fn prepare_stream_error_termination(
     session: Session,
-    plugin_data: &mut PluginRuntimeData,
+    scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     run_id: &str,
     message: String,
 ) -> (Session, AgentEvent, AgentEvent) {
-    let session = emit_session_end(session, plugin_data, tool_descriptors, plugins).await;
+    let session = emit_session_end(session, scratchpad, tool_descriptors, plugins).await;
     let error = AgentEvent::Error { message };
     let finish = AgentEvent::RunFinish {
         thread_id: session.id.clone(),
@@ -421,8 +433,8 @@ async fn prepare_stream_error_termination(
     (session, error, finish)
 }
 
-/// Build initial plugin data map.
-fn initial_plugin_data(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
+/// Build initial scratchpad map.
+fn initial_scratchpad(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
     let mut data = HashMap::new();
     for plugin in plugins {
         if let Some((key, value)) = plugin.initial_data() {
@@ -432,16 +444,16 @@ fn initial_plugin_data(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Valu
     data
 }
 
-/// Runtime plugin data shared across phase contexts.
+/// Runtime scratchpad shared across phase contexts.
 #[derive(Debug, Clone, Default)]
-struct PluginRuntimeData {
+struct ScratchpadRuntimeData {
     data: HashMap<String, Value>,
 }
 
-impl PluginRuntimeData {
+impl ScratchpadRuntimeData {
     fn new(plugins: &[Arc<dyn AgentPlugin>]) -> Self {
         Self {
-            data: initial_plugin_data(plugins),
+            data: initial_scratchpad(plugins),
         }
     }
 
@@ -451,12 +463,12 @@ impl PluginRuntimeData {
         tools: Vec<ToolDescriptor>,
     ) -> StepContext<'a> {
         let mut step = StepContext::new(session, tools);
-        step.set_data_map(self.data.clone());
+        step.set_scratchpad_map(self.data.clone());
         step
     }
 
     fn sync_from_step(&mut self, step: &StepContext<'_>) {
-        self.data = step.data_snapshot();
+        self.data = step.scratchpad_snapshot();
     }
 }
 
@@ -730,11 +742,11 @@ pub async fn run_step(
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Session, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
-    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
+    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
     // Create StepContext - use scoped blocks to manage borrows
     let (messages, filtered_tools, skip_inference, tracing_span, pending) = {
-        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
 
         // Phase: StepStart
         emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
@@ -750,7 +762,7 @@ pub async fn run_step(
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
         let tracing_span = step.tracing_span.take();
         let pending = std::mem::take(&mut step.pending_patches);
-        plugin_data.sync_from_step(&step);
+        scratchpad.sync_from_step(&step);
 
         (msgs, tools_filter, skip, tracing_span, pending)
     };
@@ -794,14 +806,14 @@ pub async fn run_step(
         Err(e) => {
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
             let err = e.to_string();
-            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             step.set(
                 "llmmetry.inference_error",
                 serde_json::json!({ "type": "llm_exec_error", "message": err }),
             );
             emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
             emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-            plugin_data.sync_from_step(&step);
+            scratchpad.sync_from_step(&step);
             return Err(AgentLoopError::LlmError(e.to_string()));
         }
     };
@@ -827,11 +839,11 @@ pub async fn run_step(
 
     // Phase: AfterInference (with new context)
     let session = {
-        let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
         step.response = Some(result.clone());
         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
         let pending = std::mem::take(&mut step.pending_patches);
-        plugin_data.sync_from_step(&step);
+        scratchpad.sync_from_step(&step);
         if pending.is_empty() {
             session
         } else {
@@ -851,10 +863,10 @@ pub async fn run_step(
 
     // Phase: StepEnd (with new context)
     let session = {
-        let mut step = plugin_data.new_step_context(&session, tool_descriptors);
+        let mut step = scratchpad.new_step_context(&session, tool_descriptors);
         emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
         let pending = std::mem::take(&mut step.pending_patches);
-        plugin_data.sync_from_step(&step);
+        scratchpad.sync_from_step(&step);
         if pending.is_empty() {
             session
         } else {
@@ -912,7 +924,7 @@ pub async fn execute_tools_with_plugins(
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let plugin_data = initial_plugin_data(plugins);
+    let scratchpad = initial_scratchpad(plugins);
 
     let results = if parallel {
         execute_tools_parallel_with_phases(
@@ -921,7 +933,7 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            plugin_data,
+            scratchpad,
             None,
             Some(&session.runtime),
             &session.id,
@@ -934,7 +946,7 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            plugin_data,
+            scratchpad,
             None,
             Some(&session.runtime),
             &session.id,
@@ -959,7 +971,7 @@ async fn execute_tools_parallel_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    plugin_data: HashMap<String, Value>,
+    scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
@@ -976,7 +988,7 @@ async fn execute_tools_parallel_with_phases(
         let call = call.clone();
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
-        let plugin_data = plugin_data.clone();
+        let scratchpad = scratchpad.clone();
         let activity_manager = activity_manager.clone();
         let rt = runtime_owned.clone();
         let sid = session_id.clone();
@@ -988,7 +1000,7 @@ async fn execute_tools_parallel_with_phases(
                 &state,
                 &tool_descriptors,
                 &plugins,
-                plugin_data,
+                scratchpad,
                 activity_manager,
                 rt.as_ref(),
                 &sid,
@@ -1007,7 +1019,7 @@ async fn execute_tools_sequential_with_phases(
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    mut plugin_data: HashMap<String, Value>,
+    mut scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
@@ -1025,7 +1037,7 @@ async fn execute_tools_sequential_with_phases(
             &state,
             tool_descriptors,
             plugins,
-            plugin_data.clone(),
+            scratchpad.clone(),
             activity_manager.clone(),
             runtime,
             session_id,
@@ -1051,7 +1063,7 @@ async fn execute_tools_sequential_with_phases(
             })?;
         }
 
-        plugin_data = result.plugin_data.clone();
+        scratchpad = result.scratchpad.clone();
         results.push(result);
 
         // Best-effort flow control: in sequential mode, stop at the first pending interaction.
@@ -1068,7 +1080,7 @@ async fn execute_tools_sequential_with_phases(
     Ok(results)
 }
 
-fn plugin_data_deltas_from_base(
+fn scratchpad_deltas_from_base(
     base: &HashMap<String, Value>,
     snapshot: &HashMap<String, Value>,
 ) -> Vec<(String, Option<Value>)> {
@@ -1087,7 +1099,7 @@ fn plugin_data_deltas_from_base(
     deltas
 }
 
-fn apply_plugin_data_changes(
+fn apply_scratchpad_changes(
     base: &HashMap<String, Value>,
     changes: HashMap<String, Option<Value>>,
 ) -> HashMap<String, Value> {
@@ -1102,21 +1114,21 @@ fn apply_plugin_data_changes(
     merged
 }
 
-fn merge_parallel_plugin_data(
+fn merge_parallel_scratchpad(
     base: &HashMap<String, Value>,
     results: &[ToolExecutionResult],
-    policy: PluginDataMergePolicy,
+    policy: ScratchpadMergePolicy,
 ) -> Result<HashMap<String, Value>, AgentLoopError> {
     match policy {
-        PluginDataMergePolicy::Strict => {
+        ScratchpadMergePolicy::Strict => {
             let mut changes: HashMap<String, Option<Value>> = HashMap::new();
 
             for result in results {
-                for (key, proposed) in plugin_data_deltas_from_base(base, &result.plugin_data) {
+                for (key, proposed) in scratchpad_deltas_from_base(base, &result.scratchpad) {
                     if let Some(existing) = changes.get(&key) {
                         if existing != &proposed {
                             return Err(AgentLoopError::StateError(format!(
-                                "conflicting parallel plugin data updates for key '{}'",
+                                "conflicting parallel scratchpad updates for key '{}'",
                                 key
                             )));
                         }
@@ -1125,18 +1137,18 @@ fn merge_parallel_plugin_data(
                     }
                 }
             }
-            Ok(apply_plugin_data_changes(base, changes))
+            Ok(apply_scratchpad_changes(base, changes))
         }
-        PluginDataMergePolicy::DeterministicLww => {
+        ScratchpadMergePolicy::DeterministicLww => {
             let mut changes: HashMap<String, Option<Value>> = HashMap::new();
 
             // `results` are in tool-call order, so overriding here is deterministic.
             for result in results {
-                for (key, proposed) in plugin_data_deltas_from_base(base, &result.plugin_data) {
+                for (key, proposed) in scratchpad_deltas_from_base(base, &result.scratchpad) {
                     changes.insert(key, proposed);
                 }
             }
-            Ok(apply_plugin_data_changes(base, changes))
+            Ok(apply_scratchpad_changes(base, changes))
         }
     }
 }
@@ -1150,7 +1162,7 @@ pub struct ToolExecutionResult {
     /// Pending interaction if tool is waiting for user action.
     pub pending_interaction: Option<crate::state_types::Interaction>,
     /// Plugin data snapshot after this tool execution.
-    pub plugin_data: HashMap<String, Value>,
+    pub scratchpad: HashMap<String, Value>,
     /// Pending patches from plugins during tool phases.
     pub pending_patches: Vec<TrackedPatch>,
 }
@@ -1162,7 +1174,7 @@ async fn execute_single_tool_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    plugin_data: HashMap<String, Value>,
+    scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
@@ -1175,7 +1187,7 @@ async fn execute_single_tool_with_phases(
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_session, tool_descriptors.to_vec());
-    step.set_data_map(plugin_data);
+    step.set_scratchpad_map(scratchpad);
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
@@ -1266,7 +1278,7 @@ async fn execute_single_tool_with_phases(
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
-        plugin_data: step.data_snapshot(),
+        scratchpad: step.scratchpad_snapshot(),
         pending_patches,
     }
 }
@@ -1366,16 +1378,16 @@ pub async fn run_loop(
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(config);
     let mut last_text = String::new();
-    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
+    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
     // Phase: SessionStart
     {
-        let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+        let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
         emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
         let pending = std::mem::take(&mut session_step.pending_patches);
-        plugin_data.sync_from_step(&session_step);
+        scratchpad.sync_from_step(&session_step);
         if !pending.is_empty() {
             session = session.with_patches(pending);
         }
@@ -1384,7 +1396,7 @@ pub async fn run_loop(
     loop {
         // Phase: StepStart and BeforeInference
         let (messages, filtered_tools, skip_inference, tracing_span) = {
-            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
             emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
 
@@ -1393,7 +1405,7 @@ pub async fn run_loop(
             let skip = step.skip_inference;
             let tracing_span = step.tracing_span.take();
             let pending = std::mem::take(&mut step.pending_patches);
-            plugin_data.sync_from_step(&step);
+            scratchpad.sync_from_step(&step);
             if !pending.is_empty() {
                 session = session.with_patches(pending);
             }
@@ -1426,7 +1438,7 @@ pub async fn run_loop(
             Ok(r) => r,
             Err(e) => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
                 step.set(
                     "llmmetry.inference_error",
                     serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
@@ -1434,13 +1446,13 @@ pub async fn run_loop(
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                 emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
                 let pending = std::mem::take(&mut step.pending_patches);
-                plugin_data.sync_from_step(&step);
+                scratchpad.sync_from_step(&step);
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
                 emit_session_end(
                     session,
-                    &mut plugin_data,
+                    &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                 )
@@ -1473,11 +1485,11 @@ pub async fn run_loop(
 
         // Phase: AfterInference
         {
-            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             step.response = Some(result.clone());
             emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
             let pending = std::mem::take(&mut step.pending_patches);
-            plugin_data.sync_from_step(&step);
+            scratchpad.sync_from_step(&step);
             if !pending.is_empty() {
                 session = session.with_patches(pending);
             }
@@ -1495,10 +1507,10 @@ pub async fn run_loop(
 
         // Phase: StepEnd
         {
-            let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
             let pending = std::mem::take(&mut step.pending_patches);
-            plugin_data.sync_from_step(&step);
+            scratchpad.sync_from_step(&step);
             if !pending.is_empty() {
                 session = session.with_patches(pending);
             }
@@ -1514,7 +1526,7 @@ pub async fn run_loop(
             Err(e) => {
                 emit_session_end(
                     session,
-                    &mut plugin_data,
+                    &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                 )
@@ -1530,7 +1542,7 @@ pub async fn run_loop(
                 &state,
                 &tool_descriptors,
                 &config.plugins,
-                plugin_data.data.clone(),
+                scratchpad.data.clone(),
                 None,
                 Some(&session.runtime),
                 &session.id,
@@ -1543,7 +1555,7 @@ pub async fn run_loop(
                 &state,
                 &tool_descriptors,
                 &config.plugins,
-                plugin_data.data.clone(),
+                scratchpad.data.clone(),
                 None,
                 Some(&session.runtime),
                 &session.id,
@@ -1556,7 +1568,7 @@ pub async fn run_loop(
             Err(e) => {
                 let _ = emit_session_end(
                     session,
-                    &mut plugin_data,
+                    &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                 )
@@ -1566,16 +1578,16 @@ pub async fn run_loop(
         };
 
         if config.parallel_tools {
-            plugin_data.data = match merge_parallel_plugin_data(
-                &plugin_data.data,
+            scratchpad.data = match merge_parallel_scratchpad(
+                &scratchpad.data,
                 &results,
-                config.plugin_data_merge_policy,
+                config.scratchpad_merge_policy,
             ) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = emit_session_end(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                     )
@@ -1584,7 +1596,7 @@ pub async fn run_loop(
                 }
             };
         } else if let Some(last) = results.last() {
-            plugin_data.data = last.plugin_data.clone();
+            scratchpad.data = last.scratchpad.clone();
         }
 
         let session_before_apply = session.clone();
@@ -1594,7 +1606,7 @@ pub async fn run_loop(
                 Err(e) => {
                     let _ = emit_session_end(
                         session_before_apply,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                     )
@@ -1608,7 +1620,7 @@ pub async fn run_loop(
         if let Some(interaction) = applied.pending_interaction {
             session = emit_session_end(
                 session,
-                &mut plugin_data,
+                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
             )
@@ -1632,7 +1644,7 @@ pub async fn run_loop(
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
             session = emit_session_end(
                 session,
-                &mut plugin_data,
+                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
             )
@@ -1647,7 +1659,7 @@ pub async fn run_loop(
     // Phase: SessionEnd
     session = emit_session_end(
         session,
-        &mut plugin_data,
+        &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
     )
@@ -1781,14 +1793,14 @@ fn run_loop_stream_impl_with_provider(
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
     let tool_descriptors = tool_descriptors_for_config(&tools, &config);
-    let mut plugin_data = PluginRuntimeData::new(&config.plugins);
+    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
         // Phase: SessionStart (use scoped block to manage borrow)
         {
-            let mut session_step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+            let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
             let pending = std::mem::take(&mut session_step.pending_patches);
-            plugin_data.sync_from_step(&session_step);
+            scratchpad.sync_from_step(&session_step);
             if !pending.is_empty() {
                 session = session.with_patches(pending);
             }
@@ -1819,13 +1831,13 @@ fn run_loop_stream_impl_with_provider(
         // Plugins can request tool replay during SessionStart by populating
         // `replay_tool_calls` in the step context. The loop handles actual execution
         // since only it has access to the tools map.
-        let replay_calls = match plugin_data.data.get("__replay_tool_calls") {
+        let replay_calls = match scratchpad.data.get("__replay_tool_calls") {
             Some(raw) => match serde_json::from_value::<Vec<crate::types::ToolCall>>(raw.clone()) {
                 Ok(calls) => calls,
                 Err(e) => {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -1844,7 +1856,7 @@ fn run_loop_stream_impl_with_provider(
             None => Vec::new(),
         };
         if !replay_calls.is_empty() {
-            plugin_data.data.remove("__replay_tool_calls");
+            scratchpad.data.remove("__replay_tool_calls");
             let mut replay_state_changed = false;
             for tool_call in &replay_calls {
                 let state = match session.rebuild_state() {
@@ -1852,7 +1864,7 @@ fn run_loop_stream_impl_with_provider(
                     Err(e) => {
                         let (finalized, error, finish) = prepare_stream_error_termination(
                             session,
-                            &mut plugin_data,
+                            &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
                             &run_id,
@@ -1879,18 +1891,18 @@ fn run_loop_stream_impl_with_provider(
                     &state,
                     &tool_descriptors,
                     &config.plugins,
-                    plugin_data.data.clone(),
+                    scratchpad.data.clone(),
                     None,
                     Some(&session.runtime),
                     &session.id,
                 )
                 .await;
-                plugin_data.data = replay_result.plugin_data.clone();
+                scratchpad.data = replay_result.scratchpad.clone();
 
                 if replay_result.pending_interaction.is_some() {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -1946,7 +1958,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -1975,7 +1987,7 @@ fn run_loop_stream_impl_with_provider(
                     Err(e) => {
                         let (finalized, error, finish) = prepare_stream_error_termination(
                             session,
-                            &mut plugin_data,
+                            &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
                             &run_id,
@@ -2001,7 +2013,7 @@ fn run_loop_stream_impl_with_provider(
             // Check cancellation at the top of each iteration.
             if let Some(ref token) = cancel_token {
                 if token.is_cancelled() {
-                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                    session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                     yield AgentEvent::RunFinish {
                         thread_id: session.id.clone(),
                         run_id: run_id.clone(),
@@ -2017,7 +2029,7 @@ fn run_loop_stream_impl_with_provider(
 
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let (messages, filtered_tools, skip_inference, tracing_span) = {
-                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
 
                 emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
                 emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
@@ -2028,7 +2040,7 @@ fn run_loop_stream_impl_with_provider(
                 let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
                 let tracing_span = step.tracing_span.take();
                 let pending = std::mem::take(&mut step.pending_patches);
-                plugin_data.sync_from_step(&step);
+                scratchpad.sync_from_step(&step);
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
@@ -2038,7 +2050,7 @@ fn run_loop_stream_impl_with_provider(
 
             // Skip inference if requested
             if skip_inference {
-                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
@@ -2076,7 +2088,7 @@ fn run_loop_stream_impl_with_provider(
                 Ok(s) => s,
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                    let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                    let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
                     step.set(
                         "llmmetry.inference_error",
                         serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
@@ -2084,13 +2096,13 @@ fn run_loop_stream_impl_with_provider(
                     emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                     emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
                     let pending = std::mem::take(&mut step.pending_patches);
-                    plugin_data.sync_from_step(&step);
+                    scratchpad.sync_from_step(&step);
                     if !pending.is_empty() {
                         session = session.with_patches(pending);
                     }
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -2132,7 +2144,7 @@ fn run_loop_stream_impl_with_provider(
                     Err(e) => {
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         let mut step =
-                            plugin_data.new_step_context(&session, tool_descriptors.clone());
+                            scratchpad.new_step_context(&session, tool_descriptors.clone());
                         step.set(
                             "llmmetry.inference_error",
                             serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
@@ -2140,13 +2152,13 @@ fn run_loop_stream_impl_with_provider(
                         emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                         emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
                         let pending = std::mem::take(&mut step.pending_patches);
-                        plugin_data.sync_from_step(&step);
+                        scratchpad.sync_from_step(&step);
                         if !pending.is_empty() {
                             session = session.with_patches(pending);
                         }
                         let (finalized, error, finish) = prepare_stream_error_termination(
                             session,
-                            &mut plugin_data,
+                            &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
                             &run_id,
@@ -2176,11 +2188,11 @@ fn run_loop_stream_impl_with_provider(
 
             // Phase: AfterInference (with new context)
             {
-                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
                 step.response = Some(result.clone());
                 emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
                 let pending = std::mem::take(&mut step.pending_patches);
-                plugin_data.sync_from_step(&step);
+                scratchpad.sync_from_step(&step);
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
@@ -2199,10 +2211,10 @@ fn run_loop_stream_impl_with_provider(
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
             {
-                let mut step = plugin_data.new_step_context(&session, tool_descriptors.clone());
+                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
                 emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
                 let pending = std::mem::take(&mut step.pending_patches);
-                plugin_data.sync_from_step(&step);
+                scratchpad.sync_from_step(&step);
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
@@ -2220,7 +2232,7 @@ fn run_loop_stream_impl_with_provider(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
-                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
 
                 let result_value = if result.text.is_empty() {
                     None
@@ -2254,7 +2266,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -2281,7 +2293,7 @@ fn run_loop_stream_impl_with_provider(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
-                        plugin_data.data.clone(),
+                        scratchpad.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
                         &sid_for_tools,
@@ -2293,7 +2305,7 @@ fn run_loop_stream_impl_with_provider(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
-                        plugin_data.data.clone(),
+                        scratchpad.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
                         &sid_for_tools,
@@ -2327,7 +2339,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -2345,16 +2357,16 @@ fn run_loop_stream_impl_with_provider(
             };
 
             if config.parallel_tools {
-                plugin_data.data = match merge_parallel_plugin_data(
-                    &plugin_data.data,
+                scratchpad.data = match merge_parallel_scratchpad(
+                    &scratchpad.data,
                     &results,
-                    config.plugin_data_merge_policy,
+                    config.scratchpad_merge_policy,
                 ) {
                     Ok(v) => v,
                     Err(e) => {
                         let (finalized, error, finish) = prepare_stream_error_termination(
                             session,
-                            &mut plugin_data,
+                            &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
                             &run_id,
@@ -2371,7 +2383,7 @@ fn run_loop_stream_impl_with_provider(
                     }
                 };
             } else if let Some(last) = results.last() {
-                plugin_data.data = last.plugin_data.clone();
+                scratchpad.data = last.scratchpad.clone();
             }
 
             // Emit pending interaction event(s) first.
@@ -2393,7 +2405,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session_before_apply,
-                        &mut plugin_data,
+                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         &run_id,
@@ -2437,7 +2449,7 @@ fn run_loop_stream_impl_with_provider(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
-                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
@@ -2461,7 +2473,7 @@ fn run_loop_stream_impl_with_provider(
             // Check stop conditions.
             let stop_ctx = loop_state.to_check_context(&result, &session);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
@@ -2643,16 +2655,16 @@ mod tests {
         }
     }
 
-    fn plugin_data_map(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
+    fn scratchpad_map(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
         entries
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect()
     }
 
-    fn plugin_data_result(
+    fn scratchpad_result(
         call_id: &str,
-        plugin_data: HashMap<String, Value>,
+        scratchpad: HashMap<String, Value>,
     ) -> ToolExecutionResult {
         ToolExecutionResult {
             execution: crate::execute::ToolExecution {
@@ -2662,7 +2674,7 @@ mod tests {
             },
             reminders: Vec::new(),
             pending_interaction: None,
-            plugin_data,
+            scratchpad,
             pending_patches: Vec::new(),
         }
     }
@@ -2673,8 +2685,8 @@ mod tests {
         assert_eq!(config.max_rounds, 10);
         assert!(config.parallel_tools);
         assert_eq!(
-            config.plugin_data_merge_policy,
-            PluginDataMergePolicy::DeterministicLww
+            config.scratchpad_merge_policy,
+            ScratchpadMergePolicy::DeterministicLww
         );
         assert!(config.system_prompt.is_empty());
     }
@@ -2684,15 +2696,15 @@ mod tests {
         let config = AgentConfig::new("gpt-4")
             .with_max_rounds(5)
             .with_parallel_tools(false)
-            .with_plugin_data_merge_policy(PluginDataMergePolicy::Strict)
+            .with_scratchpad_merge_policy(ScratchpadMergePolicy::Strict)
             .with_system_prompt("You are helpful.");
 
         assert_eq!(config.model, "gpt-4");
         assert_eq!(config.max_rounds, 5);
         assert!(!config.parallel_tools);
         assert_eq!(
-            config.plugin_data_merge_policy,
-            PluginDataMergePolicy::Strict
+            config.scratchpad_merge_policy,
+            ScratchpadMergePolicy::Strict
         );
         assert_eq!(config.system_prompt, "You are helpful.");
     }
@@ -3233,7 +3245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_data_initialization() {
+    fn test_scratchpad_initialization() {
         struct DataPlugin;
 
         #[async_trait]
@@ -3252,8 +3264,8 @@ mod tests {
         let session = Session::new("test");
         let mut step = StepContext::new(&session, vec![]);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
-        let runtime_data = PluginRuntimeData::new(&plugins);
-        step.set_data_map(runtime_data.data);
+        let runtime_data = ScratchpadRuntimeData::new(&plugins);
+        step.set_scratchpad_map(runtime_data.data);
 
         let config: Option<serde_json::Map<String, Value>> = step.get("plugin_config");
         assert!(config.is_some());
@@ -3294,7 +3306,7 @@ mod tests {
             &state,
             &tool_descriptors,
             &plugins,
-            initial_plugin_data(&plugins),
+            initial_scratchpad(&plugins),
             None,
             None,
             "test",
@@ -3356,7 +3368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_plugin_data_persists_across_phase_contexts() {
+    async fn test_scratchpad_persists_across_phase_contexts() {
         struct LifecyclePlugin;
 
         #[async_trait]
@@ -3389,13 +3401,13 @@ mod tests {
         let session = Session::new("test");
         let tools = vec![];
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(LifecyclePlugin)];
-        let mut plugin_data = PluginRuntimeData::new(&plugins);
+        let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
-        let mut session_step = plugin_data.new_step_context(&session, tools.clone());
+        let mut session_step = scratchpad.new_step_context(&session, tools.clone());
         emit_phase(Phase::SessionStart, &mut session_step, &plugins).await;
-        plugin_data.sync_from_step(&session_step);
+        scratchpad.sync_from_step(&session_step);
 
-        let mut step = plugin_data.new_step_context(&session, tools);
+        let mut step = scratchpad.new_step_context(&session, tools);
         emit_phase(Phase::StepStart, &mut step, &plugins).await;
 
         assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
@@ -3505,11 +3517,11 @@ mod tests {
     fn test_apply_tool_results_rejects_multiple_pending_interactions() {
         let session = Session::new("test");
 
-        let mut first = plugin_data_result("call_1", plugin_data_map(vec![]));
+        let mut first = scratchpad_result("call_1", scratchpad_map(vec![]));
         first.pending_interaction =
             Some(Interaction::new("confirm_1", "confirm").with_message("approve first tool"));
 
-        let mut second = plugin_data_result("call_2", plugin_data_map(vec![]));
+        let mut second = scratchpad_result("call_2", scratchpad_map(vec![]));
         second.pending_interaction =
             Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
@@ -4508,13 +4520,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_parallel_tool_plugin_data_merges_across_calls() {
+    async fn test_parallel_tool_scratchpad_merges_across_calls() {
         struct ParallelPluginDataRecorder;
 
         #[async_trait]
         impl AgentPlugin for ParallelPluginDataRecorder {
             fn id(&self) -> &str {
-                "parallel_plugin_data_recorder"
+                "parallel_scratchpad_recorder"
             }
 
             fn initial_data(&self) -> Option<(&'static str, Value)> {
@@ -4530,7 +4542,7 @@ mod tests {
                     }
                     Phase::BeforeInference => {
                         let seen_count = step
-                            .data_snapshot()
+                            .scratchpad_snapshot()
                             .keys()
                             .filter(|k| k.starts_with("seen_"))
                             .count();
@@ -4539,7 +4551,7 @@ mod tests {
                             carve_state::path!("debug", "seen_parallel_count"),
                             json!(seen_count),
                         )))
-                        .with_source("test:parallel_plugin_data");
+                        .with_source("test:parallel_scratchpad");
                         step.pending_patches.push(patch);
                     }
                     _ => {}
@@ -4576,20 +4588,20 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_parallel_plugin_data_strict_rejects_conflicts() {
-        let base = plugin_data_map(vec![("shared", json!(0)), ("stable", json!(true))]);
+    fn test_merge_parallel_scratchpad_strict_rejects_conflicts() {
+        let base = scratchpad_map(vec![("shared", json!(0)), ("stable", json!(true))]);
         let results = vec![
-            plugin_data_result(
+            scratchpad_result(
                 "call_a",
-                plugin_data_map(vec![("shared", json!(1)), ("stable", json!(true))]),
+                scratchpad_map(vec![("shared", json!(1)), ("stable", json!(true))]),
             ),
-            plugin_data_result(
+            scratchpad_result(
                 "call_b",
-                plugin_data_map(vec![("shared", json!(2)), ("stable", json!(true))]),
+                scratchpad_map(vec![("shared", json!(2)), ("stable", json!(true))]),
             ),
         ];
 
-        let err = merge_parallel_plugin_data(&base, &results, PluginDataMergePolicy::Strict)
+        let err = merge_parallel_scratchpad(&base, &results, ScratchpadMergePolicy::Strict)
             .expect_err("strict policy should fail on conflicting key updates");
 
         match err {
@@ -4601,27 +4613,27 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_parallel_plugin_data_deterministic_lww_uses_tool_call_order() {
-        let base = plugin_data_map(vec![("shared", json!(0)), ("stable", json!(true))]);
+    fn test_merge_parallel_scratchpad_deterministic_lww_uses_tool_call_order() {
+        let base = scratchpad_map(vec![("shared", json!(0)), ("stable", json!(true))]);
         let results = vec![
-            plugin_data_result(
+            scratchpad_result(
                 "call_a",
-                plugin_data_map(vec![("shared", json!(1)), ("stable", json!(true))]),
+                scratchpad_map(vec![("shared", json!(1)), ("stable", json!(true))]),
             ),
-            plugin_data_result(
+            scratchpad_result(
                 "call_b",
-                plugin_data_map(vec![("shared", json!(2)), ("stable", json!(true))]),
+                scratchpad_map(vec![("shared", json!(2)), ("stable", json!(true))]),
             ),
         ];
 
         let merged =
-            merge_parallel_plugin_data(&base, &results, PluginDataMergePolicy::DeterministicLww)
+            merge_parallel_scratchpad(&base, &results, ScratchpadMergePolicy::DeterministicLww)
                 .expect("deterministic lww should resolve conflicts");
         assert_eq!(merged.get("shared"), Some(&json!(2)));
     }
 
     #[test]
-    fn test_merge_parallel_plugin_data_deterministic_lww_disjoint_commutative() {
+    fn test_merge_parallel_scratchpad_deterministic_lww_disjoint_commutative() {
         let permutations = [
             [0usize, 1, 2],
             [0usize, 2, 1],
@@ -4634,25 +4646,25 @@ mod tests {
         for alpha in [1_i64, 7_i64] {
             for beta in ["x", "y"] {
                 for gamma in [true, false] {
-                    let base = plugin_data_map(vec![("shared.root", json!("root"))]);
+                    let base = scratchpad_map(vec![("shared.root", json!("root"))]);
                     let build_result = |idx: usize| match idx {
-                        0 => plugin_data_result(
+                        0 => scratchpad_result(
                             "call_a",
-                            plugin_data_map(vec![
+                            scratchpad_map(vec![
                                 ("shared.root", json!("root")),
                                 ("ns.alpha", json!(alpha)),
                             ]),
                         ),
-                        1 => plugin_data_result(
+                        1 => scratchpad_result(
                             "call_b",
-                            plugin_data_map(vec![
+                            scratchpad_map(vec![
                                 ("shared.root", json!("root")),
                                 ("ns.beta", json!(beta)),
                             ]),
                         ),
-                        2 => plugin_data_result(
+                        2 => scratchpad_result(
                             "call_c",
-                            plugin_data_map(vec![
+                            scratchpad_map(vec![
                                 ("shared.root", json!("root")),
                                 ("ns.gamma", json!(gamma)),
                             ]),
@@ -4664,20 +4676,20 @@ mod tests {
                         .iter()
                         .map(|idx| build_result(*idx))
                         .collect();
-                    let expected = merge_parallel_plugin_data(
+                    let expected = merge_parallel_scratchpad(
                         &base,
                         &first_order,
-                        PluginDataMergePolicy::DeterministicLww,
+                        ScratchpadMergePolicy::DeterministicLww,
                     )
                     .expect("base merge should succeed");
 
                     for order in permutations.iter().skip(1) {
                         let ordered: Vec<ToolExecutionResult> =
                             order.iter().map(|idx| build_result(*idx)).collect();
-                        let merged = merge_parallel_plugin_data(
+                        let merged = merge_parallel_scratchpad(
                             &base,
                             &ordered,
-                            PluginDataMergePolicy::DeterministicLww,
+                            ScratchpadMergePolicy::DeterministicLww,
                         )
                         .expect("merge should succeed for disjoint keys");
                         assert_eq!(merged, expected);
@@ -4688,30 +4700,30 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_parallel_plugin_data_deterministic_lww_deterministic_and_idempotent() {
-        let base = plugin_data_map(vec![("seed", json!(true)), ("shared", json!(0))]);
+    fn test_merge_parallel_scratchpad_deterministic_lww_deterministic_and_idempotent() {
+        let base = scratchpad_map(vec![("seed", json!(true)), ("shared", json!(0))]);
 
         let build_results = || {
             vec![
-                plugin_data_result(
+                scratchpad_result(
                     "call_1",
-                    plugin_data_map(vec![
+                    scratchpad_map(vec![
                         ("seed", json!(true)),
                         ("shared", json!(1)),
                         ("ns.alpha", json!("a")),
                     ]),
                 ),
-                plugin_data_result(
+                scratchpad_result(
                     "call_2",
-                    plugin_data_map(vec![
+                    scratchpad_map(vec![
                         ("seed", json!(true)),
                         ("shared", json!(2)),
                         ("ns.beta", json!("b")),
                     ]),
                 ),
-                plugin_data_result(
+                scratchpad_result(
                     "call_3",
-                    plugin_data_map(vec![
+                    scratchpad_map(vec![
                         ("seed", json!(true)),
                         ("shared", json!(3)),
                         ("ns.gamma", json!("c")),
@@ -4720,18 +4732,18 @@ mod tests {
             ]
         };
 
-        let expected = merge_parallel_plugin_data(
+        let expected = merge_parallel_scratchpad(
             &base,
             &build_results(),
-            PluginDataMergePolicy::DeterministicLww,
+            ScratchpadMergePolicy::DeterministicLww,
         )
         .expect("merge should succeed");
 
         for _ in 0..8 {
-            let merged = merge_parallel_plugin_data(
+            let merged = merge_parallel_scratchpad(
                 &base,
                 &build_results(),
-                PluginDataMergePolicy::DeterministicLww,
+                ScratchpadMergePolicy::DeterministicLww,
             )
             .expect("repeated merge should succeed");
             assert_eq!(merged, expected);
@@ -4740,7 +4752,7 @@ mod tests {
         let mut repeated = build_results();
         repeated.extend(build_results());
         let idempotent =
-            merge_parallel_plugin_data(&base, &repeated, PluginDataMergePolicy::DeterministicLww)
+            merge_parallel_scratchpad(&base, &repeated, ScratchpadMergePolicy::DeterministicLww)
                 .expect("merge should stay stable when the same result set is replayed");
         assert_eq!(idempotent, expected);
     }

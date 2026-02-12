@@ -76,7 +76,7 @@ use serde_json::Value;
 /// - **Inject context**: `step.system()`, `step.session()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
 /// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
-/// - **Store data**: `step.set()`, `step.get()`
+/// - **Use scratchpad**: `step.set()`, `step.get()`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
@@ -93,10 +93,10 @@ pub trait AgentPlugin: Send + Sync {
     /// - `step`: Mutable context for the current step
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>);
 
-    /// Provide initial data for this plugin.
+    /// Provide initial scratchpad data for this plugin.
     ///
     /// Returns a tuple of (key, initial_value) that will be stored
-    /// in `StepContext.data` at session start.
+    /// in step scratchpad at session start.
     ///
     /// # Example
     ///

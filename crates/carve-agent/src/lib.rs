@@ -188,11 +188,12 @@ pub use agent_os::{
 };
 
 // Loop exports
+#[allow(deprecated)]
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
     run_round, run_step, tool_map, tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError,
-    PluginDataMergePolicy, RoundResult, RunContext, SessionCheckpoint, SessionCheckpointReason,
+    PluginDataMergePolicy, RoundResult, RunContext, ScratchpadMergePolicy, SessionCheckpoint, SessionCheckpointReason,
     StreamWithCheckpoints, StreamWithSession,
 };
 

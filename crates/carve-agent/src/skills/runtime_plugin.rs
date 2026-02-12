@@ -114,7 +114,7 @@ impl AgentPlugin for SkillRuntimePlugin {
     }
 
     fn initial_data(&self) -> Option<(&'static str, Value)> {
-        // This initializes plugin data only; the persisted skill state lives in session state.
+        // This initializes runtime scratchpad only; persisted skill state lives in session state.
         // Keeping this empty avoids duplicating two sources of truth.
         None
     }
