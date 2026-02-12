@@ -5,7 +5,7 @@
 //! - State replay to any point in history
 //! - Batch application with conflict detection
 
-use crate::{apply_patch, CarveError, Patch, TrackedPatch};
+use crate::{apply_patch, CarveError, Conflict, ConflictKind, Patch, PatchExt, Path, TrackedPatch};
 use serde_json::Value;
 use std::sync::Arc;
 use thiserror::Error;
@@ -14,11 +14,28 @@ use tokio::sync::RwLock;
 /// Errors that can occur during state management.
 #[derive(Debug, Error)]
 pub enum StateError {
+    /// Failed to apply a patch operation.
     #[error("Failed to apply patch: {0}")]
     ApplyFailed(#[from] CarveError),
 
+    /// Replay index is outside the available history range.
     #[error("Invalid replay index: {index}, history length: {len}")]
     InvalidReplayIndex { index: usize, len: usize },
+
+    /// Batch commit contains conflicting patches.
+    #[error(
+        "conflicting patch in batch between index {left} and {right} at {path} ({kind:?})"
+    )]
+    BatchConflict {
+        /// Left patch index in the batch.
+        left: usize,
+        /// Right patch index in the batch.
+        right: usize,
+        /// Path where conflict was detected.
+        path: Path,
+        /// Conflict classification.
+        kind: ConflictKind,
+    },
 }
 
 /// Result of applying patches.
@@ -118,6 +135,15 @@ impl StateManager {
             return Ok(ApplyResult {
                 patches_applied: 0,
                 ops_applied: 0,
+            });
+        }
+
+        if let Some((left, right, conflict)) = first_batch_conflict(&patches) {
+            return Err(StateError::BatchConflict {
+                left,
+                right,
+                path: conflict.path,
+                kind: conflict.kind,
             });
         }
 
@@ -244,6 +270,23 @@ impl StateManager {
     }
 }
 
+fn first_batch_conflict(patches: &[TrackedPatch]) -> Option<(usize, usize, Conflict)> {
+    for (left_idx, left_patch) in patches.iter().enumerate() {
+        for (right_idx, right_patch) in patches.iter().enumerate().skip(left_idx + 1) {
+            if let Some(conflict) = left_patch
+                .patch()
+                .conflicts_with(right_patch.patch())
+                .into_iter()
+                .next()
+            {
+                return Some((left_idx, right_idx, conflict));
+            }
+        }
+    }
+
+    None
+}
+
 impl Clone for StateManager {
     fn clone(&self) -> Self {
         Self {
@@ -302,6 +345,42 @@ mod tests {
         let state = manager.snapshot().await;
         assert_eq!(state["a"], 1);
         assert_eq!(state["b"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_commit_batch_rejects_exact_conflict() {
+        let manager = StateManager::new(json!({"stable": true}));
+
+        let patches = vec![
+            make_patch(vec![Op::set(path!("x"), json!(1))], "left"),
+            make_patch(vec![Op::set(path!("x"), json!(2))], "right"),
+        ];
+
+        let err = manager.commit_batch(patches).await.unwrap_err();
+        assert!(err.to_string().contains("conflicting patch"));
+
+        // Batch is atomic: state/history remain unchanged on conflict.
+        let state = manager.snapshot().await;
+        assert_eq!(state, json!({"stable": true}));
+        assert_eq!(manager.history_len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_commit_batch_rejects_prefix_conflict() {
+        let manager = StateManager::new(json!({"stable": true}));
+
+        let patches = vec![
+            make_patch(vec![Op::set(path!("user"), json!({"name": "A"}))], "left"),
+            make_patch(vec![Op::set(path!("user", "name"), json!("B"))], "right"),
+        ];
+
+        let err = manager.commit_batch(patches).await.unwrap_err();
+        assert!(err.to_string().contains("conflicting patch"));
+
+        // Batch is atomic: state/history remain unchanged on conflict.
+        let state = manager.snapshot().await;
+        assert_eq!(state, json!({"stable": true}));
+        assert_eq!(manager.history_len().await, 0);
     }
 
     #[tokio::test]
