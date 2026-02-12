@@ -46,7 +46,9 @@ use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
 use crate::session::Session;
 use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
-use crate::stop::{check_stop_conditions, StopCheckContext, StopCondition, StopReason};
+use crate::stop::{
+    check_stop_conditions, StopCheckContext, StopCondition, StopConditionSpec, StopReason,
+};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::{Message, MessageMetadata};
@@ -125,10 +127,15 @@ pub struct AgentDefinition {
     pub excluded_tools: Option<Vec<String>>,
     /// Composable stop conditions checked after each tool-call round.
     ///
-    /// When empty, a default [`crate::stop::MaxRounds`] condition is created
-    /// from `max_rounds`. When non-empty, `max_rounds` is ignored and only
-    /// these conditions are checked.
+    /// When empty (and `stop_condition_specs` is also empty), a default
+    /// [`crate::stop::MaxRounds`] condition is created from `max_rounds`.
+    /// When non-empty, `max_rounds` is ignored.
     pub stop_conditions: Vec<Arc<dyn StopCondition>>,
+    /// Declarative stop condition specs, resolved to `Arc<dyn StopCondition>`
+    /// at runtime. Analogous to `plugin_ids` for plugins.
+    ///
+    /// Specs are appended after explicit `stop_conditions` in evaluation order.
+    pub stop_condition_specs: Vec<StopConditionSpec>,
 }
 
 /// Backwards-compatible alias.
@@ -169,6 +176,7 @@ impl Default for AgentDefinition {
             allowed_tools: None,
             excluded_tools: None,
             stop_conditions: Vec::new(),
+            stop_condition_specs: Vec::new(),
         }
     }
 }
@@ -194,6 +202,7 @@ impl std::fmt::Debug for AgentDefinition {
                 "stop_conditions",
                 &format!("[{} conditions]", self.stop_conditions.len()),
             )
+            .field("stop_condition_specs", &self.stop_condition_specs)
             .finish()
     }
 }
@@ -314,6 +323,23 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopCondition>>) -> Self {
         self.stop_conditions = conditions;
+        self
+    }
+
+    /// Add a declarative stop condition spec.
+    ///
+    /// Specs are resolved to `Arc<dyn StopCondition>` at runtime and
+    /// appended after explicit `stop_conditions` in evaluation order.
+    #[must_use]
+    pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
+        self.stop_condition_specs.push(spec);
+        self
+    }
+
+    /// Set all declarative stop condition specs, replacing any previously set.
+    #[must_use]
+    pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
+        self.stop_condition_specs = specs;
         self
     }
 
@@ -1078,10 +1104,14 @@ impl LoopState {
 /// If the user explicitly configured stop conditions, use those.
 /// Otherwise, create a default `MaxRounds` from `config.max_rounds`.
 fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopCondition>> {
-    if !config.stop_conditions.is_empty() {
-        return config.stop_conditions.clone();
+    let mut conditions = config.stop_conditions.clone();
+    for spec in &config.stop_condition_specs {
+        conditions.push(spec.clone().into_condition());
     }
-    vec![Arc::new(crate::stop::MaxRounds(config.max_rounds))]
+    if conditions.is_empty() {
+        return vec![Arc::new(crate::stop::MaxRounds(config.max_rounds))];
+    }
+    conditions
 }
 
 /// Run the full agent loop until completion or a stop condition is met.

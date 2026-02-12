@@ -2596,6 +2596,141 @@ mod tests {
     }
 
     // ========================================================================
+    // Truncated / Malformed JSON Resilience Tests
+    // (Reference: Mastra transform.test.ts — graceful handling of
+    //  streaming race conditions and partial tool-call arguments)
+    // ========================================================================
+
+    #[test]
+    fn test_stream_collector_truncated_json_args() {
+        // Simulates network interruption mid-stream where the accumulated
+        // argument string is incomplete JSON.  finish() should gracefully
+        // produce Value::Null (never panic).
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"url": "https://example.com"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "search");
+        // Truncated JSON → Value::Null (graceful degradation)
+        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+    }
+
+    #[test]
+    fn test_stream_collector_empty_json_args() {
+        // Tool call with completely empty argument string.
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "noop".to_string(),
+            fn_arguments: Value::String(String::new()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "noop");
+        // Empty string → Value::Null
+        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+    }
+
+    #[test]
+    fn test_stream_collector_partial_nested_json() {
+        // Complex nested JSON truncated mid-array.
+        // Reference: Mastra tests large payload cutoff at position 871.
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "complex_tool".to_string(),
+            fn_arguments: Value::String(
+                r#"{"a": {"b": [1, 2, {"c": "long_string_that_gets_truncated"#.to_string(),
+            ),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].name, "complex_tool");
+        // Truncated nested JSON → Value::Null
+        assert_eq!(result.tool_calls[0].arguments, Value::Null);
+    }
+
+    #[test]
+    fn test_stream_collector_truncated_then_end_event_recovers() {
+        // Streaming produces truncated JSON, but the End event carries the
+        // complete arguments — the End event should override and recover.
+        use genai::chat::MessageContent;
+
+        let mut collector = StreamCollector::new();
+
+        // Truncated streaming chunk
+        let tc1 = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "api".to_string(),
+            fn_arguments: Value::String(r#"{"location": "New York", "unit": "cel"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc1 }));
+
+        // End event with complete arguments
+        let end_tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: String::new(),
+            fn_arguments: Value::String(
+                r#"{"location": "New York", "unit": "celsius"}"#.to_string(),
+            ),
+            thought_signatures: None,
+        };
+        let end = StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![end_tc])),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        // End event recovered the complete, valid JSON
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            json!({"location": "New York", "unit": "celsius"})
+        );
+    }
+
+    #[test]
+    fn test_stream_collector_valid_json_args_control() {
+        // Control test: valid JSON args parse correctly (contrast with truncated tests).
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "get_weather".to_string(),
+            fn_arguments: Value::String(
+                r#"{"location": "San Francisco", "units": "metric"}"#.to_string(),
+            ),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(
+            result.tool_calls[0].arguments,
+            json!({"location": "San Francisco", "units": "metric"})
+        );
+    }
+
+    // ========================================================================
     // AI SDK v6 Complete Flow Tests
     // ========================================================================
 

@@ -199,7 +199,8 @@ pub use r#loop::{
 // Stop condition exports
 pub use stop::{
     check_stop_conditions, ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds,
-    StopCheckContext, StopCondition, StopOnTool, StopReason, Timeout, TokenBudget,
+    StopCheckContext, StopCondition, StopConditionSpec, StopOnTool, StopReason, Timeout,
+    TokenBudget,
 };
 
 // Plugin exports

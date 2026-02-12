@@ -5843,6 +5843,260 @@ async fn test_permission_flow_multiple_tools_mixed() {
 }
 
 // ============================================================================
+// HITL Suspend/Resume via execute_tools_with_plugins
+// ============================================================================
+
+/// Test: PermissionPlugin "ask" suspends tool execution via execute_tools_with_plugins.
+///
+/// Verifies: PendingInteraction error returned, no tool messages, interaction details correct,
+/// and pending_interaction persisted in session state.
+#[tokio::test]
+async fn test_e2e_permission_suspend_with_real_tool() {
+    use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
+
+    // Session with permissions.default_behavior = "ask"
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+    );
+
+    let result = StreamResult {
+        text: "Calling increment".to_string(),
+        tool_calls: vec![carve_agent::types::ToolCall::new(
+            "call_inc",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+        usage: None,
+    };
+
+    let tools = tool_map([IncrementTool]);
+    let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
+
+    // execute_tools_with_plugins should return PendingInteraction error
+    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+        .await
+        .unwrap_err();
+
+    let (suspended_session, interaction) = match err {
+        AgentLoopError::PendingInteraction {
+            session,
+            interaction,
+        } => (*session, *interaction),
+        other => panic!("Expected PendingInteraction, got: {:?}", other),
+    };
+
+    // Interaction details
+    assert_eq!(interaction.id, "permission_increment");
+    assert_eq!(interaction.action, "confirm");
+    assert!(interaction.message.contains("increment"));
+
+    // No tool messages (tool didn't execute)
+    assert_eq!(
+        suspended_session.message_count(),
+        0,
+        "No tool messages before approval"
+    );
+
+    // pending_interaction persisted in session state
+    let state = suspended_session.rebuild_state().unwrap();
+    let pending = &state["agent"]["pending_interaction"];
+    assert_eq!(pending["id"], "permission_increment");
+    assert_eq!(pending["action"], "confirm");
+
+    // Counter should NOT have been modified
+    assert!(
+        state.get("counter").is_none(),
+        "Counter should not exist (tool didn't execute)"
+    );
+}
+
+/// Test: InteractionResponsePlugin denial blocks tool via execute_tools_with_plugins.
+///
+/// After suspend, denial causes the tool to be blocked (error result, no execution).
+#[tokio::test]
+async fn test_e2e_permission_deny_blocks_via_execute_tools() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+    use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
+
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+    );
+
+    let result = StreamResult {
+        text: "Calling increment".to_string(),
+        tool_calls: vec![carve_agent::types::ToolCall::new(
+            "call_inc",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+        usage: None,
+    };
+
+    let tools = tool_map([IncrementTool]);
+    let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
+
+    // Phase 1: Suspend
+    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+        .await
+        .unwrap_err();
+
+    let (suspended_session, interaction) = match err {
+        AgentLoopError::PendingInteraction {
+            session,
+            interaction,
+        } => (*session, *interaction),
+        other => panic!("Expected PendingInteraction, got: {:?}", other),
+    };
+
+    // Phase 2: Client denies
+    let deny_request = RunAgentRequest::new("t1", "r1")
+        .with_message(AGUIMessage::tool("false", &interaction.id));
+    assert!(deny_request.is_interaction_denied(&interaction.id));
+
+    // Resume with only InteractionResponsePlugin — denial should block the tool
+    let response_plugin = InteractionResponsePlugin::from_request(&deny_request);
+    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> =
+        vec![Arc::new(response_plugin)];
+
+    let resume_result = StreamResult {
+        text: "Resuming".to_string(),
+        tool_calls: vec![carve_agent::types::ToolCall::new(
+            &interaction.id,
+            "increment",
+            json!({"path": "counter"}),
+        )],
+        usage: None,
+    };
+
+    let resumed_session = execute_tools_with_plugins(
+        suspended_session,
+        &resume_result,
+        &tools,
+        false,
+        &resume_plugins,
+    )
+    .await
+    .unwrap();
+
+    // Blocked tool should produce an error message (not execute)
+    assert_eq!(
+        resumed_session.message_count(),
+        1,
+        "Blocked tool should produce a message"
+    );
+    let msg = &resumed_session.messages[0];
+    assert_eq!(msg.role, carve_agent::types::Role::Tool);
+    assert!(
+        msg.content.contains("denied") || msg.content.contains("blocked") || msg.content.contains("Error"),
+        "Blocked message should mention denial/block, got: {}",
+        msg.content
+    );
+    // Counter should NOT have been incremented
+    let state = resumed_session.rebuild_state().unwrap();
+    assert!(
+        state.get("counter").is_none(),
+        "Counter should not exist when denied"
+    );
+}
+
+/// Test: InteractionResponsePlugin approval allows tool via execute_tools_with_plugins.
+///
+/// After suspend, approval (without PermissionPlugin re-running) lets the tool execute.
+#[tokio::test]
+async fn test_e2e_permission_approve_executes_via_execute_tools() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+    use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
+
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
+    );
+
+    let result = StreamResult {
+        text: "Calling increment".to_string(),
+        tool_calls: vec![carve_agent::types::ToolCall::new(
+            "call_inc",
+            "increment",
+            json!({"path": "counter"}),
+        )],
+        usage: None,
+    };
+
+    let tools = tool_map([IncrementTool]);
+    let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
+
+    // Phase 1: Suspend
+    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+        .await
+        .unwrap_err();
+
+    let (suspended_session, interaction) = match err {
+        AgentLoopError::PendingInteraction {
+            session,
+            interaction,
+        } => (*session, *interaction),
+        other => panic!("Expected PendingInteraction, got: {:?}", other),
+    };
+
+    // Phase 2: Client approves
+    let approve_request = RunAgentRequest::new("t1", "r1")
+        .with_message(AGUIMessage::tool("true", &interaction.id));
+    assert!(approve_request.is_interaction_approved(&interaction.id));
+
+    // Resume with only InteractionResponsePlugin (no PermissionPlugin)
+    let response_plugin = InteractionResponsePlugin::from_request(&approve_request);
+    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> =
+        vec![Arc::new(response_plugin)];
+
+    let resume_result = StreamResult {
+        text: "Resuming".to_string(),
+        tool_calls: vec![carve_agent::types::ToolCall::new(
+            &interaction.id,
+            "increment",
+            json!({"path": "counter"}),
+        )],
+        usage: None,
+    };
+
+    let resumed_session = execute_tools_with_plugins(
+        suspended_session,
+        &resume_result,
+        &tools,
+        false,
+        &resume_plugins,
+    )
+    .await
+    .unwrap();
+
+    // Tool should have executed: tool response message present
+    assert_eq!(
+        resumed_session.message_count(),
+        1,
+        "Tool response message should be present after approval"
+    );
+    let msg = &resumed_session.messages[0];
+    assert_eq!(msg.role, carve_agent::types::Role::Tool);
+    assert!(
+        msg.content.contains("new_value"),
+        "Tool result should contain new_value, got: {}",
+        msg.content
+    );
+
+    // pending_interaction should be cleared
+    let state_after = resumed_session.rebuild_state().unwrap();
+    let pending_after = state_after
+        .get("agent")
+        .and_then(|a| a.get("pending_interaction"));
+    assert!(
+        pending_after.is_none() || pending_after == Some(&Value::Null),
+        "pending_interaction should be cleared after approval, got: {:?}",
+        pending_after
+    );
+}
+
+// ============================================================================
 // Frontend Tool E2E Flow Tests
 // ============================================================================
 
