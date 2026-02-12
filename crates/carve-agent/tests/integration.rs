@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    ag_ui::MessageRole, ActivityHub, Context, ContextCategory, ContextProvider,
+    ag_ui::MessageRole, ActivityHub, AgentLoopError, Context, ContextCategory, ContextProvider,
     InteractionResponse, StateManager, SystemReminder, Tool, ToolDescriptor, ToolError,
     ToolExecutionLocation, ToolResult,
 };
@@ -830,14 +830,16 @@ async fn test_parallel_tool_execution_order() {
     };
 
     let tools = tool_map([AddTaskTool]);
-    let session = loop_execute_tools(session, &result, &tools, true)
+    let err = loop_execute_tools(session, &result, &tools, true)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    // All three tools should have produced messages
-    assert_eq!(session.message_count(), 3);
-    // All should have patches (adding tasks)
-    assert_eq!(session.patch_count(), 3);
+    match err {
+        AgentLoopError::StateError(msg) => {
+            assert!(msg.contains("conflicting parallel state patches"));
+        }
+        other => panic!("expected StateError for conflicting patches, got: {:?}", other),
+    }
 }
 
 #[tokio::test]
@@ -2414,17 +2416,16 @@ async fn test_parallel_execution_patch_conflict() {
     let tools = tool_map([IncrementTool]);
 
     // Execute in parallel mode
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let err = loop_execute_tools(session, &llm_response, &tools, true)
         .await
-        .unwrap();
+        .unwrap_err();
 
-    // All three patches collected
-    assert_eq!(session.patch_count(), 3);
-
-    // Rebuild state - last patch wins (all set to 1, so final is 1)
-    let state = session.rebuild_state().unwrap();
-    // In parallel mode, all tools see 0, all set to 1, so final is 1
-    assert_eq!(state["counter"]["value"], 1);
+    match err {
+        AgentLoopError::StateError(msg) => {
+            assert!(msg.contains("conflicting parallel state patches"));
+        }
+        other => panic!("expected StateError for conflicting patches, got: {:?}", other),
+    }
 }
 
 /// Test parallel execution with different fields - no conflict
