@@ -563,4 +563,129 @@ mod tests {
 
         assert!(step.tool_pending());
     }
+
+    // ========================================================================
+    // Corrupted / unexpected state shape fallback tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_permission_plugin_tools_is_string_not_object() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // "tools" is a string instead of an object — should not panic,
+        // falls back to default_behavior.
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // "tools" is not an object → tools.get(tool_id) returns None → falls
+        // back to default_behavior "allow"
+        assert!(!step.tool_blocked());
+        assert!(!step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_default_behavior_invalid_string() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // "default_behavior" is an unrecognized string — should fall back to Ask
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // parse_behavior("invalid_value") returns None → unwrap_or(Ask)
+        assert!(step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_default_behavior_is_number() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // "default_behavior" is a number instead of string — should fall back to Ask
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": 42, "tools": {} } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // as_str() on a number returns None → parse_behavior not called → unwrap_or(Ask)
+        assert!(step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_tool_value_is_number() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // Tool permission value is a number — should fall back to default_behavior
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "my_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // tools.get("my_tool") returns Some(123), as_str() returns None →
+        // parse_behavior not called → falls to default_behavior "allow"
+        assert!(!step.tool_blocked());
+        assert!(!step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_permission_plugin_permissions_is_array() {
+        use crate::phase::{Phase, StepContext, ToolContext};
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        // "permissions" is an array instead of object — should fall back to Ask
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "permissions": [1, 2, 3] }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+
+        let call = ToolCall::new("call_1", "any_tool", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        let plugin = PermissionPlugin;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        // Array can't .get("tools") → None → falls to default check →
+        // Array can't .get("default_behavior") → None → unwrap_or(Ask)
+        assert!(step.tool_pending());
+    }
 }

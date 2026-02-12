@@ -3814,4 +3814,215 @@ mod tests {
         assert_eq!(conditions.len(), 1);
         assert_eq!(conditions[0].id(), "timeout");
     }
+
+    // ========================================================================
+    // Parallel Tool Execution: Partial Failure Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parallel_tools_partial_failure() {
+        // When running tools in parallel, a failing tool should produce an error
+        // message, while the successful tool should still complete.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Call both".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_echo", "echo", json!({"message": "ok"})),
+                    crate::types::ToolCall::new("call_fail", "failing", json!({})),
+                ],
+                usage: None,
+            };
+
+            let mut tools = HashMap::new();
+            tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+            tools.insert("failing".to_string(), Arc::new(FailingTool) as Arc<dyn Tool>);
+
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+
+            // Both tools produce messages.
+            assert_eq!(session.message_count(), 2, "Both tools should produce a message");
+
+            // One should be success, one should be error.
+            let contents: Vec<&str> = session.messages.iter().map(|m| m.content.as_str()).collect();
+            let has_success = contents.iter().any(|c| c.contains("echoed"));
+            let has_error = contents.iter().any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
+            assert!(has_success, "Echo tool should succeed: {:?}", contents);
+            assert!(has_error, "Failing tool should produce error: {:?}", contents);
+        });
+    }
+
+    #[test]
+    fn test_sequential_tools_partial_failure() {
+        // Same test but with sequential execution.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Call both".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_echo", "echo", json!({"message": "ok"})),
+                    crate::types::ToolCall::new("call_fail", "failing", json!({})),
+                ],
+                usage: None,
+            };
+
+            let mut tools = HashMap::new();
+            tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
+            tools.insert("failing".to_string(), Arc::new(FailingTool) as Arc<dyn Tool>);
+
+            let session = execute_tools(session, &result, &tools, false).await.unwrap();
+
+            assert_eq!(session.message_count(), 2, "Both tools should produce a message");
+            let contents: Vec<&str> = session.messages.iter().map(|m| m.content.as_str()).collect();
+            let has_success = contents.iter().any(|c| c.contains("echoed"));
+            let has_error = contents.iter().any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
+            assert!(has_success, "Echo tool should succeed: {:?}", contents);
+            assert!(has_error, "Failing tool should produce error: {:?}", contents);
+        });
+    }
+
+    // ========================================================================
+    // Plugin Execution Order Tests
+    // ========================================================================
+
+    /// Plugin that records when it runs (appends to a shared Vec).
+    struct OrderTrackingPlugin {
+        id: &'static str,
+        order_log: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for OrderTrackingPlugin {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>) {
+            self.order_log
+                .lock()
+                .unwrap()
+                .push(format!("{}:{:?}", self.id, phase));
+        }
+    }
+
+    #[test]
+    fn test_plugin_execution_order_preserved() {
+        // Plugins should execute in the order they are provided.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+            let plugin_a = OrderTrackingPlugin {
+                id: "plugin_a",
+                order_log: Arc::clone(&log),
+            };
+            let plugin_b = OrderTrackingPlugin {
+                id: "plugin_b",
+                order_log: Arc::clone(&log),
+            };
+
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Test".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1", "echo", json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
+                Arc::new(plugin_a),
+                Arc::new(plugin_b),
+            ];
+
+            let _ = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+                .await;
+
+            let entries = log.lock().unwrap().clone();
+
+            // For each phase, plugin_a should appear before plugin_b.
+            let before_a = entries.iter().position(|e| e.starts_with("plugin_a:BeforeToolExecute"));
+            let before_b = entries.iter().position(|e| e.starts_with("plugin_b:BeforeToolExecute"));
+            if let (Some(a), Some(b)) = (before_a, before_b) {
+                assert!(a < b, "plugin_a should run before plugin_b in BeforeToolExecute phase");
+            }
+
+            let after_a = entries.iter().position(|e| e.starts_with("plugin_a:AfterToolExecute"));
+            let after_b = entries.iter().position(|e| e.starts_with("plugin_b:AfterToolExecute"));
+            if let (Some(a), Some(b)) = (after_a, after_b) {
+                assert!(a < b, "plugin_a should run before plugin_b in AfterToolExecute phase");
+            }
+        });
+    }
+
+    /// Plugin that blocks if it runs after another plugin has already set pending.
+    struct ConditionalBlockPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for ConditionalBlockPlugin {
+        fn id(&self) -> &str {
+            "conditional_block"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::BeforeToolExecute && step.tool_pending() {
+                step.block("Blocked because tool was pending".to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn test_plugin_order_affects_outcome() {
+        // When PendingPhasePlugin runs FIRST, it sets pending. Then
+        // ConditionalBlockPlugin sees pending and blocks. Net result: blocked.
+        // When reversed, ConditionalBlockPlugin sees no pending (does nothing),
+        // then PendingPhasePlugin sets pending. Net result: pending (not blocked).
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Test".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1", "echo", json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+
+            // Order 1: PendingPhasePlugin first → ConditionalBlockPlugin blocks.
+            let plugins_order1: Vec<Arc<dyn AgentPlugin>> = vec![
+                Arc::new(PendingPhasePlugin),
+                Arc::new(ConditionalBlockPlugin),
+            ];
+            let r1 = execute_tools_with_plugins(
+                session.clone(), &result, &tools, false, &plugins_order1,
+            ).await;
+            // When pending+blocked, the blocked result takes priority.
+            let s1 = r1.unwrap();
+            assert_eq!(s1.message_count(), 1);
+            assert!(
+                s1.messages[0].content.to_lowercase().contains("blocked")
+                    || s1.messages[0].content.to_lowercase().contains("pending"),
+                "Order 1 should block or produce error: {}",
+                s1.messages[0].content
+            );
+
+            // Order 2: ConditionalBlockPlugin first → sees no pending → PendingPhasePlugin sets pending.
+            let plugins_order2: Vec<Arc<dyn AgentPlugin>> = vec![
+                Arc::new(ConditionalBlockPlugin),
+                Arc::new(PendingPhasePlugin),
+            ];
+            let r2 = execute_tools_with_plugins(
+                session, &result, &tools, false, &plugins_order2,
+            ).await;
+            // Should be PendingInteraction (not blocked).
+            assert!(r2.is_err(), "Order 2 should result in PendingInteraction");
+            match r2.unwrap_err() {
+                AgentLoopError::PendingInteraction { .. } => {}
+                other => panic!("Expected PendingInteraction, got: {:?}", other),
+            }
+        });
+    }
 }

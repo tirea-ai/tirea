@@ -2818,4 +2818,194 @@ mod tests {
         let finish_step = type_names.iter().position(|n| *n == "FinishStep").unwrap();
         assert!(to_avail < finish_step);
     }
+
+    // ========================================================================
+    // End Event: Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_stream_collector_end_event_no_tool_calls_preserves_streamed() {
+        // When End event has no captured_tool_calls (None), the tool calls
+        // accumulated from streaming chunks should be preserved.
+        use genai::chat::StreamEnd;
+
+        let mut collector = StreamCollector::new();
+
+        // Accumulate a tool call from streaming chunks
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"test"}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        // End event with NO captured_tool_calls (some providers don't populate this)
+        let end = StreamEnd {
+            captured_content: None,
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1, "Streamed tool calls should be preserved");
+        assert_eq!(result.tool_calls[0].name, "search");
+        assert_eq!(result.tool_calls[0].arguments, json!({"q": "test"}));
+    }
+
+    #[test]
+    fn test_stream_collector_end_event_overrides_tool_name() {
+        // End event should override tool name when streamed chunk had wrong name.
+        use genai::chat::MessageContent;
+
+        let mut collector = StreamCollector::new();
+
+        // Streaming chunk with initial name
+        let tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"test"}"#.to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        // End event with different name (only fills if name was EMPTY, per line 136)
+        let end_tc = genai::chat::ToolCall {
+            call_id: "call_1".to_string(),
+            fn_name: "web_search".to_string(), // different name
+            fn_arguments: Value::String(r#"{"q":"test"}"#.to_string()),
+            thought_signatures: None,
+        };
+        let end = StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![end_tc])),
+            ..Default::default()
+        };
+        collector.process(ChatStreamEvent::End(end));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        // Current behavior: name only overridden if empty (line 136: `if partial.name.is_empty()`)
+        // So the original streaming name should be preserved.
+        assert_eq!(result.tool_calls[0].name, "search");
+    }
+
+    #[test]
+    fn test_stream_collector_whitespace_only_tool_name_filtered() {
+        // Tool calls with whitespace-only names should be filtered (ghost tool calls).
+        let mut collector = StreamCollector::new();
+
+        let tc = genai::chat::ToolCall {
+            call_id: "ghost_1".to_string(),
+            fn_name: "   ".to_string(), // whitespace only
+            fn_arguments: Value::String("{}".to_string()),
+            thought_signatures: None,
+        };
+        collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call: tc }));
+
+        let result = collector.finish();
+        // finish() filters by `!p.name.is_empty()` — whitespace-only name is NOT empty.
+        // This documents current behavior (whitespace names are kept).
+        // If this is a bug, fix the filter to use `.trim().is_empty()`.
+        assert_eq!(
+            result.tool_calls.len(),
+            1,
+            "Whitespace-only names are currently NOT filtered (document behavior)"
+        );
+    }
+
+    // ========================================================================
+    // Multiple / Interleaved Tool Call Tests
+    // ========================================================================
+
+    /// Helper: create a tool call chunk event.
+    fn tc_chunk(call_id: &str, fn_name: &str, args: &str) -> ChatStreamEvent {
+        ChatStreamEvent::ToolCallChunk(ToolChunk {
+            tool_call: genai::chat::ToolCall {
+                call_id: call_id.to_string(),
+                fn_name: fn_name.to_string(),
+                fn_arguments: Value::String(args.to_string()),
+                thought_signatures: None,
+            },
+        })
+    }
+
+    #[test]
+    fn test_stream_collector_two_tool_calls_sequential() {
+        // Two tool calls arriving sequentially.
+        let mut collector = StreamCollector::new();
+
+        collector.process(tc_chunk("tc_1", "search", r#"{"q":"foo"}"#));
+        collector.process(tc_chunk("tc_2", "fetch", r#"{"url":"https://x.com"}"#));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 2);
+
+        let names: Vec<&str> = result.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+        assert!(names.contains(&"search"));
+        assert!(names.contains(&"fetch"));
+
+        let search = result.tool_calls.iter().find(|tc| tc.name == "search").unwrap();
+        assert_eq!(search.arguments, json!({"q": "foo"}));
+
+        let fetch = result.tool_calls.iter().find(|tc| tc.name == "fetch").unwrap();
+        assert_eq!(fetch.arguments, json!({"url": "https://x.com"}));
+    }
+
+    #[test]
+    fn test_stream_collector_two_tool_calls_interleaved_chunks() {
+        // Two tool calls with interleaved argument chunks (accumulated args, AI SDK v6 pattern).
+        // Chunk 1: tc_a name only (empty args)
+        // Chunk 2: tc_b name only (empty args)
+        // Chunk 3: tc_a with partial args
+        // Chunk 4: tc_b with partial args
+        // Chunk 5: tc_a with full args (accumulated)
+        // Chunk 6: tc_b with full args (accumulated)
+        let mut collector = StreamCollector::new();
+
+        // Initial name-only chunks
+        collector.process(tc_chunk("tc_a", "search", ""));
+        collector.process(tc_chunk("tc_b", "fetch", ""));
+
+        // Partial args (accumulated pattern)
+        collector.process(tc_chunk("tc_a", "search", r#"{"q":"#));
+        collector.process(tc_chunk("tc_b", "fetch", r#"{"url":"#));
+
+        // Full accumulated args
+        collector.process(tc_chunk("tc_a", "search", r#"{"q":"a"}"#));
+        collector.process(tc_chunk("tc_b", "fetch", r#"{"url":"b"}"#));
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 2);
+
+        let search = result.tool_calls.iter().find(|tc| tc.name == "search").unwrap();
+        assert_eq!(search.arguments, json!({"q": "a"}));
+
+        let fetch = result.tool_calls.iter().find(|tc| tc.name == "fetch").unwrap();
+        assert_eq!(fetch.arguments, json!({"url": "b"}));
+    }
+
+    #[test]
+    fn test_stream_collector_tool_call_interleaved_with_text() {
+        // Text chunks interleaved between tool call chunks.
+        let mut collector = StreamCollector::new();
+
+        collector.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "I will ".to_string(),
+        }));
+        collector.process(tc_chunk("tc_1", "search", ""));
+        collector.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "search ".to_string(),
+        }));
+        collector.process(tc_chunk("tc_1", "search", r#"{"q":"test"}"#));
+        collector.process(ChatStreamEvent::Chunk(StreamChunk {
+            content: "for you.".to_string(),
+        }));
+
+        let result = collector.finish();
+        // Text should be accumulated
+        assert_eq!(result.text, "I will search for you.");
+        // Tool call should be present
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].arguments, json!({"q": "test"}));
+    }
 }

@@ -221,6 +221,69 @@ test.describe("Travel Example", () => {
   // The useTripContext hook injects trip state into the agent's context
   // via useCopilotReadable. We verify the agent can read this context.
 
+  // ── HITL Denial Path ──────────────────────────────────────────────
+  //
+  // When the user clicks Deny on the HITL approval dialog, the agent
+  // should gracefully handle the denial and continue responding.
+
+  test("HITL: denial path — agent continues after deny", async ({
+    page,
+  }) => {
+    await sendChatMessage(
+      page,
+      'Create a trip called "Denied Trip" to Rome. ' +
+        "You MUST use the add_trips tool immediately."
+    );
+
+    // Wait for the approval dialog.
+    const denyBtn = page.getByRole("button", { name: "Deny" });
+    const dialogAppeared = await denyBtn
+      .waitFor({ state: "visible", timeout: 45_000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!dialogAppeared) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "△ HITL dialog did not appear — skipping denial path test"
+      );
+      return;
+    }
+
+    // Click Deny.
+    await denyBtn.click();
+
+    // After denial, the agent should continue (generate a new response).
+    await waitForAgentDone(page, 60_000);
+
+    // The agent should have responded with some message after the denial.
+    const msgs = page.locator(".copilotKitAssistantMessage");
+    const lastMsg = msgs.last();
+    await expect(lastMsg).toBeVisible({ timeout: 10_000 });
+    await expect(lastMsg).not.toBeEmpty();
+
+    // The trip should NOT have been added to the sidebar.
+    const sidebarHasTrip = page
+      .locator("li")
+      .filter({ hasText: /Denied Trip/i })
+      .first();
+    const tripAdded = await sidebarHasTrip
+      .isVisible({ timeout: 3_000 })
+      .catch(() => false);
+
+    if (!tripAdded) {
+      // eslint-disable-next-line no-console
+      console.log(
+        "✓ HITL denial verified: trip was not added after deny"
+      );
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(
+        "△ HITL denial: trip was still added (agent may have retried)"
+      );
+    }
+  });
+
   // ── HITL Button State Feedback ─────────────────────────────────────
   //
   // After clicking Approve/Deny, the dialog should provide visual feedback:

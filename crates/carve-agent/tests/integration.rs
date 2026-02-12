@@ -3809,6 +3809,112 @@ async fn test_file_storage_special_characters_in_id() {
     assert_eq!(loaded.unwrap().message_count(), 1);
 }
 
+// ============================================================================
+// FileStorage Concurrent Write Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_file_storage_concurrent_writes_different_sessions() {
+    // Multiple tasks writing different sessions concurrently should all succeed.
+    let temp_dir = TempDir::new().unwrap();
+    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+
+    let mut handles = vec![];
+    for i in 0..20 {
+        let s = Arc::clone(&storage);
+        handles.push(tokio::spawn(async move {
+            let session = Session::new(&format!("session_{}", i))
+                .with_message(Message::user(&format!("Message from session {}", i)));
+            s.save(&session).await.unwrap();
+        }));
+    }
+
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // Verify all 20 sessions were persisted.
+    for i in 0..20 {
+        let loaded = storage.load(&format!("session_{}", i)).await.unwrap();
+        assert!(loaded.is_some(), "session_{} should exist", i);
+        let s = loaded.unwrap();
+        assert_eq!(s.message_count(), 1);
+        assert!(s.messages[0].content.contains(&format!("session {}", i)));
+    }
+}
+
+#[tokio::test]
+async fn test_file_storage_concurrent_writes_same_session() {
+    // Multiple tasks writing the SAME session concurrently.
+    // Last-write-wins: all writes should succeed without panic/corruption,
+    // and the final file should be valid JSON.
+    let temp_dir = TempDir::new().unwrap();
+    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+
+    let mut handles = vec![];
+    for i in 0..10 {
+        let s = Arc::clone(&storage);
+        handles.push(tokio::spawn(async move {
+            let session = Session::new("shared_session")
+                .with_message(Message::user(&format!("Write {}", i)));
+            s.save(&session).await.unwrap();
+        }));
+    }
+
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // The session file should be valid (no corruption).
+    let loaded = storage.load("shared_session").await.unwrap();
+    assert!(loaded.is_some(), "shared_session should exist");
+    let session = loaded.unwrap();
+    assert_eq!(session.message_count(), 1);
+    // The content should be from one of the writes.
+    assert!(session.messages[0].content.starts_with("Write "));
+}
+
+#[tokio::test]
+async fn test_file_storage_read_write_interleaved() {
+    // Interleaved reads and writes should not deadlock or corrupt permanently.
+    // Note: FileStorage does not have write locking, so concurrent reads MAY
+    // encounter partial writes. The test verifies no panic/deadlock occurs and
+    // that the final state is consistent after all writes complete.
+    let temp_dir = TempDir::new().unwrap();
+    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+
+    // Seed an initial session.
+    let initial = Session::new("interleaved").with_message(Message::user("initial"));
+    storage.save(&initial).await.unwrap();
+
+    let mut handles = vec![];
+    for i in 0..10 {
+        let s = Arc::clone(&storage);
+        if i % 2 == 0 {
+            // Writers
+            handles.push(tokio::spawn(async move {
+                let session = Session::new("interleaved")
+                    .with_message(Message::user(&format!("update {}", i)));
+                s.save(&session).await.unwrap();
+            }));
+        } else {
+            // Readers — may see partial writes, so just verify no panic.
+            handles.push(tokio::spawn(async move {
+                // load() may return Err on partial write; that's acceptable.
+                let _ = s.load("interleaved").await;
+            }));
+        }
+    }
+
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // After all writes complete, a final read should succeed.
+    let final_session = storage.load("interleaved").await.unwrap().unwrap();
+    assert!(final_session.message_count() >= 1);
+}
+
 #[tokio::test]
 async fn test_storage_empty_session() {
     let storage = MemoryStorage::new();

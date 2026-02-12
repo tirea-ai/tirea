@@ -7797,4 +7797,281 @@ mod tests {
         let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, deserialized);
     }
+
+    // ========================================================================
+    // SSE Serialize → Parse Round-Trip Tests
+    // ========================================================================
+
+    /// Helper: strip SSE framing (`data: …\n\n`) and parse back to AGUIEvent.
+    fn parse_sse_line(sse_line: &str) -> AGUIEvent {
+        let json_str = sse_line
+            .strip_prefix("data: ")
+            .expect("SSE line must start with 'data: '")
+            .strip_suffix("\n\n")
+            .expect("SSE line must end with '\\n\\n'");
+        serde_json::from_str(json_str).expect("SSE payload must be valid AGUIEvent JSON")
+    }
+
+    #[test]
+    fn test_sse_round_trip_full_lifecycle() {
+        // Simulate a realistic agent event sequence and verify every SSE
+        // line parses back to a valid AGUIEvent.
+        use crate::stream::AgentEvent;
+
+        let mut adapter = AgUiAdapter::new("th_rt".to_string(), "run_rt".to_string());
+
+        let events = vec![
+            AgentEvent::TextDelta { delta: "Hello ".to_string() },
+            AgentEvent::TextDelta { delta: "world".to_string() },
+            AgentEvent::ToolCallStart { id: "tc_1".to_string(), name: "search".to_string() },
+            AgentEvent::ToolCallDelta { id: "tc_1".to_string(), args_delta: r#"{"q":"test"}"#.to_string() },
+            AgentEvent::ToolCallReady { id: "tc_1".to_string(), name: "search".to_string(), arguments: json!({"q":"test"}) },
+            AgentEvent::ToolCallDone { id: "tc_1".to_string(), result: crate::ToolResult::success("search", json!({"results": []})), patch: None },
+            AgentEvent::RunFinish { thread_id: "th_rt".to_string(), run_id: "run_rt".to_string(), result: None, stop_reason: None },
+        ];
+
+        let mut all_sse: Vec<String> = Vec::new();
+        for ev in &events {
+            all_sse.extend(adapter.to_sse(ev));
+        }
+
+        // Every SSE line must parse back to a valid AGUIEvent.
+        assert!(!all_sse.is_empty(), "Should produce at least some SSE lines");
+        let mut parsed: Vec<AGUIEvent> = Vec::new();
+        for line in &all_sse {
+            parsed.push(parse_sse_line(line));
+        }
+
+        // Verify expected event types are present.
+        // Note: RUN_STARTED is emitted by the server wrapper, not the adapter.
+        let types: Vec<&str> = parsed.iter().map(|e| match e {
+            AGUIEvent::RunStarted { .. } => "RUN_STARTED",
+            AGUIEvent::RunFinished { .. } => "RUN_FINISHED",
+            AGUIEvent::StepStarted { .. } => "STEP_STARTED",
+            AGUIEvent::StepFinished { .. } => "STEP_FINISHED",
+            AGUIEvent::TextMessageStart { .. } => "TEXT_MESSAGE_START",
+            AGUIEvent::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
+            AGUIEvent::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
+            AGUIEvent::ToolCallStart { .. } => "TOOL_CALL_START",
+            AGUIEvent::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
+            AGUIEvent::ToolCallEnd { .. } => "TOOL_CALL_END",
+            AGUIEvent::StateSnapshot { .. } => "STATE_SNAPSHOT",
+            _ => "OTHER",
+        }).collect();
+
+        assert!(types.contains(&"TEXT_MESSAGE_CONTENT"), "Must have TEXT_MESSAGE_CONTENT");
+        assert!(types.contains(&"TOOL_CALL_START"), "Must have TOOL_CALL_START");
+        assert!(types.contains(&"RUN_FINISHED"), "Must have RUN_FINISHED");
+    }
+
+    #[test]
+    fn test_sse_round_trip_state_snapshot() {
+        use crate::stream::AgentEvent;
+
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let state = json!({"trips": [{"name": "Paris"}], "count": 1});
+        let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+        let sse_lines = adapter.to_sse(&event);
+
+        for line in &sse_lines {
+            let parsed = parse_sse_line(line);
+            if let AGUIEvent::StateSnapshot { snapshot, .. } = &parsed {
+                assert_eq!(snapshot, &state, "State snapshot must survive round-trip");
+            }
+        }
+    }
+
+    #[test]
+    fn test_sse_round_trip_error_event() {
+        use crate::stream::AgentEvent;
+
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let event = AgentEvent::Error { message: "something went wrong".to_string() };
+        let sse_lines = adapter.to_sse(&event);
+
+        assert!(!sse_lines.is_empty());
+        for line in &sse_lines {
+            let parsed = parse_sse_line(line);
+            if let AGUIEvent::RunError { message, .. } = &parsed {
+                assert!(message.contains("something went wrong"));
+            }
+        }
+    }
+
+    #[test]
+    fn test_sse_round_trip_special_chars_in_text() {
+        use crate::stream::AgentEvent;
+
+        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
+        let text = "line1\nline2\t\"quotes\" 中文 emoji🎉 \\backslash";
+        let event = AgentEvent::TextDelta { delta: text.to_string() };
+        let sse_lines = adapter.to_sse(&event);
+
+        for line in &sse_lines {
+            let parsed = parse_sse_line(line);
+            if let AGUIEvent::TextMessageContent { delta, .. } = &parsed {
+                assert_eq!(delta, text, "Special characters must survive SSE round-trip");
+            }
+        }
+    }
+
+    // ========================================================================
+    // RunAgentRequest Deserialization & Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_request_deserialization_minimal() {
+        let json = r#"{"threadId":"t1","runId":"r1","messages":[]}"#;
+        let req: RunAgentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.thread_id, "t1");
+        assert_eq!(req.run_id, "r1");
+        assert!(req.messages.is_empty());
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_request_deserialization_with_messages_and_tool() {
+        let json = r#"{
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+                {"role": "tool", "content": "true", "toolCallId": "tc_1"}
+            ]
+        }"#;
+        let req: RunAgentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.messages.len(), 3);
+        assert_eq!(req.last_user_message(), Some("hello"));
+
+        // Tool message should have tool_call_id.
+        let tool_msg = req.messages.iter().find(|m| m.role == MessageRole::Tool).unwrap();
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("tc_1"));
+    }
+
+    #[test]
+    fn test_request_last_user_message_returns_last() {
+        let req = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("First"))
+            .with_message(AGUIMessage::assistant("Response"))
+            .with_message(AGUIMessage::user("Second"));
+        assert_eq!(req.last_user_message(), Some("Second"));
+    }
+
+    #[test]
+    fn test_request_last_user_message_none_when_no_user() {
+        let req = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::assistant("Hi"));
+        assert_eq!(req.last_user_message(), None);
+    }
+
+    #[test]
+    fn test_request_deserialization_with_optional_fields() {
+        let json = r#"{
+            "threadId": "t1",
+            "runId": "r1",
+            "messages": [],
+            "state": {"counter": 5},
+            "model": "gpt-4",
+            "systemPrompt": "You are helpful."
+        }"#;
+        let req: RunAgentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.state, Some(json!({"counter": 5})));
+        assert_eq!(req.model.as_deref(), Some("gpt-4"));
+        assert_eq!(req.system_prompt.as_deref(), Some("You are helpful."));
+    }
+
+    // ========================================================================
+    // apply_agui_request_to_session: tool message with both tool_call_id AND id
+    // ========================================================================
+
+    #[test]
+    fn test_apply_agui_request_tool_msg_dedup_by_tool_call_id_ignores_id() {
+        // Tool messages dedup by tool_call_id FIRST (line 1352-1358).
+        // Even if the message has a unique `id`, it should still be deduped
+        // by tool_call_id.
+        let session = Session::new("s1").with_message(crate::types::Message {
+            id: None,
+            role: crate::types::Role::Tool,
+            content: "existing result".to_string(),
+            tool_calls: None,
+            tool_call_id: Some("tc-1".to_string()),
+            visibility: crate::types::Visibility::default(),
+            metadata: None,
+        });
+
+        // Request has a tool message with same tool_call_id but a unique id
+        let mut tool_msg = AGUIMessage::tool("new result", "tc-1");
+        tool_msg.id = Some("unique-id-123".to_string());
+
+        let request = RunAgentRequest::new("t1", "r1").with_message(tool_msg);
+        let result = super::apply_agui_request_to_session(session, &request);
+
+        // Should NOT add the tool message — dedup by tool_call_id takes priority
+        assert_eq!(result.messages.len(), 1);
+        assert_eq!(result.messages[0].content, "existing result");
+    }
+
+    #[test]
+    fn test_apply_agui_request_tool_msg_without_tool_call_id_skipped() {
+        // Tool message with no tool_call_id should be skipped entirely
+        // (the `continue` at line 1358 exits the loop iteration).
+        let session = Session::new("s1")
+            .with_message(crate::types::Message::user("existing"));
+
+        let mut tool_msg = AGUIMessage::tool("orphan result", "");
+        tool_msg.id = Some("orphan-id".to_string());
+        tool_msg.tool_call_id = None;
+
+        let request = RunAgentRequest::new("t1", "r1").with_message(tool_msg);
+        let result = super::apply_agui_request_to_session(session, &request);
+
+        // Tool msg without tool_call_id is skipped by the `continue` at line 1358
+        assert_eq!(result.messages.len(), 1);
+    }
+
+    // ========================================================================
+    // seed_session_from_request: null state edge case
+    // ========================================================================
+
+    #[test]
+    fn test_should_not_seed_when_request_state_is_null() {
+        // request.state = Some(Value::Null) — should_seed returns false
+        // because `!s.is_null()` on line 1284 is false.
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_state(Value::Null)
+            .with_message(AGUIMessage::user("hello"));
+
+        // Even though request has messages, state is Null → request_has_state is false.
+        // But request_has_messages is true, so it should STILL seed.
+        let should = super::should_seed_session_from_request(&session, &request);
+        assert!(should, "should seed when request has messages even if state is null");
+    }
+
+    #[test]
+    fn test_seed_session_with_null_state_uses_session_state() {
+        // When request.state is Some(Null), seed_session_from_request should
+        // fall back to session's original state (line 1296-1299).
+        let session = Session::with_initial_state("s1", json!({"existing": true}));
+        let mut request = RunAgentRequest::new("t1", "r1")
+            .with_message(AGUIMessage::user("hello"));
+        request.state = Some(Value::Null);
+
+        let seeded = super::seed_session_from_request(session, &request);
+        // seed_session uses request.state.unwrap_or(session.state) — since
+        // request.state is Some(Null), it will use Null, NOT session state.
+        // This documents the current behavior.
+        assert_eq!(seeded.state, Value::Null);
+    }
+
+    #[test]
+    fn test_should_not_seed_when_only_null_state_no_messages() {
+        // request.state = Some(Null), no messages → should NOT seed
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1").with_state(Value::Null);
+
+        let should = super::should_seed_session_from_request(&session, &request);
+        assert!(!should, "null state alone should not trigger seeding");
+    }
 }
