@@ -107,7 +107,7 @@ fn test_context_runtime_typed_access() {
     let doc = json!({});
     let ctx = Context::new(&doc, "call_1", "tool:test").with_runtime(Some(&rt));
 
-    let user = ctx.runtime::<UserInfo>();
+    let user = ctx.runtime::<UserInfo>().unwrap();
     assert_eq!(user.user_id().unwrap(), "u-42");
     assert_eq!(user.locale().unwrap(), "zh-CN");
 }
@@ -132,11 +132,14 @@ fn test_context_runtime_ref_none() {
 }
 
 #[test]
-#[should_panic(expected = "no Runtime set")]
-fn test_context_runtime_panics_without_runtime() {
+fn test_context_runtime_without_runtime_returns_error() {
     let doc = json!({});
     let ctx = Context::new(&doc, "c1", "s1");
-    let _user = ctx.runtime::<UserInfo>();
+    let err = ctx.runtime::<UserInfo>().err().unwrap();
+    assert_eq!(
+        err.to_string(),
+        "invalid operation: Context::runtime() called but no Runtime set"
+    );
 }
 
 #[test]
@@ -161,7 +164,7 @@ fn test_context_state_and_runtime_independent() {
     let state_user = ctx.state::<UserInfo>("");
     assert_eq!(state_user.user_id().unwrap(), "state-user");
 
-    let rt_user = ctx.runtime::<UserInfo>();
+    let rt_user = ctx.runtime::<UserInfo>().unwrap();
     assert_eq!(rt_user.user_id().unwrap(), "runtime-user");
 
     // Writing to state should not affect runtime

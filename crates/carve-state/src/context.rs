@@ -6,7 +6,7 @@
 
 use crate::runtime::Runtime;
 use crate::state::{PatchSink, State};
-use crate::{Op, Patch, Path, TrackedPatch};
+use crate::{CarveError, CarveResult, Op, Patch, Path, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -114,11 +114,12 @@ impl<'a> Context<'a> {
 
     /// Get a typed value from the runtime (same API as `ctx.state::<T>()`).
     ///
-    /// Panics if no runtime is set.
-    pub fn runtime<T: State>(&self) -> T::Ref<'_> {
-        self.runtime
-            .expect("Context::runtime() called but no Runtime set")
-            .get::<T>()
+    /// Returns an error if no runtime is set on the context.
+    pub fn runtime<T: State>(&self) -> CarveResult<T::Ref<'_>> {
+        let runtime = self
+            .runtime
+            .ok_or_else(|| CarveError::invalid_operation("Context::runtime() called but no Runtime set"))?;
+        Ok(runtime.get::<T>())
     }
 
     /// Get a raw JSON value from the runtime by key.
