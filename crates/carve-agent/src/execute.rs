@@ -54,8 +54,7 @@ pub async fn execute_single_tool_with_runtime(
     };
 
     // Create context for this tool call
-    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name))
-        .with_runtime(runtime);
+    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name)).with_runtime(runtime);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {
@@ -135,12 +134,23 @@ pub async fn execute_tools_sequential(
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let exec = execute_single_tool(tool.as_deref(), call, &state).await;
+        let mut exec = execute_single_tool(tool.as_deref(), call, &state).await;
 
         // Apply patch to state for next tool
         if let Some(ref patch) = exec.patch {
-            if let Ok(new_state) = apply_patch(&state, patch.patch()) {
-                state = new_state;
+            match apply_patch(&state, patch.patch()) {
+                Ok(new_state) => {
+                    state = new_state;
+                }
+                Err(e) => {
+                    exec.result = ToolResult::error(
+                        &call.name,
+                        format!("failed to apply tool patch for call '{}': {}", call.id, e),
+                    );
+                    exec.patch = None;
+                    executions.push(exec);
+                    break;
+                }
             }
         }
 
@@ -160,6 +170,8 @@ mod tests {
     use super::*;
     use crate::traits::tool::{ToolDescriptor, ToolError};
     use async_trait::async_trait;
+    use carve_state_derive::State;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     struct EchoTool;
@@ -187,6 +199,33 @@ mod tests {
             // In real usage, state would be accessed via ctx.state::<T>()
             // For this test, we just return success
             Ok(ToolResult::success("counter", json!({"incremented": true})))
+        }
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+    struct SequentialCounterState {
+        counter: i64,
+    }
+
+    struct InvalidIncrementTool;
+
+    #[async_trait]
+    impl Tool for InvalidIncrementTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "invalid_increment",
+                "InvalidIncrement",
+                "Produces an increment patch that can fail to apply",
+            )
+        }
+
+        async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+            let state = ctx.state::<SequentialCounterState>("");
+            state.increment_counter(1);
+            Ok(ToolResult::success(
+                "invalid_increment",
+                json!({"ok": true}),
+            ))
         }
     }
 
@@ -287,6 +326,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_tools_sequential_surfaces_patch_apply_failure() {
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert(
+            "invalid_increment".to_string(),
+            Arc::new(InvalidIncrementTool),
+        );
+        tools.insert("echo".to_string(), Arc::new(EchoTool));
+
+        let calls = vec![
+            ToolCall::new("call_bad", "invalid_increment", json!({})),
+            ToolCall::new("call_echo", "echo", json!({"n": 2})),
+        ];
+
+        // Missing `counter` makes increment patch application fail.
+        let state = json!({});
+        let (_final_state, executions) = execute_tools_sequential(&tools, &calls, &state).await;
+
+        assert_eq!(
+            executions.len(),
+            1,
+            "execution should stop once patch apply fails"
+        );
+        assert!(
+            executions[0].result.is_error(),
+            "patch apply failure should surface as tool execution error"
+        );
+        assert!(
+            executions[0]
+                .result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to apply tool patch"),
+            "expected patch apply error message, got: {:?}",
+            executions[0].result.message
+        );
+    }
+
+    #[tokio::test]
     async fn test_tool_execution_error() {
         struct FailingTool;
 
@@ -344,7 +422,10 @@ mod tests {
                     .runtime_value("user_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                Ok(ToolResult::success("rt_reader", json!({"user_id": user_id})))
+                Ok(ToolResult::success(
+                    "rt_reader",
+                    json!({"user_id": user_id}),
+                ))
             }
         }
 
