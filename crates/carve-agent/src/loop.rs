@@ -469,6 +469,20 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_patch()
 }
 
+/// Replace a placeholder tool message with the real result.
+///
+/// Finds the tool message matching `tool_call_id` that contains "awaiting approval"
+/// and replaces its content with the real tool result message.
+fn replace_placeholder_tool_message(session: &mut Session, tool_call_id: &str, real_msg: Message) {
+    if let Some(msg) = session.messages.iter_mut().rev().find(|m| {
+        m.role == crate::types::Role::Tool
+            && m.tool_call_id.as_deref() == Some(tool_call_id)
+            && m.content.contains("awaiting approval")
+    }) {
+        msg.content = real_msg.content;
+    }
+}
+
 struct AppliedToolResults {
     session: Session,
     pending_interaction: Option<Interaction>,
@@ -1528,6 +1542,54 @@ fn run_loop_stream_impl_with_provider(
             run_id: run_id.clone(),
             parent_run_id: run_ctx.parent_run_id,
         };
+
+        // Resume pending tool execution via plugin mechanism.
+        // Plugins can request tool replay during SessionStart by populating
+        // `replay_tool_calls` in the step context. The loop handles actual execution
+        // since only it has access to the tools map.
+        let replay_calls = plugin_data.data.get("__replay_tool_calls")
+            .and_then(|v| serde_json::from_value::<Vec<crate::types::ToolCall>>(v.clone()).ok())
+            .unwrap_or_default();
+        if !replay_calls.is_empty() {
+            plugin_data.data.remove("__replay_tool_calls");
+            for tool_call in &replay_calls {
+                if let Some(tool) = tools.get(&tool_call.name) {
+                    let state = session.rebuild_state().unwrap_or_default();
+                    let ctx = carve_state::Context::new(&state, &tool_call.id, format!("tool:{}", tool_call.name));
+                    let result = match tool.execute(tool_call.arguments.clone(), &ctx).await {
+                        Ok(r) => r,
+                        Err(e) => ToolResult::error(&tool_call.name, e.to_string()),
+                    };
+                    let patch = ctx.take_patch();
+
+                    // Replace the placeholder message with the real tool result.
+                    let real_msg = tool_response(&tool_call.id, &result);
+                    replace_placeholder_tool_message(&mut session, &tool_call.id, real_msg);
+
+                    // Apply tool patches.
+                    if !patch.patch().is_empty() {
+                        session = session.with_patch(patch);
+                    }
+
+                    yield AgentEvent::ToolCallDone {
+                        id: tool_call.id.clone(),
+                        result,
+                        patch: None,
+                    };
+                }
+            }
+
+            // Clear pending_interaction state after replaying tools.
+            if let Ok(state) = session.rebuild_state() {
+                let clear_patch = clear_agent_pending_interaction(&state);
+                if !clear_patch.patch().is_empty() {
+                    session = session.with_patch(clear_patch);
+                }
+                yield AgentEvent::StateSnapshot {
+                    snapshot: session.rebuild_state().unwrap_or_default(),
+                };
+            }
+        }
 
         loop {
             // Check cancellation at the top of each iteration.

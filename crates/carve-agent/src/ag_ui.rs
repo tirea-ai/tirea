@@ -1494,6 +1494,53 @@ impl InteractionResponsePlugin {
     pub fn has_responses(&self) -> bool {
         !self.approved_ids.is_empty() || !self.denied_ids.is_empty()
     }
+
+    /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
+    fn on_session_start(&self, step: &mut StepContext<'_>) {
+        use crate::state_types::AGENT_STATE_PATH;
+
+        let Ok(state) = step.session.rebuild_state() else {
+            return;
+        };
+
+        // Check if there's a persisted pending_interaction.
+        let pending_id = state
+            .get(AGENT_STATE_PATH)
+            .and_then(|a| a.get("pending_interaction"))
+            .and_then(|p| p.get("id"))
+            .and_then(|id| id.as_str());
+
+        let Some(pending_id) = pending_id else {
+            return;
+        };
+
+        // Check if the client approved this interaction.
+        let is_approved = self.approved_ids.iter().any(|id| id == pending_id);
+        if !is_approved {
+            return;
+        }
+
+        // Find the pending tool call from the last assistant message with tool_calls.
+        let tool_call = step
+            .session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| {
+                m.role == crate::types::Role::Assistant && m.tool_calls.is_some()
+            })
+            .and_then(|m| m.tool_calls.as_ref())
+            .and_then(|calls| calls.first())
+            .cloned();
+
+        if let Some(call) = tool_call {
+            // Schedule the tool call for replay by the loop.
+            step.set(
+                "__replay_tool_calls",
+                serde_json::to_value(vec![call]).unwrap_or_default(),
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -1503,9 +1550,13 @@ impl AgentPlugin for InteractionResponsePlugin {
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        // Only act in BeforeToolExecute phase
-        if phase != Phase::BeforeToolExecute {
-            return;
+        match phase {
+            Phase::SessionStart => {
+                self.on_session_start(step);
+                return;
+            }
+            Phase::BeforeToolExecute => {}
+            _ => return,
         }
 
         // Check if there's a tool context
