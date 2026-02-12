@@ -905,7 +905,16 @@ impl AiSdkEncoder {
             }
 
             AgentEvent::StepStart => vec![UIStreamEvent::start_step()],
-            AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
+            AgentEvent::StepEnd => {
+                // AI SDK v6 resets activeTextParts on finish-step, so we must
+                // close any open text block before emitting it.
+                let mut events = Vec::new();
+                if self.text_open {
+                    events.push(self.close_text());
+                }
+                events.push(UIStreamEvent::finish_step());
+                events
+            }
             AgentEvent::RunStart { .. } | AgentEvent::InferenceComplete { .. } => vec![],
 
             AgentEvent::StateSnapshot { snapshot } => {
@@ -2078,6 +2087,105 @@ mod tests {
             delta: "x".to_string(),
         });
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_encoder_step_end_closes_text() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // Open text
+        enc.on_agent_event(&AgentEvent::TextDelta {
+            delta: "hi".to_string(),
+        });
+
+        // StepEnd should close text before finish-step
+        let out = enc.on_agent_event(&AgentEvent::StepEnd);
+        assert_eq!(out.len(), 2);
+        assert!(matches!(out[0], UIStreamEvent::TextEnd { .. }));
+        assert!(matches!(out[1], UIStreamEvent::FinishStep));
+    }
+
+    #[test]
+    fn test_encoder_step_end_without_text_no_text_end() {
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+
+        // StepEnd without text should not emit text-end
+        let out = enc.on_agent_event(&AgentEvent::StepEnd);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(out[0], UIStreamEvent::FinishStep));
+    }
+
+    #[test]
+    fn test_encoder_text_tool_step_end_full_lifecycle() {
+        // Reproduces the AI SDK v6 "text-end for missing text part" bug:
+        // text-start → text-delta → finish-step(resets activeTextParts) → text-end → crash
+        // After fix: text-end is emitted BEFORE finish-step.
+        use crate::stream::AgentEvent;
+
+        let mut enc = AiSdkEncoder::new("run_1".to_string());
+        let mut all_events = enc.prologue();
+
+        // Step 1: text + tool + step end
+        for ev in &[
+            AgentEvent::StepStart,
+            AgentEvent::TextDelta { delta: "Plan: ".to_string() },
+            AgentEvent::ToolCallStart { id: "tc1".to_string(), name: "search".to_string() },
+            AgentEvent::ToolCallDone {
+                id: "tc1".to_string(),
+                result: crate::ToolResult::success("search", serde_json::json!([])),
+                patch: None,
+            },
+            AgentEvent::StepEnd,
+        ] {
+            all_events.extend(enc.on_agent_event(ev));
+        }
+
+        // Step 2: text + finish
+        for ev in &[
+            AgentEvent::StepStart,
+            AgentEvent::TextDelta { delta: "Done".to_string() },
+            AgentEvent::StepEnd,
+            AgentEvent::RunFinish {
+                thread_id: "t".to_string(),
+                run_id: "run_1".to_string(),
+                result: None,
+                stop_reason: None,
+            },
+        ] {
+            all_events.extend(enc.on_agent_event(ev));
+        }
+
+        let types: Vec<String> = all_events
+            .iter()
+            .map(|e| {
+                let json = serde_json::to_string(e).unwrap();
+                let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                v["type"].as_str().unwrap().to_string()
+            })
+            .collect();
+
+        // Every text-start must have a text-end BEFORE finish-step
+        assert_eq!(
+            types,
+            vec![
+                "start",
+                "start-step",
+                "text-start", "text-delta",   // txt_0
+                "text-end",                    // txt_0 closed before tool
+                "tool-input-start",
+                "tool-output-available",
+                "finish-step",                 // safe: no open text
+                "start-step",
+                "text-start", "text-delta",    // txt_1
+                "text-end",                    // txt_1 closed before finish-step
+                "finish-step",
+                "finish",                      // no extra text-end needed
+            ]
+        );
     }
 
     #[test]
