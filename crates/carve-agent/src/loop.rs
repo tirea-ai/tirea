@@ -54,7 +54,7 @@ use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::{Message, MessageMetadata};
 use async_stream::stream;
 use async_trait::async_trait;
-use carve_state::{ActivityManager, Context, TrackedPatch};
+use carve_state::{ActivityManager, Context, PatchExt, TrackedPatch};
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -537,10 +537,53 @@ struct AppliedToolResults {
     state_snapshot: Option<Value>,
 }
 
+fn validate_parallel_state_patch_conflicts(
+    results: &[ToolExecutionResult],
+) -> Result<(), AgentLoopError> {
+    for (left_idx, left) in results.iter().enumerate() {
+        let mut left_patches: Vec<&TrackedPatch> = Vec::new();
+        if let Some(ref patch) = left.execution.patch {
+            left_patches.push(patch);
+        }
+        left_patches.extend(left.pending_patches.iter());
+
+        if left_patches.is_empty() {
+            continue;
+        }
+
+        for right in results.iter().skip(left_idx + 1) {
+            let mut right_patches: Vec<&TrackedPatch> = Vec::new();
+            if let Some(ref patch) = right.execution.patch {
+                right_patches.push(patch);
+            }
+            right_patches.extend(right.pending_patches.iter());
+
+            if right_patches.is_empty() {
+                continue;
+            }
+
+            for left_patch in &left_patches {
+                for right_patch in &right_patches {
+                    let conflicts = left_patch.patch().conflicts_with(right_patch.patch());
+                    if let Some(conflict) = conflicts.first() {
+                        return Err(AgentLoopError::StateError(format!(
+                            "conflicting parallel state patches between '{}' and '{}' at {}",
+                            left.execution.call.id, right.execution.call.id, conflict.path
+                        )));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn apply_tool_results_to_session(
     session: Session,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
+    parallel_tools: bool,
 ) -> Result<AppliedToolResults, AgentLoopError> {
     let mut pending_interactions = results
         .iter()
@@ -559,6 +602,10 @@ fn apply_tool_results_to_session(
     }
 
     let pending_interaction = pending_interactions.pop();
+
+    if parallel_tools {
+        validate_parallel_state_patch_conflicts(results)?;
+    }
 
     // Collect patches from completed tools and plugin pending patches.
     let mut patches: Vec<TrackedPatch> = collect_patches(
@@ -895,7 +942,7 @@ pub async fn execute_tools_with_plugins(
         .await
     }?;
 
-    let applied = apply_tool_results_to_session(session, &results, None)?;
+    let applied = apply_tool_results_to_session(session, &results, None, parallel)?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
             session: Box::new(applied.session),
@@ -1540,13 +1587,21 @@ pub async fn run_loop(
             plugin_data.data = last.plugin_data.clone();
         }
 
-        let applied = match apply_tool_results_to_session(session, &results, None) {
-            Ok(a) => a,
-            Err(e) => {
-                // Session consumed; SessionEnd can't run with the original session.
-                return Err(e);
-            }
-        };
+        let session_before_apply = session.clone();
+        let applied =
+            match apply_tool_results_to_session(session, &results, None, config.parallel_tools) {
+                Ok(a) => a,
+                Err(e) => {
+                    let _ = emit_session_end(
+                        session_before_apply,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
         session = applied.session;
 
         // Pause if any tool is waiting for client response.
@@ -2327,22 +2382,30 @@ fn run_loop_stream_impl_with_provider(
                     };
                 }
             }
-            let thread_id = session.id.clone();
-            let applied = match apply_tool_results_to_session(session, &results, Some(step_meta)) {
+            let session_before_apply = session.clone();
+            let applied = match apply_tool_results_to_session(
+                session,
+                &results,
+                Some(step_meta),
+                config.parallel_tools,
+            ) {
                 Ok(a) => a,
                 Err(e) => {
-                    // Session consumed by apply_tool_results_to_session; SessionEnd can't run.
-                    yield AgentEvent::Error {
-                        message: e.to_string(),
-                    };
-                    yield AgentEvent::RunFinish {
-                        thread_id,
-                        run_id: run_id.clone(),
-                        result: None,
-                        stop_reason: None,
-                    };
-                    // No session available to persist; close receiver.
-                    drop(final_session_tx.take());
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session_before_apply,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
                     return;
                 }
             };
@@ -3450,7 +3513,7 @@ mod tests {
         second.pending_interaction =
             Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
-        let result = apply_tool_results_to_session(session, &[first, second], None);
+        let result = apply_tool_results_to_session(session, &[first, second], None, false);
         assert!(
             matches!(result, Err(AgentLoopError::StateError(_))),
             "expected StateError when multiple pending interactions exist"
@@ -4342,6 +4405,66 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_stream_apply_error_still_runs_session_end_phase() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static SESSION_END_RAN: AtomicBool = AtomicBool::new(false);
+
+        struct PendingAndSessionEndPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for PendingAndSessionEndPlugin {
+            fn id(&self) -> &str {
+                "pending_and_session_end"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                match phase {
+                    Phase::BeforeToolExecute => {
+                        if let Some(call_id) = step.tool_call_id() {
+                            step.pending(
+                                Interaction::new(format!("confirm_{call_id}"), "confirm")
+                                    .with_message("needs confirmation"),
+                            );
+                        }
+                    }
+                    Phase::SessionEnd => {
+                        SESSION_END_RAN.store(true, Ordering::SeqCst);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        SESSION_END_RAN.store(false, Ordering::SeqCst);
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(PendingAndSessionEndPlugin) as Arc<dyn AgentPlugin>)
+            .with_parallel_tools(true);
+        let session = Session::new("test").with_message(Message::user("run tools"));
+        let responses = vec![MockResponse::text("run both")
+            .with_tool_call("call_1", "echo", json!({"message": "a"}))
+            .with_tool_call("call_2", "echo", json!({"message": "b"}))];
+        let tools = tool_map([EchoTool]);
+
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::Error { message }
+                if message.contains("multiple pending interactions")
+            )),
+            "expected apply error when multiple pending interactions exist: {events:?}"
+        );
+        assert!(
+            SESSION_END_RAN.load(Ordering::SeqCst),
+            "SessionEnd phase must run on apply_tool_results failure"
+        );
+    }
+
     // ========================================================================
     // Stop condition integration tests
     // ========================================================================
@@ -5032,6 +5155,31 @@ mod tests {
                 has_error,
                 "Failing tool should produce error: {:?}",
                 contents
+            );
+        });
+    }
+
+    #[test]
+    fn test_parallel_tools_conflicting_state_patches_return_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::with_initial_state("test", json!({"counter": 0}));
+            let result = StreamResult {
+                text: "conflicting calls".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new("call_1", "counter", json!({"amount": 1})),
+                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 2})),
+                ],
+                usage: None,
+            };
+            let tools = tool_map([CounterTool]);
+
+            let err = execute_tools(session, &result, &tools, true)
+                .await
+                .expect_err("parallel conflicting patches should fail");
+            assert!(
+                matches!(err, AgentLoopError::StateError(ref msg) if msg.contains("conflict")),
+                "expected conflict state error, got: {err:?}"
             );
         });
     }
