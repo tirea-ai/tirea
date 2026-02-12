@@ -63,6 +63,14 @@
 //! let ag_ui_events = carve_agent::agent_event_to_agui(&event, &mut ctx);
 //! ```
 
+mod frontend_tool;
+mod interaction_response;
+
+pub use frontend_tool::{FrontendToolPlugin, FrontendToolStub};
+pub use interaction_response::InteractionResponsePlugin;
+
+use frontend_tool::merge_frontend_tools;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1431,219 +1439,6 @@ impl InteractionResponse {
     }
 }
 
-// ============================================================================
-// Interaction Response Plugin
-// ============================================================================
-
-/// Plugin that handles interaction responses from client.
-///
-/// This plugin works with `FrontendToolPlugin` and `PermissionPlugin` to complete
-/// the interaction flow:
-///
-/// 1. A plugin (e.g., PermissionPlugin) creates a pending interaction
-/// 2. Agent emits `AgentEvent::Pending` which becomes AG-UI tool call events
-/// 3. Client responds with a new request containing tool message(s)
-/// 4. This plugin checks if the response approves/denies the pending interaction
-/// 5. Based on response, tool execution proceeds or is blocked
-///
-/// # Usage
-///
-/// ```ignore
-/// // Create plugin with approved interaction IDs from client request
-/// let approved_ids = request.approved_interaction_ids();
-/// let denied_ids = request.denied_interaction_ids();
-/// let plugin = InteractionResponsePlugin::new(approved_ids, denied_ids);
-///
-/// let config = config.with_plugin(Arc::new(plugin));
-/// ```
-pub struct InteractionResponsePlugin {
-    /// Interaction IDs that were approved by the client.
-    approved_ids: HashSet<String>,
-    /// Interaction IDs that were denied by the client.
-    denied_ids: HashSet<String>,
-}
-
-impl InteractionResponsePlugin {
-    /// Create a new plugin with approved and denied interaction IDs.
-    pub fn new(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
-        Self {
-            approved_ids: approved_ids.into_iter().collect(),
-            denied_ids: denied_ids.into_iter().collect(),
-        }
-    }
-
-    /// Create plugin from a RunAgentRequest.
-    pub fn from_request(request: &RunAgentRequest) -> Self {
-        Self::new(
-            request.approved_interaction_ids(),
-            request.denied_interaction_ids(),
-        )
-    }
-
-    /// Check if an interaction was approved.
-    pub fn is_approved(&self, interaction_id: &str) -> bool {
-        self.approved_ids.contains(interaction_id)
-    }
-
-    /// Check if an interaction was denied.
-    pub fn is_denied(&self, interaction_id: &str) -> bool {
-        self.denied_ids.contains(interaction_id)
-    }
-
-    /// Check if plugin has any responses to process.
-    pub fn has_responses(&self) -> bool {
-        !self.approved_ids.is_empty() || !self.denied_ids.is_empty()
-    }
-
-    /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
-    fn on_session_start(&self, step: &mut StepContext<'_>) {
-        use crate::state_types::AGENT_STATE_PATH;
-
-        let Ok(state) = step.session.rebuild_state() else {
-            return;
-        };
-
-        // Check if there's a persisted pending_interaction.
-        let pending_id = state
-            .get(AGENT_STATE_PATH)
-            .and_then(|a| a.get("pending_interaction"))
-            .and_then(|p| p.get("id"))
-            .and_then(|id| id.as_str());
-
-        let Some(pending_id) = pending_id else {
-            return;
-        };
-
-        // Check if the client approved this interaction.
-        let is_approved = self.approved_ids.iter().any(|id| id == pending_id);
-        if !is_approved {
-            return;
-        }
-
-        // Find the pending tool call from the last assistant message with tool_calls.
-        let tool_call = step
-            .session
-            .messages
-            .iter()
-            .rev()
-            .find(|m| {
-                m.role == crate::types::Role::Assistant && m.tool_calls.is_some()
-            })
-            .and_then(|m| m.tool_calls.as_ref())
-            .and_then(|calls| calls.first())
-            .cloned();
-
-        if let Some(call) = tool_call {
-            // Schedule the tool call for replay by the loop.
-            step.set(
-                "__replay_tool_calls",
-                serde_json::to_value(vec![call]).unwrap_or_default(),
-            );
-        }
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for InteractionResponsePlugin {
-    fn id(&self) -> &str {
-        "ag_ui_interaction_response"
-    }
-
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        match phase {
-            Phase::SessionStart => {
-                self.on_session_start(step);
-                return;
-            }
-            Phase::BeforeToolExecute => {}
-            _ => return,
-        }
-
-        // Check if there's a tool context
-        let Some(tool) = step.tool.as_ref() else {
-            return;
-        };
-
-        // Generate possible interaction IDs for this tool call
-        // These match the IDs generated by FrontendToolPlugin and PermissionPlugin
-        let frontend_interaction_id = tool.id.clone(); // FrontendToolPlugin uses tool call ID
-        let permission_interaction_id = format!("permission_{}", tool.name); // PermissionPlugin format
-
-        // Check if any of these interactions were approved
-        let is_frontend_approved = self.is_approved(&frontend_interaction_id);
-        let is_permission_approved = self.is_approved(&permission_interaction_id);
-
-        // Check if any of these interactions were denied
-        let is_frontend_denied = self.is_denied(&frontend_interaction_id);
-        let is_permission_denied = self.is_denied(&permission_interaction_id);
-
-        // Only act if the client is responding to an interaction we actually match.
-        let has_response = is_frontend_approved
-            || is_permission_approved
-            || is_frontend_denied
-            || is_permission_denied;
-        if !has_response {
-            return;
-        }
-
-        // Verify that the server actually has a persisted pending interaction whose ID
-        // matches one of the IDs the client claims to be responding to.  Without this
-        // check a malicious client could pre-approve arbitrary tool names by injecting
-        // approved IDs in a fresh request that has no outstanding pending interaction.
-        let persisted_id = step
-            .session
-            .rebuild_state()
-            .ok()
-            .and_then(|s| {
-                s.get(crate::state_types::AGENT_STATE_PATH)?
-                    .get("pending_interaction")?
-                    .get("id")?
-                    .as_str()
-                    .map(String::from)
-            });
-
-        let id_matches = persisted_id
-            .as_deref()
-            .map(|id| id == frontend_interaction_id || id == permission_interaction_id)
-            .unwrap_or(false);
-
-        if !id_matches {
-            // No matching persisted pending interaction — ignore the client's response.
-            return;
-        }
-
-        if is_frontend_denied || is_permission_denied {
-            // Interaction was denied - block the tool
-            step.confirm();
-            step.block("User denied the action".to_string());
-            clear_agent_pending_interaction(step);
-        } else if is_frontend_approved || is_permission_approved {
-            // Interaction was approved - clear any pending state
-            // This allows the tool to execute normally.
-            step.confirm();
-            clear_agent_pending_interaction(step);
-        }
-    }
-}
-
-fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
-    use crate::state_types::{AgentState, AGENT_STATE_PATH};
-    use carve_state::Context;
-
-    let Ok(state) = step.session.rebuild_state() else {
-        return;
-    };
-
-    // Persist the clearance via patch so subsequent steps/runs don't remain stuck in Pending.
-    let ctx = Context::new(&state, "agent_state", "ag_ui_interaction_response");
-    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-    agent.pending_interaction_none();
-    let patch = ctx.take_patch();
-    if !patch.patch().is_empty() {
-        step.pending_patches.push(patch);
-    }
-}
-
 /// Error type for request processing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestError {
@@ -1690,155 +1485,6 @@ impl std::error::Error for RequestError {}
 impl From<String> for RequestError {
     fn from(message: String) -> Self {
         Self::validation(message)
-    }
-}
-
-// ============================================================================
-// AG-UI Frontend Tool Plugin
-// ============================================================================
-
-use crate::phase::{Phase, StepContext};
-use crate::plugin::AgentPlugin;
-use async_trait::async_trait;
-use std::collections::HashSet;
-
-/// Plugin that handles frontend tool execution for AG-UI protocol.
-///
-/// When a tool call targets a frontend tool (defined with `execute: "frontend"`),
-/// this plugin intercepts the execution in `BeforeToolExecute` and creates
-/// a pending interaction. This causes the agent loop to emit `AgentEvent::Pending`,
-/// which gets converted to AG-UI tool call events for client-side execution.
-///
-/// # Example
-///
-/// ```ignore
-/// let frontend_tools: HashSet<String> = request.frontend_tools()
-///     .iter()
-///     .map(|t| t.name.clone())
-///     .collect();
-///
-/// let plugin = FrontendToolPlugin::new(frontend_tools);
-/// let config = AgentConfig::new("gpt-4").with_plugin(Arc::new(plugin));
-/// ```
-pub struct FrontendToolPlugin {
-    /// Names of tools that should be executed on the frontend.
-    frontend_tools: HashSet<String>,
-}
-
-impl FrontendToolPlugin {
-    /// Create a new frontend tool plugin.
-    ///
-    /// # Arguments
-    ///
-    /// * `frontend_tools` - Set of tool names that should be executed on the frontend
-    pub fn new(frontend_tools: HashSet<String>) -> Self {
-        Self { frontend_tools }
-    }
-
-    /// Create from a RunAgentRequest.
-    pub fn from_request(request: &RunAgentRequest) -> Self {
-        let frontend_tools = request
-            .frontend_tools()
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        Self { frontend_tools }
-    }
-
-    /// Check if a tool should be executed on the frontend.
-    pub fn is_frontend_tool(&self, name: &str) -> bool {
-        self.frontend_tools.contains(name)
-    }
-}
-
-#[async_trait]
-impl AgentPlugin for FrontendToolPlugin {
-    fn id(&self) -> &str {
-        "ag_ui_frontend_tool"
-    }
-
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        if phase != Phase::BeforeToolExecute {
-            return;
-        }
-
-        // Get tool info
-        let Some(tool) = step.tool.as_ref() else {
-            return;
-        };
-
-        // Check if this is a frontend tool
-        if !self.is_frontend_tool(&tool.name) {
-            return;
-        }
-
-        // Don't create pending if tool is already blocked (e.g., by PermissionPlugin)
-        if step.tool_blocked() {
-            return;
-        }
-
-        // Create interaction for frontend execution
-        // The tool call ID and arguments are passed to the client
-        let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
-            .with_parameters(tool.args.clone());
-
-        step.pending(interaction);
-    }
-}
-
-/// Stub `Tool` implementation for frontend-defined tools.
-///
-/// This provides a `ToolDescriptor` so the LLM knows the tool exists, but execution
-/// is intercepted by `FrontendToolPlugin` before `execute` is ever called.
-struct FrontendToolStub {
-    descriptor: crate::traits::tool::ToolDescriptor,
-}
-
-impl FrontendToolStub {
-    fn from_agui_def(def: &AGUIToolDef) -> Self {
-        let parameters = def
-            .parameters
-            .clone()
-            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-        Self {
-            descriptor: crate::traits::tool::ToolDescriptor::new(
-                &def.name,
-                &def.name,
-                &def.description,
-            )
-            .with_parameters(parameters),
-        }
-    }
-}
-
-#[async_trait]
-impl crate::traits::tool::Tool for FrontendToolStub {
-    fn descriptor(&self) -> crate::traits::tool::ToolDescriptor {
-        self.descriptor.clone()
-    }
-
-    async fn execute(
-        &self,
-        _args: Value,
-        _ctx: &carve_state::Context<'_>,
-    ) -> Result<crate::traits::tool::ToolResult, crate::traits::tool::ToolError> {
-        // Should never be reached – FrontendToolPlugin intercepts before execution.
-        Err(crate::traits::tool::ToolError::Internal(
-            "frontend tool stub should not be executed directly".into(),
-        ))
-    }
-}
-
-/// Convert frontend tool definitions from an AG-UI request into `Arc<dyn Tool>` stubs
-/// and merge them into the provided tools map.
-fn merge_frontend_tools(
-    tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
-    request: &RunAgentRequest,
-) {
-    for def in request.frontend_tools() {
-        tools
-            .entry(def.name.clone())
-            .or_insert_with(|| Arc::new(FrontendToolStub::from_agui_def(def)));
     }
 }
 
@@ -2236,7 +1882,10 @@ pub fn run_agent_stream_with_request_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phase::{Phase, StepContext};
+    use crate::plugin::AgentPlugin;
     use serde_json::json;
+    use std::collections::HashSet;
 
     #[test]
     fn test_run_started_serialization() {
@@ -4504,7 +4153,7 @@ mod tests {
     #[test]
     fn test_frontend_tool_plugin_id() {
         let plugin = FrontendToolPlugin::new(HashSet::new());
-        assert_eq!(plugin.id(), "ag_ui_frontend_tool");
+        assert_eq!(plugin.id(), "frontend_tool");
     }
 
     #[tokio::test]
@@ -4884,7 +4533,7 @@ mod tests {
     #[test]
     fn test_interaction_response_plugin_id() {
         let plugin = InteractionResponsePlugin::new(vec![], vec![]);
-        assert_eq!(plugin.id(), "ag_ui_interaction_response");
+        assert_eq!(plugin.id(), "interaction_response");
     }
 
     #[tokio::test]
