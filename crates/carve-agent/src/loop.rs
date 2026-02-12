@@ -811,6 +811,7 @@ pub async fn execute_tools_with_plugins(
             plugin_data,
             None,
             Some(&session.runtime),
+            &session.id,
         )
         .await
     } else {
@@ -823,6 +824,7 @@ pub async fn execute_tools_with_plugins(
             plugin_data,
             None,
             Some(&session.runtime),
+            &session.id,
         )
         .await
     };
@@ -847,11 +849,13 @@ async fn execute_tools_parallel_with_phases(
     plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
+    session_id: &str,
 ) -> Vec<ToolExecutionResult> {
     use futures::future::join_all;
 
     // Clone runtime for parallel tasks (Runtime is Clone).
     let runtime_owned = runtime.cloned();
+    let session_id = session_id.to_string();
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
@@ -862,6 +866,7 @@ async fn execute_tools_parallel_with_phases(
         let plugin_data = plugin_data.clone();
         let activity_manager = activity_manager.clone();
         let rt = runtime_owned.clone();
+        let sid = session_id.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -873,6 +878,7 @@ async fn execute_tools_parallel_with_phases(
                 plugin_data,
                 activity_manager,
                 rt.as_ref(),
+                &sid,
             )
             .await
         }
@@ -891,6 +897,7 @@ async fn execute_tools_sequential_with_phases(
     mut plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
+    session_id: &str,
 ) -> Vec<ToolExecutionResult> {
     use carve_state::apply_patch;
 
@@ -908,6 +915,7 @@ async fn execute_tools_sequential_with_phases(
             plugin_data.clone(),
             activity_manager.clone(),
             runtime,
+            session_id,
         )
         .await;
 
@@ -965,9 +973,13 @@ async fn execute_single_tool_with_phases(
     plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
+    session_id: &str,
 ) -> ToolExecutionResult {
-    // Create a minimal session for StepContext
-    let temp_session = Session::with_initial_state("temp", state.clone());
+    // Create a session stub so plugins see the real session id and runtime.
+    let mut temp_session = Session::with_initial_state(session_id, state.clone());
+    if let Some(rt) = runtime {
+        temp_session.runtime = rt.clone();
+    }
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_session, tool_descriptors.to_vec());
@@ -1328,6 +1340,7 @@ pub async fn run_loop(
                 plugin_data.data.clone(),
                 None,
                 Some(&session.runtime),
+                &session.id,
             )
             .await
         } else {
@@ -1340,6 +1353,7 @@ pub async fn run_loop(
                 plugin_data.data.clone(),
                 None,
                 Some(&session.runtime),
+                &session.id,
             )
             .await
         };
@@ -1548,6 +1562,10 @@ fn run_loop_stream_impl_with_provider(
         }
 
         // Resolve run_id: from runtime if pre-set, otherwise generate.
+        // NOTE: runtime is mutated in-place here. This is intentional —
+        // runtime is transient (not persisted) and the owned-builder pattern
+        // (`with_runtime`) is impractical inside the loop where `session` is
+        // borrowed across yield points.
         let run_id = session.runtime.value("run_id")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| {
@@ -1876,6 +1894,7 @@ fn run_loop_stream_impl_with_provider(
             };
 
             let rt_for_tools = session.runtime.clone();
+            let sid_for_tools = session.id.clone();
             let mut tool_future: Pin<Box<dyn Future<Output = Vec<ToolExecutionResult>> + Send>> =
                 if config.parallel_tools {
                     Box::pin(execute_tools_parallel_with_phases(
@@ -1887,6 +1906,7 @@ fn run_loop_stream_impl_with_provider(
                         plugin_data.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
+                        &sid_for_tools,
                     ))
                 } else {
                     Box::pin(execute_tools_sequential_with_phases(
@@ -1898,6 +1918,7 @@ fn run_loop_stream_impl_with_provider(
                         plugin_data.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
+                        &sid_for_tools,
                     ))
                 };
             let mut activity_closed = false;
@@ -2307,6 +2328,7 @@ mod tests {
             HashMap::new(),
             Some(activity_manager),
             None,
+            "test",
         ));
 
         tokio::select! {
@@ -2385,6 +2407,7 @@ mod tests {
                 HashMap::new(),
                 Some(activity_manager),
                 None,
+                "test",
             )
             .await
         });
@@ -2567,7 +2590,7 @@ mod tests {
                     step.session("Test session context");
                 }
                 Phase::AfterToolExecute => {
-                    if step.tool_id() == Some("echo") {
+                    if step.tool_name() == Some("echo") {
                         step.reminder("Check the echo result");
                     }
                 }
@@ -2594,7 +2617,7 @@ mod tests {
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeToolExecute && step.tool_id() == Some("echo") {
+            if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
                 step.block("Echo tool is blocked");
             }
         }
@@ -2806,10 +2829,65 @@ mod tests {
             initial_plugin_data(&plugins),
             None,
             None,
+            "test",
         )
         .await;
 
         assert!(result.execution.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static VERIFIED: AtomicBool = AtomicBool::new(false);
+
+        struct SessionCheckPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SessionCheckPlugin {
+            fn id(&self) -> &str {
+                "session_check"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::BeforeToolExecute {
+                    assert_eq!(step.session.id, "real-session-42");
+                    assert_eq!(
+                        step.session.runtime.value("user_id"),
+                        Some(&json!("u-abc")),
+                    );
+                    VERIFIED.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+
+        VERIFIED.store(false, Ordering::SeqCst);
+
+        let tool = EchoTool;
+        let call = crate::types::ToolCall::new("call_1", "echo", json!({ "message": "hi" }));
+        let state = json!({});
+        let tool_descriptors = vec![tool.descriptor()];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(SessionCheckPlugin)];
+
+        let mut rt = carve_state::Runtime::new();
+        rt.set("user_id", "u-abc").unwrap();
+
+        let result = execute_single_tool_with_phases(
+            Some(&tool),
+            &call,
+            &state,
+            &tool_descriptors,
+            &plugins,
+            HashMap::new(),
+            None,
+            Some(&rt),
+            "real-session-42",
+        )
+        .await;
+
+        assert!(result.execution.result.is_success());
+        assert!(VERIFIED.load(Ordering::SeqCst), "plugin did not run");
     }
 
     #[tokio::test]
@@ -2906,7 +2984,7 @@ mod tests {
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-            if phase == Phase::BeforeToolExecute && step.tool_id() == Some("echo") {
+            if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
                 use crate::state_types::Interaction;
                 step.pending(
                     Interaction::new("confirm_1", "confirm").with_message("Execute echo?"),

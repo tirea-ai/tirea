@@ -30,7 +30,7 @@
 //!                 step.exclude("dangerous_tool");
 //!             }
 //!             Phase::AfterToolExecute => {
-//!                 if step.tool_id() == Some("read_file") {
+//!                 if step.tool_name() == Some("read_file") {
 //!                     step.reminder("Check for sensitive data.");
 //!                 }
 //!             }
@@ -188,7 +188,7 @@ mod tests {
                     step.exclude("dangerous_tool");
                 }
                 Phase::AfterToolExecute => {
-                    if step.tool_id() == Some("read_file") {
+                    if step.tool_name() == Some("read_file") {
                         step.reminder("Check for sensitive data.");
                     }
                 }
@@ -220,7 +220,7 @@ mod tests {
                 return;
             }
 
-            if let Some(tool_id) = step.tool_id() {
+            if let Some(tool_id) = step.tool_name() {
                 if self.denied_tools.contains(&tool_id.to_string()) {
                     step.block("Permission denied");
                 }
@@ -251,7 +251,7 @@ mod tests {
                 return;
             }
 
-            if let Some(tool_id) = step.tool_id() {
+            if let Some(tool_id) = step.tool_name() {
                 if self.confirm_tools.contains(&tool_id.to_string()) && !step.tool_pending() {
                     step.pending(
                         Interaction::new("confirm", "confirm").with_message("Execute this tool?"),

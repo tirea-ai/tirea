@@ -247,9 +247,20 @@ impl<'a> StepContext<'a> {
     // Tool Control (only valid during tool phases)
     // =========================================================================
 
-    /// Get current tool ID.
-    pub fn tool_id(&self) -> Option<&str> {
+    /// Get the current tool name (e.g., `"read_file"`).
+    pub fn tool_name(&self) -> Option<&str> {
         self.tool.as_ref().map(|t| t.name.as_str())
+    }
+
+    /// Get the current tool call ID (e.g., `"call_abc123"`).
+    pub fn tool_call_id(&self) -> Option<&str> {
+        self.tool.as_ref().map(|t| t.id.as_str())
+    }
+
+    /// Get current tool name.
+    #[deprecated(note = "Use tool_name() for the tool name or tool_call_id() for the call ID")]
+    pub fn tool_id(&self) -> Option<&str> {
+        self.tool_name()
     }
 
     /// Get current tool arguments.
@@ -578,7 +589,8 @@ mod tests {
         let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
         ctx.tool = Some(ToolContext::new(&call));
 
-        assert_eq!(ctx.tool_id(), Some("read_file"));
+        assert_eq!(ctx.tool_name(), Some("read_file"));
+        assert_eq!(ctx.tool_call_id(), Some("call_1"));
         assert_eq!(ctx.tool_args().unwrap()["path"], "/test");
         assert!(!ctx.tool_blocked());
         assert!(!ctx.tool_pending());
@@ -964,11 +976,12 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_id_without_tool() {
+    fn test_tool_name_without_tool() {
         let session = mock_session();
         let ctx = StepContext::new(&session, vec![]);
 
-        assert!(ctx.tool_id().is_none());
+        assert!(ctx.tool_name().is_none());
+        assert!(ctx.tool_call_id().is_none());
     }
 
     #[test]

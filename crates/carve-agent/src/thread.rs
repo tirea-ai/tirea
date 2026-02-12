@@ -10,8 +10,12 @@ use serde_json::Value;
 
 /// A conversation thread with messages and state history.
 ///
-/// Thread is an immutable data structure. All modification methods
-/// return a new Thread instance (functional style).
+/// Thread uses an owned builder pattern: `with_*` methods consume `self`
+/// and return a new `Thread` (e.g., `thread.with_message(msg)`).
+///
+/// The `runtime` field is an exception — it is transient (not serialized)
+/// and may be mutated in-place during a run (e.g., setting `run_id`).
+/// Runtime changes are never persisted to storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     /// Unique thread identifier.

@@ -129,7 +129,7 @@ impl AgentPlugin for PermissionPlugin {
             return;
         }
 
-        let Some(tool_id) = step.tool_id() else {
+        let Some(tool_id) = step.tool_name() else {
             return;
         };
 

@@ -58,10 +58,6 @@ pub struct Context<'a> {
     activity_manager: Option<Arc<dyn ActivityManager>>,
     /// Per-run runtime context (user_id, tokens, etc.).
     runtime: Option<&'a Runtime>,
-    /// Execution control: blocked reason (if execution should be blocked).
-    blocked: Mutex<Option<String>>,
-    /// Execution control: pending data (arbitrary JSON for pending state).
-    pending: Mutex<Option<Value>>,
 }
 
 impl<'a> Context<'a> {
@@ -92,8 +88,6 @@ impl<'a> Context<'a> {
             ops: Mutex::new(Vec::new()),
             activity_manager,
             runtime: None,
-            blocked: Mutex::new(None),
-            pending: Mutex::new(None),
         }
     }
 
@@ -211,53 +205,6 @@ impl<'a> Context<'a> {
         self.ops.lock().unwrap().len()
     }
 
-    // =========================================================================
-    // Execution control methods
-    // =========================================================================
-
-    /// Set the blocked state with a reason.
-    ///
-    /// When blocked, subsequent execution can check this to skip processing.
-    pub fn set_blocked(&self, reason: impl Into<String>) {
-        *self.blocked.lock().unwrap() = Some(reason.into());
-    }
-
-    /// Check if execution is blocked.
-    pub fn is_blocked(&self) -> bool {
-        self.blocked.lock().unwrap().is_some()
-    }
-
-    /// Get the block reason if blocked.
-    pub fn block_reason(&self) -> Option<String> {
-        self.blocked.lock().unwrap().clone()
-    }
-
-    /// Clear the blocked state.
-    pub fn clear_blocked(&self) {
-        *self.blocked.lock().unwrap() = None;
-    }
-
-    /// Set the pending state with arbitrary data.
-    ///
-    /// When pending, execution should pause for user interaction.
-    pub fn set_pending(&self, data: impl Into<Value>) {
-        *self.pending.lock().unwrap() = Some(data.into());
-    }
-
-    /// Check if execution is pending.
-    pub fn is_pending(&self) -> bool {
-        self.pending.lock().unwrap().is_some()
-    }
-
-    /// Get the pending data if any.
-    pub fn pending_data(&self) -> Option<Value> {
-        self.pending.lock().unwrap().clone()
-    }
-
-    /// Clear the pending state.
-    pub fn clear_pending(&self) {
-        *self.pending.lock().unwrap() = None;
-    }
 }
 
 /// Activity context that mirrors state operations with immediate event emission.
