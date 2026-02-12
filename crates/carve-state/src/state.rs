@@ -20,7 +20,7 @@ type CollectHook<'a> = Arc<dyn Fn(&Op) + Send + Sync + 'a>;
 /// `PatchSink` uses a `Mutex` internally to support async contexts.
 /// In single-threaded usage, the lock overhead is minimal.
 pub struct PatchSink<'a> {
-    ops: &'a Mutex<Vec<Op>>,
+    ops: Option<&'a Mutex<Vec<Op>>>,
     on_collect: Option<CollectHook<'a>>,
 }
 
@@ -29,7 +29,7 @@ impl<'a> PatchSink<'a> {
     #[doc(hidden)]
     pub fn new(ops: &'a Mutex<Vec<Op>>) -> Self {
         Self {
-            ops,
+            ops: Some(ops),
             on_collect: None,
         }
     }
@@ -40,15 +40,29 @@ impl<'a> PatchSink<'a> {
     #[doc(hidden)]
     pub fn new_with_hook(ops: &'a Mutex<Vec<Op>>, hook: CollectHook<'a>) -> Self {
         Self {
-            ops,
+            ops: Some(ops),
             on_collect: Some(hook),
+        }
+    }
+
+    /// Create a read-only PatchSink that panics on collect.
+    ///
+    /// Used for `Runtime::get()` where writes are a programming error.
+    #[doc(hidden)]
+    pub fn read_only() -> Self {
+        Self {
+            ops: None,
+            on_collect: None,
         }
     }
 
     /// Collect an operation.
     #[inline]
     pub fn collect(&self, op: Op) {
-        self.ops.lock().unwrap().push(op.clone());
+        let ops = self
+            .ops
+            .expect("PatchSink::collect called on read-only sink (programming error)");
+        ops.lock().unwrap().push(op.clone());
         if let Some(hook) = &self.on_collect {
             hook(&op);
         }
@@ -58,6 +72,7 @@ impl<'a> PatchSink<'a> {
     #[doc(hidden)]
     pub fn inner(&self) -> &'a Mutex<Vec<Op>> {
         self.ops
+            .expect("PatchSink::inner called on read-only sink (programming error)")
     }
 }
 

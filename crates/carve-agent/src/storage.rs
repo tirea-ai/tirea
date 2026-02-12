@@ -81,6 +81,8 @@ pub struct SessionListQuery {
     pub offset: usize,
     /// Maximum number of items to return (clamped to 1..=200).
     pub limit: usize,
+    /// Filter by resource_id (owner). `None` means no filtering.
+    pub resource_id: Option<String>,
 }
 
 impl Default for SessionListQuery {
@@ -88,6 +90,7 @@ impl Default for SessionListQuery {
         Self {
             offset: 0,
             limit: 50,
+            resource_id: None,
         }
     }
 }
@@ -246,6 +249,20 @@ pub trait Storage: Send + Sync {
         query: &SessionListQuery,
     ) -> Result<SessionListPage, StorageError> {
         let mut all = self.list().await?;
+
+        // Filter by resource_id if specified.
+        if let Some(ref resource_id) = query.resource_id {
+            let mut filtered = Vec::new();
+            for id in &all {
+                if let Some(session) = self.load(id).await? {
+                    if session.resource_id.as_deref() == Some(resource_id.as_str()) {
+                        filtered.push(id.clone());
+                    }
+                }
+            }
+            all = filtered;
+        }
+
         all.sort();
         let total = all.len();
         let limit = query.limit.clamp(1, 200);
@@ -803,22 +820,54 @@ impl Storage for PostgresStorage {
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
 
-        let count_sql = format!("SELECT COUNT(*)::bigint FROM {}", self.table);
-        let (total,): (i64,) = sqlx::query_as(&count_sql)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
+        // resource_id filter via JSONB.
+        let resource_clause = if query.resource_id.is_some() {
+            " WHERE data->>'resource_id' = $3"
+        } else {
+            ""
+        };
+
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint FROM {}{}",
+            self.table, resource_clause
+        );
+        let total: i64 = if let Some(ref rid) = query.resource_id {
+            let (total,): (i64,) = sqlx::query_as(&count_sql)
+                .bind(fetch_limit)
+                .bind(offset)
+                .bind(rid)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(Self::sql_err)?;
+            total
+        } else {
+            let (total,): (i64,) = sqlx::query_as(&count_sql)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(Self::sql_err)?;
+            total
+        };
 
         let sql = format!(
-            "SELECT id FROM {} ORDER BY id LIMIT $1 OFFSET $2",
-            self.table
+            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
+            self.table, resource_clause
         );
-        let rows: Vec<(String,)> = sqlx::query_as(&sql)
-            .bind(fetch_limit)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
+        let rows: Vec<(String,)> = if let Some(ref rid) = query.resource_id {
+            sqlx::query_as(&sql)
+                .bind(fetch_limit)
+                .bind(offset)
+                .bind(rid)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(Self::sql_err)?
+        } else {
+            sqlx::query_as(&sql)
+                .bind(fetch_limit)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(Self::sql_err)?
+        };
 
         let has_more = rows.len() > limit;
         let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
@@ -1688,6 +1737,7 @@ mod tests {
             .list_paginated(&SessionListQuery {
                 offset: 0,
                 limit: 3,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -1711,6 +1761,7 @@ mod tests {
             .list_paginated(&SessionListQuery {
                 offset: 3,
                 limit: 10,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -1733,6 +1784,7 @@ mod tests {
             .list_paginated(&SessionListQuery {
                 offset: 100,
                 limit: 10,
+                ..Default::default()
             })
             .await
             .unwrap();

@@ -100,6 +100,7 @@ mod manager;
 mod op;
 mod patch;
 mod path;
+pub mod runtime;
 mod state;
 mod writer;
 
@@ -115,6 +116,7 @@ pub use writer::JsonWriter;
 // State types
 pub use context::{parse_path, ActivityContext, ActivityManager, Context};
 pub use manager::{ApplyResult, StateError, StateManager};
+pub use runtime::{Runtime, RuntimeError};
 pub use state::{PatchSink, State, StateExt};
 
 // Re-export derive macro when feature is enabled

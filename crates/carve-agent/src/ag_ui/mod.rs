@@ -1575,7 +1575,7 @@ pub fn run_agent_stream(
 pub fn run_agent_stream_with_parent(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    mut session: Session,
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
@@ -1584,11 +1584,13 @@ pub fn run_agent_stream_with_parent(
     Box::pin(stream! {
         let mut ctx = AGUIContext::new(thread_id.clone(), run_id.clone());
 
-        // Pass run_id/parent_run_id into the core loop so its RunStart/RunFinish
-        // carry the correct IDs — no synthetic lifecycle events needed here.
+        // Set run_id and parent_run_id on the session runtime
+        let _ = session.runtime.set("run_id", run_id.clone());
+        if let Some(parent) = parent_run_id.clone() {
+            let _ = session.runtime.set("parent_run_id", parent);
+        }
+
         let run_ctx = RunContext {
-            run_id: Some(run_id.clone()),
-            parent_run_id: parent_run_id.clone(),
             cancellation_token: None,
         };
         let mut inner_stream = run_loop_stream(client, config, session, tools, run_ctx);
@@ -1774,7 +1776,7 @@ pub fn run_agent_events_with_request(
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithSession {
     let mut config = config;
-    let session = apply_agui_request_to_session(session, &request);
+    let mut session = apply_agui_request_to_session(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1803,9 +1805,13 @@ pub fn run_agent_events_with_request(
         config = config.with_plugin(Arc::new(frontend_plugin));
     }
 
+    // Set run_id and parent_run_id on the session runtime
+    let _ = session.runtime.set("run_id", request.run_id.clone());
+    if let Some(parent) = request.parent_run_id.clone() {
+        let _ = session.runtime.set("parent_run_id", parent);
+    }
+
     let run_ctx = RunContext {
-        run_id: Some(request.run_id.clone()),
-        parent_run_id: request.parent_run_id.clone(),
         cancellation_token: None,
     };
 
@@ -1821,7 +1827,7 @@ pub fn run_agent_events_with_request_checkpoints(
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithCheckpoints {
     let mut config = config;
-    let session = apply_agui_request_to_session(session, &request);
+    let mut session = apply_agui_request_to_session(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1849,9 +1855,13 @@ pub fn run_agent_events_with_request_checkpoints(
         config = config.with_plugin(Arc::new(frontend_plugin));
     }
 
+    // Set run_id and parent_run_id on the session runtime
+    let _ = session.runtime.set("run_id", request.run_id.clone());
+    if let Some(parent) = request.parent_run_id.clone() {
+        let _ = session.runtime.set("parent_run_id", parent);
+    }
+
     let run_ctx = RunContext {
-        run_id: Some(request.run_id.clone()),
-        parent_run_id: request.parent_run_id.clone(),
         cancellation_token: None,
     };
 

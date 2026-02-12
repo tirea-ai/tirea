@@ -143,13 +143,11 @@ pub type AgentConfig = AgentDefinition;
 
 /// Optional lifecycle context for a streaming agent run.
 ///
-/// When fields are `None`, the loop auto-generates values.
+/// Run-specific data (run_id, parent_run_id, etc.) should be set on
+/// `session.runtime` before starting the loop. This struct only holds
+/// the cancellation token which is orthogonal to the data model.
 #[derive(Debug, Clone, Default)]
 pub struct RunContext {
-    /// External run ID. If `None`, a UUID v4 is generated internally.
-    pub run_id: Option<String>,
-    /// Parent run ID for nested/sub-agent runs.
-    pub parent_run_id: Option<String>,
     /// Cancellation token for cooperative loop termination.
     ///
     /// When cancelled, the loop stops at the next check point and emits
@@ -812,6 +810,7 @@ pub async fn execute_tools_with_plugins(
             plugins,
             plugin_data,
             None,
+            Some(&session.runtime),
         )
         .await
     } else {
@@ -823,6 +822,7 @@ pub async fn execute_tools_with_plugins(
             plugins,
             plugin_data,
             None,
+            Some(&session.runtime),
         )
         .await
     };
@@ -846,8 +846,12 @@ async fn execute_tools_parallel_with_phases(
     plugins: &[Arc<dyn AgentPlugin>],
     plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
+    runtime: Option<&carve_state::Runtime>,
 ) -> Vec<ToolExecutionResult> {
     use futures::future::join_all;
+
+    // Clone runtime for parallel tasks (Runtime is Clone).
+    let runtime_owned = runtime.cloned();
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
@@ -857,6 +861,7 @@ async fn execute_tools_parallel_with_phases(
         let tool_descriptors = tool_descriptors.to_vec();
         let plugin_data = plugin_data.clone();
         let activity_manager = activity_manager.clone();
+        let rt = runtime_owned.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -867,6 +872,7 @@ async fn execute_tools_parallel_with_phases(
                 &plugins,
                 plugin_data,
                 activity_manager,
+                rt.as_ref(),
             )
             .await
         }
@@ -884,6 +890,7 @@ async fn execute_tools_sequential_with_phases(
     plugins: &[Arc<dyn AgentPlugin>],
     mut plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
+    runtime: Option<&carve_state::Runtime>,
 ) -> Vec<ToolExecutionResult> {
     use carve_state::apply_patch;
 
@@ -900,6 +907,7 @@ async fn execute_tools_sequential_with_phases(
             plugins,
             plugin_data.clone(),
             activity_manager.clone(),
+            runtime,
         )
         .await;
 
@@ -956,6 +964,7 @@ async fn execute_single_tool_with_phases(
     plugins: &[Arc<dyn AgentPlugin>],
     plugin_data: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
+    runtime: Option<&carve_state::Runtime>,
 ) -> ToolExecutionResult {
     // Create a minimal session for StepContext
     let temp_session = Session::with_initial_state("temp", state.clone());
@@ -1013,7 +1022,7 @@ async fn execute_single_tool_with_phases(
             &call.id,
             format!("tool:{}", call.name),
             activity_manager,
-        );
+        ).with_runtime(runtime);
         let result = async {
             match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
                 Ok(r) => r,
@@ -1318,6 +1327,7 @@ pub async fn run_loop(
                 &config.plugins,
                 plugin_data.data.clone(),
                 None,
+                Some(&session.runtime),
             )
             .await
         } else {
@@ -1329,6 +1339,7 @@ pub async fn run_loop(
                 &config.plugins,
                 plugin_data.data.clone(),
                 None,
+                Some(&session.runtime),
             )
             .await
         };
@@ -1536,11 +1547,21 @@ fn run_loop_stream_impl_with_provider(
             }
         }
 
-        let run_id = run_ctx.run_id.unwrap_or_else(uuid_v4);
+        // Resolve run_id: from runtime if pre-set, otherwise generate.
+        let run_id = session.runtime.value("run_id")
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| {
+                let id = uuid_v4();
+                // Best-effort: set into runtime (may already be set).
+                let _ = session.runtime.set("run_id", &id);
+                id
+            });
+        let parent_run_id = session.runtime.value("parent_run_id")
+            .and_then(|v| v.as_str().map(String::from));
         yield AgentEvent::RunStart {
             thread_id: session.id.clone(),
             run_id: run_id.clone(),
-            parent_run_id: run_ctx.parent_run_id,
+            parent_run_id,
         };
 
         // Resume pending tool execution via plugin mechanism.
@@ -1555,7 +1576,8 @@ fn run_loop_stream_impl_with_provider(
             for tool_call in &replay_calls {
                 if let Some(tool) = tools.get(&tool_call.name) {
                     let state = session.rebuild_state().unwrap_or_default();
-                    let ctx = carve_state::Context::new(&state, &tool_call.id, format!("tool:{}", tool_call.name));
+                    let ctx = carve_state::Context::new(&state, &tool_call.id, format!("tool:{}", tool_call.name))
+                        .with_runtime(Some(&session.runtime));
                     let result = match tool.execute(tool_call.arguments.clone(), &ctx).await {
                         Ok(r) => r,
                         Err(e) => ToolResult::error(&tool_call.name, e.to_string()),
@@ -1853,6 +1875,7 @@ fn run_loop_stream_impl_with_provider(
                 }
             };
 
+            let rt_for_tools = session.runtime.clone();
             let mut tool_future: Pin<Box<dyn Future<Output = Vec<ToolExecutionResult>> + Send>> =
                 if config.parallel_tools {
                     Box::pin(execute_tools_parallel_with_phases(
@@ -1863,6 +1886,7 @@ fn run_loop_stream_impl_with_provider(
                         &config.plugins,
                         plugin_data.data.clone(),
                         Some(activity_manager.clone()),
+                        Some(&rt_for_tools),
                     ))
                 } else {
                     Box::pin(execute_tools_sequential_with_phases(
@@ -1873,6 +1897,7 @@ fn run_loop_stream_impl_with_provider(
                         &config.plugins,
                         plugin_data.data.clone(),
                         Some(activity_manager.clone()),
+                        Some(&rt_for_tools),
                     ))
                 };
             let mut activity_closed = false;
@@ -2281,6 +2306,7 @@ mod tests {
             &plugins,
             HashMap::new(),
             Some(activity_manager),
+            None,
         ));
 
         tokio::select! {
@@ -2358,6 +2384,7 @@ mod tests {
                 &plugins_for_task,
                 HashMap::new(),
                 Some(activity_manager),
+                None,
             )
             .await
         });
@@ -2777,6 +2804,7 @@ mod tests {
             &tool_descriptors,
             &plugins,
             initial_plugin_data(&plugins),
+            None,
             None,
         )
         .await;
@@ -3385,31 +3413,39 @@ mod tests {
     #[test]
     fn test_run_context_default() {
         let ctx = RunContext::default();
-        assert!(ctx.run_id.is_none());
-        assert!(ctx.parent_run_id.is_none());
+        assert!(ctx.cancellation_token.is_none());
     }
 
     #[test]
-    fn test_run_context_with_values() {
+    fn test_run_context_with_cancellation() {
         let ctx = RunContext {
-            run_id: Some("my-run".into()),
-            parent_run_id: Some("parent-run".into()),
-            cancellation_token: None,
+            cancellation_token: Some(CancellationToken::new()),
         };
-        assert_eq!(ctx.run_id.as_deref(), Some("my-run"));
-        assert_eq!(ctx.parent_run_id.as_deref(), Some("parent-run"));
+        assert!(ctx.cancellation_token.is_some());
     }
 
     #[test]
     fn test_run_context_clone() {
         let ctx = RunContext {
-            run_id: Some("r1".into()),
-            parent_run_id: None,
             cancellation_token: None,
         };
         let cloned = ctx.clone();
-        assert_eq!(cloned.run_id, ctx.run_id);
-        assert_eq!(cloned.parent_run_id, ctx.parent_run_id);
+        assert!(cloned.cancellation_token.is_none());
+    }
+
+    #[test]
+    fn test_runtime_run_id_in_session() {
+        let mut session = Session::new("test");
+        session.runtime.set("run_id", "my-run").unwrap();
+        session.runtime.set("parent_run_id", "parent-run").unwrap();
+        assert_eq!(
+            session.runtime.value("run_id").and_then(|v| v.as_str()),
+            Some("my-run")
+        );
+        assert_eq!(
+            session.runtime.value("parent_run_id").and_then(|v| v.as_str()),
+            Some("parent-run")
+        );
     }
 
     // ========================================================================
@@ -3734,7 +3770,6 @@ mod tests {
             tools,
             RunContext {
                 cancellation_token: Some(token),
-                ..Default::default()
             },
             None,
             None,

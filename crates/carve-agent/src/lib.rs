@@ -94,6 +94,7 @@ pub mod plugins;
 pub mod prelude;
 pub mod session;
 pub mod skills;
+pub mod thread;
 pub mod state_types;
 pub mod stop;
 pub mod storage;
@@ -117,8 +118,8 @@ pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 // Type exports
 pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
 
-// Session exports
-pub use session::{Session, SessionMetadata};
+// Thread/Session exports
+pub use thread::{Session, SessionMetadata, Thread, ThreadMetadata};
 
 // Storage exports
 pub use storage::{
@@ -165,8 +166,8 @@ pub use ag_ui::{
 
 // Execute exports
 pub use execute::{
-    collect_patches, execute_single_tool, execute_tools_parallel, execute_tools_sequential,
-    ToolExecution,
+    collect_patches, execute_single_tool, execute_single_tool_with_runtime,
+    execute_tools_parallel, execute_tools_sequential, ToolExecution,
 };
 
 // Convert exports (pure functions)

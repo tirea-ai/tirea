@@ -4,6 +4,7 @@
 //! through typed state references. All modifications are automatically
 //! collected - no explicit `finish()` call needed.
 
+use crate::runtime::Runtime;
 use crate::state::{PatchSink, State};
 use crate::{Op, Patch, Path, TrackedPatch};
 use serde_json::Value;
@@ -55,6 +56,8 @@ pub struct Context<'a> {
     source: String,
     ops: Mutex<Vec<Op>>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
+    /// Per-run runtime context (user_id, tokens, etc.).
+    runtime: Option<&'a Runtime>,
     /// Execution control: blocked reason (if execution should be blocked).
     blocked: Mutex<Option<String>>,
     /// Execution control: pending data (arbitrary JSON for pending state).
@@ -88,9 +91,16 @@ impl<'a> Context<'a> {
             source: source.into(),
             ops: Mutex::new(Vec::new()),
             activity_manager,
+            runtime: None,
             blocked: Mutex::new(None),
             pending: Mutex::new(None),
         }
+    }
+
+    /// Create a new context with a runtime reference.
+    pub fn with_runtime(mut self, runtime: Option<&'a Runtime>) -> Self {
+        self.runtime = runtime;
+        self
     }
 
     /// Get the current call ID.
@@ -101,6 +111,25 @@ impl<'a> Context<'a> {
     /// Get the source identifier.
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// Get the runtime reference, if set.
+    pub fn runtime_ref(&self) -> Option<&Runtime> {
+        self.runtime
+    }
+
+    /// Get a typed value from the runtime (same API as `ctx.state::<T>()`).
+    ///
+    /// Panics if no runtime is set.
+    pub fn runtime<T: State>(&self) -> T::Ref<'_> {
+        self.runtime
+            .expect("Context::runtime() called but no Runtime set")
+            .get::<T>()
+    }
+
+    /// Get a raw JSON value from the runtime by key.
+    pub fn runtime_value(&self, key: &str) -> Option<&Value> {
+        self.runtime.and_then(|rt| rt.value(key))
     }
 
     /// Get a typed state reference at the specified path.

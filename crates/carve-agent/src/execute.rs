@@ -2,7 +2,7 @@
 
 use crate::traits::tool::{Tool, ToolResult};
 use crate::types::ToolCall;
-use carve_state::{Context, TrackedPatch};
+use carve_state::{Context, Runtime, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,6 +35,16 @@ pub async fn execute_single_tool(
     call: &ToolCall,
     state: &Value,
 ) -> ToolExecution {
+    execute_single_tool_with_runtime(tool, call, state, None).await
+}
+
+/// Execute a single tool call with an optional runtime context.
+pub async fn execute_single_tool_with_runtime(
+    tool: Option<&dyn Tool>,
+    call: &ToolCall,
+    state: &Value,
+    runtime: Option<&Runtime>,
+) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
             call: call.clone(),
@@ -44,7 +54,8 @@ pub async fn execute_single_tool(
     };
 
     // Create context for this tool call
-    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name));
+    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name))
+        .with_runtime(runtime);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {

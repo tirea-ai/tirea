@@ -88,13 +88,19 @@ pub fn run_ai_sdk_sse(
 pub fn run_ai_sdk_sse_with_hook(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    mut session: Session,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_id: String,
     parent_run_id: Option<String>,
     event_hook: Option<EventHook>,
 ) -> AiSdkSseStream {
     let adapter = AiSdkAdapter::new(run_id.clone());
+
+    // Set run_id and parent_run_id on the session runtime
+    let _ = session.runtime.set("run_id", run_id.clone());
+    if let Some(parent) = parent_run_id.clone() {
+        let _ = session.runtime.set("parent_run_id", parent);
+    }
 
     let StreamWithCheckpoints {
         events: mut agent_events,
@@ -106,8 +112,6 @@ pub fn run_ai_sdk_sse_with_hook(
         session,
         tools,
         RunContext {
-            run_id: Some(run_id.clone()),
-            parent_run_id,
             cancellation_token: None,
         },
     );

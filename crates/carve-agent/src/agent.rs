@@ -1558,12 +1558,14 @@ mod tests {
     async fn test_run_loop_stream_external_run_id_passthrough() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("thread-42").with_message(crate::types::Message::user("hi"));
+        let mut session = Session::new("thread-42").with_message(crate::types::Message::user("hi"));
         let tools = HashMap::new();
 
+        // Set run_id and parent_run_id on the session runtime
+        let _ = session.runtime.set("run_id", "external-run-id".to_string());
+        let _ = session.runtime.set("parent_run_id", "parent-run-id".to_string());
+
         let ctx = RunContext {
-            run_id: Some("external-run-id".into()),
-            parent_run_id: Some("parent-run-id".into()),
             cancellation_token: None,
         };
         let events =
@@ -1634,12 +1636,13 @@ mod tests {
     async fn test_run_loop_stream_run_id_consistent_across_events() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("s1").with_message(crate::types::Message::user("hi"));
+        let mut session = Session::new("s1").with_message(crate::types::Message::user("hi"));
         let tools = HashMap::new();
 
+        // Set run_id on the session runtime
+        let _ = session.runtime.set("run_id", "consistent-id".to_string());
+
         let ctx = RunContext {
-            run_id: Some("consistent-id".into()),
-            parent_run_id: None,
             cancellation_token: None,
         };
         let events =
