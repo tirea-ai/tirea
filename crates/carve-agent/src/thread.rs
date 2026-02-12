@@ -4,7 +4,7 @@
 //! The `Session` type alias is provided for backward compatibility.
 
 use crate::types::Message;
-use carve_state::{apply_patches, CarveResult, Runtime, TrackedPatch};
+use carve_state::{apply_patches, CarveError, CarveResult, Runtime, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -140,11 +140,15 @@ impl Thread {
     ///
     /// - `patch_index = 0`: Returns state after applying the first patch only
     /// - `patch_index = n`: Returns state after applying patches 0..=n
+    /// - `patch_index >= patch_count`: Returns error
     ///
     /// This enables time-travel debugging by accessing any historical state point.
     pub fn replay_to(&self, patch_index: usize) -> CarveResult<Value> {
-        if self.patches.is_empty() || patch_index >= self.patches.len() {
-            return self.rebuild_state();
+        if patch_index >= self.patches.len() {
+            return Err(CarveError::invalid_operation(format!(
+                "replay index {patch_index} out of bounds (history len: {})",
+                self.patches.len()
+            )));
         }
 
         apply_patches(
@@ -363,8 +367,11 @@ mod tests {
         let state_at_2 = thread.replay_to(2).unwrap();
         assert_eq!(state_at_2["counter"], 30);
 
-        let state_beyond = thread.replay_to(100).unwrap();
-        assert_eq!(state_beyond["counter"], 30);
+        let err = thread.replay_to(100).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("replay index 100 out of bounds (history len: 3)")
+        );
     }
 
     #[test]
@@ -372,7 +379,10 @@ mod tests {
         let state = json!({"counter": 0});
         let thread = Thread::with_initial_state("test-1", state.clone());
 
-        let replayed = thread.replay_to(0).unwrap();
-        assert_eq!(replayed, state);
+        let err = thread.replay_to(0).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("replay index 0 out of bounds (history len: 0)")
+        );
     }
 }
