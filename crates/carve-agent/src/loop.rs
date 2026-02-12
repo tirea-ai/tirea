@@ -59,7 +59,7 @@ use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -827,7 +827,7 @@ pub async fn execute_tools_with_plugins(
             &session.id,
         )
         .await
-    };
+    }?;
 
     let applied = apply_tool_results_to_session(session, &results, None)?;
     if let Some(interaction) = applied.pending_interaction {
@@ -850,7 +850,7 @@ async fn execute_tools_parallel_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
-) -> Vec<ToolExecutionResult> {
+) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
     // Clone runtime for parallel tasks (Runtime is Clone).
@@ -884,7 +884,7 @@ async fn execute_tools_parallel_with_phases(
         }
     });
 
-    join_all(futures).await
+    Ok(join_all(futures).await)
 }
 
 /// Execute tools sequentially with phase hooks.
@@ -898,7 +898,7 @@ async fn execute_tools_sequential_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
-) -> Vec<ToolExecutionResult> {
+) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
 
     let mut state = initial_state.clone();
@@ -921,15 +921,21 @@ async fn execute_tools_sequential_with_phases(
 
         // Apply patch to state for next tool
         if let Some(ref patch) = result.execution.patch {
-            if let Ok(new_state) = apply_patch(&state, patch.patch()) {
-                state = new_state;
-            }
+            state = apply_patch(&state, patch.patch()).map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to apply tool patch for call '{}': {}",
+                    result.execution.call.id, e
+                ))
+            })?;
         }
         // Apply pending patches from plugins to state for next tool
         for pp in &result.pending_patches {
-            if let Ok(new_state) = apply_patch(&state, pp.patch()) {
-                state = new_state;
-            }
+            state = apply_patch(&state, pp.patch()).map_err(|e| {
+                AgentLoopError::StateError(format!(
+                    "failed to apply plugin patch for call '{}': {}",
+                    result.execution.call.id, e
+                ))
+            })?;
         }
 
         plugin_data = result.plugin_data.clone();
@@ -946,7 +952,50 @@ async fn execute_tools_sequential_with_phases(
         }
     }
 
-    results
+    Ok(results)
+}
+
+fn merge_parallel_plugin_data(
+    base: &HashMap<String, Value>,
+    results: &[ToolExecutionResult],
+) -> Result<HashMap<String, Value>, AgentLoopError> {
+    let mut changes: HashMap<String, Option<Value>> = HashMap::new();
+
+    for result in results {
+        let mut keys: HashSet<String> = HashSet::new();
+        keys.extend(base.keys().cloned());
+        keys.extend(result.plugin_data.keys().cloned());
+
+        for key in keys {
+            let before = base.get(&key);
+            let after = result.plugin_data.get(&key);
+            if before == after {
+                continue;
+            }
+
+            let proposed = after.cloned();
+            if let Some(existing) = changes.get(&key) {
+                if existing != &proposed {
+                    return Err(AgentLoopError::StateError(format!(
+                        "conflicting parallel plugin data updates for key '{}'",
+                        key
+                    )));
+                }
+            } else {
+                changes.insert(key, proposed);
+            }
+        }
+    }
+
+    let mut merged = base.clone();
+    for (key, value) in changes {
+        if let Some(v) = value {
+            merged.insert(key, v);
+        } else {
+            merged.remove(&key);
+        }
+    }
+    Ok(merged)
 }
 
 /// Result of tool execution with phase hooks.
@@ -1358,7 +1407,35 @@ pub async fn run_loop(
             .await
         };
 
-        if let Some(last) = results.last() {
+        let results = match results {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = emit_session_end(
+                    session,
+                    &mut plugin_data,
+                    &tool_descriptors,
+                    &config.plugins,
+                )
+                .await;
+                return Err(e);
+            }
+        };
+
+        if config.parallel_tools {
+            plugin_data.data = match merge_parallel_plugin_data(&plugin_data.data, &results) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = emit_session_end(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                    )
+                    .await;
+                    return Err(e);
+                }
+            };
+        } else if let Some(last) = results.last() {
             plugin_data.data = last.plugin_data.clone();
         }
 
@@ -1895,7 +1972,7 @@ fn run_loop_stream_impl_with_provider(
 
             let rt_for_tools = session.runtime.clone();
             let sid_for_tools = session.id.clone();
-            let mut tool_future: Pin<Box<dyn Future<Output = Vec<ToolExecutionResult>> + Send>> =
+            let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
                 if config.parallel_tools {
                     Box::pin(execute_tools_parallel_with_phases(
                         &tools,
@@ -1944,7 +2021,47 @@ fn run_loop_stream_impl_with_provider(
                 yield event;
             }
 
-            if let Some(last) = results.last() {
+            let results = match results {
+                Ok(r) => r,
+                Err(e) => {
+                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                    yield AgentEvent::Error {
+                        message: e.to_string(),
+                    };
+                    yield AgentEvent::RunFinish {
+                        thread_id: session.id.clone(),
+                        run_id: run_id.clone(),
+                        result: None,
+                        stop_reason: None,
+                    };
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
+                }
+            };
+
+            if config.parallel_tools {
+                plugin_data.data = match merge_parallel_plugin_data(&plugin_data.data, &results) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
+                        yield AgentEvent::Error {
+                            message: e.to_string(),
+                        };
+                        yield AgentEvent::RunFinish {
+                            thread_id: session.id.clone(),
+                            run_id: run_id.clone(),
+                            result: None,
+                            stop_reason: None,
+                        };
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
+                        return;
+                    }
+                };
+            } else if let Some(last) = results.last() {
                 plugin_data.data = last.plugin_data.clone();
             }
 
@@ -2147,7 +2264,7 @@ mod tests {
     use crate::phase::Phase;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use async_trait::async_trait;
-    use carve_state::{ActivityManager, Context};
+    use carve_state::{ActivityManager, Context, Op, Patch};
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
     use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
@@ -2410,6 +2527,7 @@ mod tests {
                 "test",
             )
             .await
+            .expect("parallel tool execution should succeed")
         });
 
         let ((), ()) = tokio::join!(ready_a.notified(), ready_b.notified());
@@ -3263,6 +3381,66 @@ mod tests {
         });
     }
 
+    #[test]
+    fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
+        struct FirstCallIntermediatePatchPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for FirstCallIntermediatePatchPlugin {
+            fn id(&self) -> &str {
+                "first_call_intermediate_patch"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
+                    return;
+                }
+
+                // This increment fails when applied between call_1 and call_2 because
+                // `counter` doesn't exist yet. Swallowing that failure hides a broken
+                // intermediate state transition.
+                let patch = TrackedPatch::new(Patch::new().with_op(Op::increment(
+                    carve_state::path!("counter"),
+                    1_i64,
+                )))
+                .with_source("test:intermediate_apply_error");
+                step.pending_patches.push(patch);
+            }
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Call tools".to_string(),
+                tool_calls: vec![
+                    crate::types::ToolCall::new(
+                        "call_1",
+                        "echo",
+                        json!({"message": "hello"}),
+                    ),
+                    crate::types::ToolCall::new(
+                        "call_2",
+                        "counter",
+                        json!({"amount": 5}),
+                    ),
+                ],
+                usage: None,
+            };
+
+            let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+            tools.insert("echo".to_string(), Arc::new(EchoTool));
+            tools.insert("counter".to_string(), Arc::new(CounterTool));
+            let plugins: Vec<Arc<dyn AgentPlugin>> =
+                vec![Arc::new(FirstCallIntermediatePatchPlugin)];
+
+            let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+                .await
+                .expect_err("sequential apply errors should surface");
+            assert!(matches!(err, AgentLoopError::StateError(_)));
+        });
+    }
+
     // ========================================================================
     // Phase lifecycle helpers & tests for run_loop_stream
     // ========================================================================
@@ -3651,6 +3829,28 @@ mod tests {
         collect_stream_events(stream).await
     }
 
+    /// Helper: run a mock stream and collect events plus final session.
+    async fn run_mock_stream_with_final_session(
+        provider: MockStreamProvider,
+        config: AgentConfig,
+        session: Session,
+        tools: HashMap<String, Arc<dyn Tool>>,
+    ) -> (Vec<AgentEvent>, Session) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let stream = run_loop_stream_impl_with_provider(
+            Arc::new(provider),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+            Some(tx),
+            None,
+        );
+        let events = collect_stream_events(stream).await;
+        let final_session = rx.await.expect("final session should be available");
+        (events, final_session)
+    }
+
     /// Extract the stop_reason from the RunFinish event.
     fn extract_stop_reason(events: &[AgentEvent]) -> Option<StopReason> {
         events.iter().find_map(|e| match e {
@@ -3693,6 +3893,74 @@ mod tests {
 
         let events = run_mock_stream(provider, config, session, tools).await;
         assert_eq!(extract_stop_reason(&events), Some(StopReason::NaturalEnd));
+    }
+
+    #[tokio::test]
+    async fn test_parallel_tool_plugin_data_merges_across_calls() {
+        struct ParallelPluginDataRecorder;
+
+        #[async_trait]
+        impl AgentPlugin for ParallelPluginDataRecorder {
+            fn id(&self) -> &str {
+                "parallel_plugin_data_recorder"
+            }
+
+            fn initial_data(&self) -> Option<(&'static str, Value)> {
+                Some(("seed", json!(true)))
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                match phase {
+                    Phase::BeforeToolExecute => {
+                        if let Some(call_id) = step.tool_call_id() {
+                            step.set(&format!("seen_{call_id}"), true);
+                        }
+                    }
+                    Phase::BeforeInference => {
+                        let seen_count = step
+                            .data_snapshot()
+                            .keys()
+                            .filter(|k| k.starts_with("seen_"))
+                            .count();
+
+                        let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                            carve_state::path!("debug", "seen_parallel_count"),
+                            json!(seen_count),
+                        )))
+                        .with_source("test:parallel_plugin_data");
+                        step.pending_patches.push(patch);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let responses = vec![
+            MockResponse::text("run tools")
+                .with_tool_call("call_a", "echo", json!({"message": "a"}))
+                .with_tool_call("call_b", "counter", json!({"amount": 1})),
+            MockResponse::text("done"),
+        ];
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(ParallelPluginDataRecorder) as Arc<dyn AgentPlugin>)
+            .with_parallel_tools(true);
+        let session = Session::new("test").with_message(Message::user("go"));
+
+        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        tools.insert("echo".to_string(), Arc::new(EchoTool));
+        tools.insert("counter".to_string(), Arc::new(CounterTool));
+
+        let (_events, final_session) = run_mock_stream_with_final_session(
+            MockStreamProvider::new(responses),
+            config,
+            session,
+            tools,
+        )
+        .await;
+
+        let state = final_session.rebuild_state().unwrap();
+        assert_eq!(state["debug"]["seen_parallel_count"], 2);
     }
 
     #[tokio::test]

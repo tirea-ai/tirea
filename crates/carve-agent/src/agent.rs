@@ -3,7 +3,9 @@
 //! Provides [`Agent`] as the primary interface for running agent loops,
 //! creating subagents, and managing background agent tasks.
 
-use crate::r#loop::{run_loop_stream, AgentDefinition, AgentLoopError, RunContext};
+use crate::r#loop::{
+    run_loop_stream, run_loop_stream_with_session, AgentDefinition, AgentLoopError, RunContext,
+};
 use crate::session::Session;
 use crate::storage::{Storage, StorageError};
 use crate::stream::AgentEvent;
@@ -175,15 +177,16 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let mut stream = run_loop_stream(
+            let stream_with_session = run_loop_stream_with_session(
                 client,
                 definition,
                 session.clone(),
                 filtered,
                 RunContext::default(),
             );
+            let mut stream = stream_with_session.events;
             let mut last_response = String::new();
-            let final_session = session;
+            let mut saw_run_finish = false;
 
             loop {
                 tokio::select! {
@@ -194,7 +197,7 @@ impl Agent {
                         match event {
                             Some(AgentEvent::RunFinish { result, .. }) => {
                                 last_response = AgentEvent::extract_response(&result);
-                                break;
+                                saw_run_finish = true;
                             }
                             Some(AgentEvent::Error { message }) => {
                                 return Err(AgentLoopError::LlmError(message));
@@ -205,6 +208,12 @@ impl Agent {
                     }
                 }
             }
+
+            let final_session = if saw_run_finish {
+                stream_with_session.final_session.await.unwrap_or(session)
+            } else {
+                session
+            };
 
             // Save session if storage available
             if let Some(ref storage) = storage {
@@ -1055,6 +1064,30 @@ mod tests {
         }
     }
 
+    /// Plugin that writes a marker into session state during SessionEnd.
+    struct SessionEndStatePatchPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SessionEndStatePatchPlugin {
+        fn id(&self) -> &str {
+            "session_end_state_patch"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase != Phase::SessionEnd {
+                return;
+            }
+            let patch = carve_state::TrackedPatch::new(
+                carve_state::Patch::new().with_op(carve_state::Op::set(
+                    carve_state::path!("spawn", "finished"),
+                    json!(true),
+                )),
+            )
+            .with_source("test:session_end_state_patch");
+            step.pending_patches.push(patch);
+        }
+    }
+
     /// Plugin that records the tool IDs visible during BeforeInference.
     struct ToolRecorderPlugin {
         recorded: Arc<Mutex<Vec<Vec<String>>>>,
@@ -1348,6 +1381,27 @@ mod tests {
         );
         let saved = saved.unwrap();
         assert_eq!(saved.id, session_id);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_returns_and_persists_final_session_state() {
+        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let def = AgentDefinition::with_id("spawn-final-state", "gpt-4o-mini")
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+            .with_plugin(Arc::new(SessionEndStatePatchPlugin) as Arc<dyn AgentPlugin>);
+        let agent =
+            Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn Storage>);
+
+        let handle = agent.spawn("persist final session");
+        let session_id = handle.session_id().to_string();
+        let result = handle.wait().await.unwrap();
+
+        let result_state = result.session.rebuild_state().unwrap();
+        assert_eq!(result_state["spawn"]["finished"], true);
+
+        let saved = storage.load(&session_id).await.unwrap().expect("session exists");
+        let saved_state = saved.rebuild_state().unwrap();
+        assert_eq!(saved_state["spawn"]["finished"], true);
     }
 
     // ========================================================================

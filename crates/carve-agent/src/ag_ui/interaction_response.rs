@@ -103,8 +103,22 @@ impl InteractionResponsePlugin {
                 m.role == crate::types::Role::Assistant && m.tool_calls.is_some()
             })
             .and_then(|m| m.tool_calls.as_ref())
-            .and_then(|calls| calls.first())
-            .cloned();
+            .and_then(|calls| {
+                // Frontend tool interactions use tool call id as interaction id.
+                if let Some(call) = calls.iter().find(|c| c.id == pending_id) {
+                    return Some(call.clone());
+                }
+
+                // Permission interactions use `permission_<tool_name>`.
+                if let Some(tool_name) = pending_id.strip_prefix("permission_") {
+                    if let Some(call) = calls.iter().find(|c| c.name == tool_name) {
+                        return Some(call.clone());
+                    }
+                }
+
+                // Fallback for unknown interaction id formats.
+                calls.first().cloned()
+            });
 
         if let Some(call) = tool_call {
             // Schedule the tool call for replay by the loop.
@@ -214,5 +228,48 @@ fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
     let patch = ctx.take_patch();
     if !patch.patch().is_empty() {
         step.pending_patches.push(patch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Session;
+    use crate::types::{Message, ToolCall};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn session_start_replays_tool_matching_pending_interaction() {
+        let plugin = InteractionResponsePlugin::new(
+            vec!["permission_write_file".to_string()],
+            vec![],
+        );
+
+        let session = Session::with_initial_state(
+            "s1",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "permission_write_file",
+                        "action": "confirm"
+                    }
+                }
+            }),
+        )
+        .with_message(Message::assistant_with_tool_calls(
+            "tools",
+            vec![
+                ToolCall::new("call_read", "read_file", json!({"path": "a.txt"})),
+                ToolCall::new("call_write", "write_file", json!({"path": "b.txt"})),
+            ],
+        ));
+
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step.get("__replay_tool_calls").unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].id, "call_write");
+        assert_eq!(replay_calls[0].name, "write_file");
     }
 }
