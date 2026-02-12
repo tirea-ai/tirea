@@ -322,7 +322,7 @@ impl<'a> StepContext<'a> {
     ///
     /// Returns `true` when serialization succeeds and value is stored.
     /// Returns `false` when the value cannot be serialized.
-    pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
+    pub fn scratchpad_set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
         match serde_json::to_value(value) {
             Ok(v) => {
                 self.scratchpad.insert(key.to_string(), v);
@@ -340,20 +340,44 @@ impl<'a> StepContext<'a> {
     }
 
     /// Get a scratchpad value.
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+    pub fn scratchpad_get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
         self.scratchpad
             .get(key)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// Check if a scratchpad key exists.
-    pub fn has(&self, key: &str) -> bool {
+    pub fn scratchpad_has(&self, key: &str) -> bool {
         self.scratchpad.contains_key(key)
     }
 
     /// Remove a scratchpad value.
-    pub fn remove(&mut self, key: &str) -> Option<Value> {
+    pub fn scratchpad_remove(&mut self, key: &str) -> Option<Value> {
         self.scratchpad.remove(key)
+    }
+
+    /// Deprecated: use `scratchpad_set`.
+    #[deprecated(since = "0.2.0", note = "Use `scratchpad_set` instead")]
+    pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
+        self.scratchpad_set(key, value)
+    }
+
+    /// Deprecated: use `scratchpad_get`.
+    #[deprecated(since = "0.2.0", note = "Use `scratchpad_get` instead")]
+    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.scratchpad_get(key)
+    }
+
+    /// Deprecated: use `scratchpad_has`.
+    #[deprecated(since = "0.2.0", note = "Use `scratchpad_has` instead")]
+    pub fn has(&self, key: &str) -> bool {
+        self.scratchpad_has(key)
+    }
+
+    /// Deprecated: use `scratchpad_remove`.
+    #[deprecated(since = "0.2.0", note = "Use `scratchpad_remove` instead")]
+    pub fn remove(&mut self, key: &str) -> Option<Value> {
+        self.scratchpad_remove(key)
     }
 
     /// Replace all scratchpad data with the provided map.
@@ -686,7 +710,7 @@ mod tests {
     }
 
     // =========================================================================
-    // Plugin data tests
+    // Scratchpad tests
     // =========================================================================
 
     #[test]
@@ -698,6 +722,21 @@ mod tests {
         let value: Option<i32> = ctx.get("counter");
 
         assert_eq!(value, Some(42));
+    }
+
+    #[test]
+    fn test_scratchpad_named_api_roundtrip() {
+        let session = mock_session();
+        let mut ctx = StepContext::new(&session, vec![]);
+
+        assert!(ctx.scratchpad_set("counter", 42i32));
+        assert!(ctx.scratchpad_has("counter"));
+        let value: Option<i32> = ctx.scratchpad_get("counter");
+        assert_eq!(value, Some(42));
+
+        let removed = ctx.scratchpad_remove("counter");
+        assert_eq!(removed, Some(json!(42)));
+        assert!(!ctx.scratchpad_has("counter"));
     }
 
     #[test]

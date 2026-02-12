@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn test_reminder_plugin_no_initial_data() {
         let plugin = ReminderPlugin::new();
-        assert!(plugin.initial_data().is_none());
+        assert!(plugin.initial_scratchpad().is_none());
     }
 
     #[test]

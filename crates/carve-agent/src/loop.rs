@@ -437,7 +437,7 @@ async fn prepare_stream_error_termination(
 fn initial_scratchpad(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
     let mut data = HashMap::new();
     for plugin in plugins {
-        if let Some((key, value)) = plugin.initial_data() {
+        if let Some((key, value)) = plugin.initial_scratchpad() {
             data.insert(key.to_string(), value);
         }
     }
@@ -807,7 +807,7 @@ pub async fn run_step(
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
             let err = e.to_string();
             let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            step.set(
+            step.scratchpad_set(
                 "llmmetry.inference_error",
                 serde_json::json!({ "type": "llm_exec_error", "message": err }),
             );
@@ -1439,7 +1439,7 @@ pub async fn run_loop(
             Err(e) => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                step.set(
+                step.scratchpad_set(
                     "llmmetry.inference_error",
                     serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
                 );
@@ -1450,13 +1450,8 @@ pub async fn run_loop(
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
-                emit_session_end(
-                    session,
-                    &mut scratchpad,
-                    &tool_descriptors,
-                    &config.plugins,
-                )
-                .await;
+                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    .await;
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
         };
@@ -1524,13 +1519,8 @@ pub async fn run_loop(
         let state = match session.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_session_end(
-                    session,
-                    &mut scratchpad,
-                    &tool_descriptors,
-                    &config.plugins,
-                )
-                .await;
+                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    .await;
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
@@ -1566,13 +1556,9 @@ pub async fn run_loop(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                let _ = emit_session_end(
-                    session,
-                    &mut scratchpad,
-                    &tool_descriptors,
-                    &config.plugins,
-                )
-                .await;
+                let _ =
+                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                        .await;
                 return Err(e);
             }
         };
@@ -1618,13 +1604,9 @@ pub async fn run_loop(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            session = emit_session_end(
-                session,
-                &mut scratchpad,
-                &tool_descriptors,
-                &config.plugins,
-            )
-            .await;
+            session =
+                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    .await;
             return Err(AgentLoopError::PendingInteraction {
                 session: Box::new(session),
                 interaction: Box::new(interaction),
@@ -1642,13 +1624,9 @@ pub async fn run_loop(
         // Check stop conditions.
         let stop_ctx = loop_state.to_check_context(&result, &session);
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-            session = emit_session_end(
-                session,
-                &mut scratchpad,
-                &tool_descriptors,
-                &config.plugins,
-            )
-            .await;
+            session =
+                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    .await;
             return Err(AgentLoopError::Stopped {
                 session: Box::new(session),
                 reason,
@@ -1657,13 +1635,7 @@ pub async fn run_loop(
     }
 
     // Phase: SessionEnd
-    session = emit_session_end(
-        session,
-        &mut scratchpad,
-        &tool_descriptors,
-        &config.plugins,
-    )
-    .await;
+    session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
 
     Ok((session, last_text))
 }
@@ -2089,7 +2061,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                     let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                    step.set(
+                    step.scratchpad_set(
                         "llmmetry.inference_error",
                         serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
                     );
@@ -2145,7 +2117,7 @@ fn run_loop_stream_impl_with_provider(
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         let mut step =
                             scratchpad.new_step_context(&session, tool_descriptors.clone());
-                        step.set(
+                        step.scratchpad_set(
                             "llmmetry.inference_error",
                             serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
                         );
@@ -2662,10 +2634,7 @@ mod tests {
             .collect()
     }
 
-    fn scratchpad_result(
-        call_id: &str,
-        scratchpad: HashMap<String, Value>,
-    ) -> ToolExecutionResult {
+    fn scratchpad_result(call_id: &str, scratchpad: HashMap<String, Value>) -> ToolExecutionResult {
         ToolExecutionResult {
             execution: crate::execute::ToolExecution {
                 call: crate::types::ToolCall::new(call_id, "test_tool", json!({})),
@@ -3256,7 +3225,7 @@ mod tests {
 
             async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
 
-            fn initial_data(&self) -> Option<(&'static str, Value)> {
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("plugin_config", json!({"enabled": true})))
             }
         }
@@ -3267,7 +3236,7 @@ mod tests {
         let runtime_data = ScratchpadRuntimeData::new(&plugins);
         step.set_scratchpad_map(runtime_data.data);
 
-        let config: Option<serde_json::Map<String, Value>> = step.get("plugin_config");
+        let config: Option<serde_json::Map<String, Value>> = step.scratchpad_get("plugin_config");
         assert!(config.is_some());
         assert_eq!(config.unwrap()["enabled"], true);
     }
@@ -3282,12 +3251,13 @@ mod tests {
                 "guarded"
             }
 
-            fn initial_data(&self) -> Option<(&'static str, Value)> {
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("allow_exec", json!(true)))
             }
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-                if phase == Phase::BeforeToolExecute && step.get::<bool>("allow_exec") != Some(true)
+                if phase == Phase::BeforeToolExecute
+                    && step.scratchpad_get::<bool>("allow_exec") != Some(true)
                 {
                     step.block("missing plugin initial data");
                 }
@@ -3299,6 +3269,51 @@ mod tests {
         let state = json!({});
         let tool_descriptors = vec![tool.descriptor()];
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
+
+        let result = execute_single_tool_with_phases(
+            Some(&tool),
+            &call,
+            &state,
+            &tool_descriptors,
+            &plugins,
+            initial_scratchpad(&plugins),
+            None,
+            None,
+            "test",
+        )
+        .await;
+
+        assert!(result.execution.result.is_success());
+    }
+
+    #[tokio::test]
+    async fn test_plugin_initial_scratchpad_available_in_before_tool_execute() {
+        struct GuardedScratchpadPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for GuardedScratchpadPlugin {
+            fn id(&self) -> &str {
+                "guarded_scratchpad"
+            }
+
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
+                Some(("allow_exec_v2", json!(true)))
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::BeforeToolExecute
+                    && step.scratchpad_get::<bool>("allow_exec_v2") != Some(true)
+                {
+                    step.block("missing plugin initial scratchpad");
+                }
+            }
+        }
+
+        let tool = EchoTool;
+        let call = crate::types::ToolCall::new("call_1", "echo", json!({ "message": "hello" }));
+        let state = json!({});
+        let tool_descriptors = vec![tool.descriptor()];
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedScratchpadPlugin)];
 
         let result = execute_single_tool_with_phases(
             Some(&tool),
@@ -3377,17 +3392,17 @@ mod tests {
                 "lifecycle"
             }
 
-            fn initial_data(&self) -> Option<(&'static str, Value)> {
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("seed", json!(1)))
             }
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 match phase {
                     Phase::SessionStart => {
-                        step.set("seed", 2);
+                        step.scratchpad_set("seed", 2);
                     }
                     Phase::StepStart => {
-                        if step.get::<i64>("seed") == Some(2) {
+                        if step.scratchpad_get::<i64>("seed") == Some(2) {
                             step.system("seed_visible");
                         } else {
                             step.system("seed_missing");
@@ -4242,7 +4257,7 @@ mod tests {
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 if phase == Phase::SessionStart {
-                    step.set("__replay_tool_calls", json!({"bad": "payload"}));
+                    step.scratchpad_set("__replay_tool_calls", json!({"bad": "payload"}));
                 }
             }
         }
@@ -4299,7 +4314,7 @@ mod tests {
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 if phase == Phase::SessionStart {
-                    step.set(
+                    step.scratchpad_set(
                         "__replay_tool_calls",
                         vec![crate::types::ToolCall::new(
                             "replay_call_1",
@@ -4362,7 +4377,7 @@ mod tests {
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 match phase {
                     Phase::SessionStart => {
-                        step.set(
+                        step.scratchpad_set(
                             "__replay_tool_calls",
                             vec![crate::types::ToolCall::new(
                                 "replay_call_1",
@@ -4521,15 +4536,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_parallel_tool_scratchpad_merges_across_calls() {
-        struct ParallelPluginDataRecorder;
+        struct ParallelScratchpadRecorder;
 
         #[async_trait]
-        impl AgentPlugin for ParallelPluginDataRecorder {
+        impl AgentPlugin for ParallelScratchpadRecorder {
             fn id(&self) -> &str {
                 "parallel_scratchpad_recorder"
             }
 
-            fn initial_data(&self) -> Option<(&'static str, Value)> {
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("seed", json!(true)))
             }
 
@@ -4537,7 +4552,7 @@ mod tests {
                 match phase {
                     Phase::BeforeToolExecute => {
                         if let Some(call_id) = step.tool_call_id() {
-                            step.set(&format!("seen_{call_id}"), true);
+                            step.scratchpad_set(&format!("seen_{call_id}"), true);
                         }
                     }
                     Phase::BeforeInference => {
@@ -4567,7 +4582,7 @@ mod tests {
         ];
 
         let config = AgentConfig::new("mock")
-            .with_plugin(Arc::new(ParallelPluginDataRecorder) as Arc<dyn AgentPlugin>)
+            .with_plugin(Arc::new(ParallelScratchpadRecorder) as Arc<dyn AgentPlugin>)
             .with_parallel_tools(true);
         let session = Session::new("test").with_message(Message::user("go"));
 

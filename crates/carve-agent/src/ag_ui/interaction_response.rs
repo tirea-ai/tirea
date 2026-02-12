@@ -99,9 +99,7 @@ impl InteractionResponsePlugin {
             .messages
             .iter()
             .rev()
-            .find(|m| {
-                m.role == crate::types::Role::Assistant && m.tool_calls.is_some()
-            })
+            .find(|m| m.role == crate::types::Role::Assistant && m.tool_calls.is_some())
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.
@@ -122,7 +120,7 @@ impl InteractionResponsePlugin {
 
         if let Some(call) = tool_call {
             // Schedule the tool call for replay by the loop.
-            step.set(
+            step.scratchpad_set(
                 "__replay_tool_calls",
                 serde_json::to_value(vec![call]).unwrap_or_default(),
             );
@@ -177,17 +175,13 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let persisted_id = step
-            .session
-            .rebuild_state()
-            .ok()
-            .and_then(|s| {
-                s.get(crate::state_types::AGENT_STATE_PATH)?
-                    .get("pending_interaction")?
-                    .get("id")?
-                    .as_str()
-                    .map(String::from)
-            });
+        let persisted_id = step.session.rebuild_state().ok().and_then(|s| {
+            s.get(crate::state_types::AGENT_STATE_PATH)?
+                .get("pending_interaction")?
+                .get("id")?
+                .as_str()
+                .map(String::from)
+        });
 
         let id_matches = persisted_id
             .as_deref()
@@ -240,10 +234,8 @@ mod tests {
 
     #[tokio::test]
     async fn session_start_replays_tool_matching_pending_interaction() {
-        let plugin = InteractionResponsePlugin::new(
-            vec!["permission_write_file".to_string()],
-            vec![],
-        );
+        let plugin =
+            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
         let session = Session::with_initial_state(
             "s1",
@@ -267,7 +259,9 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
-        let replay_calls: Vec<ToolCall> = step.get("__replay_tool_calls").unwrap_or_default();
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");

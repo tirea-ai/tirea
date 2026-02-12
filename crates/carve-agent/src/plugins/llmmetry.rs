@@ -407,8 +407,8 @@ impl AgentPlugin for LLMMetryPlugin {
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
                 let (cache_read_input_tokens, cache_creation_input_tokens) =
                     extract_cache_tokens(usage);
-                let error: Option<InferenceError> = step.get("llmmetry.inference_error");
-                step.remove("llmmetry.inference_error");
+                let error: Option<InferenceError> = step.scratchpad_get("llmmetry.inference_error");
+                step.scratchpad_remove("llmmetry.inference_error");
 
                 let model = lock_unpoison(&self.model).clone();
                 let provider = lock_unpoison(&self.provider).clone();
@@ -928,7 +928,7 @@ mod tests {
         let mut step = StepContext::new(&session, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
-        step.set(
+        step.scratchpad_set(
             "llmmetry.inference_error",
             serde_json::json!({ "type": "rate_limited", "message": "429" }),
         );
@@ -1208,7 +1208,7 @@ mod tests {
     fn test_total_duration_methods() {
         let m = AgentMetrics {
             inferences: vec![
-                make_span("m", "p"),     // 100ms
+                make_span("m", "p"), // 100ms
                 GenAISpan {
                     duration_ms: 200,
                     ..make_span("m", "p")
@@ -1444,7 +1444,7 @@ mod tests {
             let mut step = StepContext::new(&session, vec![]);
 
             plugin.on_phase(Phase::BeforeInference, &mut step).await;
-            step.set(
+            step.scratchpad_set(
                 "llmmetry.inference_error",
                 serde_json::json!({ "type": "rate_limited", "message": "429" }),
             );

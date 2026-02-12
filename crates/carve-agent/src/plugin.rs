@@ -76,7 +76,7 @@ use serde_json::Value;
 /// - **Inject context**: `step.system()`, `step.session()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
 /// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
-/// - **Use scratchpad**: `step.set()`, `step.get()`
+/// - **Use scratchpad**: `step.scratchpad_set()`, `step.scratchpad_get()`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
@@ -101,10 +101,17 @@ pub trait AgentPlugin: Send + Sync {
     /// # Example
     ///
     /// ```ignore
-    /// fn initial_data(&self) -> Option<(&'static str, Value)> {
+    /// fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
     ///     Some(("reminders", json!([])))
     /// }
     /// ```
+    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
+        #[allow(deprecated)]
+        self.initial_data()
+    }
+
+    /// Deprecated: use `initial_scratchpad`.
+    #[deprecated(since = "0.2.0", note = "Use `initial_scratchpad` instead")]
     fn initial_data(&self) -> Option<(&'static str, Value)> {
         None
     }
@@ -152,7 +159,7 @@ mod tests {
             }
         }
 
-        fn initial_data(&self) -> Option<(&'static str, Value)> {
+        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
             Some(("test_data", json!({ "initialized": true })))
         }
     }
@@ -288,9 +295,9 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_initial_data() {
+    fn test_plugin_initial_scratchpad() {
         let plugin = TestPlugin::new("test");
-        let data = plugin.initial_data();
+        let data = plugin.initial_scratchpad();
 
         assert!(data.is_some());
         let (key, value) = data.unwrap();
@@ -299,9 +306,35 @@ mod tests {
     }
 
     #[test]
+    fn test_legacy_initial_data_still_supported() {
+        struct LegacyPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for LegacyPlugin {
+            fn id(&self) -> &str {
+                "legacy"
+            }
+
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+
+            #[allow(deprecated)]
+            fn initial_data(&self) -> Option<(&'static str, Value)> {
+                Some(("legacy_data", json!({ "ok": true })))
+            }
+        }
+
+        let plugin = LegacyPlugin;
+        let data = plugin.initial_scratchpad();
+        assert!(data.is_some());
+        let (key, value) = data.unwrap();
+        assert_eq!(key, "legacy_data");
+        assert_eq!(value["ok"], true);
+    }
+
+    #[test]
     fn test_noop_plugin_no_initial_data() {
         let plugin = NoOpPlugin;
-        assert!(plugin.initial_data().is_none());
+        assert!(plugin.initial_scratchpad().is_none());
     }
 
     #[tokio::test]

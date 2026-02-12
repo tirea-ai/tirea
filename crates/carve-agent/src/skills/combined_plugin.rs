@@ -46,7 +46,7 @@ impl AgentPlugin for SkillPlugin {
         self.runtime.on_phase(phase, step).await;
     }
 
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
+    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
         None
     }
 }

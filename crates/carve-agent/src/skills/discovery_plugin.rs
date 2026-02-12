@@ -133,7 +133,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         step.system(rendered);
     }
 
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
+    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
         None
     }
 }

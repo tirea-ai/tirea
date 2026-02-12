@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn test_permission_plugin_no_initial_data() {
         let plugin = PermissionPlugin;
-        assert!(plugin.initial_data().is_none());
+        assert!(plugin.initial_scratchpad().is_none());
     }
 
     #[tokio::test]
@@ -672,10 +672,7 @@ mod tests {
         use crate::types::ToolCall;
 
         // "permissions" is an array instead of object — should fall back to Ask
-        let session = Session::with_initial_state(
-            "test",
-            json!({ "permissions": [1, 2, 3] }),
-        );
+        let session = Session::with_initial_state("test", json!({ "permissions": [1, 2, 3] }));
         let mut step = StepContext::new(&session, vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));

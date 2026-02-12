@@ -113,7 +113,7 @@ impl AgentPlugin for SkillRuntimePlugin {
         step.system(rendered);
     }
 
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
+    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
         // This initializes runtime scratchpad only; persisted skill state lives in session state.
         // Keeping this empty avoids duplicating two sources of truth.
         None
