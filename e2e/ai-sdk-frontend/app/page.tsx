@@ -30,11 +30,58 @@ export default function Chat() {
               borderBottom: "1px solid #eee",
             }}
           >
-            <strong>{m.role === "user" ? "You" : "Agent"}:</strong>{" "}
-            {m.parts
-              .filter((p) => p.type === "text")
-              .map((p) => (p as { type: "text"; text: string }).text)
-              .join("")}
+            <strong>{m.role === "user" ? "You" : "Agent"}:</strong>
+            {m.parts.map((p, i) => {
+              if (p.type === "text") {
+                return <span key={i}> {p.text}</span>;
+              }
+              if (p.type === "dynamic-tool" || p.type.startsWith("tool-")) {
+                const tool = p as {
+                  type: string;
+                  toolName?: string;
+                  toolCallId: string;
+                  state: string;
+                  input?: unknown;
+                  output?: unknown;
+                  errorText?: string;
+                };
+                const name = tool.toolName ?? p.type.replace("tool-", "");
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      margin: "0.5rem 0",
+                      padding: "0.5rem",
+                      background: "#f5f5f5",
+                      borderRadius: 4,
+                      fontSize: "0.85em",
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    <div>
+                      <strong>Tool: {name}</strong>{" "}
+                      <span style={{ color: "#888" }}>({tool.state})</span>
+                    </div>
+                    {tool.input != null && (
+                      <div style={{ color: "#555", marginTop: "0.25rem" }}>
+                        Input: {JSON.stringify(tool.input)}
+                      </div>
+                    )}
+                    {tool.output != null && (
+                      <div style={{ color: "#2a7", marginTop: "0.25rem" }}>
+                        Output: {JSON.stringify(tool.output)}
+                      </div>
+                    )}
+                    {tool.errorText && (
+                      <div style={{ color: "red", marginTop: "0.25rem" }}>
+                        Error: {tool.errorText}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+              return null;
+            })}
           </div>
         ))}
         {isLoading && (
