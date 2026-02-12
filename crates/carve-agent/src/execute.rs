@@ -321,4 +321,123 @@ mod tests {
             .unwrap()
             .contains("Intentional failure"));
     }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_runtime_reads() {
+        use carve_state::Runtime;
+
+        /// Tool that reads user_id from runtime and returns it.
+        struct RuntimeReaderTool;
+
+        #[async_trait]
+        impl Tool for RuntimeReaderTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("rt_reader", "RuntimeReader", "Reads runtime values")
+            }
+
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                let user_id = ctx
+                    .runtime_value("user_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                Ok(ToolResult::success("rt_reader", json!({"user_id": user_id})))
+            }
+        }
+
+        let mut rt = Runtime::new();
+        rt.set("user_id", "u-42").unwrap();
+
+        let tool = RuntimeReaderTool;
+        let call = ToolCall::new("call_1", "rt_reader", json!({}));
+        let state = json!({});
+
+        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+
+        assert!(exec.result.is_success());
+        assert_eq!(exec.result.data["user_id"], "u-42");
+    }
+
+    #[tokio::test]
+    async fn test_execute_single_tool_with_runtime_none() {
+        /// Tool that checks runtime_ref is None.
+        struct RuntimeCheckerTool;
+
+        #[async_trait]
+        impl Tool for RuntimeCheckerTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("rt_checker", "RuntimeChecker", "Checks runtime presence")
+            }
+
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                let has_runtime = ctx.runtime_ref().is_some();
+                Ok(ToolResult::success(
+                    "rt_checker",
+                    json!({"has_runtime": has_runtime}),
+                ))
+            }
+        }
+
+        let tool = RuntimeCheckerTool;
+        let call = ToolCall::new("call_1", "rt_checker", json!({}));
+        let state = json!({});
+
+        // Without runtime
+        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, None).await;
+        assert_eq!(exec.result.data["has_runtime"], false);
+
+        // With runtime
+        let rt = Runtime::new();
+        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+        assert_eq!(exec.result.data["has_runtime"], true);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_runtime_sensitive_key() {
+        use carve_state::Runtime;
+
+        /// Tool that reads a sensitive key from runtime.
+        struct SensitiveReaderTool;
+
+        #[async_trait]
+        impl Tool for SensitiveReaderTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("sensitive", "Sensitive", "Reads sensitive key")
+            }
+
+            async fn execute(
+                &self,
+                _args: Value,
+                ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                let rt = ctx.runtime_ref().unwrap();
+                let token = rt.value("token").and_then(|v| v.as_str()).unwrap();
+                let is_sensitive = rt.is_sensitive("token");
+                Ok(ToolResult::success(
+                    "sensitive",
+                    json!({"token_len": token.len(), "is_sensitive": is_sensitive}),
+                ))
+            }
+        }
+
+        let mut rt = Runtime::new();
+        rt.set_sensitive("token", "super-secret-token").unwrap();
+
+        let tool = SensitiveReaderTool;
+        let call = ToolCall::new("call_1", "sensitive", json!({}));
+        let state = json!({});
+
+        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+
+        assert!(exec.result.is_success());
+        assert_eq!(exec.result.data["token_len"], 18);
+        assert_eq!(exec.result.data["is_sensitive"], true);
+    }
 }

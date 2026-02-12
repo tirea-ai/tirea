@@ -168,4 +168,18 @@ mod tests {
         assert_eq!(collected.len(), 2);
         assert_eq!(seen.lock().unwrap().len(), 2);
     }
+
+    #[test]
+    #[should_panic(expected = "read-only sink")]
+    fn test_patch_sink_read_only_collect_panics() {
+        let sink = PatchSink::read_only();
+        sink.collect(Op::set(Path::root().key("x"), Value::from(1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "read-only sink")]
+    fn test_patch_sink_read_only_inner_panics() {
+        let sink = PatchSink::read_only();
+        let _ = sink.inner();
+    }
 }
