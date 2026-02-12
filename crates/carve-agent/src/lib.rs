@@ -222,6 +222,7 @@ pub use plugins::{
     InMemorySink,
     LLMMetryPlugin,
     MetricsSink,
+    ModelStats,
     // Extension traits
     PermissionContextExt,
     PermissionPlugin,
@@ -231,4 +232,5 @@ pub use plugins::{
     ReminderPlugin,
     ReminderState,
     ToolSpan,
+    ToolStats,
 };

@@ -76,6 +76,42 @@ impl ToolSpan {
     }
 }
 
+/// Per-model aggregated inference statistics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelStats {
+    /// Model identifier (e.g. "claude-sonnet-4-5").
+    pub model: String,
+    /// Provider name (e.g. "anthropic").
+    pub provider: String,
+    /// Number of inference calls.
+    pub inference_count: usize,
+    /// Total input (prompt) tokens.
+    pub input_tokens: i32,
+    /// Total output (completion) tokens.
+    pub output_tokens: i32,
+    /// Total tokens (input + output).
+    pub total_tokens: i32,
+    /// Total cache-read input tokens.
+    pub cache_read_input_tokens: i32,
+    /// Total cache-creation input tokens.
+    pub cache_creation_input_tokens: i32,
+    /// Total wall-clock inference duration in milliseconds.
+    pub total_duration_ms: u64,
+}
+
+/// Per-tool aggregated execution statistics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolStats {
+    /// Tool name.
+    pub name: String,
+    /// Number of calls.
+    pub call_count: usize,
+    /// Number of failed calls.
+    pub failure_count: usize,
+    /// Total wall-clock execution duration in milliseconds.
+    pub total_duration_ms: u64,
+}
+
 /// Aggregated metrics for an agent session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentMetrics {
@@ -103,6 +139,32 @@ impl AgentMetrics {
         self.inferences.iter().filter_map(|s| s.total_tokens).sum()
     }
 
+    /// Total cache-read input tokens across all inferences.
+    pub fn total_cache_read_tokens(&self) -> i32 {
+        self.inferences
+            .iter()
+            .filter_map(|s| s.cache_read_input_tokens)
+            .sum()
+    }
+
+    /// Total cache-creation input tokens across all inferences.
+    pub fn total_cache_creation_tokens(&self) -> i32 {
+        self.inferences
+            .iter()
+            .filter_map(|s| s.cache_creation_input_tokens)
+            .sum()
+    }
+
+    /// Total wall-clock inference duration in milliseconds.
+    pub fn total_inference_duration_ms(&self) -> u64 {
+        self.inferences.iter().map(|s| s.duration_ms).sum()
+    }
+
+    /// Total wall-clock tool execution duration in milliseconds.
+    pub fn total_tool_duration_ms(&self) -> u64 {
+        self.tools.iter().map(|s| s.duration_ms).sum()
+    }
+
     /// Number of inferences.
     pub fn inference_count(&self) -> usize {
         self.inferences.len()
@@ -116,6 +178,52 @@ impl AgentMetrics {
     /// Number of failed tool executions.
     pub fn tool_failures(&self) -> usize {
         self.tools.iter().filter(|t| !t.is_success()).count()
+    }
+
+    /// Inference statistics grouped by `(model, provider)`.
+    ///
+    /// Results are sorted by model name for deterministic output.
+    pub fn stats_by_model(&self) -> Vec<ModelStats> {
+        let mut map: HashMap<(String, String), ModelStats> = HashMap::new();
+        for span in &self.inferences {
+            let key = (span.model.clone(), span.provider.clone());
+            let entry = map.entry(key).or_insert_with(|| ModelStats {
+                model: span.model.clone(),
+                provider: span.provider.clone(),
+                ..Default::default()
+            });
+            entry.inference_count += 1;
+            entry.input_tokens += span.input_tokens.unwrap_or(0);
+            entry.output_tokens += span.output_tokens.unwrap_or(0);
+            entry.total_tokens += span.total_tokens.unwrap_or(0);
+            entry.cache_read_input_tokens += span.cache_read_input_tokens.unwrap_or(0);
+            entry.cache_creation_input_tokens += span.cache_creation_input_tokens.unwrap_or(0);
+            entry.total_duration_ms += span.duration_ms;
+        }
+        let mut result: Vec<ModelStats> = map.into_values().collect();
+        result.sort_by(|a, b| a.model.cmp(&b.model));
+        result
+    }
+
+    /// Tool execution statistics grouped by tool name.
+    ///
+    /// Results are sorted by tool name for deterministic output.
+    pub fn stats_by_tool(&self) -> Vec<ToolStats> {
+        let mut map: HashMap<String, ToolStats> = HashMap::new();
+        for span in &self.tools {
+            let entry = map.entry(span.name.clone()).or_insert_with(|| ToolStats {
+                name: span.name.clone(),
+                ..Default::default()
+            });
+            entry.call_count += 1;
+            if !span.is_success() {
+                entry.failure_count += 1;
+            }
+            entry.total_duration_ms += span.duration_ms;
+        }
+        let mut result: Vec<ToolStats> = map.into_values().collect();
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        result
     }
 }
 
@@ -925,6 +1033,198 @@ mod tests {
         assert_eq!(extract_cache_tokens(None), (None, None));
         let u = usage(10, 20, 30);
         assert_eq!(extract_cache_tokens(Some(&u)), (None, None));
+    }
+
+    // ---- stats_by_model ----
+
+    #[test]
+    fn test_stats_by_model_empty() {
+        let m = AgentMetrics::default();
+        assert!(m.stats_by_model().is_empty());
+    }
+
+    #[test]
+    fn test_stats_by_model_single() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_span("gpt-4", "openai"),
+                GenAISpan {
+                    input_tokens: Some(5),
+                    output_tokens: Some(3),
+                    total_tokens: Some(8),
+                    duration_ms: 50,
+                    ..make_span("gpt-4", "openai")
+                },
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_model();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].model, "gpt-4");
+        assert_eq!(stats[0].provider, "openai");
+        assert_eq!(stats[0].inference_count, 2);
+        assert_eq!(stats[0].input_tokens, 15);
+        assert_eq!(stats[0].output_tokens, 23);
+        assert_eq!(stats[0].total_tokens, 38);
+        assert_eq!(stats[0].total_duration_ms, 150);
+    }
+
+    #[test]
+    fn test_stats_by_model_multiple() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_span("gpt-4", "openai"),
+                make_span("claude-3", "anthropic"),
+                GenAISpan {
+                    input_tokens: Some(50),
+                    output_tokens: Some(25),
+                    total_tokens: Some(75),
+                    duration_ms: 200,
+                    ..make_span("claude-3", "anthropic")
+                },
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_model();
+        assert_eq!(stats.len(), 2);
+        // Sorted by model name
+        assert_eq!(stats[0].model, "claude-3");
+        assert_eq!(stats[0].inference_count, 2);
+        assert_eq!(stats[0].input_tokens, 60);
+        assert_eq!(stats[0].output_tokens, 45);
+        assert_eq!(stats[0].total_duration_ms, 300);
+
+        assert_eq!(stats[1].model, "gpt-4");
+        assert_eq!(stats[1].inference_count, 1);
+    }
+
+    #[test]
+    fn test_stats_by_model_with_cache_tokens() {
+        let m = AgentMetrics {
+            inferences: vec![GenAISpan {
+                cache_read_input_tokens: Some(30),
+                cache_creation_input_tokens: Some(10),
+                ..make_span("claude-3", "anthropic")
+            }],
+            ..Default::default()
+        };
+        let stats = m.stats_by_model();
+        assert_eq!(stats[0].cache_read_input_tokens, 30);
+        assert_eq!(stats[0].cache_creation_input_tokens, 10);
+    }
+
+    // ---- stats_by_tool ----
+
+    #[test]
+    fn test_stats_by_tool_empty() {
+        let m = AgentMetrics::default();
+        assert!(m.stats_by_tool().is_empty());
+    }
+
+    #[test]
+    fn test_stats_by_tool_single() {
+        let m = AgentMetrics {
+            tools: vec![
+                make_tool_span("search", "c1"),
+                ToolSpan {
+                    duration_ms: 20,
+                    ..make_tool_span("search", "c2")
+                },
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_tool();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].name, "search");
+        assert_eq!(stats[0].call_count, 2);
+        assert_eq!(stats[0].failure_count, 0);
+        assert_eq!(stats[0].total_duration_ms, 30);
+    }
+
+    #[test]
+    fn test_stats_by_tool_multiple() {
+        let m = AgentMetrics {
+            tools: vec![
+                make_tool_span("search", "c1"),
+                make_tool_span("write", "c2"),
+                make_tool_span("search", "c3"),
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_tool();
+        assert_eq!(stats.len(), 2);
+        // Sorted by name
+        assert_eq!(stats[0].name, "search");
+        assert_eq!(stats[0].call_count, 2);
+        assert_eq!(stats[1].name, "write");
+        assert_eq!(stats[1].call_count, 1);
+    }
+
+    #[test]
+    fn test_stats_by_tool_with_failures() {
+        let m = AgentMetrics {
+            tools: vec![
+                make_tool_span("write", "c1"),
+                ToolSpan {
+                    error_type: Some("permission denied".into()),
+                    ..make_tool_span("write", "c2")
+                },
+                ToolSpan {
+                    error_type: Some("not found".into()),
+                    ..make_tool_span("write", "c3")
+                },
+            ],
+            ..Default::default()
+        };
+        let stats = m.stats_by_tool();
+        assert_eq!(stats[0].call_count, 3);
+        assert_eq!(stats[0].failure_count, 2);
+    }
+
+    // ---- total cache/duration methods ----
+
+    #[test]
+    fn test_total_cache_tokens() {
+        let m = AgentMetrics {
+            inferences: vec![
+                GenAISpan {
+                    cache_read_input_tokens: Some(30),
+                    cache_creation_input_tokens: Some(10),
+                    ..make_span("m", "p")
+                },
+                GenAISpan {
+                    cache_read_input_tokens: Some(20),
+                    cache_creation_input_tokens: None,
+                    ..make_span("m", "p")
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_cache_read_tokens(), 50);
+        assert_eq!(m.total_cache_creation_tokens(), 10);
+    }
+
+    #[test]
+    fn test_total_duration_methods() {
+        let m = AgentMetrics {
+            inferences: vec![
+                make_span("m", "p"),     // 100ms
+                GenAISpan {
+                    duration_ms: 200,
+                    ..make_span("m", "p")
+                },
+            ],
+            tools: vec![
+                make_tool_span("a", "c1"), // 10ms
+                ToolSpan {
+                    duration_ms: 30,
+                    ..make_tool_span("b", "c2")
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(m.total_inference_duration_ms(), 300);
+        assert_eq!(m.total_tool_duration_ms(), 40);
     }
 
     // ---- Tracing span capture tests ----
