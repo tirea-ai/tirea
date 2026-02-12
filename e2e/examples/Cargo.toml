@@ -1,0 +1,27 @@
+[package]
+name = "uncarve-examples"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+carve-agent = { path = "../../crates/carve-agent" }
+carve-agentos-server = { path = "../../crates/carve-agentos-server" }
+carve-state = { path = "../../crates/carve-state" }
+carve-state-derive = { path = "../../crates/carve-state-derive" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+genai = "0.5"
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
+uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "travel"
+path = "src/travel.rs"
+
+[[bin]]
+name = "research"
+path = "src/research.rs"
