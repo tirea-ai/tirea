@@ -488,6 +488,88 @@ fn apply_pending_patches(session: Session, pending: Vec<TrackedPatch>) -> Sessio
     }
 }
 
+async fn run_phase_block<R, Setup, Extract>(
+    session: &Session,
+    scratchpad: &mut ScratchpadRuntimeData,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+    phases: &[Phase],
+    setup: Setup,
+    extract: Extract,
+) -> Result<(R, Vec<TrackedPatch>), AgentLoopError>
+where
+    Setup: FnOnce(&mut StepContext<'_>),
+    Extract: FnOnce(&mut StepContext<'_>) -> R,
+{
+    let mut step = scratchpad.new_step_context(session, tool_descriptors.to_vec());
+    setup(&mut step);
+    for phase in phases {
+        emit_phase_checked(*phase, &mut step, plugins).await?;
+    }
+    let output = extract(&mut step);
+    let pending = take_step_side_effects(scratchpad, &mut step);
+    Ok((output, pending))
+}
+
+async fn emit_phase_block<Setup>(
+    phase: Phase,
+    session: &Session,
+    scratchpad: &mut ScratchpadRuntimeData,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+    setup: Setup,
+) -> Result<Vec<TrackedPatch>, AgentLoopError>
+where
+    Setup: FnOnce(&mut StepContext<'_>),
+{
+    let (_, pending) = run_phase_block(
+        session,
+        scratchpad,
+        tool_descriptors,
+        plugins,
+        &[phase],
+        setup,
+        |_| (),
+    )
+    .await?;
+    Ok(pending)
+}
+
+async fn emit_cleanup_phases_and_apply(
+    session: Session,
+    scratchpad: &mut ScratchpadRuntimeData,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+    error_type: &'static str,
+    message: String,
+) -> Result<Session, AgentLoopError> {
+    let pending = emit_phase_block(
+        Phase::AfterInference,
+        &session,
+        scratchpad,
+        tool_descriptors,
+        plugins,
+        |step| {
+            step.scratchpad_set(
+                "llmmetry.inference_error",
+                serde_json::json!({ "type": error_type, "message": message }),
+            );
+        },
+    )
+    .await?;
+    let session = apply_pending_patches(session, pending);
+    let pending = emit_phase_block(
+        Phase::StepEnd,
+        &session,
+        scratchpad,
+        tool_descriptors,
+        plugins,
+        |_| {},
+    )
+    .await?;
+    Ok(apply_pending_patches(session, pending))
+}
+
 /// Emit SessionEnd phase and apply any resulting patches to the session.
 async fn emit_session_end(
     session: Session,
@@ -903,27 +985,27 @@ pub async fn run_step(
     let tool_descriptors = tool_descriptors_for_config(tools, config);
     let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
-    // Create StepContext - use scoped blocks to manage borrows
-    let (messages, filtered_tools, skip_inference, tracing_span, pending) = {
-        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-
-        // Phase: StepStart
-        emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await?;
-
-        // Phase: BeforeInference
-        emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await?;
-
-        // Build messages
-        let msgs = build_messages(&step, &config.system_prompt);
-
-        // Get data before dropping step
-        let skip = step.skip_inference;
-        let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
-        let tracing_span = step.tracing_span.take();
-        let pending = take_step_side_effects(&mut scratchpad, &mut step);
-
-        (msgs, tools_filter, skip, tracing_span, pending)
-    };
+    let phase_block = run_phase_block(
+        &session,
+        &mut scratchpad,
+        &tool_descriptors,
+        &config.plugins,
+        &[Phase::StepStart, Phase::BeforeInference],
+        |_| {},
+        |step| {
+            let messages = build_messages(step, &config.system_prompt);
+            let filtered_tools = step
+                .tools
+                .iter()
+                .map(|td| td.id.clone())
+                .collect::<Vec<_>>();
+            let skip_inference = step.skip_inference;
+            let tracing_span = step.tracing_span.take();
+            (messages, filtered_tools, skip_inference, tracing_span)
+        },
+    )
+    .await?;
+    let ((messages, filtered_tools, skip_inference, tracing_span), pending) = phase_block;
     let session = apply_pending_patches(session, pending);
 
     // Skip inference if requested
@@ -959,15 +1041,15 @@ pub async fn run_step(
         Ok(r) => r,
         Err(e) => {
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-            let err = e.to_string();
-            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            step.scratchpad_set(
-                "llmmetry.inference_error",
-                serde_json::json!({ "type": "llm_exec_error", "message": err }),
-            );
-            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await?;
-            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await?;
-            let _ = take_step_side_effects(&mut scratchpad, &mut step);
+            let _session = emit_cleanup_phases_and_apply(
+                session,
+                &mut scratchpad,
+                &tool_descriptors,
+                &config.plugins,
+                "llm_exec_error",
+                e.to_string(),
+            )
+            .await?;
             return Err(AgentLoopError::LlmError(e.to_string()));
         }
     };
@@ -992,13 +1074,18 @@ pub async fn run_step(
     };
 
     // Phase: AfterInference (with new context)
-    let session = {
-        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-        step.response = Some(result.clone());
-        emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await?;
-        let pending = take_step_side_effects(&mut scratchpad, &mut step);
-        apply_pending_patches(session, pending)
-    };
+    let pending = emit_phase_block(
+        Phase::AfterInference,
+        &session,
+        &mut scratchpad,
+        &tool_descriptors,
+        &config.plugins,
+        |step| {
+            step.response = Some(result.clone());
+        },
+    )
+    .await?;
+    let session = apply_pending_patches(session, pending);
 
     // Add assistant message
     let step_meta = MessageMetadata {
@@ -1017,12 +1104,16 @@ pub async fn run_step(
     };
 
     // Phase: StepEnd (with new context)
-    let session = {
-        let mut step = scratchpad.new_step_context(&session, tool_descriptors);
-        emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await?;
-        let pending = take_step_side_effects(&mut scratchpad, &mut step);
-        apply_pending_patches(session, pending)
-    };
+    let pending = emit_phase_block(
+        Phase::StepEnd,
+        &session,
+        &mut scratchpad,
+        &tool_descriptors,
+        &config.plugins,
+        |_| {},
+    )
+    .await?;
+    let session = apply_pending_patches(session, pending);
 
     Ok((session, result))
 }
@@ -1544,35 +1635,41 @@ pub async fn run_loop(
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
     // Phase: SessionStart
-    let session_start_pending = {
-        let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-        emit_phase_checked(Phase::SessionStart, &mut session_step, &config.plugins).await?;
-        take_step_side_effects(&mut scratchpad, &mut session_step)
-    };
-    session = apply_pending_patches(session, session_start_pending);
+    let pending = emit_phase_block(
+        Phase::SessionStart,
+        &session,
+        &mut scratchpad,
+        &tool_descriptors,
+        &config.plugins,
+        |_| {},
+    )
+    .await?;
+    session = apply_pending_patches(session, pending);
 
     loop {
         // Phase: StepStart and BeforeInference
-        let step_prepare = {
-            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            if let Err(err) = emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await
-            {
-                Err(err)
-            } else if let Err(err) =
-                emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await
-            {
-                Err(err)
-            } else {
-                let msgs = build_messages(&step, &config.system_prompt);
-                let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
-                let skip = step.skip_inference;
+        let step_prepare = run_phase_block(
+            &session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &config.plugins,
+            &[Phase::StepStart, Phase::BeforeInference],
+            |_| {},
+            |step| {
+                let messages = build_messages(step, &config.system_prompt);
+                let filtered_tools = step
+                    .tools
+                    .iter()
+                    .map(|td| td.id.clone())
+                    .collect::<Vec<_>>();
+                let skip_inference = step.skip_inference;
                 let tracing_span = step.tracing_span.take();
-                let pending = take_step_side_effects(&mut scratchpad, &mut step);
-
-                Ok::<_, AgentLoopError>((msgs, tools_filter, skip, tracing_span, pending))
-            }
-        };
-        let (messages, filtered_tools, skip_inference, tracing_span, pending) = match step_prepare {
+                (messages, filtered_tools, skip_inference, tracing_span)
+            },
+        )
+        .await;
+        let ((messages, filtered_tools, skip_inference, tracing_span), pending) = match step_prepare
+        {
             Ok(v) => v,
             Err(e) => {
                 let _finalized =
@@ -1608,37 +1705,28 @@ pub async fn run_loop(
             Ok(r) => r,
             Err(e) => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                step.scratchpad_set(
-                    "llmmetry.inference_error",
-                    serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
-                );
-                if let Err(phase_error) =
-                    emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
+                session = match emit_cleanup_phases_and_apply(
+                    session.clone(),
+                    &mut scratchpad,
+                    &tool_descriptors,
+                    &config.plugins,
+                    "llm_exec_error",
+                    e.to_string(),
+                )
+                .await
                 {
-                    let _finalized = emit_session_end(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                    )
-                    .await;
-                    return Err(phase_error);
-                }
-                if let Err(phase_error) =
-                    emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
-                {
-                    let _finalized = emit_session_end(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                    )
-                    .await;
-                    return Err(phase_error);
-                }
-                let pending = take_step_side_effects(&mut scratchpad, &mut step);
-                session = apply_pending_patches(session, pending);
+                    Ok(s) => s,
+                    Err(phase_error) => {
+                        let _finalized = emit_session_end(
+                            session,
+                            &mut scratchpad,
+                            &tool_descriptors,
+                            &config.plugins,
+                        )
+                        .await;
+                        return Err(phase_error);
+                    }
+                };
                 let _finalized =
                     emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
@@ -1669,14 +1757,18 @@ pub async fn run_loop(
         last_text = result.text.clone();
 
         // Phase: AfterInference
-        let after_inference_pending = {
-            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            step.response = Some(result.clone());
-            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins)
-                .await
-                .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
-        };
-        match after_inference_pending {
+        match emit_phase_block(
+            Phase::AfterInference,
+            &session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &config.plugins,
+            |step| {
+                step.response = Some(result.clone());
+            },
+        )
+        .await
+        {
             Ok(pending) => {
                 session = apply_pending_patches(session, pending);
             }
@@ -1703,13 +1795,16 @@ pub async fn run_loop(
         };
 
         // Phase: StepEnd
-        let step_end_pending = {
-            let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins)
-                .await
-                .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
-        };
-        match step_end_pending {
+        match emit_phase_block(
+            Phase::StepEnd,
+            &session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &config.plugins,
+            |_| {},
+        )
+        .await
+        {
             Ok(pending) => {
                 session = apply_pending_patches(session, pending);
             }
@@ -1997,25 +2092,15 @@ fn run_loop_stream_impl_with_provider(
         let parent_run_id = session.runtime.value("parent_run_id")
             .and_then(|v| v.as_str().map(String::from));
 
-        // Phase: SessionStart (use scoped block to manage borrow)
-        let session_start_pending = {
-            let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            emit_phase_checked(Phase::SessionStart, &mut session_step, &config.plugins)
-                .await
-                .map(|_| take_step_side_effects(&mut scratchpad, &mut session_step))
-        };
-        match session_start_pending {
-            Ok(pending) => {
-                session = apply_pending_patches(session, pending);
-            }
-            Err(e) => {
+        macro_rules! terminate_stream_error {
+            ($message:expr) => {{
                 let (finalized, error, finish) = prepare_stream_error_termination(
                     session,
                     &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                     &run_id,
-                    e.to_string(),
+                    $message,
                 )
                 .await;
                 session = finalized;
@@ -2025,6 +2110,25 @@ fn run_loop_stream_impl_with_provider(
                     let _ = tx.send(session);
                 }
                 return;
+            }};
+        }
+
+        // Phase: SessionStart (use scoped block to manage borrow)
+        match emit_phase_block(
+            Phase::SessionStart,
+            &session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &config.plugins,
+            |_| {},
+        )
+        .await
+        {
+            Ok(pending) => {
+                session = apply_pending_patches(session, pending);
+            }
+            Err(e) => {
+                terminate_stream_error!(e.to_string());
             }
         }
 
@@ -2042,22 +2146,7 @@ fn run_loop_stream_impl_with_provider(
             Some(raw) => match serde_json::from_value::<Vec<crate::types::ToolCall>>(raw.clone()) {
                 Ok(calls) => calls,
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        format!("failed to parse __replay_tool_calls: {e}"),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(format!("failed to parse __replay_tool_calls: {e}"));
                 }
             },
             None => Vec::new(),
@@ -2069,25 +2158,10 @@ fn run_loop_stream_impl_with_provider(
                 let state = match session.rebuild_state() {
                     Ok(s) => s,
                     Err(e) => {
-                        let (finalized, error, finish) = prepare_stream_error_termination(
-                            session,
-                            &mut scratchpad,
-                            &tool_descriptors,
-                            &config.plugins,
-                            &run_id,
-                            format!(
-                                "failed to rebuild state before replaying tool '{}': {e}",
-                                tool_call.id
-                            ),
-                        )
-                        .await;
-                        session = finalized;
-                        yield error;
-                        yield finish;
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
-                        }
-                        return;
+                        terminate_stream_error!(format!(
+                            "failed to rebuild state before replaying tool '{}': {e}",
+                            tool_call.id
+                        ));
                     }
                 };
 
@@ -2107,46 +2181,16 @@ fn run_loop_stream_impl_with_provider(
                 {
                     Ok(result) => result,
                     Err(e) => {
-                        let (finalized, error, finish) = prepare_stream_error_termination(
-                            session,
-                            &mut scratchpad,
-                            &tool_descriptors,
-                            &config.plugins,
-                            &run_id,
-                            e.to_string(),
-                        )
-                        .await;
-                        session = finalized;
-                        yield error;
-                        yield finish;
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
-                        }
-                        return;
+                        terminate_stream_error!(e.to_string());
                     }
                 };
                 scratchpad.data = replay_result.scratchpad.clone();
 
                 if replay_result.pending_interaction.is_some() {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        format!(
-                            "replayed tool '{}' requested pending interaction",
-                            tool_call.id
-                        ),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(format!(
+                        "replayed tool '{}' requested pending interaction",
+                        tool_call.id
+                    ));
                 }
 
                 // Replace the placeholder message with the real tool result.
@@ -2184,22 +2228,7 @@ fn run_loop_stream_impl_with_provider(
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        format!("failed to rebuild state after replay: {e}"),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(format!("failed to rebuild state after replay: {e}"));
                 }
             };
 
@@ -2213,22 +2242,7 @@ fn run_loop_stream_impl_with_provider(
                 let snapshot = match session.rebuild_state() {
                     Ok(s) => s,
                     Err(e) => {
-                        let (finalized, error, finish) = prepare_stream_error_termination(
-                            session,
-                            &mut scratchpad,
-                            &tool_descriptors,
-                            &config.plugins,
-                            &run_id,
-                            format!("failed to rebuild replay snapshot: {e}"),
-                        )
-                        .await;
-                        session = finalized;
-                        yield error;
-                        yield finish;
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
-                        }
-                        return;
+                        terminate_stream_error!(format!("failed to rebuild replay snapshot: {e}"));
                     }
                 };
                 yield AgentEvent::StateSnapshot {
@@ -2256,49 +2270,29 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
-            let step_prepare = {
-                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-
-                if let Err(err) =
-                    emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await
-                {
-                    Err(err)
-                } else if let Err(err) =
-                    emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await
-                {
-                    Err(err)
-                } else {
-                    let msgs = build_messages(&step, &config.system_prompt);
-
-                    let skip = step.skip_inference;
-                    let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+            let step_prepare = run_phase_block(
+                &session,
+                &mut scratchpad,
+                &tool_descriptors,
+                &config.plugins,
+                &[Phase::StepStart, Phase::BeforeInference],
+                |_| {},
+                |step| {
+                    let messages = build_messages(step, &config.system_prompt);
+                    let filtered_tools = step.tools.iter().map(|td| td.id.clone()).collect::<Vec<_>>();
+                    let skip_inference = step.skip_inference;
                     let tracing_span = step.tracing_span.take();
-                    let pending = take_step_side_effects(&mut scratchpad, &mut step);
-
-                    Ok::<_, AgentLoopError>((msgs, tools_filter, skip, tracing_span, pending))
-                }
-            };
-            let (messages, filtered_tools, skip_inference, tracing_span, pending) = match step_prepare {
-                Ok(v) => v,
-                Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
+                    (messages, filtered_tools, skip_inference, tracing_span)
+                },
+            )
+            .await;
+            let ((messages, filtered_tools, skip_inference, tracing_span), pending) =
+                match step_prepare {
+                    Ok(v) => v,
+                    Err(e) => {
+                        terminate_stream_error!(e.to_string());
                     }
-                    return;
-                }
-            };
+                };
             session = apply_pending_patches(session, pending);
 
             // Skip inference if requested
@@ -2341,63 +2335,24 @@ fn run_loop_stream_impl_with_provider(
                 Ok(s) => s,
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                    let cleanup_pending = {
-                        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                        step.scratchpad_set(
-                            "llmmetry.inference_error",
-                            serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
-                        );
-                        if let Err(err) =
-                            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
-                        {
-                            Err(err)
-                        } else if let Err(err) =
-                            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
-                        {
-                            Err(err)
-                        } else {
-                            Ok(take_step_side_effects(&mut scratchpad, &mut step))
-                        }
-                    };
-                    match cleanup_pending {
-                        Ok(pending) => {
-                            session = apply_pending_patches(session, pending);
-                        }
-                        Err(phase_error) => {
-                            let (finalized, error, finish) = prepare_stream_error_termination(
-                                session,
-                                &mut scratchpad,
-                                &tool_descriptors,
-                                &config.plugins,
-                                &run_id,
-                                phase_error.to_string(),
-                            )
-                            .await;
-                            session = finalized;
-                            yield error;
-                            yield finish;
-                            if let Some(tx) = final_session_tx.take() {
-                                let _ = tx.send(session);
-                            }
-                            return;
-                        }
-                    }
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
+                    match emit_cleanup_phases_and_apply(
+                        session.clone(),
                         &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
-                        &run_id,
+                        "llm_stream_start_error",
                         e.to_string(),
                     )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
+                    .await
+                    {
+                        Ok(next_session) => {
+                            session = next_session;
+                        }
+                        Err(phase_error) => {
+                            terminate_stream_error!(phase_error.to_string());
+                        }
                     }
-                    return;
+                    terminate_stream_error!(e.to_string());
                 }
             };
 
@@ -2450,64 +2405,24 @@ fn run_loop_stream_impl_with_provider(
                     }
                     Err(e) => {
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                        let cleanup_pending = {
-                            let mut step =
-                                scratchpad.new_step_context(&session, tool_descriptors.clone());
-                            step.scratchpad_set(
-                                "llmmetry.inference_error",
-                                serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
-                            );
-                            if let Err(err) =
-                                emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
-                            {
-                                Err(err)
-                            } else if let Err(err) =
-                                emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
-                            {
-                                Err(err)
-                            } else {
-                                Ok(take_step_side_effects(&mut scratchpad, &mut step))
-                            }
-                        };
-                        match cleanup_pending {
-                            Ok(pending) => {
-                                session = apply_pending_patches(session, pending);
-                            }
-                            Err(phase_error) => {
-                                let (finalized, error, finish) = prepare_stream_error_termination(
-                                    session,
-                                    &mut scratchpad,
-                                    &tool_descriptors,
-                                    &config.plugins,
-                                    &run_id,
-                                    phase_error.to_string(),
-                                )
-                                .await;
-                                session = finalized;
-                                yield error;
-                                yield finish;
-                                if let Some(tx) = final_session_tx.take() {
-                                    let _ = tx.send(session);
-                                }
-                                return;
-                            }
-                        }
-                        let (finalized, error, finish) = prepare_stream_error_termination(
-                            session,
+                        match emit_cleanup_phases_and_apply(
+                            session.clone(),
                             &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
-                            &run_id,
+                            "llm_stream_event_error",
                             e.to_string(),
                         )
-                        .await;
-                        session = finalized;
-                        yield error;
-                        yield finish;
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
+                        .await
+                        {
+                            Ok(next_session) => {
+                                session = next_session;
+                            }
+                            Err(phase_error) => {
+                                terminate_stream_error!(phase_error.to_string());
+                            }
                         }
-                        return;
+                        terminate_stream_error!(e.to_string());
                     }
                 }
             }
@@ -2523,34 +2438,23 @@ fn run_loop_stream_impl_with_provider(
             };
 
             // Phase: AfterInference (with new context)
-            let after_inference_pending = {
-                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                step.response = Some(result.clone());
-                emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins)
-                    .await
-                    .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
-            };
-            match after_inference_pending {
+            match emit_phase_block(
+                Phase::AfterInference,
+                &session,
+                &mut scratchpad,
+                &tool_descriptors,
+                &config.plugins,
+                |step| {
+                    step.response = Some(result.clone());
+                },
+            )
+            .await
+            {
                 Ok(pending) => {
                     session = apply_pending_patches(session, pending);
                 }
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(e.to_string());
                 }
             }
 
@@ -2566,33 +2470,21 @@ fn run_loop_stream_impl_with_provider(
             };
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
-            let step_end_pending = {
-                let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins)
-                    .await
-                    .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
-            };
-            match step_end_pending {
+            match emit_phase_block(
+                Phase::StepEnd,
+                &session,
+                &mut scratchpad,
+                &tool_descriptors,
+                &config.plugins,
+                |_| {},
+            )
+            .await
+            {
                 Ok(pending) => {
                     session = apply_pending_patches(session, pending);
                 }
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(e.to_string());
                 }
             }
 
@@ -2640,22 +2532,7 @@ fn run_loop_stream_impl_with_provider(
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(e.to_string());
                 }
             };
 
@@ -2732,22 +2609,7 @@ fn run_loop_stream_impl_with_provider(
             let results = match results {
                 Ok(r) => r,
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    terminate_stream_error!(e.to_string());
                 }
             };
 
@@ -2759,22 +2621,7 @@ fn run_loop_stream_impl_with_provider(
                 ) {
                     Ok(v) => v,
                     Err(e) => {
-                        let (finalized, error, finish) = prepare_stream_error_termination(
-                            session,
-                            &mut scratchpad,
-                            &tool_descriptors,
-                            &config.plugins,
-                            &run_id,
-                            e.to_string(),
-                        )
-                        .await;
-                        session = finalized;
-                        yield error;
-                        yield finish;
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
-                        }
-                        return;
+                        terminate_stream_error!(e.to_string());
                     }
                 };
             } else if let Some(last) = results.last() {
@@ -2798,22 +2645,8 @@ fn run_loop_stream_impl_with_provider(
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    let (finalized, error, finish) = prepare_stream_error_termination(
-                        session_before_apply,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                        &run_id,
-                        e.to_string(),
-                    )
-                    .await;
-                    session = finalized;
-                    yield error;
-                    yield finish;
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
-                    }
-                    return;
+                    session = session_before_apply;
+                    terminate_stream_error!(e.to_string());
                 }
             };
             session = applied.session;
@@ -3938,6 +3771,148 @@ mod tests {
             .expect("StepStart should not fail");
 
         assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_run_phase_block_executes_phases_extracts_output_and_commits_side_effects() {
+        struct PhaseBlockPlugin {
+            phases: Arc<Mutex<Vec<Phase>>>,
+        }
+
+        #[async_trait]
+        impl AgentPlugin for PhaseBlockPlugin {
+            fn id(&self) -> &str {
+                "phase_block"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                self.phases.lock().unwrap().push(phase);
+                match phase {
+                    Phase::StepStart => {
+                        step.system("from_step_start");
+                        step.scratchpad_set("phase_block_seen", true);
+                    }
+                    Phase::BeforeInference => {
+                        step.skip_inference = true;
+                        let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                            carve_state::path!("debug", "phase_block"),
+                            json!(true),
+                        )))
+                        .with_source("test:phase_block");
+                        step.pending_patches.push(patch);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let session = Session::with_initial_state("test", json!({}));
+        let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PhaseBlockPlugin {
+            phases: phases.clone(),
+        })];
+        let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
+
+        let (extracted, pending) = run_phase_block(
+            &session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &plugins,
+            &[Phase::StepStart, Phase::BeforeInference],
+            |_| {},
+            |step| {
+                (
+                    step.system_context.clone(),
+                    step.skip_inference,
+                    step.scratchpad_get::<bool>("phase_block_seen"),
+                )
+            },
+        )
+        .await
+        .expect("phase block should succeed");
+
+        assert_eq!(
+            phases.lock().unwrap().as_slice(),
+            &[Phase::StepStart, Phase::BeforeInference]
+        );
+        assert_eq!(extracted.0, vec!["from_step_start".to_string()]);
+        assert!(extracted.1);
+        assert_eq!(extracted.2, Some(true));
+        assert_eq!(pending.len(), 1);
+
+        let updated = apply_pending_patches(session, pending);
+        let state = updated
+            .rebuild_state()
+            .expect("state rebuild should succeed");
+        assert_eq!(state["debug"]["phase_block"], true);
+    }
+
+    #[tokio::test]
+    async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() {
+        struct CleanupPlugin {
+            phases: Arc<Mutex<Vec<Phase>>>,
+        }
+
+        #[async_trait]
+        impl AgentPlugin for CleanupPlugin {
+            fn id(&self) -> &str {
+                "cleanup_plugin"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                self.phases.lock().unwrap().push(phase);
+                match phase {
+                    Phase::AfterInference => {
+                        let err =
+                            step.scratchpad_get::<serde_json::Value>("llmmetry.inference_error");
+                        assert_eq!(
+                            err.as_ref()
+                                .and_then(|v| v.get("type"))
+                                .and_then(|v| v.as_str()),
+                            Some("llm_stream_start_error")
+                        );
+                    }
+                    Phase::StepEnd => {
+                        let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                            carve_state::path!("debug", "cleanup_ran"),
+                            json!(true),
+                        )))
+                        .with_source("test:cleanup");
+                        step.pending_patches.push(patch);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let session = Session::with_initial_state("test", json!({}));
+        let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
+        let phases = Arc::new(Mutex::new(Vec::new()));
+        let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(CleanupPlugin {
+            phases: phases.clone(),
+        })];
+        let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
+
+        let updated = emit_cleanup_phases_and_apply(
+            session,
+            &mut scratchpad,
+            &tool_descriptors,
+            &plugins,
+            "llm_stream_start_error",
+            "boom".to_string(),
+        )
+        .await
+        .expect("cleanup phases should succeed");
+
+        assert_eq!(
+            phases.lock().unwrap().as_slice(),
+            &[Phase::AfterInference, Phase::StepEnd]
+        );
+        let state = updated
+            .rebuild_state()
+            .expect("state rebuild should succeed");
+        assert_eq!(state["debug"]["cleanup_ran"], true);
     }
 
     #[tokio::test]

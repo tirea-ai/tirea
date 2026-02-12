@@ -538,6 +538,81 @@ impl AgentOs {
         Ok(())
     }
 
+    fn assemble_plugin_chain(
+        system_plugins: Vec<Arc<dyn AgentPlugin>>,
+        policy_plugins: Vec<Arc<dyn AgentPlugin>>,
+        other_plugins: Vec<Arc<dyn AgentPlugin>>,
+        explicit_plugins: Vec<Arc<dyn AgentPlugin>>,
+    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        let mut plugins = Vec::new();
+        plugins.extend(system_plugins);
+        plugins.extend(policy_plugins);
+        plugins.extend(other_plugins);
+        plugins.extend(explicit_plugins);
+        Self::ensure_unique_plugin_ids(&plugins)?;
+        Ok(plugins)
+    }
+
+    fn ensure_skills_plugin_not_installed(
+        plugins: &[Arc<dyn AgentPlugin>],
+    ) -> Result<(), AgentOsWiringError> {
+        let reserved = Self::reserved_plugin_ids();
+        if let Some(existing) = plugins
+            .iter()
+            .map(|p| p.id())
+            .find(|id| reserved.contains(id))
+        {
+            return Err(AgentOsWiringError::SkillsPluginAlreadyInstalled(
+                existing.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn build_skills_plugins(&self, reg: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentPlugin>> {
+        match self.skills.mode {
+            SkillsMode::Disabled => Vec::new(),
+            SkillsMode::DiscoveryAndRuntime => {
+                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
+                    self.skills.discovery_max_entries,
+                    self.skills.discovery_max_chars,
+                );
+                vec![SkillPlugin::new(discovery).boxed()]
+            }
+            SkillsMode::DiscoveryOnly => {
+                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
+                    self.skills.discovery_max_entries,
+                    self.skills.discovery_max_chars,
+                );
+                vec![Arc::new(discovery)]
+            }
+            SkillsMode::RuntimeOnly => vec![Arc::new(SkillRuntimePlugin::new())],
+        }
+    }
+
+    fn wire_skills_plugins_and_tools(
+        &self,
+        explicit_plugins: &[Arc<dyn AgentPlugin>],
+        tools: &mut HashMap<String, Arc<dyn Tool>>,
+    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        if self.skills.mode == SkillsMode::Disabled {
+            return Ok(Vec::new());
+        }
+
+        Self::ensure_skills_plugin_not_installed(explicit_plugins)?;
+        let reg = self
+            .skills_registry
+            .clone()
+            .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
+
+        let skills = SkillSubsystem::new(reg.clone());
+        skills.extend_tools(tools).map_err(|e| match e {
+            SkillSubsystemError::ToolIdConflict(id) => AgentOsWiringError::SkillsToolIdConflict(id),
+        })?;
+
+        Ok(self.build_skills_plugins(reg))
+    }
+
     pub fn wire_plugins_into(
         &self,
         mut config: AgentConfig,
@@ -546,16 +621,10 @@ impl AgentOs {
             return Ok(config);
         }
 
-        let mut out: Vec<Arc<dyn AgentPlugin>> = Vec::new();
-        out.extend(self.resolve_plugin_id_list(&config.policy_ids)?);
-        out.extend(self.resolve_plugin_id_list(&config.plugin_ids)?);
-
-        // Append explicitly-provided plugins.
-        out.extend(config.plugins);
-
-        Self::ensure_unique_plugin_ids(&out)?;
-
-        config.plugins = out;
+        let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
+        let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
+        config.plugins =
+            Self::assemble_plugin_chain(Vec::new(), policy_plugins, other_plugins, config.plugins)?;
         Ok(config)
     }
 
@@ -570,64 +639,13 @@ impl AgentOs {
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
 
-        let system_plugins: Vec<Arc<dyn AgentPlugin>> = if self.skills.mode == SkillsMode::Disabled
-        {
-            Vec::new()
-        } else {
-            let reg = self
-                .skills_registry
-                .clone()
-                .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
-
-            // Prevent duplicate plugin installation.
-            let reserved = Self::reserved_plugin_ids();
-            if let Some(existing) = explicit_plugins
-                .iter()
-                .map(|p| p.id())
-                .find(|id| reserved.contains(id))
-            {
-                return Err(AgentOsWiringError::SkillsPluginAlreadyInstalled(
-                    existing.to_string(),
-                ));
-            }
-
-            // Register skills tools.
-            let skills = SkillSubsystem::new(reg.clone());
-            skills.extend_tools(tools).map_err(|e| match e {
-                SkillSubsystemError::ToolIdConflict(id) => {
-                    AgentOsWiringError::SkillsToolIdConflict(id)
-                }
-            })?;
-
-            // Build skills plugins.
-            match self.skills.mode {
-                SkillsMode::Disabled => Vec::new(),
-                SkillsMode::DiscoveryAndRuntime => {
-                    let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                        self.skills.discovery_max_entries,
-                        self.skills.discovery_max_chars,
-                    );
-                    vec![SkillPlugin::new(discovery).boxed()]
-                }
-                SkillsMode::DiscoveryOnly => {
-                    let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                        self.skills.discovery_max_entries,
-                        self.skills.discovery_max_chars,
-                    );
-                    vec![Arc::new(discovery)]
-                }
-                SkillsMode::RuntimeOnly => vec![Arc::new(SkillRuntimePlugin::new())],
-            }
-        };
-
-        let mut wired: Vec<Arc<dyn AgentPlugin>> = Vec::new();
-        wired.extend(system_plugins);
-        wired.extend(policy_plugins);
-        wired.extend(other_plugins);
-        wired.extend(explicit_plugins);
-        Self::ensure_unique_plugin_ids(&wired)?;
-
-        config.plugins = wired;
+        let system_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
+        config.plugins = Self::assemble_plugin_chain(
+            system_plugins,
+            policy_plugins,
+            other_plugins,
+            explicit_plugins,
+        )?;
         Ok(config)
     }
 
@@ -659,61 +677,10 @@ impl AgentOs {
         mut config: AgentConfig,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
-        if self.skills.mode == SkillsMode::Disabled {
-            return Ok(config);
-        }
-
-        let reg = self
-            .skills_registry
-            .clone()
-            .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
-
-        // Prevent duplicate plugin installation.
-        let reserved_plugin_ids = Self::reserved_plugin_ids();
-        if let Some(existing) = config
-            .plugins
-            .iter()
-            .map(|p| p.id())
-            .find(|id| reserved_plugin_ids.contains(id))
-        {
-            return Err(AgentOsWiringError::SkillsPluginAlreadyInstalled(
-                existing.to_string(),
-            ));
-        }
-
-        // Register skills tools.
-        let skills = SkillSubsystem::new(reg.clone());
-        skills.extend_tools(tools).map_err(|e| match e {
-            SkillSubsystemError::ToolIdConflict(id) => AgentOsWiringError::SkillsToolIdConflict(id),
-        })?;
-
-        // Register skills plugins.
-        let mut plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
-        match self.skills.mode {
-            SkillsMode::Disabled => {}
-            SkillsMode::DiscoveryAndRuntime => {
-                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                    self.skills.discovery_max_entries,
-                    self.skills.discovery_max_chars,
-                );
-                plugins.push(SkillPlugin::new(discovery).boxed());
-            }
-            SkillsMode::DiscoveryOnly => {
-                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                    self.skills.discovery_max_entries,
-                    self.skills.discovery_max_chars,
-                );
-                plugins.push(Arc::new(discovery));
-            }
-            SkillsMode::RuntimeOnly => {
-                plugins.push(Arc::new(SkillRuntimePlugin::new()));
-            }
-        }
-
-        // Prepend skills plugins so skill context appears early and ordering is deterministic.
-        plugins.extend(config.plugins);
-        config.plugins = plugins;
-
+        let explicit_plugins = std::mem::take(&mut config.plugins);
+        let skills_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
+        config.plugins =
+            Self::assemble_plugin_chain(skills_plugins, Vec::new(), Vec::new(), explicit_plugins)?;
         Ok(config)
     }
 
@@ -926,6 +893,63 @@ mod tests {
 
         assert!(tools.is_empty());
         assert_eq!(cfg2.plugins.len(), cfg.plugins.len());
+    }
+
+    #[test]
+    fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
+        #[derive(Debug)]
+        struct LocalPlugin(&'static str);
+
+        #[async_trait]
+        impl AgentPlugin for LocalPlugin {
+            fn id(&self) -> &str {
+                self.0
+            }
+
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        }
+
+        let os = AgentOs::builder()
+            .with_registered_plugin("policy1", Arc::new(LocalPlugin("policy1")))
+            .with_registered_plugin("p1", Arc::new(LocalPlugin("p1")))
+            .build()
+            .unwrap();
+
+        let cfg = AgentConfig::new("gpt-4o-mini")
+            .with_policy_id("policy1")
+            .with_plugin_id("p1")
+            .with_plugin(Arc::new(LocalPlugin("explicit")));
+
+        let wired = os.wire_plugins_into(cfg).unwrap();
+        let ids: Vec<&str> = wired.plugins.iter().map(|p| p.id()).collect();
+        assert_eq!(ids, vec!["policy1", "p1", "explicit"]);
+    }
+
+    #[test]
+    fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
+        #[derive(Debug)]
+        struct LocalPlugin(&'static str);
+
+        #[async_trait]
+        impl AgentPlugin for LocalPlugin {
+            fn id(&self) -> &str {
+                self.0
+            }
+
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        }
+
+        let os = AgentOs::builder()
+            .with_registered_plugin("p1", Arc::new(LocalPlugin("p1")))
+            .build()
+            .unwrap();
+
+        let cfg = AgentConfig::new("gpt-4o-mini")
+            .with_plugin_id("p1")
+            .with_plugin(Arc::new(LocalPlugin("p1")));
+
+        let err = os.wire_plugins_into(cfg).unwrap_err();
+        assert!(matches!(err, AgentOsWiringError::PluginAlreadyInstalled(id) if id == "p1"));
     }
 
     #[derive(Debug)]
