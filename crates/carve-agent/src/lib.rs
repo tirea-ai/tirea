@@ -83,8 +83,8 @@
 pub mod activity;
 pub mod ag_ui;
 pub mod agent;
-pub mod ai_sdk_sse;
 pub mod agent_os;
+pub mod ai_sdk_sse;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -94,11 +94,11 @@ pub mod plugins;
 pub mod prelude;
 pub mod session;
 pub mod skills;
-pub mod thread;
 pub mod state_types;
 pub mod stop;
 pub mod storage;
 pub mod stream;
+pub mod thread;
 mod tool_filter;
 pub mod traits;
 pub mod types;
@@ -122,17 +122,16 @@ pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
 pub use thread::{Session, SessionMetadata, Thread, ThreadMetadata};
 
 // Storage exports
+#[cfg(feature = "postgres")]
+pub use storage::PostgresStorage;
 pub use storage::{
     FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, SessionListPage,
     SessionListQuery, SortOrder, Storage, StorageError,
 };
-#[cfg(feature = "postgres")]
-pub use storage::PostgresStorage;
 
 // Stream exports
 pub use stream::{
-    agent_event_to_agui, agent_event_to_ui, AgentEvent, StreamCollector, StreamOutput,
-    StreamResult,
+    agent_event_to_agui, agent_event_to_ui, AgentEvent, StreamCollector, StreamOutput, StreamResult,
 };
 
 // Activity exports
@@ -153,21 +152,21 @@ pub use ui_stream::{
 };
 
 // AI SDK SSE exports
-pub use ai_sdk_sse::{AiSdkSseStream, EventHook, run_ai_sdk_sse, run_ai_sdk_sse_with_hook};
+pub use ai_sdk_sse::{run_ai_sdk_sse, run_ai_sdk_sse_with_hook, AiSdkSseStream, EventHook};
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
     apply_agui_request_to_session, run_agent_events_with_request,
     run_agent_events_with_request_checkpoints, run_agent_stream, run_agent_stream_sse,
-    run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIEvent,
-    AGUIContextEntry, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
+    run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIContextEntry,
+    AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
     ToolExecutionLocation,
 };
 
 // Execute exports
 pub use execute::{
-    collect_patches, execute_single_tool, execute_single_tool_with_runtime,
-    execute_tools_parallel, execute_tools_sequential, ToolExecution,
+    collect_patches, execute_single_tool, execute_single_tool_with_runtime, execute_tools_parallel,
+    execute_tools_sequential, ToolExecution,
 };
 
 // Convert exports (pure functions)
@@ -193,8 +192,8 @@ pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
     run_round, run_step, tool_map, tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError,
-    RoundResult, RunContext, SessionCheckpoint, SessionCheckpointReason, StreamWithCheckpoints,
-    StreamWithSession,
+    PluginDataMergePolicy, RoundResult, RunContext, SessionCheckpoint, SessionCheckpointReason,
+    StreamWithCheckpoints, StreamWithSession,
 };
 
 // Stop condition exports

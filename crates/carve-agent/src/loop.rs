@@ -59,7 +59,7 @@ use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -107,6 +107,12 @@ pub struct AgentDefinition {
     pub max_rounds: usize,
     /// Whether to execute tools in parallel.
     pub parallel_tools: bool,
+    /// Merge policy for plugin data produced by parallel tool execution.
+    ///
+    /// Plugin data keys are intentionally developer-defined. Components may share
+    /// namespaces/keys by convention; this policy controls how same-key updates are
+    /// resolved when multiple parallel tool calls update plugin data in one round.
+    pub plugin_data_merge_policy: PluginDataMergePolicy,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Plugins to run during the agent loop.
@@ -138,6 +144,21 @@ pub struct AgentDefinition {
     pub stop_condition_specs: Vec<StopConditionSpec>,
 }
 
+/// Conflict resolution policy for plugin data updates from parallel tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginDataMergePolicy {
+    /// Fail the run when parallel tool executions propose different values for the same key.
+    Strict,
+    /// Resolve conflicts by deterministic last-writer-wins in tool-call order.
+    DeterministicLww,
+}
+
+impl Default for PluginDataMergePolicy {
+    fn default() -> Self {
+        Self::DeterministicLww
+    }
+}
+
 /// Backwards-compatible alias.
 pub type AgentConfig = AgentDefinition;
 
@@ -163,6 +184,7 @@ impl Default for AgentDefinition {
             system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
+            plugin_data_merge_policy: PluginDataMergePolicy::default(),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -190,6 +212,7 @@ impl std::fmt::Debug for AgentDefinition {
             )
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
+            .field("plugin_data_merge_policy", &self.plugin_data_merge_policy)
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
@@ -241,6 +264,13 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
         self.parallel_tools = parallel;
+        self
+    }
+
+    /// Set plugin data merge policy for parallel tool execution.
+    #[must_use]
+    pub fn with_plugin_data_merge_policy(mut self, policy: PluginDataMergePolicy) -> Self {
+        self.plugin_data_merge_policy = policy;
         self
     }
 
@@ -369,6 +399,26 @@ async fn emit_session_end(
         session = session.with_patches(pending);
     }
     session
+}
+
+/// Build terminal error events after running SessionEnd cleanup.
+async fn prepare_stream_error_termination(
+    session: Session,
+    plugin_data: &mut PluginRuntimeData,
+    tool_descriptors: &[ToolDescriptor],
+    plugins: &[Arc<dyn AgentPlugin>],
+    run_id: &str,
+    message: String,
+) -> (Session, AgentEvent, AgentEvent) {
+    let session = emit_session_end(session, plugin_data, tool_descriptors, plugins).await;
+    let error = AgentEvent::Error { message };
+    let finish = AgentEvent::RunFinish {
+        thread_id: session.id.clone(),
+        run_id: run_id.to_string(),
+        result: None,
+        stop_reason: None,
+    };
+    (session, error, finish)
 }
 
 /// Build initial plugin data map.
@@ -955,38 +1005,29 @@ async fn execute_tools_sequential_with_phases(
     Ok(results)
 }
 
-fn merge_parallel_plugin_data(
+fn plugin_data_deltas_from_base(
     base: &HashMap<String, Value>,
-    results: &[ToolExecutionResult],
-) -> Result<HashMap<String, Value>, AgentLoopError> {
-    let mut changes: HashMap<String, Option<Value>> = HashMap::new();
+    snapshot: &HashMap<String, Value>,
+) -> Vec<(String, Option<Value>)> {
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    keys.extend(base.keys().cloned());
+    keys.extend(snapshot.keys().cloned());
 
-    for result in results {
-        let mut keys: HashSet<String> = HashSet::new();
-        keys.extend(base.keys().cloned());
-        keys.extend(result.plugin_data.keys().cloned());
-
-        for key in keys {
-            let before = base.get(&key);
-            let after = result.plugin_data.get(&key);
-            if before == after {
-                continue;
-            }
-
-            let proposed = after.cloned();
-            if let Some(existing) = changes.get(&key) {
-                if existing != &proposed {
-                    return Err(AgentLoopError::StateError(format!(
-                        "conflicting parallel plugin data updates for key '{}'",
-                        key
-                    )));
-                }
-            } else {
-                changes.insert(key, proposed);
-            }
+    let mut deltas = Vec::new();
+    for key in keys {
+        let before = base.get(&key);
+        let after = snapshot.get(&key);
+        if before != after {
+            deltas.push((key, after.cloned()));
         }
     }
+    deltas
+}
 
+fn apply_plugin_data_changes(
+    base: &HashMap<String, Value>,
+    changes: HashMap<String, Option<Value>>,
+) -> HashMap<String, Value> {
     let mut merged = base.clone();
     for (key, value) in changes {
         if let Some(v) = value {
@@ -995,7 +1036,46 @@ fn merge_parallel_plugin_data(
             merged.remove(&key);
         }
     }
-    Ok(merged)
+    merged
+}
+
+fn merge_parallel_plugin_data(
+    base: &HashMap<String, Value>,
+    results: &[ToolExecutionResult],
+    policy: PluginDataMergePolicy,
+) -> Result<HashMap<String, Value>, AgentLoopError> {
+    match policy {
+        PluginDataMergePolicy::Strict => {
+            let mut changes: HashMap<String, Option<Value>> = HashMap::new();
+
+            for result in results {
+                for (key, proposed) in plugin_data_deltas_from_base(base, &result.plugin_data) {
+                    if let Some(existing) = changes.get(&key) {
+                        if existing != &proposed {
+                            return Err(AgentLoopError::StateError(format!(
+                                "conflicting parallel plugin data updates for key '{}'",
+                                key
+                            )));
+                        }
+                    } else {
+                        changes.insert(key, proposed);
+                    }
+                }
+            }
+            Ok(apply_plugin_data_changes(base, changes))
+        }
+        PluginDataMergePolicy::DeterministicLww => {
+            let mut changes: HashMap<String, Option<Value>> = HashMap::new();
+
+            // `results` are in tool-call order, so overriding here is deterministic.
+            for result in results {
+                for (key, proposed) in plugin_data_deltas_from_base(base, &result.plugin_data) {
+                    changes.insert(key, proposed);
+                }
+            }
+            Ok(apply_plugin_data_changes(base, changes))
+        }
+    }
 }
 
 /// Result of tool execution with phase hooks.
@@ -1083,7 +1163,8 @@ async fn execute_single_tool_with_phases(
             &call.id,
             format!("tool:{}", call.name),
             activity_manager,
-        ).with_runtime(runtime);
+        )
+        .with_runtime(runtime);
         let result = async {
             match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
                 Ok(r) => r,
@@ -1422,7 +1503,11 @@ pub async fn run_loop(
         };
 
         if config.parallel_tools {
-            plugin_data.data = match merge_parallel_plugin_data(&plugin_data.data, &results) {
+            plugin_data.data = match merge_parallel_plugin_data(
+                &plugin_data.data,
+                &results,
+                config.plugin_data_merge_policy,
+            ) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = emit_session_end(
@@ -1799,14 +1884,18 @@ fn run_loop_stream_impl_with_provider(
                     if !pending.is_empty() {
                         session = session.with_patches(pending);
                     }
-                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                    yield AgentEvent::Error { message: e.to_string() };
-                    yield AgentEvent::RunFinish {
-                        thread_id: session.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        stop_reason: None,
-                    };
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
                     if let Some(tx) = final_session_tx.take() {
                         let _ = tx.send(session);
                     }
@@ -1851,14 +1940,18 @@ fn run_loop_stream_impl_with_provider(
                         if !pending.is_empty() {
                             session = session.with_patches(pending);
                         }
-                        session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                        yield AgentEvent::Error { message: e.to_string() };
-                        yield AgentEvent::RunFinish {
-                            thread_id: session.id.clone(),
-                            run_id: run_id.clone(),
-                            result: None,
-                            stop_reason: None,
-                        };
+                        let (finalized, error, finish) = prepare_stream_error_termination(
+                            session,
+                            &mut plugin_data,
+                            &tool_descriptors,
+                            &config.plugins,
+                            &run_id,
+                            e.to_string(),
+                        )
+                        .await;
+                        session = finalized;
+                        yield error;
+                        yield finish;
                         if let Some(tx) = final_session_tx.take() {
                             let _ = tx.send(session);
                         }
@@ -1955,14 +2048,18 @@ fn run_loop_stream_impl_with_provider(
             let state = match session.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
-                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                    yield AgentEvent::Error { message: e.to_string() };
-                    yield AgentEvent::RunFinish {
-                        thread_id: session.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        stop_reason: None,
-                    };
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
                     if let Some(tx) = final_session_tx.take() {
                         let _ = tx.send(session);
                     }
@@ -2024,16 +2121,18 @@ fn run_loop_stream_impl_with_provider(
             let results = match results {
                 Ok(r) => r,
                 Err(e) => {
-                    session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                    yield AgentEvent::Error {
-                        message: e.to_string(),
-                    };
-                    yield AgentEvent::RunFinish {
-                        thread_id: session.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        stop_reason: None,
-                    };
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
                     if let Some(tx) = final_session_tx.take() {
                         let _ = tx.send(session);
                     }
@@ -2042,19 +2141,25 @@ fn run_loop_stream_impl_with_provider(
             };
 
             if config.parallel_tools {
-                plugin_data.data = match merge_parallel_plugin_data(&plugin_data.data, &results) {
+                plugin_data.data = match merge_parallel_plugin_data(
+                    &plugin_data.data,
+                    &results,
+                    config.plugin_data_merge_policy,
+                ) {
                     Ok(v) => v,
                     Err(e) => {
-                        session = emit_session_end(session, &mut plugin_data, &tool_descriptors, &config.plugins).await;
-                        yield AgentEvent::Error {
-                            message: e.to_string(),
-                        };
-                        yield AgentEvent::RunFinish {
-                            thread_id: session.id.clone(),
-                            run_id: run_id.clone(),
-                            result: None,
-                            stop_reason: None,
-                        };
+                        let (finalized, error, finish) = prepare_stream_error_termination(
+                            session,
+                            &mut plugin_data,
+                            &tool_descriptors,
+                            &config.plugins,
+                            &run_id,
+                            e.to_string(),
+                        )
+                        .await;
+                        session = finalized;
+                        yield error;
+                        yield finish;
                         if let Some(tx) = final_session_tx.take() {
                             let _ = tx.send(session);
                         }
@@ -2266,8 +2371,8 @@ mod tests {
     use async_trait::async_trait;
     use carve_state::{ActivityManager, Context, Op, Patch};
     use carve_state_derive::State;
-    use serde::{Deserialize, Serialize};
     use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
+    use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
     use std::sync::Mutex;
     use tokio::sync::Notify;
@@ -2326,11 +2431,39 @@ mod tests {
         }
     }
 
+    fn plugin_data_map(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
+        entries
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    fn plugin_data_result(
+        call_id: &str,
+        plugin_data: HashMap<String, Value>,
+    ) -> ToolExecutionResult {
+        ToolExecutionResult {
+            execution: crate::execute::ToolExecution {
+                call: crate::types::ToolCall::new(call_id, "test_tool", json!({})),
+                result: ToolResult::success("test_tool", json!({"ok": true})),
+                patch: None,
+            },
+            reminders: Vec::new(),
+            pending_interaction: None,
+            plugin_data,
+            pending_patches: Vec::new(),
+        }
+    }
+
     #[test]
     fn test_agent_config_default() {
         let config = AgentConfig::default();
         assert_eq!(config.max_rounds, 10);
         assert!(config.parallel_tools);
+        assert_eq!(
+            config.plugin_data_merge_policy,
+            PluginDataMergePolicy::DeterministicLww
+        );
         assert!(config.system_prompt.is_empty());
     }
 
@@ -2339,11 +2472,16 @@ mod tests {
         let config = AgentConfig::new("gpt-4")
             .with_max_rounds(5)
             .with_parallel_tools(false)
+            .with_plugin_data_merge_policy(PluginDataMergePolicy::Strict)
             .with_system_prompt("You are helpful.");
 
         assert_eq!(config.model, "gpt-4");
         assert_eq!(config.max_rounds, 5);
         assert!(!config.parallel_tools);
+        assert_eq!(
+            config.plugin_data_merge_policy,
+            PluginDataMergePolicy::Strict
+        );
         assert_eq!(config.system_prompt, "You are helpful.");
     }
 
@@ -2971,10 +3109,7 @@ mod tests {
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 if phase == Phase::BeforeToolExecute {
                     assert_eq!(step.session.id, "real-session-42");
-                    assert_eq!(
-                        step.session.runtime.value("user_id"),
-                        Some(&json!("u-abc")),
-                    );
+                    assert_eq!(step.session.runtime.value("user_id"), Some(&json!("u-abc")),);
                     VERIFIED.store(true, Ordering::SeqCst);
                 }
             }
@@ -3399,10 +3534,9 @@ mod tests {
                 // This increment fails when applied between call_1 and call_2 because
                 // `counter` doesn't exist yet. Swallowing that failure hides a broken
                 // intermediate state transition.
-                let patch = TrackedPatch::new(Patch::new().with_op(Op::increment(
-                    carve_state::path!("counter"),
-                    1_i64,
-                )))
+                let patch = TrackedPatch::new(
+                    Patch::new().with_op(Op::increment(carve_state::path!("counter"), 1_i64)),
+                )
                 .with_source("test:intermediate_apply_error");
                 step.pending_patches.push(patch);
             }
@@ -3414,16 +3548,8 @@ mod tests {
             let result = StreamResult {
                 text: "Call tools".to_string(),
                 tool_calls: vec![
-                    crate::types::ToolCall::new(
-                        "call_1",
-                        "echo",
-                        json!({"message": "hello"}),
-                    ),
-                    crate::types::ToolCall::new(
-                        "call_2",
-                        "counter",
-                        json!({"amount": 5}),
-                    ),
+                    crate::types::ToolCall::new("call_1", "echo", json!({"message": "hello"})),
+                    crate::types::ToolCall::new("call_2", "counter", json!({"amount": 5})),
                 ],
                 usage: None,
             };
@@ -3699,7 +3825,10 @@ mod tests {
             Some("my-run")
         );
         assert_eq!(
-            session.runtime.value("parent_run_id").and_then(|v| v.as_str()),
+            session
+                .runtime
+                .value("parent_run_id")
+                .and_then(|v| v.as_str()),
             Some("parent-run")
         );
     }
@@ -3768,9 +3897,8 @@ mod tests {
             _model: &str,
             _chat_req: genai::chat::ChatRequest,
             _options: Option<&ChatOptions>,
-        ) -> genai::Result<
-            Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send>>,
-        > {
+        ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send>>>
+        {
             let resp = {
                 let mut responses = self.responses.lock().unwrap();
                 if responses.is_empty() {
@@ -3869,18 +3997,24 @@ mod tests {
         // Provider returns tool calls forever → should stop after 2 rounds.
         let responses: Vec<MockResponse> = (0..10)
             .map(|i| {
-                MockResponse::text("calling echo")
-                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "hi"}))
+                MockResponse::text("calling echo").with_tool_call(
+                    &format!("c{i}"),
+                    "echo",
+                    json!({"message": "hi"}),
+                )
             })
             .collect();
 
-        let config = AgentConfig::new("mock")
-            .with_stop_condition(crate::stop::MaxRounds(2));
+        let config = AgentConfig::new("mock").with_stop_condition(crate::stop::MaxRounds(2));
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::MaxRoundsReached)
+        );
     }
 
     #[tokio::test]
@@ -3963,28 +4097,199 @@ mod tests {
         assert_eq!(state["debug"]["seen_parallel_count"], 2);
     }
 
+    #[test]
+    fn test_merge_parallel_plugin_data_strict_rejects_conflicts() {
+        let base = plugin_data_map(vec![("shared", json!(0)), ("stable", json!(true))]);
+        let results = vec![
+            plugin_data_result(
+                "call_a",
+                plugin_data_map(vec![("shared", json!(1)), ("stable", json!(true))]),
+            ),
+            plugin_data_result(
+                "call_b",
+                plugin_data_map(vec![("shared", json!(2)), ("stable", json!(true))]),
+            ),
+        ];
+
+        let err = merge_parallel_plugin_data(&base, &results, PluginDataMergePolicy::Strict)
+            .expect_err("strict policy should fail on conflicting key updates");
+
+        match err {
+            AgentLoopError::StateError(message) => {
+                assert!(message.contains("shared"), "unexpected message: {message}");
+            }
+            other => panic!("expected state error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_merge_parallel_plugin_data_deterministic_lww_uses_tool_call_order() {
+        let base = plugin_data_map(vec![("shared", json!(0)), ("stable", json!(true))]);
+        let results = vec![
+            plugin_data_result(
+                "call_a",
+                plugin_data_map(vec![("shared", json!(1)), ("stable", json!(true))]),
+            ),
+            plugin_data_result(
+                "call_b",
+                plugin_data_map(vec![("shared", json!(2)), ("stable", json!(true))]),
+            ),
+        ];
+
+        let merged =
+            merge_parallel_plugin_data(&base, &results, PluginDataMergePolicy::DeterministicLww)
+                .expect("deterministic lww should resolve conflicts");
+        assert_eq!(merged.get("shared"), Some(&json!(2)));
+    }
+
+    #[test]
+    fn test_merge_parallel_plugin_data_deterministic_lww_disjoint_commutative() {
+        let permutations = [
+            [0usize, 1, 2],
+            [0usize, 2, 1],
+            [1usize, 0, 2],
+            [1usize, 2, 0],
+            [2usize, 0, 1],
+            [2usize, 1, 0],
+        ];
+
+        for alpha in [1_i64, 7_i64] {
+            for beta in ["x", "y"] {
+                for gamma in [true, false] {
+                    let base = plugin_data_map(vec![("shared.root", json!("root"))]);
+                    let build_result = |idx: usize| match idx {
+                        0 => plugin_data_result(
+                            "call_a",
+                            plugin_data_map(vec![
+                                ("shared.root", json!("root")),
+                                ("ns.alpha", json!(alpha)),
+                            ]),
+                        ),
+                        1 => plugin_data_result(
+                            "call_b",
+                            plugin_data_map(vec![
+                                ("shared.root", json!("root")),
+                                ("ns.beta", json!(beta)),
+                            ]),
+                        ),
+                        2 => plugin_data_result(
+                            "call_c",
+                            plugin_data_map(vec![
+                                ("shared.root", json!("root")),
+                                ("ns.gamma", json!(gamma)),
+                            ]),
+                        ),
+                        _ => panic!("invalid index"),
+                    };
+
+                    let first_order: Vec<ToolExecutionResult> = permutations[0]
+                        .iter()
+                        .map(|idx| build_result(*idx))
+                        .collect();
+                    let expected = merge_parallel_plugin_data(
+                        &base,
+                        &first_order,
+                        PluginDataMergePolicy::DeterministicLww,
+                    )
+                    .expect("base merge should succeed");
+
+                    for order in permutations.iter().skip(1) {
+                        let ordered: Vec<ToolExecutionResult> =
+                            order.iter().map(|idx| build_result(*idx)).collect();
+                        let merged = merge_parallel_plugin_data(
+                            &base,
+                            &ordered,
+                            PluginDataMergePolicy::DeterministicLww,
+                        )
+                        .expect("merge should succeed for disjoint keys");
+                        assert_eq!(merged, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_merge_parallel_plugin_data_deterministic_lww_deterministic_and_idempotent() {
+        let base = plugin_data_map(vec![("seed", json!(true)), ("shared", json!(0))]);
+
+        let build_results = || {
+            vec![
+                plugin_data_result(
+                    "call_1",
+                    plugin_data_map(vec![
+                        ("seed", json!(true)),
+                        ("shared", json!(1)),
+                        ("ns.alpha", json!("a")),
+                    ]),
+                ),
+                plugin_data_result(
+                    "call_2",
+                    plugin_data_map(vec![
+                        ("seed", json!(true)),
+                        ("shared", json!(2)),
+                        ("ns.beta", json!("b")),
+                    ]),
+                ),
+                plugin_data_result(
+                    "call_3",
+                    plugin_data_map(vec![
+                        ("seed", json!(true)),
+                        ("shared", json!(3)),
+                        ("ns.gamma", json!("c")),
+                    ]),
+                ),
+            ]
+        };
+
+        let expected = merge_parallel_plugin_data(
+            &base,
+            &build_results(),
+            PluginDataMergePolicy::DeterministicLww,
+        )
+        .expect("merge should succeed");
+
+        for _ in 0..8 {
+            let merged = merge_parallel_plugin_data(
+                &base,
+                &build_results(),
+                PluginDataMergePolicy::DeterministicLww,
+            )
+            .expect("repeated merge should succeed");
+            assert_eq!(merged, expected);
+        }
+
+        let mut repeated = build_results();
+        repeated.extend(build_results());
+        let idempotent =
+            merge_parallel_plugin_data(&base, &repeated, PluginDataMergePolicy::DeterministicLww)
+                .expect("merge should stay stable when the same result set is replayed");
+        assert_eq!(idempotent, expected);
+    }
+
     #[tokio::test]
     async fn test_stop_plugin_requested() {
         // SkipInferencePlugin → PluginRequested.
         let (recorder, _) = RecordAndSkipPlugin::new();
-        let config = AgentConfig::new("mock")
-            .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+        let config =
+            AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
         let session = Session::new("test").with_message(Message::user("hi"));
         let tools = HashMap::new();
 
         let provider = MockStreamProvider::new(vec![]);
         let events = run_mock_stream(provider, config, session, tools).await;
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::PluginRequested));
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::PluginRequested)
+        );
     }
 
     #[tokio::test]
     async fn test_stop_on_tool_condition() {
         // StopOnTool("finish") → first round calls echo, second calls finish.
         let responses = vec![
-            MockResponse::text("step 1")
-                .with_tool_call("c1", "echo", json!({"message": "a"})),
-            MockResponse::text("step 2")
-                .with_tool_call("c2", "finish_tool", json!({})),
+            MockResponse::text("step 1").with_tool_call("c1", "echo", json!({"message": "a"})),
+            MockResponse::text("step 2").with_tool_call("c2", "finish_tool", json!({})),
         ];
 
         struct FinishTool;
@@ -3993,7 +4298,11 @@ mod tests {
             fn descriptor(&self) -> ToolDescriptor {
                 ToolDescriptor::new("finish_tool", "Finish", "Finishes the run")
             }
-            async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+            async fn execute(
+                &self,
+                _args: Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
                 Ok(ToolResult::success("finish_tool", json!({"done": true})))
             }
         }
@@ -4006,7 +4315,8 @@ mod tests {
         let ft: Arc<dyn Tool> = Arc::new(FinishTool);
         tools.insert("finish_tool".to_string(), ft);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::ToolCalled("finish_tool".to_string()))
@@ -4017,10 +4327,12 @@ mod tests {
     async fn test_stop_content_match_condition() {
         // ContentMatch("FINAL_ANSWER") → second response has it in the text.
         let responses = vec![
-            MockResponse::text("thinking...")
-                .with_tool_call("c1", "echo", json!({"message": "a"})),
-            MockResponse::text("here is the FINAL_ANSWER: 42")
-                .with_tool_call("c2", "echo", json!({"message": "b"})),
+            MockResponse::text("thinking...").with_tool_call("c1", "echo", json!({"message": "a"})),
+            MockResponse::text("here is the FINAL_ANSWER: 42").with_tool_call(
+                "c2",
+                "echo",
+                json!({"message": "b"}),
+            ),
         ];
 
         let config = AgentConfig::new("mock")
@@ -4029,7 +4341,8 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("solve"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::ContentMatched("FINAL_ANSWER".to_string()))
@@ -4054,8 +4367,12 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::TokenBudgetExceeded));
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::TokenBudgetExceeded)
+        );
     }
 
     #[tokio::test]
@@ -4063,8 +4380,11 @@ mod tests {
         // ConsecutiveErrors(2) → all tool calls fail each round.
         let responses: Vec<MockResponse> = (0..5)
             .map(|i| {
-                MockResponse::text(&format!("round {i}"))
-                    .with_tool_call(&format!("c{i}"), "failing", json!({}))
+                MockResponse::text(&format!("round {i}")).with_tool_call(
+                    &format!("c{i}"),
+                    "failing",
+                    json!({}),
+                )
             })
             .collect();
 
@@ -4074,8 +4394,12 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([FailingTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::ConsecutiveErrorsExceeded));
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::ConsecutiveErrorsExceeded)
+        );
     }
 
     #[tokio::test]
@@ -4083,8 +4407,11 @@ mod tests {
         // LoopDetection(window=3) → same tool called repeatedly.
         let responses: Vec<MockResponse> = (0..5)
             .map(|i| {
-                MockResponse::text(&format!("round {i}"))
-                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "same"}))
+                MockResponse::text(&format!("round {i}")).with_tool_call(
+                    &format!("c{i}"),
+                    "echo",
+                    json!({"message": "same"}),
+                )
             })
             .collect();
 
@@ -4094,7 +4421,8 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
         assert_eq!(extract_stop_reason(&events), Some(StopReason::LoopDetected));
     }
 
@@ -4128,11 +4456,9 @@ mod tests {
     async fn test_stop_first_condition_wins() {
         // Both MaxRounds(1) and TokenBudget(50) should trigger after round 1.
         // MaxRounds is first in the list → it wins.
-        let responses = vec![
-            MockResponse::text("r1")
-                .with_tool_call("c1", "echo", json!({"message": "a"}))
-                .with_usage(100, 100),
-        ];
+        let responses = vec![MockResponse::text("r1")
+            .with_tool_call("c1", "echo", json!({"message": "a"}))
+            .with_usage(100, 100)];
 
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::MaxRounds(1))
@@ -4140,9 +4466,13 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
         // MaxRounds listed first → wins
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::MaxRoundsReached)
+        );
     }
 
     #[tokio::test]
@@ -4150,8 +4480,11 @@ mod tests {
         // No explicit stop_conditions → auto-creates MaxRounds from config.max_rounds.
         let responses: Vec<MockResponse> = (0..5)
             .map(|i| {
-                MockResponse::text(&format!("r{i}"))
-                    .with_tool_call(&format!("c{i}"), "echo", json!({"message": "a"}))
+                MockResponse::text(&format!("r{i}")).with_tool_call(
+                    &format!("c{i}"),
+                    "echo",
+                    json!({"message": "a"}),
+                )
             })
             .collect();
 
@@ -4159,28 +4492,37 @@ mod tests {
         let session = Session::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::MaxRoundsReached)
+        );
     }
 
     #[tokio::test]
     async fn test_stop_reason_in_run_finish_event() {
         // Verify RunFinish event structure when stop condition triggers.
-        let responses = vec![
-            MockResponse::text("r1")
-                .with_tool_call("c1", "echo", json!({"message": "a"})),
-        ];
+        let responses =
+            vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
 
-        let config = AgentConfig::new("mock")
-            .with_stop_condition(crate::stop::MaxRounds(1));
+        let config = AgentConfig::new("mock").with_stop_condition(crate::stop::MaxRounds(1));
         let session = Session::new("test-thread").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
 
-        let finish = events.iter().find(|e| matches!(e, AgentEvent::RunFinish { .. }));
+        let finish = events
+            .iter()
+            .find(|e| matches!(e, AgentEvent::RunFinish { .. }));
         assert!(finish.is_some());
-        if let Some(AgentEvent::RunFinish { thread_id, stop_reason, .. }) = finish {
+        if let Some(AgentEvent::RunFinish {
+            thread_id,
+            stop_reason,
+            ..
+        }) = finish
+        {
             assert_eq!(thread_id, "test-thread");
             assert_eq!(*stop_reason, Some(StopReason::MaxRoundsReached));
         }
@@ -4207,9 +4549,13 @@ mod tests {
             .with_stop_condition(crate::stop::MaxRounds(3));
         let session = Session::new("test").with_message(Message::user("go"));
 
-        let events = run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+        let events =
+            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
         // Should hit MaxRounds(3), not ConsecutiveErrors
-        assert_eq!(extract_stop_reason(&events), Some(StopReason::MaxRoundsReached));
+        assert_eq!(
+            extract_stop_reason(&events),
+            Some(StopReason::MaxRoundsReached)
+        );
     }
 
     #[tokio::test]
@@ -4253,7 +4599,9 @@ mod tests {
         let mut state = LoopState::new();
         for i in 0..25 {
             let tool_calls = vec![crate::types::ToolCall::new(
-                &format!("c{i}"), &format!("tool_{i}"), json!({}),
+                &format!("c{i}"),
+                &format!("tool_{i}"),
+                json!({}),
             )];
             state.record_tool_round(&tool_calls, 0);
         }
@@ -4300,19 +4648,36 @@ mod tests {
 
             let mut tools = HashMap::new();
             tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
-            tools.insert("failing".to_string(), Arc::new(FailingTool) as Arc<dyn Tool>);
+            tools.insert(
+                "failing".to_string(),
+                Arc::new(FailingTool) as Arc<dyn Tool>,
+            );
 
             let session = execute_tools(session, &result, &tools, true).await.unwrap();
 
             // Both tools produce messages.
-            assert_eq!(session.message_count(), 2, "Both tools should produce a message");
+            assert_eq!(
+                session.message_count(),
+                2,
+                "Both tools should produce a message"
+            );
 
             // One should be success, one should be error.
-            let contents: Vec<&str> = session.messages.iter().map(|m| m.content.as_str()).collect();
+            let contents: Vec<&str> = session
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect();
             let has_success = contents.iter().any(|c| c.contains("echoed"));
-            let has_error = contents.iter().any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
+            let has_error = contents
+                .iter()
+                .any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
             assert!(has_success, "Echo tool should succeed: {:?}", contents);
-            assert!(has_error, "Failing tool should produce error: {:?}", contents);
+            assert!(
+                has_error,
+                "Failing tool should produce error: {:?}",
+                contents
+            );
         });
     }
 
@@ -4333,16 +4698,35 @@ mod tests {
 
             let mut tools = HashMap::new();
             tools.insert("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>);
-            tools.insert("failing".to_string(), Arc::new(FailingTool) as Arc<dyn Tool>);
+            tools.insert(
+                "failing".to_string(),
+                Arc::new(FailingTool) as Arc<dyn Tool>,
+            );
 
-            let session = execute_tools(session, &result, &tools, false).await.unwrap();
+            let session = execute_tools(session, &result, &tools, false)
+                .await
+                .unwrap();
 
-            assert_eq!(session.message_count(), 2, "Both tools should produce a message");
-            let contents: Vec<&str> = session.messages.iter().map(|m| m.content.as_str()).collect();
+            assert_eq!(
+                session.message_count(),
+                2,
+                "Both tools should produce a message"
+            );
+            let contents: Vec<&str> = session
+                .messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect();
             let has_success = contents.iter().any(|c| c.contains("echoed"));
-            let has_error = contents.iter().any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
+            let has_error = contents
+                .iter()
+                .any(|c| c.to_lowercase().contains("error") || c.to_lowercase().contains("fail"));
             assert!(has_success, "Echo tool should succeed: {:?}", contents);
-            assert!(has_error, "Failing tool should produce error: {:?}", contents);
+            assert!(
+                has_error,
+                "Failing tool should produce error: {:?}",
+                contents
+            );
         });
     }
 
@@ -4390,32 +4774,44 @@ mod tests {
             let result = StreamResult {
                 text: "Test".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1", "echo", json!({"message": "test"}),
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
                 )],
                 usage: None,
             };
             let tools = tool_map([EchoTool]);
-            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![
-                Arc::new(plugin_a),
-                Arc::new(plugin_b),
-            ];
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(plugin_a), Arc::new(plugin_b)];
 
-            let _ = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
-                .await;
+            let _ = execute_tools_with_plugins(session, &result, &tools, false, &plugins).await;
 
             let entries = log.lock().unwrap().clone();
 
             // For each phase, plugin_a should appear before plugin_b.
-            let before_a = entries.iter().position(|e| e.starts_with("plugin_a:BeforeToolExecute"));
-            let before_b = entries.iter().position(|e| e.starts_with("plugin_b:BeforeToolExecute"));
+            let before_a = entries
+                .iter()
+                .position(|e| e.starts_with("plugin_a:BeforeToolExecute"));
+            let before_b = entries
+                .iter()
+                .position(|e| e.starts_with("plugin_b:BeforeToolExecute"));
             if let (Some(a), Some(b)) = (before_a, before_b) {
-                assert!(a < b, "plugin_a should run before plugin_b in BeforeToolExecute phase");
+                assert!(
+                    a < b,
+                    "plugin_a should run before plugin_b in BeforeToolExecute phase"
+                );
             }
 
-            let after_a = entries.iter().position(|e| e.starts_with("plugin_a:AfterToolExecute"));
-            let after_b = entries.iter().position(|e| e.starts_with("plugin_b:AfterToolExecute"));
+            let after_a = entries
+                .iter()
+                .position(|e| e.starts_with("plugin_a:AfterToolExecute"));
+            let after_b = entries
+                .iter()
+                .position(|e| e.starts_with("plugin_b:AfterToolExecute"));
             if let (Some(a), Some(b)) = (after_a, after_b) {
-                assert!(a < b, "plugin_a should run before plugin_b in AfterToolExecute phase");
+                assert!(
+                    a < b,
+                    "plugin_a should run before plugin_b in AfterToolExecute phase"
+                );
             }
         });
     }
@@ -4448,7 +4844,9 @@ mod tests {
             let result = StreamResult {
                 text: "Test".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
-                    "call_1", "echo", json!({"message": "test"}),
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
                 )],
                 usage: None,
             };
@@ -4460,8 +4858,13 @@ mod tests {
                 Arc::new(ConditionalBlockPlugin),
             ];
             let r1 = execute_tools_with_plugins(
-                session.clone(), &result, &tools, false, &plugins_order1,
-            ).await;
+                session.clone(),
+                &result,
+                &tools,
+                false,
+                &plugins_order1,
+            )
+            .await;
             // When pending+blocked, the blocked result takes priority.
             let s1 = r1.unwrap();
             assert_eq!(s1.message_count(), 1);
@@ -4477,9 +4880,8 @@ mod tests {
                 Arc::new(ConditionalBlockPlugin),
                 Arc::new(PendingPhasePlugin),
             ];
-            let r2 = execute_tools_with_plugins(
-                session, &result, &tools, false, &plugins_order2,
-            ).await;
+            let r2 =
+                execute_tools_with_plugins(session, &result, &tools, false, &plugins_order2).await;
             // Should be PendingInteraction (not blocked).
             assert!(r2.is_err(), "Order 2 should result in PendingInteraction");
             match r2.unwrap_err() {
