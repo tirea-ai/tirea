@@ -319,9 +319,23 @@ impl<'a> StepContext<'a> {
     // =========================================================================
 
     /// Set plugin data.
-    pub fn set<T: Serialize>(&mut self, key: &str, value: T) {
-        if let Ok(v) = serde_json::to_value(value) {
-            self.data.insert(key.to_string(), v);
+    ///
+    /// Returns `true` when serialization succeeds and value is stored.
+    /// Returns `false` when the value cannot be serialized.
+    pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
+        match serde_json::to_value(value) {
+            Ok(v) => {
+                self.data.insert(key.to_string(), v);
+                true
+            }
+            Err(err) => {
+                tracing::warn!(
+                    key,
+                    error = %err,
+                    "failed to serialize plugin data value"
+                );
+                false
+            }
         }
     }
 
@@ -668,10 +682,30 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        ctx.set("counter", 42i32);
+        assert!(ctx.set("counter", 42i32));
         let value: Option<i32> = ctx.get("counter");
 
         assert_eq!(value, Some(42));
+    }
+
+    #[test]
+    fn test_set_data_returns_false_when_serialize_fails() {
+        let session = mock_session();
+        let mut ctx = StepContext::new(&session, vec![]);
+
+        struct FailingSerialize;
+        impl Serialize for FailingSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("expected test failure"))
+            }
+        }
+
+        let ok = ctx.set("bad_value", FailingSerialize);
+        assert!(!ok);
+        assert!(!ctx.has("bad_value"));
     }
 
     #[test]
