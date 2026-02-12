@@ -1764,47 +1764,180 @@ fn run_loop_stream_impl_with_provider(
         // Plugins can request tool replay during SessionStart by populating
         // `replay_tool_calls` in the step context. The loop handles actual execution
         // since only it has access to the tools map.
-        let replay_calls = plugin_data.data.get("__replay_tool_calls")
-            .and_then(|v| serde_json::from_value::<Vec<crate::types::ToolCall>>(v.clone()).ok())
-            .unwrap_or_default();
+        let replay_calls = match plugin_data.data.get("__replay_tool_calls") {
+            Some(raw) => match serde_json::from_value::<Vec<crate::types::ToolCall>>(raw.clone()) {
+                Ok(calls) => calls,
+                Err(e) => {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        format!("failed to parse __replay_tool_calls: {e}"),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
+                }
+            },
+            None => Vec::new(),
+        };
         if !replay_calls.is_empty() {
             plugin_data.data.remove("__replay_tool_calls");
+            let mut replay_state_changed = false;
             for tool_call in &replay_calls {
-                if let Some(tool) = tools.get(&tool_call.name) {
-                    let state = session.rebuild_state().unwrap_or_default();
-                    let ctx = carve_state::Context::new(&state, &tool_call.id, format!("tool:{}", tool_call.name))
-                        .with_runtime(Some(&session.runtime));
-                    let result = match tool.execute(tool_call.arguments.clone(), &ctx).await {
-                        Ok(r) => r,
-                        Err(e) => ToolResult::error(&tool_call.name, e.to_string()),
-                    };
-                    let patch = ctx.take_patch();
-
-                    // Replace the placeholder message with the real tool result.
-                    let real_msg = tool_response(&tool_call.id, &result);
-                    replace_placeholder_tool_message(&mut session, &tool_call.id, real_msg);
-
-                    // Apply tool patches.
-                    if !patch.patch().is_empty() {
-                        session = session.with_patch(patch);
+                let state = match session.rebuild_state() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let (finalized, error, finish) = prepare_stream_error_termination(
+                            session,
+                            &mut plugin_data,
+                            &tool_descriptors,
+                            &config.plugins,
+                            &run_id,
+                            format!(
+                                "failed to rebuild state before replaying tool '{}': {e}",
+                                tool_call.id
+                            ),
+                        )
+                        .await;
+                        session = finalized;
+                        yield error;
+                        yield finish;
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
+                        return;
                     }
+                };
 
-                    yield AgentEvent::ToolCallDone {
-                        id: tool_call.id.clone(),
-                        result,
-                        patch: None,
-                    };
+                let tool = tools.get(&tool_call.name).cloned();
+                let replay_result = execute_single_tool_with_phases(
+                    tool.as_deref(),
+                    tool_call,
+                    &state,
+                    &tool_descriptors,
+                    &config.plugins,
+                    plugin_data.data.clone(),
+                    None,
+                    Some(&session.runtime),
+                    &session.id,
+                )
+                .await;
+                plugin_data.data = replay_result.plugin_data.clone();
+
+                if replay_result.pending_interaction.is_some() {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        format!(
+                            "replayed tool '{}' requested pending interaction",
+                            tool_call.id
+                        ),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
                 }
+
+                // Replace the placeholder message with the real tool result.
+                let real_msg = tool_response(&tool_call.id, &replay_result.execution.result);
+                replace_placeholder_tool_message(&mut session, &tool_call.id, real_msg);
+
+                // Preserve reminder emission semantics for replayed tool calls.
+                if !replay_result.reminders.is_empty() {
+                    let msgs = replay_result.reminders.iter().map(|reminder| {
+                        Message::internal_system(format!(
+                            "<system-reminder>{}</system-reminder>",
+                            reminder
+                        ))
+                    });
+                    session = session.with_messages(msgs);
+                }
+
+                if let Some(patch) = replay_result.execution.patch.clone() {
+                    replay_state_changed = true;
+                    session = session.with_patch(patch);
+                }
+                if !replay_result.pending_patches.is_empty() {
+                    replay_state_changed = true;
+                    session = session.with_patches(replay_result.pending_patches.clone());
+                }
+
+                yield AgentEvent::ToolCallDone {
+                    id: tool_call.id.clone(),
+                    result: replay_result.execution.result,
+                    patch: replay_result.execution.patch,
+                };
             }
 
             // Clear pending_interaction state after replaying tools.
-            if let Ok(state) = session.rebuild_state() {
-                let clear_patch = clear_agent_pending_interaction(&state);
-                if !clear_patch.patch().is_empty() {
-                    session = session.with_patch(clear_patch);
+            let state = match session.rebuild_state() {
+                Ok(s) => s,
+                Err(e) => {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut plugin_data,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        format!("failed to rebuild state after replay: {e}"),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
                 }
+            };
+
+            let clear_patch = clear_agent_pending_interaction(&state);
+            if !clear_patch.patch().is_empty() {
+                replay_state_changed = true;
+                session = session.with_patch(clear_patch);
+            }
+
+            if replay_state_changed {
+                let snapshot = match session.rebuild_state() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let (finalized, error, finish) = prepare_stream_error_termination(
+                            session,
+                            &mut plugin_data,
+                            &tool_descriptors,
+                            &config.plugins,
+                            &run_id,
+                            format!("failed to rebuild replay snapshot: {e}"),
+                        )
+                        .await;
+                        session = finalized;
+                        yield error;
+                        yield finish;
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
+                        return;
+                    }
+                };
                 yield AgentEvent::StateSnapshot {
-                    snapshot: session.rebuild_state().unwrap_or_default(),
+                    snapshot,
                 };
             }
         }
@@ -4020,6 +4153,193 @@ mod tests {
             AgentEvent::RunFinish { stop_reason, .. } => stop_reason.clone(),
             _ => None,
         })
+    }
+
+    #[tokio::test]
+    async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
+        struct InvalidReplayPayloadPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for InvalidReplayPayloadPlugin {
+            fn id(&self) -> &str {
+                "invalid_replay_payload"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::SessionStart {
+                    step.set("__replay_tool_calls", json!({"bad": "payload"}));
+                }
+            }
+        }
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(InvalidReplayPayloadPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(Message::user("resume"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(
+            MockStreamProvider::new(vec![MockResponse::text("should not run")]),
+            config,
+            session,
+            tools,
+        )
+        .await;
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::Error { message }
+                if message.contains("__replay_tool_calls")
+            )),
+            "expected replay payload parse error, got events: {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(AgentEvent::RunFinish {
+                    stop_reason: None,
+                    ..
+                })
+            ),
+            "expected terminal RunFinish after replay parse error, got: {:?}",
+            events.last()
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TextDelta { .. })),
+            "stream should terminate before inference when replay payload is invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_replay_rebuild_state_failure_emits_error() {
+        struct ReplayPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for ReplayPlugin {
+            fn id(&self) -> &str {
+                "replay_state_failure"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::SessionStart {
+                    step.set(
+                        "__replay_tool_calls",
+                        vec![crate::types::ToolCall::new(
+                            "replay_call_1",
+                            "echo",
+                            json!({"message": "resume"}),
+                        )],
+                    );
+                }
+            }
+        }
+
+        let broken_patch = carve_state::TrackedPatch::new(
+            Patch::new().with_op(Op::increment(carve_state::path!("missing_counter"), 1_i64)),
+        )
+        .with_source("test:broken_state");
+        let session = Session::with_initial_state("test", json!({}))
+            .with_message(Message::user("resume"))
+            .with_patch(broken_patch);
+
+        let config =
+            AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(
+            MockStreamProvider::new(vec![MockResponse::text("should not run")]),
+            config,
+            session,
+            tools,
+        )
+        .await;
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("replay"))),
+            "expected replay state rebuild error, got events: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallDone { .. })),
+            "replay tool must not execute when state rebuild fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_replay_tool_exec_respects_tool_phases() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static BEFORE_TOOL_EXECUTED: AtomicBool = AtomicBool::new(false);
+
+        struct ReplayBlockingPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for ReplayBlockingPlugin {
+            fn id(&self) -> &str {
+                "replay_blocking"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                match phase {
+                    Phase::SessionStart => {
+                        step.set(
+                            "__replay_tool_calls",
+                            vec![crate::types::ToolCall::new(
+                                "replay_call_1",
+                                "echo",
+                                json!({"message": "resume"}),
+                            )],
+                        );
+                    }
+                    Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
+                        BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
+                        step.block("blocked in replay");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        BEFORE_TOOL_EXECUTED.store(false, Ordering::SeqCst);
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(ReplayBlockingPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(Message::user("resume"));
+        let tools = tool_map([EchoTool]);
+
+        let events = run_mock_stream(
+            MockStreamProvider::new(vec![MockResponse::text("done")]),
+            config,
+            session,
+            tools,
+        )
+        .await;
+
+        let replay_done = events.iter().find(|e| {
+            matches!(
+                e,
+                AgentEvent::ToolCallDone { id, .. } if id == "replay_call_1"
+            )
+        });
+
+        let replay_result = match replay_done {
+            Some(AgentEvent::ToolCallDone { result, .. }) => result,
+            _ => panic!("expected replay ToolCallDone event, got: {events:?}"),
+        };
+
+        assert!(
+            BEFORE_TOOL_EXECUTED.load(Ordering::SeqCst),
+            "BeforeToolExecute should run for replayed tool calls"
+        );
+        assert!(
+            replay_result.is_error(),
+            "blocked replay should produce an error tool result"
+        );
     }
 
     // ========================================================================
