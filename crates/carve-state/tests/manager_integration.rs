@@ -440,6 +440,32 @@ async fn test_manager_commit_invalid_op() {
     assert!(result.is_err());
 }
 
+#[tokio::test]
+async fn test_manager_commit_batch_is_atomic_on_error() {
+    let manager = StateManager::new(json!({"base": 1}));
+
+    let patches = vec![
+        make_patch(vec![Op::set(path!("valid"), json!(true))], "valid"),
+        make_patch(
+            vec![Op::Increment {
+                path: path!("missing_counter"),
+                amount: carve_state::Number::Int(1),
+            }],
+            "invalid",
+        ),
+    ];
+
+    let result = manager.commit_batch(patches).await;
+    assert!(result.is_err(), "expected batch commit to fail");
+
+    // Atomicity expectation: failed batch must not partially mutate state.
+    let snapshot = manager.snapshot().await;
+    assert_eq!(snapshot, json!({"base": 1}));
+
+    // Failed batch must not append any history entry.
+    assert_eq!(manager.history_len().await, 0);
+}
+
 // ============================================================================
 // Concurrent access tests (basic)
 // ============================================================================

@@ -95,11 +95,10 @@ impl StateManager {
         let ops_count = patch.patch().len();
 
         let mut state = self.state.write().await;
+        let mut history = self.history.write().await;
         let new_state = apply_patch(&state, patch.patch())?;
         *state = new_state;
-        drop(state);
-
-        self.history.write().await.push(patch);
+        history.push(patch);
 
         Ok(ApplyResult {
             patches_applied: 1,
@@ -109,8 +108,8 @@ impl StateManager {
 
     /// Commit multiple patches in batch.
     ///
-    /// Patches are applied in order. If any patch fails, the operation
-    /// stops and returns an error (partial application may have occurred).
+    /// Patches are applied in order atomically. If any patch fails, no changes
+    /// are persisted to state or history.
     pub async fn commit_batch(
         &self,
         patches: Vec<TrackedPatch>,
@@ -124,16 +123,16 @@ impl StateManager {
 
         let mut total_ops = 0;
         let mut state = self.state.write().await;
+        let mut history = self.history.write().await;
+        let mut new_state = state.clone();
 
         for patch in &patches {
             total_ops += patch.patch().len();
-            let new_state = apply_patch(&state, patch.patch())?;
-            *state = new_state;
+            new_state = apply_patch(&new_state, patch.patch())?;
         }
-        drop(state);
-
+        *state = new_state;
         let patches_count = patches.len();
-        self.history.write().await.extend(patches);
+        history.extend(patches);
 
         Ok(ApplyResult {
             patches_applied: patches_count,

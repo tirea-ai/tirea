@@ -272,17 +272,24 @@ fn apply_increment(doc: &mut Value, path: &Path, amount: &Number) -> CarveResult
         Value::Number(n) => {
             let result = if let Some(i) = n.as_i64() {
                 match amount {
-                    Number::Int(a) => Value::Number((i + a).into()),
-                    Number::Float(a) => Value::Number(
-                        serde_json::Number::from_f64(i as f64 + a)
-                            .unwrap_or_else(|| serde_json::Number::from(0)),
-                    ),
+                    Number::Int(a) => {
+                        let value = i.checked_add(*a).ok_or_else(|| {
+                            CarveError::invalid_operation(format!(
+                                "increment overflow at {path}: {i} + {a}"
+                            ))
+                        })?;
+                        Value::Number(value.into())
+                    }
+                    Number::Float(a) => {
+                        Value::Number(finite_number_from_f64(path, i as f64 + a, "increment")?)
+                    }
                 }
             } else if let Some(f) = n.as_f64() {
-                Value::Number(
-                    serde_json::Number::from_f64(f + amount.as_f64())
-                        .unwrap_or_else(|| serde_json::Number::from(0)),
-                )
+                Value::Number(finite_number_from_f64(
+                    path,
+                    f + amount.as_f64(),
+                    "increment",
+                )?)
             } else {
                 return Err(CarveError::numeric_on_non_number(path.clone()));
             };
@@ -302,17 +309,24 @@ fn apply_decrement(doc: &mut Value, path: &Path, amount: &Number) -> CarveResult
         Value::Number(n) => {
             let result = if let Some(i) = n.as_i64() {
                 match amount {
-                    Number::Int(a) => Value::Number((i - a).into()),
-                    Number::Float(a) => Value::Number(
-                        serde_json::Number::from_f64(i as f64 - a)
-                            .unwrap_or_else(|| serde_json::Number::from(0)),
-                    ),
+                    Number::Int(a) => {
+                        let value = i.checked_sub(*a).ok_or_else(|| {
+                            CarveError::invalid_operation(format!(
+                                "decrement overflow at {path}: {i} - {a}"
+                            ))
+                        })?;
+                        Value::Number(value.into())
+                    }
+                    Number::Float(a) => {
+                        Value::Number(finite_number_from_f64(path, i as f64 - a, "decrement")?)
+                    }
                 }
             } else if let Some(f) = n.as_f64() {
-                Value::Number(
-                    serde_json::Number::from_f64(f - amount.as_f64())
-                        .unwrap_or_else(|| serde_json::Number::from(0)),
-                )
+                Value::Number(finite_number_from_f64(
+                    path,
+                    f - amount.as_f64(),
+                    "decrement",
+                )?)
             } else {
                 return Err(CarveError::numeric_on_non_number(path.clone()));
             };
@@ -346,6 +360,18 @@ fn apply_insert(doc: &mut Value, path: &Path, index: usize, value: Value) -> Car
             value_type_name(target),
         )),
     }
+}
+
+fn finite_number_from_f64(path: &Path, value: f64, op: &str) -> CarveResult<serde_json::Number> {
+    if !value.is_finite() {
+        return Err(CarveError::invalid_operation(format!(
+            "{op} produced non-finite value at {path}"
+        )));
+    }
+
+    serde_json::Number::from_f64(value).ok_or_else(|| {
+        CarveError::invalid_operation(format!("{op} produced non-representable value at {path}"))
+    })
 }
 
 /// Apply a Remove operation (removes first occurrence).
@@ -541,6 +567,28 @@ mod tests {
         let patch = Patch::new().with_op(Op::decrement(path!("count"), 3i64));
         let result = apply_patch(&doc, &patch).unwrap();
         assert_eq!(result["count"], 7);
+    }
+
+    #[test]
+    fn test_apply_increment_nan_amount_returns_error() {
+        let doc = json!({"count": 5});
+        let patch = Patch::new().with_op(Op::increment(path!("count"), f64::NAN));
+        let result = apply_patch(&doc, &patch);
+        assert!(
+            matches!(result, Err(CarveError::InvalidOperation { .. })),
+            "expected InvalidOperation, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_apply_decrement_infinite_amount_returns_error() {
+        let doc = json!({"count": 5});
+        let patch = Patch::new().with_op(Op::decrement(path!("count"), f64::INFINITY));
+        let result = apply_patch(&doc, &patch);
+        assert!(
+            matches!(result, Err(CarveError::InvalidOperation { .. })),
+            "expected InvalidOperation, got: {result:?}"
+        );
     }
 
     #[test]

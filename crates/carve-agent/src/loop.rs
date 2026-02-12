@@ -542,7 +542,23 @@ fn apply_tool_results_to_session(
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
 ) -> Result<AppliedToolResults, AgentLoopError> {
-    let pending_interaction = results.iter().find_map(|r| r.pending_interaction.clone());
+    let mut pending_interactions = results
+        .iter()
+        .filter_map(|r| r.pending_interaction.clone())
+        .collect::<Vec<_>>();
+
+    if pending_interactions.len() > 1 {
+        let ids = pending_interactions
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AgentLoopError::StateError(format!(
+            "multiple pending interactions in one tool round: [{ids}]"
+        )));
+    }
+
+    let pending_interaction = pending_interactions.pop();
 
     // Collect patches from completed tools and plugin pending patches.
     let mut patches: Vec<TrackedPatch> = collect_patches(
@@ -3287,6 +3303,25 @@ mod tests {
             let state = session.rebuild_state().unwrap();
             assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
         });
+    }
+
+    #[test]
+    fn test_apply_tool_results_rejects_multiple_pending_interactions() {
+        let session = Session::new("test");
+
+        let mut first = plugin_data_result("call_1", plugin_data_map(vec![]));
+        first.pending_interaction =
+            Some(Interaction::new("confirm_1", "confirm").with_message("approve first tool"));
+
+        let mut second = plugin_data_result("call_2", plugin_data_map(vec![]));
+        second.pending_interaction =
+            Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
+
+        let result = apply_tool_results_to_session(session, &[first, second], None);
+        assert!(
+            matches!(result, Err(AgentLoopError::StateError(_))),
+            "expected StateError when multiple pending interactions exist"
+        );
     }
 
     #[test]
