@@ -12219,3 +12219,164 @@ mod llmmetry_tracing {
         assert_eq!(m.tool_count(), 1);
     }
 }
+
+// ============================================================================
+// InteractionResponsePlugin SessionStart / __replay_tool_calls tests
+// ============================================================================
+
+/// Test: on_session_start sets __replay_tool_calls when pending_interaction is approved
+#[tokio::test]
+async fn test_interaction_response_session_start_sets_replay_on_approval() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_add_trips";
+
+    // Build a session with:
+    //   1. A persisted pending_interaction in agent state
+    //   2. An assistant message carrying the original tool call
+    //   3. A placeholder tool result
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new(pending_id, "add_trips", json!({"destination": "Beijing"}))],
+    ))
+    .with_message(carve_agent::types::Message::tool(
+        pending_id,
+        "Tool 'add_trips' is awaiting approval. Execution paused.",
+    ));
+
+    // Plugin with this interaction approved
+    let plugin = InteractionResponsePlugin::new(
+        vec![pending_id.to_string()], // approved
+        vec![],                       // no denied
+    );
+
+    let mut step = StepContext::new(&session, vec![]);
+
+    // Run SessionStart phase
+    plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+    // Should have set __replay_tool_calls
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(replay.is_some(), "__replay_tool_calls should be set");
+    let calls = replay.unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "add_trips");
+    assert_eq!(calls[0].id, pending_id);
+}
+
+/// Test: on_session_start does NOT set __replay_tool_calls when interaction is denied
+#[tokio::test]
+async fn test_interaction_response_session_start_no_replay_on_denial() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_add_trips";
+
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new(pending_id, "add_trips", json!({}))],
+    ));
+
+    // Plugin with this interaction denied (not approved)
+    let plugin = InteractionResponsePlugin::new(
+        vec![],                       // no approved
+        vec![pending_id.to_string()], // denied
+    );
+
+    let mut step = StepContext::new(&session, vec![]);
+    plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(
+        replay.is_none() || replay.as_ref().map_or(true, |v| v.is_empty()),
+        "__replay_tool_calls should NOT be set on denial"
+    );
+}
+
+/// Test: on_session_start does nothing when no pending_interaction exists
+#[tokio::test]
+async fn test_interaction_response_session_start_no_pending() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::with_initial_state("test", json!({ "agent": {} }));
+
+    let plugin = InteractionResponsePlugin::new(
+        vec!["some_id".to_string()],
+        vec![],
+    );
+
+    let mut step = StepContext::new(&session, vec![]);
+    plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(
+        replay.is_none(),
+        "__replay_tool_calls should not be set when no pending interaction"
+    );
+}
+
+/// Test: on_session_start does nothing when approved ID doesn't match pending
+#[tokio::test]
+async fn test_interaction_response_session_start_mismatched_id() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
+    )
+    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+        "",
+        vec![ToolCall::new("permission_x", "some_tool", json!({}))],
+    ));
+
+    // Approved a different ID
+    let plugin = InteractionResponsePlugin::new(
+        vec!["permission_y".to_string()],
+        vec![],
+    );
+
+    let mut step = StepContext::new(&session, vec![]);
+    plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(
+        replay.is_none(),
+        "__replay_tool_calls should not be set when IDs don't match"
+    );
+}
+
+/// Test: on_session_start does nothing when no assistant message with tool_calls
+#[tokio::test]
+async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
+    use carve_agent::ag_ui::InteractionResponsePlugin;
+
+    let pending_id = "permission_add_trips";
+
+    // Session has pending interaction but no assistant message with tool calls
+    let session = Session::with_initial_state(
+        "test",
+        json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+    )
+    .with_message(carve_agent::types::Message::assistant("I need to call a tool"));
+
+    let plugin = InteractionResponsePlugin::new(
+        vec![pending_id.to_string()],
+        vec![],
+    );
+
+    let mut step = StepContext::new(&session, vec![]);
+    plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    assert!(
+        replay.is_none(),
+        "__replay_tool_calls should not be set without tool calls"
+    );
+}
