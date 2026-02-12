@@ -1,7 +1,58 @@
-use carve_agent::{AgentDefinition, AgentPlugin, PermissionPlugin, Tool};
+use carve_agent::{
+    AgentDefinition, AgentMetrics, AgentPlugin, GenAISpan, LLMMetryPlugin, MetricsSink,
+    PermissionPlugin, Tool, ToolSpan,
+};
 use clap::Parser;
 use std::sync::Arc;
 use uncarve_examples::travel::tools::*;
+
+/// Logging sink that prints metrics to stderr after each session.
+struct LoggingSink;
+
+impl MetricsSink for LoggingSink {
+    fn on_inference(&self, span: &GenAISpan) {
+        eprintln!(
+            "[llmmetry] inference: model={} provider={} input={:?} output={:?} cache_read={:?} cache_create={:?} {}ms",
+            span.model, span.provider,
+            span.input_tokens, span.output_tokens,
+            span.cache_read_input_tokens, span.cache_creation_input_tokens,
+            span.duration_ms,
+        );
+    }
+
+    fn on_tool(&self, span: &ToolSpan) {
+        eprintln!(
+            "[llmmetry] tool: name={} error={:?} {}ms",
+            span.name, span.error_type, span.duration_ms,
+        );
+    }
+
+    fn on_session_end(&self, metrics: &AgentMetrics) {
+        eprintln!("\n=== Session Metrics ({:.1}s) ===", metrics.session_duration_ms as f64 / 1000.0);
+        for stat in metrics.stats_by_model() {
+            eprintln!(
+                "  [{}@{}] {} inferences | input: {} output: {} cache_read: {} cache_create: {} | {:.1}s",
+                stat.model, stat.provider, stat.inference_count,
+                stat.input_tokens, stat.output_tokens,
+                stat.cache_read_input_tokens, stat.cache_creation_input_tokens,
+                stat.total_duration_ms as f64 / 1000.0,
+            );
+        }
+        for stat in metrics.stats_by_tool() {
+            eprintln!(
+                "  [tool:{}] {} calls ({} failures) | {:.1}s",
+                stat.name, stat.call_count, stat.failure_count,
+                stat.total_duration_ms as f64 / 1000.0,
+            );
+        }
+        eprintln!("  totals: {} input + {} output = {} tokens | inference {:.1}s tool {:.1}s",
+            metrics.total_input_tokens(), metrics.total_output_tokens(), metrics.total_tokens(),
+            metrics.total_inference_duration_ms() as f64 / 1000.0,
+            metrics.total_tool_duration_ms() as f64 / 1000.0,
+        );
+        eprintln!("===\n");
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +71,7 @@ async fn main() {
         ).into(),
         max_rounds: 10,
         parallel_tools: true,
+        plugin_ids: vec!["permission".into(), "llmmetry".into()],
         ..Default::default()
     };
 
@@ -31,8 +83,13 @@ async fn main() {
         Arc::new(SearchPlacesTool),
     ];
 
+    let llmmetry = LLMMetryPlugin::new(LoggingSink)
+        .with_model("deepseek-chat")
+        .with_provider("deepseek");
+
     let plugins: Vec<(String, Arc<dyn AgentPlugin>)> = vec![
         ("permission".into(), Arc::new(PermissionPlugin)),
+        ("llmmetry".into(), Arc::new(llmmetry)),
     ];
 
     uncarve_examples::serve(args, agent_def, tools, plugins).await;
