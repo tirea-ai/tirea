@@ -39,18 +39,18 @@
 //! ```
 
 use crate::activity::ActivityHub;
-use crate::storage::{CheckpointReason, ThreadDelta};
 use crate::agent::uuid_v7;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
-use crate::thread::Thread;
 use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
 use crate::stop::{
     check_stop_conditions, StopCheckContext, StopCondition, StopConditionSpec, StopReason,
 };
+use crate::storage::{CheckpointReason, ThreadDelta};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
+use crate::thread::Thread;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::types::{Message, MessageMetadata};
 use async_stream::stream;
@@ -67,6 +67,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
+
+pub type RunCancellationToken = CancellationToken;
 
 #[async_trait]
 trait ChatStreamProvider: Send + Sync {
@@ -180,9 +182,16 @@ pub type AgentConfig = AgentDefinition;
 pub struct RunContext {
     /// Cancellation token for cooperative loop termination.
     ///
-    /// When cancelled, the loop stops at the next check point and emits
-    /// `RunFinish` with `StopReason::Cancelled`.
-    pub cancellation_token: Option<CancellationToken>,
+    /// When cancelled, this is the **run cancellation signal**:
+    /// the loop stops at the next check point and emits `RunFinish` with
+    /// `StopReason::Cancelled`.
+    pub cancellation_token: Option<RunCancellationToken>,
+}
+
+impl RunContext {
+    pub fn run_cancellation_token(&self) -> Option<&RunCancellationToken> {
+        self.cancellation_token.as_ref()
+    }
 }
 
 /// Runtime key: caller session id visible to tools.
@@ -766,15 +775,11 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
 /// If no placeholder exists, append the real tool message.
 fn replace_placeholder_tool_message(thread: &mut Thread, tool_call_id: &str, real_msg: Message) {
     // Find the placeholder message index (searching from end)
-    if let Some(index) = thread
-        .messages
-        .iter()
-        .rposition(|m| {
-            m.role == crate::types::Role::Tool
-                && m.tool_call_id.as_deref() == Some(tool_call_id)
-                && m.content.contains("awaiting approval")
-        })
-    {
+    if let Some(index) = thread.messages.iter().rposition(|m| {
+        m.role == crate::types::Role::Tool
+            && m.tool_call_id.as_deref() == Some(tool_call_id)
+            && m.content.contains("awaiting approval")
+    }) {
         // Replace the Arc with a new one containing the updated message
         thread.messages[index] = std::sync::Arc::new(real_msg);
         return;
@@ -2005,16 +2010,14 @@ pub async fn run_loop(
         let state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                    .await;
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
         let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                    .await;
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
@@ -2103,8 +2106,7 @@ pub async fn run_loop(
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
             thread =
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                    .await;
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::PendingInteraction {
                 thread: Box::new(thread),
                 interaction: Box::new(interaction),
@@ -2123,8 +2125,7 @@ pub async fn run_loop(
         let stop_ctx = loop_state.to_check_context(&result, &thread);
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
             thread =
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                    .await;
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::Stopped {
                 thread: Box::new(thread),
                 reason,
@@ -2148,15 +2149,7 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    run_loop_stream_impl_with_provider(
-        Arc::new(client),
-        config,
-        thread,
-        tools,
-        run_ctx,
-        None,
-        None,
-    )
+    run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx, None, None)
 }
 
 /// A streaming agent run with access to the final `Thread`.
@@ -2255,7 +2248,7 @@ fn run_loop_stream_impl_with_provider(
     let mut thread = thread;
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(&config);
-    let cancel_token = run_ctx.cancellation_token.clone();
+    let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
@@ -2450,7 +2443,7 @@ fn run_loop_stream_impl_with_provider(
 
         loop {
             // Check cancellation at the top of each iteration.
-            if let Some(ref token) = cancel_token {
+            if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
                     thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                     yield AgentEvent::RunFinish {
@@ -2575,7 +2568,7 @@ fn run_loop_stream_impl_with_provider(
             let mut chat_stream = chat_stream_events;
 
             loop {
-                let next_event = if let Some(ref token) = cancel_token {
+                let next_event = if let Some(ref token) = run_cancellation_token {
                     tokio::select! {
                         _ = token.cancelled() => {
                             thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
@@ -2798,7 +2791,7 @@ fn run_loop_stream_impl_with_provider(
             let results = loop {
                 tokio::select! {
                     _ = async {
-                        if let Some(ref token) = cancel_token {
+                        if let Some(ref token) = run_cancellation_token {
                             token.cancelled().await;
                         } else {
                             futures::future::pending::<()>().await;
@@ -5308,6 +5301,15 @@ mod tests {
     }
 
     #[test]
+    fn test_run_context_run_cancellation_token_accessor() {
+        let token = RunCancellationToken::new();
+        let ctx = RunContext {
+            cancellation_token: Some(token),
+        };
+        assert!(ctx.run_cancellation_token().is_some());
+    }
+
+    #[test]
     fn test_run_context_clone() {
         let ctx = RunContext {
             cancellation_token: None,
@@ -6517,11 +6519,7 @@ mod tests {
             );
 
             // One should be success, one should be error.
-            let contents: Vec<&str> = thread
-                .messages
-                .iter()
-                .map(|m| m.content.as_str())
-                .collect();
+            let contents: Vec<&str> = thread.messages.iter().map(|m| m.content.as_str()).collect();
             let has_success = contents.iter().any(|c| c.contains("echoed"));
             let has_error = contents
                 .iter()
@@ -6582,20 +6580,14 @@ mod tests {
                 Arc::new(FailingTool) as Arc<dyn Tool>,
             );
 
-            let thread = execute_tools(thread, &result, &tools, false)
-                .await
-                .unwrap();
+            let thread = execute_tools(thread, &result, &tools, false).await.unwrap();
 
             assert_eq!(
                 thread.message_count(),
                 2,
                 "Both tools should produce a message"
             );
-            let contents: Vec<&str> = thread
-                .messages
-                .iter()
-                .map(|m| m.content.as_str())
-                .collect();
+            let contents: Vec<&str> = thread.messages.iter().map(|m| m.content.as_str()).collect();
             let has_success = contents.iter().any(|c| c.contains("echoed"));
             let has_error = contents
                 .iter()
@@ -6736,14 +6728,9 @@ mod tests {
                 Arc::new(PendingPhasePlugin),
                 Arc::new(ConditionalBlockPlugin),
             ];
-            let r1 = execute_tools_with_plugins(
-                thread.clone(),
-                &result,
-                &tools,
-                false,
-                &plugins_order1,
-            )
-            .await;
+            let r1 =
+                execute_tools_with_plugins(thread.clone(), &result, &tools, false, &plugins_order1)
+                    .await;
             // When pending+blocked, the blocked result takes priority.
             let s1 = r1.unwrap();
             assert_eq!(s1.message_count(), 1);

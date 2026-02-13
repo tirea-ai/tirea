@@ -4,8 +4,8 @@ use crate::plugin::AgentPlugin;
 use crate::plugins::{resolve_permission_behavior_for_tool, PERMISSION_STATE_PATH};
 pub(crate) use crate::r#loop::TOOL_RUNTIME_CALLER_AGENT_ID_KEY as RUNTIME_CALLER_AGENT_ID_KEY;
 use crate::r#loop::{
-    RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
-    TOOL_RUNTIME_CALLER_STATE_KEY,
+    RunCancellationToken, RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
+    TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };
 use crate::state_types::{
     AgentRunState, AgentRunStatus, AgentState, Interaction, ToolPermissionBehavior,
@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 const RUNTIME_CALLER_SESSION_ID_KEY: &str = TOOL_RUNTIME_CALLER_THREAD_ID_KEY;
 const RUNTIME_CALLER_STATE_KEY: &str = TOOL_RUNTIME_CALLER_STATE_KEY;
@@ -51,8 +50,8 @@ struct AgentRunRecord {
     thread: crate::Thread,
     assistant: Option<String>,
     error: Option<String>,
-    stop_requested: bool,
-    cancellation_token: Option<CancellationToken>,
+    run_cancellation_requested: bool,
+    cancellation_token: Option<RunCancellationToken>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,7 +158,7 @@ impl AgentRunManager {
                 rec.status.as_str()
             ));
         }
-        rec.stop_requested = true;
+        rec.run_cancellation_requested = true;
         rec.status = AgentRunStatus::Stopped;
         if let Some(token) = rec.cancellation_token.take() {
             token.cancel();
@@ -202,7 +201,7 @@ impl AgentRunManager {
         for id in run_ids {
             if let Some(rec) = runs.get_mut(&id) {
                 if rec.status == AgentRunStatus::Running {
-                    rec.stop_requested = true;
+                    rec.run_cancellation_requested = true;
                     rec.status = AgentRunStatus::Stopped;
                     stopped = true;
                     if let Some(token) = rec.cancellation_token.take() {
@@ -236,7 +235,7 @@ impl AgentRunManager {
         target_agent_id: String,
         parent_run_id: Option<String>,
         thread: crate::Thread,
-        cancellation_token: Option<CancellationToken>,
+        cancellation_token: Option<RunCancellationToken>,
     ) -> u64 {
         let mut runs = self.runs.lock().await;
         let epoch = runs.get(run_id).map(|r| r.epoch + 1).unwrap_or(1);
@@ -251,7 +250,7 @@ impl AgentRunManager {
                 thread,
                 assistant: None,
                 error: None,
-                stop_requested: false,
+                run_cancellation_requested: false,
                 cancellation_token,
             },
         );
@@ -274,8 +273,8 @@ impl AgentRunManager {
         rec.assistant = completion.assistant;
         rec.error = completion.error;
 
-        // Explicit stop request wins over terminal status from executor.
-        rec.status = if rec.stop_requested {
+        // Explicit run-cancellation request wins over terminal status from executor.
+        rec.status = if rec.run_cancellation_requested {
             AgentRunStatus::Stopped
         } else {
             completion.status
@@ -328,7 +327,7 @@ async fn execute_target_agent(
     os: AgentOs,
     target_agent_id: String,
     thread: crate::Thread,
-    cancellation_token: Option<CancellationToken>,
+    cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
     let run_ctx = RunContext { cancellation_token };
     let stream = match os.run_stream_with_session(&target_agent_id, thread.clone(), run_ctx) {
@@ -461,9 +460,7 @@ fn bind_child_lineage(
     }
     if let Some(parent_run_id) = parent_run_id {
         if thread.runtime.value(RUNTIME_PARENT_RUN_ID_KEY).is_none() {
-            let _ = thread
-                .runtime
-                .set(RUNTIME_PARENT_RUN_ID_KEY, parent_run_id);
+            let _ = thread.runtime.set(RUNTIME_PARENT_RUN_ID_KEY, parent_run_id);
         }
     }
     thread
@@ -919,15 +916,19 @@ impl Tool for AgentRunTool {
                             ));
                         }
 
-                        record.thread =
-                            bind_child_lineage(record.thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
+                        record.thread = bind_child_lineage(
+                            record.thread,
+                            &run_id,
+                            caller_run_id.as_deref(),
+                            Some(&owner_thread_id),
+                        );
 
                         if let Some(prompt) = optional_string(&args, "prompt") {
                             record.thread = record.thread.with_message(Message::user(prompt));
                         }
 
                         if background {
-                            let token = CancellationToken::new();
+                            let token = RunCancellationToken::new();
                             let epoch = self
                                 .manager
                                 .put_running(
@@ -1064,15 +1065,19 @@ impl Tool for AgentRunTool {
                             ))
                         }
                     };
-                    child_thread =
-                        bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
+                    child_thread = bind_child_lineage(
+                        child_thread,
+                        &run_id,
+                        caller_run_id.as_deref(),
+                        Some(&owner_thread_id),
+                    );
 
                     if let Some(prompt) = optional_string(&args, "prompt") {
                         child_thread = child_thread.with_message(Message::user(prompt));
                     }
 
                     if background {
-                        let token = CancellationToken::new();
+                        let token = RunCancellationToken::new();
                         let epoch = self
                             .manager
                             .put_running(
@@ -1112,10 +1117,7 @@ impl Tool for AgentRunTool {
                                 status: AgentRunStatus::Running,
                                 assistant: None,
                                 error: None,
-                                thread: self
-                                    .manager
-                                    .owned_record(&owner_thread_id, &run_id)
-                                    .await,
+                                thread: self.manager.owned_record(&owner_thread_id, &run_id).await,
                             },
                         );
                         return Ok(to_tool_result(tool_name, summary));
@@ -1198,10 +1200,15 @@ impl Tool for AgentRunTool {
             crate::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
-        child_thread = bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
+        child_thread = bind_child_lineage(
+            child_thread,
+            &run_id,
+            caller_run_id.as_deref(),
+            Some(&owner_thread_id),
+        );
 
         if background {
-            let token = CancellationToken::new();
+            let token = RunCancellationToken::new();
             let epoch = self
                 .manager
                 .put_running(
@@ -1259,13 +1266,9 @@ impl Tool for AgentRunTool {
                 None,
             )
             .await;
-        let completion = execute_target_agent(
-            self.os.clone(),
-            target_agent_id.clone(),
-            child_thread,
-            None,
-        )
-        .await;
+        let completion =
+            execute_target_agent(self.os.clone(), target_agent_id.clone(), child_thread, None)
+                .await;
         let completion_state = AgentRunState {
             run_id: run_id.clone(),
             parent_run_id: caller_run_id,
@@ -1682,7 +1685,7 @@ mod tests {
     use crate::agent_os::InMemoryAgentRegistry;
     use crate::r#loop::{
         TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
-        TOOL_RUNTIME_CALLER_THREAD_ID_KEY, TOOL_RUNTIME_CALLER_STATE_KEY,
+        TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
     };
     use crate::thread::Thread;
     use crate::traits::tool::ToolStatus;

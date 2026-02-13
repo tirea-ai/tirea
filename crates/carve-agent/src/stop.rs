@@ -71,7 +71,7 @@ pub enum StopReason {
     ConsecutiveErrorsExceeded,
     /// Identical tool call patterns detected across rounds.
     LoopDetected,
-    /// External cancellation signal received.
+    /// Run cancellation signal received (cooperative abort of the current run).
     Cancelled,
     /// Custom stop reason from a user-defined [`StopCondition`].
     Custom(String),
