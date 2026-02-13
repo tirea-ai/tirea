@@ -64,9 +64,11 @@
 //! ```
 
 mod frontend_tool;
+mod interaction_plugin;
 mod interaction_response;
 
 pub use frontend_tool::{FrontendToolPlugin, FrontendToolStub};
+pub use interaction_plugin::AgUiInteractionPlugin;
 pub use interaction_response::InteractionResponsePlugin;
 
 use frontend_tool::merge_frontend_tools;
@@ -1533,15 +1535,13 @@ fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
 }
 
 struct RequestWiring {
-    response: InteractionResponsePlugin,
-    frontend: FrontendToolPlugin,
+    interaction: AgUiInteractionPlugin,
 }
 
 impl RequestWiring {
     fn from_request(request: &RunAgentRequest) -> Self {
         Self {
-            response: InteractionResponsePlugin::from_request(request),
-            frontend: FrontendToolPlugin::from_request(request),
+            interaction: AgUiInteractionPlugin::from_request(request),
         }
     }
 
@@ -1551,15 +1551,15 @@ impl RequestWiring {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
         request: &RunAgentRequest,
     ) -> AgentConfig {
-        if self.response.has_responses() {
-            config = config.with_plugin(Arc::new(self.response));
+        if !self.interaction.is_active() {
+            return config;
         }
 
-        if !self.frontend.frontend_tools.is_empty() {
+        if self.interaction.has_frontend_tools() {
             merge_frontend_tools(tools, request);
-            config = config.with_plugin(Arc::new(self.frontend));
         }
 
+        config = config.with_plugin(Arc::new(self.interaction));
         config
     }
 }
@@ -4782,6 +4782,75 @@ mod tests {
         }
     }
 
+    // ========================================================================
+    // AgUiInteractionPlugin Tests
+    // ========================================================================
+
+    #[test]
+    fn test_agui_interaction_plugin_activity_flags() {
+        let none_request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
+        let none_plugin = AgUiInteractionPlugin::from_request(&none_request);
+        assert!(!none_plugin.is_active());
+        assert!(!none_plugin.has_frontend_tools());
+
+        let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_message(AGUIMessage::tool("true", "permission_write"));
+        let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+        assert!(response_plugin.is_active());
+        assert!(!response_plugin.has_frontend_tools());
+
+        let frontend_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
+        let frontend_plugin = AgUiInteractionPlugin::from_request(&frontend_request);
+        assert!(frontend_plugin.is_active());
+        assert!(frontend_plugin.has_frontend_tools());
+    }
+
+    #[tokio::test]
+    async fn test_agui_interaction_plugin_denied_frontend_call_stays_blocked() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+            .with_tool(AGUIToolDef::frontend("dangerousAction", "Dangerous action"))
+            .with_message(AGUIMessage::tool("false", "call_danger"));
+        let plugin = AgUiInteractionPlugin::from_request(&request);
+
+        let session = Session::with_initial_state(
+            "test",
+            json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        assert!(step.tool_blocked());
+        assert!(!step.tool_pending());
+    }
+
+    #[tokio::test]
+    async fn test_agui_interaction_plugin_frontend_tool_sets_pending() {
+        use crate::phase::ToolContext;
+        use crate::session::Session;
+        use crate::types::ToolCall;
+
+        let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
+            .with_tool(AGUIToolDef::frontend("showNotification", "Show"));
+        let plugin = AgUiInteractionPlugin::from_request(&request);
+        let session = Session::new("test");
+        let mut step = StepContext::new(&session, vec![]);
+        let call = ToolCall::new("call_1", "showNotification", json!({"text": "hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+
+        assert!(step.tool_pending());
+        assert!(!step.tool_blocked());
+    }
+
     #[test]
     fn test_approved_interaction_ids() {
         let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -7476,8 +7545,8 @@ mod tests {
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
         assert_eq!(
             plugin_ids,
-            vec!["interaction_response", "frontend_tool"],
-            "AG-UI request wiring should install response before frontend plugin"
+            vec!["agui_interaction"],
+            "AG-UI request wiring should install a single combined interaction plugin"
         );
     }
 
@@ -7504,14 +7573,14 @@ mod tests {
                 name: "responses_only",
                 request: RunAgentRequest::new("t1", "r1")
                     .with_messages(vec![AGUIMessage::tool("true", "permission_write")]),
-                expected_plugins: vec!["interaction_response"],
+                expected_plugins: vec!["agui_interaction"],
                 expect_frontend_stub: false,
             },
             Case {
                 name: "frontend_only",
                 request: RunAgentRequest::new("t1", "r1")
                     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
-                expected_plugins: vec!["frontend_tool"],
+                expected_plugins: vec!["agui_interaction"],
                 expect_frontend_stub: true,
             },
             Case {
@@ -7519,7 +7588,7 @@ mod tests {
                 request: RunAgentRequest::new("t1", "r1")
                     .with_messages(vec![AGUIMessage::tool("true", "permission_write")])
                     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
-                expected_plugins: vec!["interaction_response", "frontend_tool"],
+                expected_plugins: vec!["agui_interaction"],
                 expect_frontend_stub: true,
             },
         ];
@@ -7561,10 +7630,7 @@ mod tests {
         let (config, _session, _tools) =
             super::prepare_request_runtime(config, session, tools, &request);
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
-        assert_eq!(
-            plugin_ids,
-            vec!["permission", "interaction_response", "frontend_tool"]
-        );
+        assert_eq!(plugin_ids, vec!["permission", "agui_interaction"]);
     }
 
     // ========================================================================

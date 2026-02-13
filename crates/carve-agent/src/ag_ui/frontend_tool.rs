@@ -59,6 +59,11 @@ impl FrontendToolPlugin {
     pub fn is_frontend_tool(&self, name: &str) -> bool {
         self.frontend_tools.contains(name)
     }
+
+    /// Whether any frontend tools are configured.
+    pub fn has_frontend_tools(&self) -> bool {
+        !self.frontend_tools.is_empty()
+    }
 }
 
 #[async_trait]
