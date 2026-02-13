@@ -257,12 +257,6 @@ impl<'a> StepContext<'a> {
         self.tool.as_ref().map(|t| t.id.as_str())
     }
 
-    /// Get current tool name.
-    #[deprecated(note = "Use tool_name() for the tool name or tool_call_id() for the call ID")]
-    pub fn tool_id(&self) -> Option<&str> {
-        self.tool_name()
-    }
-
     /// Get current tool arguments.
     pub fn tool_args(&self) -> Option<&Value> {
         self.tool.as_ref().map(|t| &t.args)
@@ -356,30 +350,6 @@ impl<'a> StepContext<'a> {
         self.scratchpad.remove(key)
     }
 
-    /// Deprecated: use `scratchpad_set`.
-    #[deprecated(since = "0.2.0", note = "Use `scratchpad_set` instead")]
-    pub fn set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
-        self.scratchpad_set(key, value)
-    }
-
-    /// Deprecated: use `scratchpad_get`.
-    #[deprecated(since = "0.2.0", note = "Use `scratchpad_get` instead")]
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.scratchpad_get(key)
-    }
-
-    /// Deprecated: use `scratchpad_has`.
-    #[deprecated(since = "0.2.0", note = "Use `scratchpad_has` instead")]
-    pub fn has(&self, key: &str) -> bool {
-        self.scratchpad_has(key)
-    }
-
-    /// Deprecated: use `scratchpad_remove`.
-    #[deprecated(since = "0.2.0", note = "Use `scratchpad_remove` instead")]
-    pub fn remove(&mut self, key: &str) -> Option<Value> {
-        self.scratchpad_remove(key)
-    }
-
     /// Replace all scratchpad data with the provided map.
     pub fn set_scratchpad_map(&mut self, scratchpad: HashMap<String, Value>) {
         self.scratchpad = scratchpad;
@@ -388,18 +358,6 @@ impl<'a> StepContext<'a> {
     /// Clone all scratchpad data.
     pub fn scratchpad_snapshot(&self) -> HashMap<String, Value> {
         self.scratchpad.clone()
-    }
-
-    /// Deprecated: use `set_scratchpad_map`.
-    #[deprecated(since = "0.2.0", note = "Use `set_scratchpad_map` instead")]
-    pub fn set_data_map(&mut self, data: HashMap<String, Value>) {
-        self.set_scratchpad_map(data);
-    }
-
-    /// Deprecated: use `scratchpad_snapshot`.
-    #[deprecated(since = "0.2.0", note = "Use `scratchpad_snapshot` instead")]
-    pub fn data_snapshot(&self) -> HashMap<String, Value> {
-        self.scratchpad_snapshot()
     }
 
     // =========================================================================
@@ -718,8 +676,8 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        assert!(ctx.set("counter", 42i32));
-        let value: Option<i32> = ctx.get("counter");
+        assert!(ctx.scratchpad_set("counter", 42i32));
+        let value: Option<i32> = ctx.scratchpad_get("counter");
 
         assert_eq!(value, Some(42));
     }
@@ -754,9 +712,9 @@ mod tests {
             }
         }
 
-        let ok = ctx.set("bad_value", FailingSerialize);
+        let ok = ctx.scratchpad_set("bad_value", FailingSerialize);
         assert!(!ok);
-        assert!(!ctx.has("bad_value"));
+        assert!(!ctx.scratchpad_has("bad_value"));
     }
 
     #[test]
@@ -764,7 +722,7 @@ mod tests {
         let session = mock_session();
         let ctx = StepContext::new(&session, vec![]);
 
-        let value: Option<i32> = ctx.get("nonexistent");
+        let value: Option<i32> = ctx.scratchpad_get("nonexistent");
         assert!(value.is_none());
     }
 
@@ -773,9 +731,9 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        assert!(!ctx.has("key"));
-        ctx.set("key", "value");
-        assert!(ctx.has("key"));
+        assert!(!ctx.scratchpad_has("key"));
+        ctx.scratchpad_set("key", "value");
+        assert!(ctx.scratchpad_has("key"));
     }
 
     #[test]
@@ -783,11 +741,11 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        ctx.set("key", "value");
-        let removed = ctx.remove("key");
+        ctx.scratchpad_set("key", "value");
+        let removed = ctx.scratchpad_remove("key");
 
         assert!(removed.is_some());
-        assert!(!ctx.has("key"));
+        assert!(!ctx.scratchpad_has("key"));
     }
 
     #[test]
@@ -806,8 +764,8 @@ mod tests {
             items: vec!["a".to_string(), "b".to_string()],
         };
 
-        ctx.set("config", &config);
-        let retrieved: Option<Config> = ctx.get("config");
+        ctx.scratchpad_set("config", &config);
+        let retrieved: Option<Config> = ctx.scratchpad_get("config");
 
         assert_eq!(retrieved, Some(config));
     }
@@ -1112,11 +1070,11 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        ctx.set("key", 1i32);
-        assert_eq!(ctx.get::<i32>("key"), Some(1));
+        ctx.scratchpad_set("key", 1i32);
+        assert_eq!(ctx.scratchpad_get::<i32>("key"), Some(1));
 
-        ctx.set("key", 2i32);
-        assert_eq!(ctx.get::<i32>("key"), Some(2));
+        ctx.scratchpad_set("key", 2i32);
+        assert_eq!(ctx.scratchpad_get::<i32>("key"), Some(2));
     }
 
     #[test]
@@ -1124,7 +1082,7 @@ mod tests {
         let session = mock_session();
         let mut ctx = StepContext::new(&session, vec![]);
 
-        let removed = ctx.remove("nonexistent");
+        let removed = ctx.scratchpad_remove("nonexistent");
         assert!(removed.is_none());
     }
 

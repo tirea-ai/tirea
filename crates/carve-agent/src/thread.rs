@@ -219,6 +219,15 @@ mod tests {
     }
 
     #[test]
+    fn test_runtime_is_set_once() {
+        let mut thread = Thread::new("t-1");
+        thread.runtime.set("run_id", "run-1").unwrap();
+        let err = thread.runtime.set("run_id", "run-2").unwrap_err();
+        assert!(matches!(err, carve_state::RuntimeError::AlreadySet(key) if key == "run_id"));
+        assert_eq!(thread.runtime.value("run_id"), Some(&json!("run-1")));
+    }
+
+    #[test]
     fn test_session_alias() {
         // Session is a type alias for Thread
         let session: Session = Session::new("test-1");
@@ -332,6 +341,28 @@ mod tests {
         // Deserialized thread has default (empty) runtime
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
         assert!(!restored.runtime.contains_key("token"));
+    }
+
+    #[test]
+    fn test_state_persists_but_runtime_is_transient_after_serialization() {
+        let mut rt = Runtime::new();
+        rt.set("run_id", "run-1").unwrap();
+
+        let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
+            .with_runtime(rt)
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            ));
+
+        let json_str = serde_json::to_string(&thread).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
+
+        let rebuilt = restored.rebuild_state().unwrap();
+        assert_eq!(rebuilt["counter"], 5, "persisted state should survive serialization");
+        assert!(
+            !restored.runtime.contains_key("run_id"),
+            "runtime data must not be persisted"
+        );
     }
 
     #[test]

@@ -4971,7 +4971,7 @@ async fn test_scenario_permission_approved_complete_flow() {
     let mut step = StepContext::new(&session, vec![]);
 
     // Set up ask permission
-    step.set(
+    step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5024,7 +5024,7 @@ async fn test_scenario_permission_denied_complete_flow() {
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
 
-    step.set(
+    step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5120,7 +5120,7 @@ async fn test_scenario_multiple_interactions_sequence() {
 
     // First tool: write_file
     let mut step1 = StepContext::new(&session, vec![]);
-    step1.set(
+    step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5138,7 +5138,7 @@ async fn test_scenario_multiple_interactions_sequence() {
 
     // Second tool: read_file
     let mut step2 = StepContext::new(&session, vec![]);
-    step2.set(
+    step2.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5361,7 +5361,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     // Step 1: First run - PermissionPlugin creates pending interaction
     let permission_plugin = PermissionPlugin;
     let mut step1 = StepContext::new(&session, vec![]);
-    step1.set(
+    step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5398,7 +5398,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     );
     let response_plugin = InteractionResponsePlugin::from_request(&response_request);
     let mut step2 = StepContext::new(&session2, vec![]);
-    step2.set(
+    step2.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5758,7 +5758,7 @@ async fn test_permission_flow_approval_e2e() {
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set(
+    step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5822,7 +5822,7 @@ async fn test_permission_flow_denial_e2e() {
     // Phase 1: Agent requests permission
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set(
+    step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5881,7 +5881,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     // Tool 1: Will be approved
     let mut step1 = StepContext::new(&session, vec![]);
-    step1.set(
+    step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -5900,7 +5900,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
 
     // Tool 2: Will be denied
     let mut step2 = StepContext::new(&session, vec![]);
-    step2.set(
+    step2.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -6717,7 +6717,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
 
     let session = Session::new("test");
     let mut step = StepContext::new(&session, vec![]);
-    step.set(
+    step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -12261,7 +12261,7 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
     // Should have set __replay_tool_calls
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(replay.is_some(), "__replay_tool_calls should be set");
     let calls = replay.unwrap();
     assert_eq!(calls.len(), 1);
@@ -12294,7 +12294,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
         replay.is_none() || replay.as_ref().map_or(true, |v| v.is_empty()),
         "__replay_tool_calls should NOT be set on denial"
@@ -12316,7 +12316,7 @@ async fn test_interaction_response_session_start_no_pending() {
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
         replay.is_none(),
         "__replay_tool_calls should not be set when no pending interaction"
@@ -12346,7 +12346,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
         replay.is_none(),
         "__replay_tool_calls should not be set when IDs don't match"
@@ -12375,7 +12375,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
         replay.is_none(),
         "__replay_tool_calls should not be set without tool calls"
@@ -12397,7 +12397,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let session = Session::new("test");
     let permission_plugin = PermissionPlugin;
     let mut step1 = StepContext::new(&session, vec![]);
-    step1.set(
+    step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
     );
@@ -12452,7 +12452,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 
     // Verify: __replay_tool_calls is set with correct tool call
     let replay: Vec<ToolCall> = step2
-        .get("__replay_tool_calls")
+        .scratchpad_get("__replay_tool_calls")
         .expect("__replay_tool_calls should be set after approval");
     assert_eq!(replay.len(), 1, "Should schedule exactly one tool call");
     assert_eq!(replay[0].name, "add_trips");
@@ -12494,7 +12494,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
         .on_phase(Phase::SessionStart, &mut step)
         .await;
 
-    let replay: Option<Vec<ToolCall>> = step.get("__replay_tool_calls");
+    let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
         replay.is_none() || replay.as_ref().map_or(true, |v| v.is_empty()),
         "Denial should NOT schedule tool replay"
@@ -12537,7 +12537,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
         .await;
 
     let replay: Vec<ToolCall> = step
-        .get("__replay_tool_calls")
+        .scratchpad_get("__replay_tool_calls")
         .expect("Should schedule replay");
     assert_eq!(replay.len(), 1, "Should only schedule the first tool call");
     assert_eq!(replay[0].name, "tool_a");
@@ -12575,7 +12575,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     response_plugin
         .on_phase(Phase::SessionStart, &mut step1)
         .await;
-    assert!(step1.get::<Vec<ToolCall>>("__replay_tool_calls").is_some());
+    assert!(step1.scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls").is_some());
 
     // BeforeToolExecute on different step context (independent)
     let mut step2 = StepContext::new(&session, vec![]);

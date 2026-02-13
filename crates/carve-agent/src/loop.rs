@@ -159,10 +159,6 @@ impl Default for ScratchpadMergePolicy {
     }
 }
 
-/// Backward-compatible alias.
-#[deprecated(since = "0.2.0", note = "Use `ScratchpadMergePolicy` instead")]
-pub type PluginDataMergePolicy = ScratchpadMergePolicy;
-
 /// Backwards-compatible alias.
 pub type AgentConfig = AgentDefinition;
 
@@ -274,14 +270,6 @@ impl AgentDefinition {
     /// Set scratchpad merge policy for parallel tool execution.
     #[must_use]
     pub fn with_scratchpad_merge_policy(mut self, policy: ScratchpadMergePolicy) -> Self {
-        self.scratchpad_merge_policy = policy;
-        self
-    }
-
-    /// Deprecated: use `with_scratchpad_merge_policy`.
-    #[deprecated(since = "0.2.0", note = "Use `with_scratchpad_merge_policy` instead")]
-    #[must_use]
-    pub fn with_plugin_data_merge_policy(mut self, policy: ScratchpadMergePolicy) -> Self {
         self.scratchpad_merge_policy = policy;
         self
     }
@@ -3426,6 +3414,87 @@ mod tests {
         emit_phase(Phase::StepStart, &mut step, &plugins).await;
 
         assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_scratchpad_is_run_scoped_and_writable() {
+        struct RunScopedScratchpadPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for RunScopedScratchpadPlugin {
+            fn id(&self) -> &str {
+                "run_scoped_scratchpad"
+            }
+
+            fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
+                Some(("counter", json!(0)))
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                match phase {
+                    Phase::SessionStart | Phase::StepStart => {
+                        let next = step.scratchpad_get::<i64>("counter").unwrap_or(0) + 1;
+                        step.scratchpad_set("counter", next);
+                    }
+                    Phase::SessionEnd => {
+                        let Ok(state) = step.session.rebuild_state() else {
+                            return;
+                        };
+                        let run_count = state
+                            .get("debug")
+                            .and_then(|d| d.get("run_count"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0)
+                            + 1;
+                        let counter = step.scratchpad_get::<i64>("counter").unwrap_or(-1);
+                        let patch = TrackedPatch::new(
+                            Patch::new()
+                                .with_op(Op::set(carve_state::path!("debug", "run_count"), json!(run_count)))
+                                .with_op(Op::set(
+                                    carve_state::path!("debug", "last_scratchpad_counter"),
+                                    json!(counter),
+                                )),
+                        )
+                        .with_source("test:run_scoped_scratchpad");
+                        step.pending_patches.push(patch);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(RunScopedScratchpadPlugin) as Arc<dyn AgentPlugin>);
+        let tools = HashMap::new();
+        let session = Session::with_initial_state("test", json!({}));
+
+        let (_, first_session) = run_mock_stream_with_final_session(
+            MockStreamProvider::new(vec![MockResponse::text("done")]),
+            config.clone(),
+            session,
+            tools.clone(),
+        )
+        .await;
+        let first_state = first_session.rebuild_state().unwrap();
+        assert_eq!(first_state["debug"]["run_count"], 1);
+        assert_eq!(first_state["debug"]["last_scratchpad_counter"], 2);
+        assert!(first_state.get("counter").is_none());
+
+        let (_, second_session) = run_mock_stream_with_final_session(
+            MockStreamProvider::new(vec![MockResponse::text("done")]),
+            config,
+            first_session,
+            tools,
+        )
+        .await;
+        let second_state = second_session.rebuild_state().unwrap();
+        assert_eq!(second_state["debug"]["run_count"], 2);
+        assert_eq!(
+            second_state["debug"]["last_scratchpad_counter"],
+            2,
+            "scratchpad must reset on each run instead of accumulating"
+        );
+        assert!(second_state.get("counter").is_none());
     }
 
     // ============================================================================

@@ -106,13 +106,6 @@ pub trait AgentPlugin: Send + Sync {
     /// }
     /// ```
     fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        #[allow(deprecated)]
-        self.initial_data()
-    }
-
-    /// Deprecated: use `initial_scratchpad`.
-    #[deprecated(since = "0.2.0", note = "Use `initial_scratchpad` instead")]
-    fn initial_data(&self) -> Option<(&'static str, Value)> {
         None
     }
 }
@@ -306,33 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_initial_data_still_supported() {
-        struct LegacyPlugin;
-
-        #[async_trait]
-        impl AgentPlugin for LegacyPlugin {
-            fn id(&self) -> &str {
-                "legacy"
-            }
-
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
-
-            #[allow(deprecated)]
-            fn initial_data(&self) -> Option<(&'static str, Value)> {
-                Some(("legacy_data", json!({ "ok": true })))
-            }
-        }
-
-        let plugin = LegacyPlugin;
-        let data = plugin.initial_scratchpad();
-        assert!(data.is_some());
-        let (key, value) = data.unwrap();
-        assert_eq!(key, "legacy_data");
-        assert_eq!(value["ok"], true);
-    }
-
-    #[test]
-    fn test_noop_plugin_no_initial_data() {
+    fn test_noop_plugin_no_initial_scratchpad() {
         let plugin = NoOpPlugin;
         assert!(plugin.initial_scratchpad().is_none());
     }
