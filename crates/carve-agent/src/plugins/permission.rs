@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// State path for permission state.
@@ -139,27 +139,7 @@ impl AgentPlugin for PermissionPlugin {
             .rebuild_state()
             .ok()
             .and_then(|s| s.get(PERMISSION_STATE_PATH).cloned());
-
-        let permission = permission_state
-            .as_ref()
-            .and_then(|state| {
-                state
-                    .get("tools")
-                    .and_then(|tools| tools.get(tool_id))
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_behavior)
-            })
-            .unwrap_or_else(|| {
-                permission_state
-                    .as_ref()
-                    .and_then(|state| {
-                        state
-                            .get("default_behavior")
-                            .and_then(|v| v.as_str())
-                            .and_then(parse_behavior)
-                    })
-                    .unwrap_or(ToolPermissionBehavior::Ask)
-            });
+        let permission = resolve_permission_behavior_for_tool(permission_state.as_ref(), tool_id);
 
         match permission {
             ToolPermissionBehavior::Allow => {
@@ -181,6 +161,36 @@ impl AgentPlugin for PermissionPlugin {
             }
         }
     }
+}
+
+/// Resolve permission behavior for a tool from optional `permissions` state.
+///
+/// Resolution order:
+/// 1. `permissions.tools[tool_id]`
+/// 2. `permissions.default_behavior`
+/// 3. `ask` fallback
+pub(crate) fn resolve_permission_behavior_for_tool(
+    permission_state: Option<&Value>,
+    tool_id: &str,
+) -> ToolPermissionBehavior {
+    permission_state
+        .and_then(|state| {
+            state
+                .get("tools")
+                .and_then(|tools| tools.get(tool_id))
+                .and_then(|v| v.as_str())
+                .and_then(parse_behavior)
+        })
+        .unwrap_or_else(|| {
+            permission_state
+                .and_then(|state| {
+                    state
+                        .get("default_behavior")
+                        .and_then(|v| v.as_str())
+                        .and_then(parse_behavior)
+                })
+                .unwrap_or(ToolPermissionBehavior::Ask)
+        })
 }
 
 /// Parse a behavior string into a ToolPermissionBehavior.
@@ -219,6 +229,43 @@ mod tests {
             parsed.tools.get("read"),
             Some(&ToolPermissionBehavior::Allow)
         );
+    }
+
+    #[test]
+    fn test_resolve_permission_behavior_prefers_tool_override() {
+        let state = json!({
+            "default_behavior": "deny",
+            "tools": {
+                "recover_agent_run": "allow"
+            }
+        });
+
+        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
+        assert_eq!(behavior, ToolPermissionBehavior::Allow);
+    }
+
+    #[test]
+    fn test_resolve_permission_behavior_falls_back_to_default() {
+        let state = json!({
+            "default_behavior": "deny",
+            "tools": {}
+        });
+
+        let behavior = resolve_permission_behavior_for_tool(Some(&state), "unknown_tool");
+        assert_eq!(behavior, ToolPermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn test_resolve_permission_behavior_invalid_values_fall_back_to_ask() {
+        let state = json!({
+            "default_behavior": "invalid",
+            "tools": {
+                "recover_agent_run": 42
+            }
+        });
+
+        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
+        assert_eq!(behavior, ToolPermissionBehavior::Ask);
     }
 
     #[test]

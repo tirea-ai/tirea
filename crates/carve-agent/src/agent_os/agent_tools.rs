@@ -1,20 +1,25 @@
 use super::{AgentOs, AgentRegistry};
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
+use crate::plugins::{resolve_permission_behavior_for_tool, PERMISSION_STATE_PATH};
 pub(crate) use crate::r#loop::TOOL_RUNTIME_CALLER_AGENT_ID_KEY as RUNTIME_CALLER_AGENT_ID_KEY;
 use crate::r#loop::{
     RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY, TOOL_RUNTIME_CALLER_SESSION_ID_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY,
+};
+use crate::state_types::{
+    AgentRunState, AgentRunStatus, AgentState, Interaction, ToolPermissionBehavior,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::stop::StopReason;
 use crate::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_EXCLUDED_AGENTS_KEY,
 };
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
-use crate::types::{Message, Role};
+use crate::types::{Message, Role, ToolCall};
 use async_trait::async_trait;
+use carve_state::Context;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,26 +29,8 @@ use tokio_util::sync::CancellationToken;
 const RUNTIME_CALLER_SESSION_ID_KEY: &str = TOOL_RUNTIME_CALLER_SESSION_ID_KEY;
 const RUNTIME_CALLER_STATE_KEY: &str = TOOL_RUNTIME_CALLER_STATE_KEY;
 const RUNTIME_CALLER_MESSAGES_KEY: &str = TOOL_RUNTIME_CALLER_MESSAGES_KEY;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentRunStatus {
-    Running,
-    Completed,
-    Failed,
-    Stopped,
-}
-
-impl AgentRunStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Stopped => "stopped",
-        }
-    }
-}
+const RUNTIME_RUN_ID_KEY: &str = "run_id";
+const RUNTIME_PARENT_RUN_ID_KEY: &str = "parent_run_id";
 
 #[derive(Debug, Clone)]
 pub struct AgentRunSummary {
@@ -121,6 +108,36 @@ impl AgentRunManager {
             .collect();
         out.sort_by(|a, b| a.run_id.cmp(&b.run_id));
         out
+    }
+
+    pub async fn all_for_owner(&self, owner_session_id: &str) -> Vec<AgentRunSummary> {
+        let runs = self.runs.lock().await;
+        let mut out: Vec<AgentRunSummary> = runs
+            .iter()
+            .filter_map(|(run_id, rec)| {
+                if rec.owner_session_id != owner_session_id {
+                    return None;
+                }
+                Some(AgentRunSummary {
+                    run_id: run_id.clone(),
+                    target_agent_id: rec.target_agent_id.clone(),
+                    status: rec.status,
+                    assistant: rec.assistant.clone(),
+                    error: rec.error.clone(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+        out
+    }
+
+    async fn owned_record(&self, owner_session_id: &str, run_id: &str) -> Option<crate::Session> {
+        let runs = self.runs.lock().await;
+        let rec = runs.get(run_id)?;
+        if rec.owner_session_id != owner_session_id {
+            return None;
+        }
+        Some(rec.session.clone())
     }
 
     pub async fn stop_owned(
@@ -342,6 +359,265 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     }
 }
 
+fn runtime_run_id(runtime: Option<&carve_state::Runtime>) -> Option<String> {
+    runtime
+        .and_then(|rt| rt.value(RUNTIME_RUN_ID_KEY))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn bind_child_lineage(
+    mut session: crate::Session,
+    run_id: &str,
+    parent_run_id: Option<&str>,
+) -> crate::Session {
+    let current_run_id = session
+        .runtime
+        .value(RUNTIME_RUN_ID_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let current_parent_run_id = session
+        .runtime
+        .value(RUNTIME_PARENT_RUN_ID_KEY)
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let parent_mismatch = match (current_parent_run_id.as_deref(), parent_run_id) {
+        (Some(cur), Some(expected)) => cur != expected,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let run_mismatch = current_run_id.as_deref().is_some_and(|cur| cur != run_id);
+
+    if run_mismatch || parent_mismatch {
+        session = session.with_runtime(carve_state::Runtime::new());
+    }
+
+    if session.runtime.value(RUNTIME_RUN_ID_KEY).is_none() {
+        let _ = session.runtime.set(RUNTIME_RUN_ID_KEY, run_id);
+    }
+    if let Some(parent_run_id) = parent_run_id {
+        if session.runtime.value(RUNTIME_PARENT_RUN_ID_KEY).is_none() {
+            let _ = session
+                .runtime
+                .set(RUNTIME_PARENT_RUN_ID_KEY, parent_run_id);
+        }
+    }
+    session
+}
+
+fn parent_run_id_from_session(session: Option<&crate::Session>) -> Option<String> {
+    session
+        .and_then(|s| s.runtime.value(RUNTIME_PARENT_RUN_ID_KEY))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn as_agent_run_state(summary: &AgentRunSummary, session: Option<crate::Session>) -> AgentRunState {
+    let parent_run_id = parent_run_id_from_session(session.as_ref());
+    AgentRunState {
+        run_id: summary.run_id.clone(),
+        parent_run_id,
+        target_agent_id: summary.target_agent_id.clone(),
+        status: summary.status,
+        assistant: summary.assistant.clone(),
+        error: summary.error.clone(),
+        session,
+    }
+}
+
+fn as_agent_run_summary(run_id: &str, state: &AgentRunState) -> AgentRunSummary {
+    AgentRunSummary {
+        run_id: run_id.to_string(),
+        target_agent_id: state.target_agent_id.clone(),
+        status: state.status,
+        assistant: state.assistant.clone(),
+        error: state.error.clone(),
+    }
+}
+
+fn set_persisted_run(ctx: &Context<'_>, run_id: &str, run: AgentRunState) {
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.agent_runs_insert(run_id.to_string(), run);
+}
+
+fn parse_persisted_runs(ctx: &Context<'_>) -> HashMap<String, AgentRunState> {
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.agent_runs().ok().unwrap_or_default()
+}
+
+fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, AgentRunState> {
+    doc.get(AGENT_STATE_PATH)
+        .and_then(|v| v.get("agent_runs"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<HashMap<String, AgentRunState>>(v).ok())
+        .unwrap_or_default()
+}
+
+fn make_orphaned_running_state(run: &AgentRunState) -> AgentRunState {
+    let mut next = run.clone();
+    next.status = AgentRunStatus::Stopped;
+    next.error = Some("No live executor found in current process; marked stopped".to_string());
+    next
+}
+
+fn recovery_interaction_id(run_id: &str) -> String {
+    format!("{AGENT_RECOVERY_INTERACTION_PREFIX}{run_id}")
+}
+
+fn build_recovery_interaction(run_id: &str, run: &AgentRunState) -> Interaction {
+    Interaction::new(
+        recovery_interaction_id(run_id),
+        AGENT_RECOVERY_INTERACTION_ACTION,
+    )
+    .with_message(format!(
+        "Detected interrupted run '{run_id}' (agent '{}'). Resume now?",
+        run.target_agent_id
+    ))
+    .with_parameters(json!({
+        "run_id": run_id,
+        "agent_id": run.target_agent_id,
+        "background": false
+    }))
+    .with_response_schema(json!({
+        "type": "boolean"
+    }))
+}
+
+fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
+    state
+        .get(AGENT_STATE_PATH)
+        .and_then(|a| a.get("pending_interaction"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
+}
+
+fn set_pending_interaction_patch(
+    state: &Value,
+    interaction: Interaction,
+    call_id: &str,
+) -> Option<carve_state::TrackedPatch> {
+    let ctx = Context::new(state, call_id, "agent_recovery");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.set_pending_interaction(Some(interaction));
+    let patch = ctx.take_patch();
+    if patch.patch().is_empty() {
+        None
+    } else {
+        Some(patch)
+    }
+}
+
+fn schedule_recovery_replay(step: &mut StepContext<'_>, run_id: &str) {
+    let mut replay_calls = step
+        .scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls")
+        .unwrap_or_default();
+
+    let exists = replay_calls.iter().any(|call| {
+        call.name == "agent_run"
+            && call
+                .arguments
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == run_id)
+    });
+    if exists {
+        return;
+    }
+
+    replay_calls.push(ToolCall::new(
+        format!("agent_recovery_resume_{run_id}"),
+        "agent_run",
+        json!({
+            "run_id": run_id,
+            "background": false
+        }),
+    ));
+    let _ = step.scratchpad_set("__replay_tool_calls", replay_calls);
+}
+
+#[derive(Debug, Default, Clone)]
+struct ReconcileOutcome {
+    changed: bool,
+    orphaned_run_ids: Vec<String>,
+}
+
+fn set_agent_runs_patch_from_state_doc(
+    state: &Value,
+    next_runs: HashMap<String, AgentRunState>,
+    call_id: &str,
+) -> Option<carve_state::TrackedPatch> {
+    let ctx = Context::new(state, call_id, "agent_tools");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.set_agent_runs(next_runs);
+    let patch = ctx.take_patch();
+    if patch.patch().is_empty() {
+        None
+    } else {
+        Some(patch)
+    }
+}
+
+async fn reconcile_persisted_runs(
+    manager: &AgentRunManager,
+    owner_session_id: &str,
+    runs: &mut HashMap<String, AgentRunState>,
+) -> ReconcileOutcome {
+    let summaries = manager.all_for_owner(owner_session_id).await;
+    let mut by_id: HashMap<String, AgentRunSummary> = HashMap::new();
+    for summary in summaries {
+        by_id.insert(summary.run_id.clone(), summary);
+    }
+
+    let mut changed = false;
+    let mut orphaned_run_ids = Vec::new();
+    let mut known_ids: Vec<String> = runs.keys().cloned().collect();
+    known_ids.sort();
+
+    for run_id in known_ids {
+        let Some(current) = runs.get(&run_id).cloned() else {
+            continue;
+        };
+        if let Some(summary) = by_id.get(&run_id) {
+            let session = manager.owned_record(owner_session_id, &run_id).await;
+            let mut next = as_agent_run_state(summary, session.or_else(|| current.session.clone()));
+            if next.parent_run_id.is_none() {
+                next.parent_run_id = current.parent_run_id.clone();
+            }
+            if current.status != next.status
+                || current.assistant != next.assistant
+                || current.error != next.error
+                || current.parent_run_id != next.parent_run_id
+                || current.session.as_ref().map(|s| &s.id) != next.session.as_ref().map(|s| &s.id)
+            {
+                runs.insert(run_id.clone(), next);
+                changed = true;
+            }
+            continue;
+        }
+
+        if current.status == AgentRunStatus::Running {
+            runs.insert(run_id.clone(), make_orphaned_running_state(&current));
+            changed = true;
+            orphaned_run_ids.push(run_id);
+        }
+    }
+
+    for (run_id, summary) in by_id {
+        if runs.contains_key(&run_id) {
+            continue;
+        }
+        let session = manager.owned_record(owner_session_id, &run_id).await;
+        runs.insert(run_id.clone(), as_agent_run_state(&summary, session));
+        changed = true;
+    }
+
+    ReconcileOutcome {
+        changed,
+        orphaned_run_ids,
+    }
+}
+
 fn required_bool(args: &Value, key: &str, default: bool) -> bool {
     args.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
 }
@@ -457,6 +733,7 @@ impl Tool for AgentRunTool {
             .and_then(|rt| rt.value(RUNTIME_CALLER_AGENT_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        let caller_run_id = runtime_run_id(runtime);
 
         if let Some(run_id) = run_id {
             if let Some(existing) = self
@@ -468,6 +745,8 @@ impl Tool for AgentRunTool {
                     AgentRunStatus::Running
                     | AgentRunStatus::Completed
                     | AgentRunStatus::Failed => {
+                        let session = self.manager.owned_record(&owner_session_id, &run_id).await;
+                        set_persisted_run(ctx, &run_id, as_agent_run_state(&existing, session));
                         return Ok(to_tool_result(tool_name, existing));
                     }
                     AgentRunStatus::Stopped => {
@@ -479,6 +758,25 @@ impl Tool for AgentRunTool {
                             Ok(v) => v,
                             Err(e) => return Ok(tool_error(tool_name, "unknown_run", e)),
                         };
+
+                        if !is_target_agent_visible(
+                            self.os.agents_registry().as_ref(),
+                            &record.target_agent_id,
+                            caller_agent_id.as_deref(),
+                            runtime,
+                        ) {
+                            return Ok(tool_error(
+                                tool_name,
+                                "unknown_agent",
+                                format!(
+                                    "Unknown or unavailable agent_id: {}",
+                                    record.target_agent_id
+                                ),
+                            ));
+                        }
+
+                        record.session =
+                            bind_child_lineage(record.session, &run_id, caller_run_id.as_deref());
 
                         if let Some(prompt) = optional_string(&args, "prompt") {
                             record.session = record.session.with_message(Message::user(prompt));
@@ -500,7 +798,7 @@ impl Tool for AgentRunTool {
                             let os = self.os.clone();
                             let run_id_bg = run_id.clone();
                             let agent_id_bg = record.target_agent_id.clone();
-                            let session_bg = record.session;
+                            let session_bg = record.session.clone();
                             tokio::spawn(async move {
                                 let completion =
                                     execute_target_agent(os, agent_id_bg, session_bg, Some(token))
@@ -515,6 +813,19 @@ impl Tool for AgentRunTool {
                                 .get_owned_summary(&owner_session_id, &run_id)
                                 .await
                                 .expect("summary must exist right after put_running");
+                            set_persisted_run(
+                                ctx,
+                                &run_id,
+                                AgentRunState {
+                                    run_id: run_id.clone(),
+                                    parent_run_id: caller_run_id.clone(),
+                                    target_agent_id: record.target_agent_id.clone(),
+                                    status: AgentRunStatus::Running,
+                                    assistant: None,
+                                    error: None,
+                                    session: Some(record.session),
+                                },
+                            );
                             return Ok(to_tool_result(tool_name, summary));
                         }
 
@@ -530,26 +841,174 @@ impl Tool for AgentRunTool {
                             .await;
                         let completion = execute_target_agent(
                             self.os.clone(),
-                            record.target_agent_id,
-                            record.session,
+                            record.target_agent_id.clone(),
+                            record.session.clone(),
                             None,
                         )
                         .await;
+                        let completion_state = AgentRunState {
+                            run_id: run_id.clone(),
+                            parent_run_id: caller_run_id.clone(),
+                            target_agent_id: record.target_agent_id,
+                            status: completion.status,
+                            assistant: completion.assistant.clone(),
+                            error: completion.error.clone(),
+                            session: Some(completion.session.clone()),
+                        };
                         let summary = self
                             .manager
                             .update_after_completion(&run_id, epoch, completion)
                             .await
                             .expect("summary must exist after completion update");
+                        set_persisted_run(ctx, &run_id, completion_state);
                         return Ok(to_tool_result(tool_name, summary));
                     }
                 }
             }
 
-            return Ok(tool_error(
-                tool_name,
-                "unknown_run",
-                format!("Unknown run_id: {run_id}"),
-            ));
+            let Some(mut persisted) = parse_persisted_runs(ctx).remove(&run_id) else {
+                return Ok(tool_error(
+                    tool_name,
+                    "unknown_run",
+                    format!("Unknown run_id: {run_id}"),
+                ));
+            };
+
+            let orphaned_running = persisted.status == AgentRunStatus::Running;
+            if orphaned_running {
+                persisted = make_orphaned_running_state(&persisted);
+                set_persisted_run(ctx, &run_id, persisted.clone());
+                return Ok(to_tool_result(
+                    tool_name,
+                    as_agent_run_summary(&run_id, &persisted),
+                ));
+            }
+
+            match persisted.status {
+                AgentRunStatus::Running | AgentRunStatus::Completed | AgentRunStatus::Failed => {
+                    return Ok(to_tool_result(
+                        tool_name,
+                        as_agent_run_summary(&run_id, &persisted),
+                    ));
+                }
+                AgentRunStatus::Stopped => {
+                    if !is_target_agent_visible(
+                        self.os.agents_registry().as_ref(),
+                        &persisted.target_agent_id,
+                        caller_agent_id.as_deref(),
+                        runtime,
+                    ) {
+                        return Ok(tool_error(
+                            tool_name,
+                            "unknown_agent",
+                            format!(
+                                "Unknown or unavailable agent_id: {}",
+                                persisted.target_agent_id
+                            ),
+                        ));
+                    }
+
+                    let mut child_session = match persisted.session {
+                        Some(s) => s,
+                        None => {
+                            return Ok(tool_error(
+                                tool_name,
+                                "invalid_state",
+                                format!("Run '{run_id}' cannot be resumed: missing child session"),
+                            ))
+                        }
+                    };
+                    child_session =
+                        bind_child_lineage(child_session, &run_id, caller_run_id.as_deref());
+
+                    if let Some(prompt) = optional_string(&args, "prompt") {
+                        child_session = child_session.with_message(Message::user(prompt));
+                    }
+
+                    if background {
+                        let token = CancellationToken::new();
+                        let epoch = self
+                            .manager
+                            .put_running(
+                                &run_id,
+                                owner_session_id.clone(),
+                                persisted.target_agent_id.clone(),
+                                child_session.clone(),
+                                Some(token.clone()),
+                            )
+                            .await;
+                        let manager = self.manager.clone();
+                        let os = self.os.clone();
+                        let run_id_bg = run_id.clone();
+                        let agent_id_bg = persisted.target_agent_id.clone();
+                        tokio::spawn(async move {
+                            let completion =
+                                execute_target_agent(os, agent_id_bg, child_session, Some(token))
+                                    .await;
+                            let _ = manager
+                                .update_after_completion(&run_id_bg, epoch, completion)
+                                .await;
+                        });
+
+                        let summary = self
+                            .manager
+                            .get_owned_summary(&owner_session_id, &run_id)
+                            .await
+                            .expect("summary must exist right after put_running");
+                        set_persisted_run(
+                            ctx,
+                            &run_id,
+                            AgentRunState {
+                                run_id: run_id.clone(),
+                                parent_run_id: caller_run_id.clone(),
+                                target_agent_id: persisted.target_agent_id,
+                                status: AgentRunStatus::Running,
+                                assistant: None,
+                                error: None,
+                                session: self
+                                    .manager
+                                    .owned_record(&owner_session_id, &run_id)
+                                    .await,
+                            },
+                        );
+                        return Ok(to_tool_result(tool_name, summary));
+                    }
+
+                    let epoch = self
+                        .manager
+                        .put_running(
+                            &run_id,
+                            owner_session_id.clone(),
+                            persisted.target_agent_id.clone(),
+                            child_session.clone(),
+                            None,
+                        )
+                        .await;
+                    let completion = execute_target_agent(
+                        self.os.clone(),
+                        persisted.target_agent_id.clone(),
+                        child_session,
+                        None,
+                    )
+                    .await;
+                    let completion_state = AgentRunState {
+                        run_id: run_id.clone(),
+                        parent_run_id: caller_run_id.clone(),
+                        target_agent_id: persisted.target_agent_id,
+                        status: completion.status,
+                        assistant: completion.assistant.clone(),
+                        error: completion.error.clone(),
+                        session: Some(completion.session.clone()),
+                    };
+                    let summary = self
+                        .manager
+                        .update_after_completion(&run_id, epoch, completion)
+                        .await
+                        .expect("summary must exist after completion update");
+                    set_persisted_run(ctx, &run_id, completion_state);
+                    return Ok(to_tool_result(tool_name, summary));
+                }
+            }
         }
 
         let target_agent_id = match required_string(&args, "agent_id", tool_name) {
@@ -591,6 +1050,7 @@ impl Tool for AgentRunTool {
             crate::Session::new(session_id)
         };
         child_session = child_session.with_message(Message::user(prompt));
+        child_session = bind_child_lineage(child_session, &run_id, caller_run_id.as_deref());
 
         if background {
             let token = CancellationToken::new();
@@ -607,9 +1067,12 @@ impl Tool for AgentRunTool {
             let manager = self.manager.clone();
             let os = self.os.clone();
             let run_id_bg = run_id.clone();
+            let target_agent_id_bg = target_agent_id.clone();
+            let child_session_bg = child_session.clone();
             tokio::spawn(async move {
                 let completion =
-                    execute_target_agent(os, target_agent_id, child_session, Some(token)).await;
+                    execute_target_agent(os, target_agent_id_bg, child_session_bg, Some(token))
+                        .await;
                 let _ = manager
                     .update_after_completion(&run_id_bg, epoch, completion)
                     .await;
@@ -620,6 +1083,19 @@ impl Tool for AgentRunTool {
                 .get_owned_summary(&owner_session_id, &run_id)
                 .await
                 .expect("summary must exist right after put_running");
+            set_persisted_run(
+                ctx,
+                &run_id,
+                AgentRunState {
+                    run_id: run_id.clone(),
+                    parent_run_id: caller_run_id.clone(),
+                    target_agent_id: target_agent_id.clone(),
+                    status: AgentRunStatus::Running,
+                    assistant: None,
+                    error: None,
+                    session: Some(child_session),
+                },
+            );
             return Ok(to_tool_result(tool_name, summary));
         }
 
@@ -633,13 +1109,28 @@ impl Tool for AgentRunTool {
                 None,
             )
             .await;
-        let completion =
-            execute_target_agent(self.os.clone(), target_agent_id, child_session, None).await;
+        let completion = execute_target_agent(
+            self.os.clone(),
+            target_agent_id.clone(),
+            child_session,
+            None,
+        )
+        .await;
+        let completion_state = AgentRunState {
+            run_id: run_id.clone(),
+            parent_run_id: caller_run_id,
+            target_agent_id,
+            status: completion.status,
+            assistant: completion.assistant.clone(),
+            error: completion.error.clone(),
+            session: Some(completion.session.clone()),
+        };
         let summary = self
             .manager
             .update_after_completion(&run_id, epoch, completion)
             .await
             .expect("summary must exist after completion update");
+        set_persisted_run(ctx, &run_id, completion_state);
         Ok(to_tool_result(tool_name, summary))
     }
 }
@@ -696,8 +1187,133 @@ impl Tool for AgentStopTool {
         };
 
         match self.manager.stop_owned(&owner_session_id, &run_id).await {
-            Ok(summary) => Ok(to_tool_result(tool_name, summary)),
-            Err(e) => Ok(tool_error(tool_name, "invalid_state", e)),
+            Ok(summary) => {
+                let mut entry =
+                    parse_persisted_runs(ctx)
+                        .remove(&run_id)
+                        .unwrap_or(AgentRunState {
+                            run_id: run_id.clone(),
+                            parent_run_id: runtime_run_id(ctx.runtime_ref()),
+                            target_agent_id: summary.target_agent_id.clone(),
+                            status: AgentRunStatus::Stopped,
+                            assistant: summary.assistant.clone(),
+                            error: summary.error.clone(),
+                            session: None,
+                        });
+                entry.status = AgentRunStatus::Stopped;
+                entry.assistant = summary.assistant.clone();
+                entry.error = summary.error.clone();
+                set_persisted_run(ctx, &run_id, entry);
+                Ok(to_tool_result(tool_name, summary))
+            }
+            Err(e) => {
+                let Some(mut persisted) = parse_persisted_runs(ctx).remove(&run_id) else {
+                    return Ok(tool_error(tool_name, "invalid_state", e));
+                };
+                if persisted.status == AgentRunStatus::Running {
+                    persisted = make_orphaned_running_state(&persisted);
+                    let summary = as_agent_run_summary(&run_id, &persisted);
+                    set_persisted_run(ctx, &run_id, persisted);
+                    return Ok(to_tool_result(tool_name, summary));
+                }
+                Ok(tool_error(tool_name, "invalid_state", e))
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AgentRecoveryPlugin {
+    manager: Arc<AgentRunManager>,
+}
+
+impl AgentRecoveryPlugin {
+    pub fn new(manager: Arc<AgentRunManager>) -> Self {
+        Self { manager }
+    }
+
+    async fn on_session_start(&self, step: &mut StepContext<'_>) {
+        let state = match step.session.rebuild_state() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let mut runs = parse_persisted_runs_from_doc(&state);
+        if runs.is_empty() {
+            return;
+        }
+
+        let has_pending_interaction = state
+            .get(AGENT_STATE_PATH)
+            .and_then(|a| a.get("pending_interaction"))
+            .is_some_and(|v| !v.is_null());
+
+        let outcome =
+            reconcile_persisted_runs(self.manager.as_ref(), &step.session.id, &mut runs).await;
+        if outcome.changed {
+            if let Some(patch) = set_agent_runs_patch_from_state_doc(
+                &state,
+                runs.clone(),
+                &format!("agent_recovery_reconcile_{}", step.session.id),
+            ) {
+                step.pending_patches.push(patch);
+            }
+        }
+
+        if has_pending_interaction || outcome.orphaned_run_ids.is_empty() {
+            return;
+        }
+
+        let run_id = outcome.orphaned_run_ids[0].clone();
+        let Some(run) = runs.get(&run_id) else {
+            return;
+        };
+
+        let behavior = resolve_permission_behavior_for_tool(
+            state.get(PERMISSION_STATE_PATH),
+            AGENT_RECOVERY_INTERACTION_ACTION,
+        );
+        match behavior {
+            ToolPermissionBehavior::Allow => {
+                schedule_recovery_replay(step, &run_id);
+            }
+            ToolPermissionBehavior::Deny => {}
+            ToolPermissionBehavior::Ask => {
+                let interaction = build_recovery_interaction(&run_id, run);
+                if let Some(patch) =
+                    set_pending_interaction_patch(&state, interaction, "agent_recovery_pending")
+                {
+                    step.pending_patches.push(patch);
+                }
+            }
+        }
+    }
+
+    async fn on_before_inference(&self, step: &mut StepContext<'_>) {
+        let state = match step.session.rebuild_state() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let Some(pending) = parse_pending_interaction_from_state(&state) else {
+            return;
+        };
+        if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
+            step.skip_inference = true;
+        }
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for AgentRecoveryPlugin {
+    fn id(&self) -> &str {
+        "agent_recovery"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        match phase {
+            Phase::SessionStart => self.on_session_start(step).await,
+            Phase::BeforeInference => self.on_before_inference(step).await,
+            _ => {}
         }
     }
 }
@@ -873,6 +1489,7 @@ mod tests {
     use crate::session::Session;
     use crate::traits::tool::ToolStatus;
     use async_trait::async_trait;
+    use carve_state::apply_patches;
     use serde_json::json;
     use std::time::Duration;
 
@@ -1066,19 +1683,30 @@ mod tests {
         }
     }
 
-    fn caller_runtime() -> carve_state::Runtime {
+    fn caller_runtime_with_state_and_run(
+        state: serde_json::Value,
+        run_id: &str,
+    ) -> carve_state::Runtime {
         let mut rt = carve_state::Runtime::new();
         rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, "owner-session")
             .unwrap();
         rt.set(TOOL_RUNTIME_CALLER_AGENT_ID_KEY, "caller").unwrap();
-        rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, json!({"forked": true}))
-            .unwrap();
+        rt.set(RUNTIME_RUN_ID_KEY, run_id).unwrap();
+        rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, state).unwrap();
         rt.set(
             TOOL_RUNTIME_CALLER_MESSAGES_KEY,
             vec![crate::Message::user("seed message")],
         )
         .unwrap();
         rt
+    }
+
+    fn caller_runtime_with_state(state: serde_json::Value) -> carve_state::Runtime {
+        caller_runtime_with_state_and_run(state, "parent-run-default")
+    }
+
+    fn caller_runtime() -> carve_state::Runtime {
+        caller_runtime_with_state(json!({"forked": true}))
     }
 
     #[tokio::test]
@@ -1141,5 +1769,462 @@ mod tests {
             .unwrap();
         assert_eq!(resumed.status, ToolStatus::Success);
         assert_eq!(resumed.data["status"], json!("completed"));
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_persists_run_state_patch() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "worker",
+                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+            )
+            .build()
+            .unwrap();
+        let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
+
+        let doc = json!({});
+        let rt = caller_runtime();
+        let ctx =
+            carve_state::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+        let started = run_tool
+            .execute(
+                json!({
+                    "agent_id":"worker",
+                    "prompt":"start",
+                    "background": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(started.status, ToolStatus::Success);
+        let run_id = started.data["run_id"]
+            .as_str()
+            .expect("run_id should exist")
+            .to_string();
+
+        let patch = ctx.take_patch();
+        assert!(
+            !patch.patch().is_empty(),
+            "expected tool to persist run snapshot into state"
+        );
+        let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"][&run_id]["status"],
+            json!("running")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_binds_runtime_run_id_and_parent_lineage() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "worker",
+                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+            )
+            .build()
+            .unwrap();
+        let manager = Arc::new(AgentRunManager::new());
+        let run_tool = AgentRunTool::new(os, manager.clone());
+
+        let doc = json!({});
+        let rt = caller_runtime_with_state_and_run(json!({"forked": true}), "parent-run-42");
+        let ctx =
+            carve_state::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+        let started = run_tool
+            .execute(
+                json!({
+                    "agent_id":"worker",
+                    "prompt":"start",
+                    "background": true
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(started.status, ToolStatus::Success);
+        let run_id = started.data["run_id"]
+            .as_str()
+            .expect("run_id should exist")
+            .to_string();
+
+        let child_session = manager
+            .owned_record("owner-session", &run_id)
+            .await
+            .expect("child session should be tracked");
+        assert_eq!(
+            child_session
+                .runtime
+                .value(RUNTIME_RUN_ID_KEY)
+                .and_then(|v| v.as_str()),
+            Some(run_id.as_str())
+        );
+        assert_eq!(
+            child_session
+                .runtime
+                .value(RUNTIME_PARENT_RUN_ID_KEY)
+                .and_then(|v| v.as_str()),
+            Some("parent-run-42")
+        );
+
+        let patch = ctx.take_patch();
+        let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"][&run_id]["parent_run_id"],
+            json!("parent-run-42")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "worker",
+                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+            )
+            .build()
+            .unwrap();
+        let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
+
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let doc = json!({
+            "agent": {
+                "agent_runs": {
+                    "run-1": {
+                        "run_id": "run-1",
+                        "target_agent_id": "worker",
+                        "status": "stopped",
+                        "session": serde_json::to_value(&child_session).unwrap()
+                    }
+                }
+            }
+        });
+        let rt = caller_runtime_with_state(doc.clone());
+        let ctx =
+            carve_state::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+        let resumed = run_tool
+            .execute(
+                json!({
+                    "run_id":"run-1",
+                    "prompt":"resume",
+                    "background": false
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed.status, ToolStatus::Success);
+        assert_eq!(resumed.data["status"], json!("completed"));
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_resume_updates_parent_run_lineage() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "worker",
+                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+            )
+            .build()
+            .unwrap();
+        let manager = Arc::new(AgentRunManager::new());
+        let run_tool = AgentRunTool::new(os, manager.clone());
+
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let doc = json!({
+            "agent": {
+                "agent_runs": {
+                    "run-1": {
+                        "run_id": "run-1",
+                        "parent_run_id": "old-parent",
+                        "target_agent_id": "worker",
+                        "status": "stopped",
+                        "session": serde_json::to_value(&child_session).unwrap()
+                    }
+                }
+            }
+        });
+        let rt = caller_runtime_with_state_and_run(doc.clone(), "new-parent-run");
+        let ctx =
+            carve_state::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+        let resumed = run_tool
+            .execute(
+                json!({
+                    "run_id":"run-1",
+                    "prompt":"resume",
+                    "background": false
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed.status, ToolStatus::Success);
+
+        let child_session = manager
+            .owned_record("owner-session", "run-1")
+            .await
+            .expect("resumed run should be tracked");
+        assert_eq!(
+            child_session
+                .runtime
+                .value(RUNTIME_RUN_ID_KEY)
+                .and_then(|v| v.as_str()),
+            Some("run-1")
+        );
+        assert_eq!(
+            child_session
+                .runtime
+                .value(RUNTIME_PARENT_RUN_ID_KEY)
+                .and_then(|v| v.as_str()),
+            Some("new-parent-run")
+        );
+
+        let patch = ctx.take_patch();
+        let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"]["run-1"]["parent_run_id"],
+            json!("new-parent-run")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "worker",
+                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+            )
+            .build()
+            .unwrap();
+        let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
+
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let doc = json!({
+            "agent": {
+                "agent_runs": {
+                    "run-1": {
+                        "run_id": "run-1",
+                        "target_agent_id": "worker",
+                        "status": "running",
+                        "session": serde_json::to_value(&child_session).unwrap()
+                    }
+                }
+            }
+        });
+        let rt = caller_runtime_with_state(doc.clone());
+        let ctx =
+            carve_state::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+        let summary = run_tool
+            .execute(
+                json!({
+                    "run_id":"run-1",
+                    "background": false
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary.status, ToolStatus::Success);
+        assert_eq!(summary.data["status"], json!("stopped"));
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        assert!(
+            !step.pending_patches.is_empty(),
+            "expected reconciliation + pending patches for orphan running entry"
+        );
+        assert!(!step.skip_inference);
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches.clone())
+            .rebuild_state()
+            .unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"]["run-1"]["status"],
+            json!("stopped")
+        );
+        assert_eq!(
+            updated["agent"]["pending_interaction"]["action"],
+            json!(AGENT_RECOVERY_INTERACTION_ACTION)
+        );
+        assert_eq!(
+            updated["agent"]["pending_interaction"]["parameters"]["run_id"],
+            json!("run-1")
+        );
+
+        let updated_session = session.clone().with_patches(step.pending_patches);
+        let mut before = StepContext::new(&updated_session, vec![]);
+        plugin.on_phase(Phase::BeforeInference, &mut before).await;
+        assert!(
+            before.skip_inference,
+            "recovery confirmation should pause inference"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_does_not_override_existing_pending_interaction() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "existing_1",
+                        "action": "confirm",
+                    },
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        assert!(
+            !step.skip_inference,
+            "existing pending interaction should not be replaced"
+        );
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert_eq!(
+            updated["agent"]["pending_interaction"]["id"],
+            json!("existing_1")
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_auto_approve_when_permission_allow() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "permissions": {
+                    "default_behavior": "ask",
+                    "tools": {
+                        "recover_agent_run": "allow"
+                    }
+                },
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"]["run-1"]["status"],
+            json!("stopped")
+        );
+        assert!(
+            updated["agent"].get("pending_interaction").is_none()
+                || updated["agent"]["pending_interaction"].is_null()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_auto_deny_when_permission_deny() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "permissions": {
+                    "default_behavior": "ask",
+                    "tools": {
+                        "recover_agent_run": "deny"
+                    }
+                },
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert!(replay_calls.is_empty());
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"]["run-1"]["status"],
+            json!("stopped")
+        );
+        assert!(
+            updated["agent"].get("pending_interaction").is_none()
+                || updated["agent"]["pending_interaction"].is_null()
+        );
     }
 }

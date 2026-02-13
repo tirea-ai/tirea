@@ -37,6 +37,7 @@ mod permission;
 mod reminder;
 
 // Re-export extension traits
+pub(crate) use permission::resolve_permission_behavior_for_tool;
 pub use permission::PermissionContextExt;
 pub use reminder::ReminderContextExt;
 
