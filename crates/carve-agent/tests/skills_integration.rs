@@ -1,6 +1,6 @@
 use carve_agent::{
     execute_single_tool, execute_single_tool_with_runtime, AgentPlugin, FsSkillRegistry,
-    LoadSkillResourceTool, Message, Phase, Session, SkillActivateTool, SkillRegistry,
+    LoadSkillResourceTool, Message, Phase, Thread, SkillActivateTool, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool, StepContext, ToolCall, ToolDescriptor, ToolResult,
     APPEND_USER_MESSAGES_METADATA_KEY,
 };
@@ -46,34 +46,34 @@ echo "hello"
 }
 
 async fn apply_tool(
-    session: Session,
+    thread: Thread,
     tool: &dyn carve_agent::Tool,
     call: ToolCall,
-) -> (Session, ToolResult) {
-    let state = session.rebuild_state().unwrap();
+) -> (Thread, ToolResult) {
+    let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
-    let session = if let Some(patch) = exec.patch.clone() {
-        session.with_patch(patch)
+    let thread = if let Some(patch) = exec.patch.clone() {
+        thread.with_patch(patch)
     } else {
-        session
+        thread
     };
-    (session, exec.result)
+    (thread, exec.result)
 }
 
 async fn apply_tool_with_runtime(
-    session: Session,
+    thread: Thread,
     tool: &dyn carve_agent::Tool,
     call: ToolCall,
     runtime: &carve_state::Runtime,
-) -> (Session, ToolResult) {
-    let state = session.rebuild_state().unwrap();
+) -> (Thread, ToolResult) {
+    let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool_with_runtime(Some(tool), &call, &state, Some(runtime)).await;
-    let session = if let Some(patch) = exec.patch.clone() {
-        session.with_patch(patch)
+    let thread = if let Some(patch) = exec.patch.clone() {
+        thread.with_patch(patch)
     } else {
-        session
+        thread
     };
-    (session, exec.result)
+    (thread, exec.result)
 }
 
 fn assert_error_code(result: &ToolResult, expected_code: &str) {
@@ -87,17 +87,17 @@ async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
     let activate = SkillActivateTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     assert!(
         step.system_context.is_empty(),
@@ -109,14 +109,14 @@ async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
 async fn test_skill_activation_respects_runtime_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
-    let session = Session::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let mut runtime = carve_state::Runtime::new();
     runtime
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
-    let (_session, result) = apply_tool_with_runtime(
-        session,
+    let (_thread, result) = apply_tool_with_runtime(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
         &runtime,
@@ -129,14 +129,14 @@ async fn test_skill_activation_respects_runtime_skill_policy() {
 async fn test_load_skill_resource_respects_runtime_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let load = LoadSkillResourceTool::new(reg);
-    let session = Session::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let mut runtime = carve_state::Runtime::new();
     runtime
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
-    let (_session, result) = apply_tool_with_runtime(
-        session,
+    let (_thread, result) = apply_tool_with_runtime(
+        thread,
         &load,
         ToolCall::new(
             "call_1",
@@ -156,17 +156,17 @@ async fn test_load_reference_injects_reference_content() {
     let load_ref = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
-    let (session, _) = apply_tool(
-        session,
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_2",
@@ -177,7 +177,7 @@ async fn test_load_reference_injects_reference_content() {
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_reference"));
@@ -191,17 +191,17 @@ async fn test_script_result_is_persisted_and_injected() {
     let run_script = SkillScriptTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
-    let (session, _) = apply_tool(
-        session,
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_2",
@@ -212,7 +212,7 @@ async fn test_script_result_is_persisted_and_injected() {
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_script_result"));
@@ -226,17 +226,17 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
     let load_asset = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
-    let (session, _) = apply_tool(
-        session,
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &load_asset,
         ToolCall::new(
             "call_2",
@@ -248,7 +248,7 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
     assert!(result.is_success());
     assert_eq!(result.data["encoding"], "base64");
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_asset"));
@@ -260,9 +260,9 @@ async fn test_load_reference_rejects_escape() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_1",
@@ -280,9 +280,9 @@ async fn test_load_resource_requires_supported_prefix() {
     let (_td, reg) = make_skill_tree();
     let load_asset = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_asset,
         ToolCall::new(
             "call_1",
@@ -300,9 +300,9 @@ async fn test_load_resource_kind_mismatch_is_error() {
     let (_td, reg) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_resource,
         ToolCall::new(
             "call_1",
@@ -320,9 +320,9 @@ async fn test_load_resource_explicit_kind_asset_works() {
     let (_td, reg) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_resource,
         ToolCall::new(
             "call_1",
@@ -341,9 +341,9 @@ async fn test_skill_activation_requires_exact_skill_name() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "DOCX"})),
     )
@@ -357,9 +357,9 @@ async fn test_skill_activation_unknown_skill_errors() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "nope"})),
     )
@@ -373,9 +373,9 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({})),
     )
@@ -389,16 +389,16 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
     assert!(result.is_success());
 
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
 }
 
@@ -407,9 +407,9 @@ async fn test_skill_activation_emits_append_user_messages_metadata() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
@@ -435,9 +435,9 @@ async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
     fs::remove_file(td.path().join("skills").join("docx").join("SKILL.md")).unwrap();
 
     let activate = SkillActivateTool::new(reg);
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
@@ -451,9 +451,9 @@ async fn test_load_reference_requires_references_prefix() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_1",
@@ -471,18 +471,18 @@ async fn test_load_reference_missing_arguments_are_errors() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
-    let (_session, r1) = apply_tool(
-        session.clone(),
+    let (_thread, r1) = apply_tool(
+        thread.clone(),
         &load_ref,
         ToolCall::new("call_1", "load_skill_resource", json!({"skill": "docx"})),
     )
     .await;
     assert_error_code(&r1, "invalid_arguments");
 
-    let (_session, r2) = apply_tool(
-        session,
+    let (_thread, r2) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_2",
@@ -502,9 +502,9 @@ async fn test_load_reference_invalid_utf8_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BAD.bin"), vec![0xff, 0xfe, 0xfd]).unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_1",
@@ -522,9 +522,9 @@ async fn test_load_reference_missing_file_is_error() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_1",
@@ -551,9 +551,9 @@ async fn test_load_reference_symlink_escape_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     unix_fs::symlink(&outside, refs_dir.join("ESCAPE.md")).unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_1",
@@ -571,9 +571,9 @@ async fn test_script_requires_scripts_prefix() {
     let (_td, reg) = make_skill_tree();
     let run_script = SkillScriptTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_1",
@@ -591,18 +591,18 @@ async fn test_script_missing_arguments_are_errors() {
     let (_td, reg) = make_skill_tree();
     let run_script = SkillScriptTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
-    let (_session, r1) = apply_tool(
-        session.clone(),
+    let (_thread, r1) = apply_tool(
+        thread.clone(),
         &run_script,
         ToolCall::new("call_1", "skill_script", json!({"skill": "docx"})),
     )
     .await;
     assert_error_code(&r1, "invalid_arguments");
 
-    let (_session, r2) = apply_tool(
-        session,
+    let (_thread, r2) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_2",
@@ -630,16 +630,16 @@ printf "%s" "$*"
     )
     .unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (session, _) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_2",
@@ -650,7 +650,7 @@ printf "%s" "$*"
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<stdout>"));
@@ -672,9 +672,9 @@ exit 2
     )
     .unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_1",
@@ -697,9 +697,9 @@ async fn test_script_unsupported_runtime_is_error() {
     fs::write(scripts_dir.join("bad.rb"), "puts 'hi'\n").unwrap();
 
     let run_script = SkillScriptTool::new(reg);
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_1",
@@ -722,9 +722,9 @@ async fn test_script_rejects_excessive_argument_count() {
         args.push(format!("arg-{i}"));
     }
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (_session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (_thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_1",
@@ -758,9 +758,9 @@ Body
         Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
     let activate = SkillActivateTool::new(reg);
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (session, result) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (thread, result) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "scoped"})),
     )
@@ -773,7 +773,7 @@ Body
         json!(["Bash(command: \"git status\")"])
     );
 
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
     assert!(
         state["permissions"]["tools"].get("Bash").is_none(),
@@ -793,16 +793,16 @@ async fn test_reference_truncation_flag_is_injected() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BIG.md"), big).unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (session, _) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &load_ref,
         ToolCall::new(
             "call_2",
@@ -813,7 +813,7 @@ async fn test_reference_truncation_flag_is_injected() {
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("path=\"references/BIG.md\""));
@@ -837,16 +837,16 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     )
     .unwrap();
 
-    let session = Session::with_initial_state("s", json!({}));
-    let (session, _) = apply_tool(
-        session,
+    let thread = Thread::with_initial_state("s", json!({}));
+    let (thread, _) = apply_tool(
+        thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
     )
     .await;
 
-    let (session, result) = apply_tool(
-        session,
+    let (thread, result) = apply_tool(
+        thread,
         &run_script,
         ToolCall::new(
             "call_2",
@@ -857,7 +857,7 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     .await;
     assert!(result.is_success());
 
-    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("script=\"scripts/big.sh\""));

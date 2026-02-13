@@ -35,7 +35,7 @@
 //! }
 //! ```
 
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::types::ToolCall;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -102,11 +102,11 @@ pub struct StopCheckContext<'a> {
     pub last_text: &'a str,
     /// History of tool call names per round (most recent last), for loop detection.
     pub tool_call_history: &'a VecDeque<Vec<String>>,
-    /// The current session, providing access to conversation history and state.
+    /// The current thread, providing access to conversation history and state.
     ///
-    /// Custom stop conditions can inspect `session.messages` for patterns,
-    /// check `session.message_count()`, or examine the accumulated state.
-    pub session: &'a Session,
+    /// Custom stop conditions can inspect `thread.messages` for patterns,
+    /// check `thread.message_count()`, or examine the accumulated state.
+    pub thread: &'a Thread,
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +398,7 @@ mod tests {
     use serde_json::json;
     use std::sync::LazyLock;
 
-    static TEST_SESSION: LazyLock<Session> = LazyLock::new(|| Session::new("test"));
+    static TEST_SESSION: LazyLock<Thread> = LazyLock::new(|| Thread::new("test"));
 
     fn empty_context() -> StopCheckContext<'static> {
         static EMPTY_TOOL_CALLS: &[ToolCall] = &[];
@@ -412,7 +412,7 @@ mod tests {
             last_tool_calls: EMPTY_TOOL_CALLS,
             last_text: "",
             tool_call_history: &EMPTY_HISTORY,
-            session: &TEST_SESSION,
+            thread: &TEST_SESSION,
         }
     }
 

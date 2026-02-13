@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ContextCategory {
     /// Injected at session start, before message history.
-    Session,
+    Thread,
     /// Injected after user input.
     UserInput,
     /// Injected after tool execution.

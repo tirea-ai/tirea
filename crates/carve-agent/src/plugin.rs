@@ -5,7 +5,7 @@
 //!
 //! # Phases
 //!
-//! - `SessionStart` / `SessionEnd` - Session lifecycle (called once)
+//! - `SessionStart` / `SessionEnd` - Thread lifecycle (called once)
 //! - `StepStart` / `StepEnd` - Step lifecycle
 //! - `BeforeInference` / `AfterInference` - LLM call lifecycle
 //! - `BeforeToolExecute` / `AfterToolExecute` - Tool execution lifecycle
@@ -114,7 +114,7 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::phase::StepContext;
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::state_types::Interaction;
     use crate::traits::tool::ToolDescriptor;
     use crate::types::ToolCall;
@@ -146,7 +146,7 @@ mod tests {
                     step.system("Test system context");
                 }
                 Phase::BeforeInference => {
-                    step.session("Test session context");
+                    step.thread("Test thread context");
                 }
                 _ => {}
             }
@@ -184,7 +184,7 @@ mod tests {
                     step.system("Current time: 2024-01-01");
                 }
                 Phase::BeforeInference => {
-                    step.session("Remember to be helpful.");
+                    step.thread("Remember to be helpful.");
                     step.exclude("dangerous_tool");
                 }
                 Phase::AfterToolExecute => {
@@ -265,8 +265,8 @@ mod tests {
     // Helper Functions
     // =========================================================================
 
-    fn mock_session() -> Session {
-        Session::new("test-session")
+    fn mock_thread() -> Thread {
+        Thread::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -307,8 +307,8 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_on_phase_step_start() {
         let plugin = TestPlugin::new("test");
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::StepStart, &mut step).await;
 
@@ -319,21 +319,21 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_on_phase_before_inference() {
         let plugin = TestPlugin::new("test");
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.session_context.len(), 1);
-        assert_eq!(step.session_context[0], "Test session context");
+        assert_eq!(step.session_context[0], "Test thread context");
     }
 
     #[tokio::test]
     async fn test_context_injection_plugin() {
         let plugin = ContextInjectionPlugin;
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut step = StepContext::new(&session, tools);
+        let mut step = StepContext::new(&thread, tools);
 
         // StepStart - adds system context
         plugin.on_phase(Phase::StepStart, &mut step).await;
@@ -354,8 +354,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_blocks_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
@@ -368,8 +368,8 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_allows_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
@@ -382,8 +382,8 @@ mod tests {
     #[tokio::test]
     async fn test_confirmation_plugin_sets_pending() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
@@ -396,8 +396,8 @@ mod tests {
     #[tokio::test]
     async fn test_confirmation_plugin_skips_non_matching() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
@@ -414,9 +414,9 @@ mod tests {
             Box::new(PermissionPlugin::new(vec!["dangerous_tool"])),
         ];
 
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut step = StepContext::new(&session, tools);
+        let mut step = StepContext::new(&thread, tools);
 
         // Run all plugins for StepStart
         for plugin in &plugins {
@@ -443,8 +443,8 @@ mod tests {
     #[tokio::test]
     async fn test_noop_plugin_all_phases() {
         let plugin = NoOpPlugin;
-        let session = mock_session();
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut step = StepContext::new(&thread, vec![]);
 
         // All phases should be callable without panic or side effects
         plugin.on_phase(Phase::SessionStart, &mut step).await;

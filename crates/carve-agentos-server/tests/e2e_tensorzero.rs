@@ -191,10 +191,10 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         "LLM did not answer '4' for 2+2. Got: {deltas}"
     );
 
-    // Session persistence.
+    // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load("tz-sdk-1").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
 }
 
 // ============================================================================
@@ -277,10 +277,10 @@ async fn e2e_tensorzero_ag_ui_sse() {
         "LLM did not answer '6' for 3+3. Got: {content}"
     );
 
-    // Session persistence.
+    // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load("tz-agui-1").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
 }
 
 // ============================================================================

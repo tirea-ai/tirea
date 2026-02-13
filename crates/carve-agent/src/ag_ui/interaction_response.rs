@@ -75,7 +75,7 @@ impl InteractionResponsePlugin {
 
     /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
     fn on_session_start(&self, step: &mut StepContext<'_>) {
-        let Ok(state) = step.session.rebuild_state() else {
+        let Ok(state) = step.thread.rebuild_state() else {
             return;
         };
 
@@ -132,7 +132,7 @@ impl InteractionResponsePlugin {
 
         // Find the pending tool call from the last assistant message with tool_calls.
         let tool_call = step
-            .session
+            .thread
             .messages
             .iter()
             .rev()
@@ -215,7 +215,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let persisted_id = step.session.rebuild_state().ok().and_then(|s| {
+        let persisted_id = step.thread.rebuild_state().ok().and_then(|s| {
             s.get(crate::state_types::AGENT_STATE_PATH)?
                 .get("pending_interaction")?
                 .get("id")?
@@ -251,7 +251,7 @@ fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
     use crate::state_types::{AgentState, AGENT_STATE_PATH};
     use carve_state::Context;
 
-    let Ok(state) = step.session.rebuild_state() else {
+    let Ok(state) = step.thread.rebuild_state() else {
         return;
     };
 
@@ -268,7 +268,7 @@ fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::types::{Message, ToolCall};
     use carve_state::apply_patches;
     use serde_json::json;
@@ -278,7 +278,7 @@ mod tests {
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s1",
             json!({
                 "agent": {
@@ -297,7 +297,7 @@ mod tests {
             ],
         ));
 
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -313,7 +313,7 @@ mod tests {
         let plugin =
             InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s1",
             json!({
                 "agent": {
@@ -328,7 +328,7 @@ mod tests {
             }),
         );
 
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -345,7 +345,7 @@ mod tests {
         let plugin =
             InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s1",
             json!({
                 "agent": {
@@ -360,7 +360,7 @@ mod tests {
             }),
         );
 
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
         assert!(
             !step.pending_patches.is_empty(),
@@ -368,7 +368,7 @@ mod tests {
         );
 
         let updated = apply_patches(
-            &session.rebuild_state().unwrap(),
+            &thread.rebuild_state().unwrap(),
             step.pending_patches.iter().map(|p| p.patch()),
         )
         .expect("pending patch should apply");

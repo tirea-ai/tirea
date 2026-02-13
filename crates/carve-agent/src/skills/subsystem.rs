@@ -125,7 +125,7 @@ mod tests {
     use super::*;
     use crate::execute::execute_single_tool;
     use crate::phase::{Phase, StepContext};
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::skills::FsSkillRegistry;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::types::{Message, ToolCall};
@@ -253,15 +253,15 @@ mod tests {
         sys.extend_tools(&mut tools).unwrap();
 
         // Activate the skill via the registered "skill" tool.
-        let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-        let state = session.rebuild_state().unwrap();
+        let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+        let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
         let activate_tool = tools.get("skill").unwrap().as_ref();
         let exec = execute_single_tool(Some(activate_tool), &call, &state).await;
         assert!(exec.result.is_success());
-        let session = session.with_patch(exec.patch.unwrap());
+        let thread = thread.with_patch(exec.patch.unwrap());
 
-        let state = session.rebuild_state().unwrap();
+        let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new(
             "call_2",
             "load_skill_resource",
@@ -270,11 +270,11 @@ mod tests {
         let load_resource_tool = tools.get("load_skill_resource").unwrap().as_ref();
         let exec = execute_single_tool(Some(load_resource_tool), &call, &state).await;
         assert!(exec.result.is_success());
-        let session = session.with_patch(exec.patch.unwrap());
+        let thread = thread.with_patch(exec.patch.unwrap());
 
         // Run the subsystem plugin and verify both discovery and runtime injections exist.
         let plugin = sys.plugin();
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 2);

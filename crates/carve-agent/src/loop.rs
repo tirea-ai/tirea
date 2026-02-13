@@ -44,7 +44,7 @@ use crate::convert::{assistant_message, assistant_tool_calls, build_request, too
 use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
 use crate::stop::{
     check_stop_conditions, StopCheckContext, StopCondition, StopConditionSpec, StopReason,
@@ -173,7 +173,7 @@ pub type AgentConfig = AgentDefinition;
 /// Optional lifecycle context for a streaming agent run.
 ///
 /// Run-specific data (run_id, parent_run_id, etc.) should be set on
-/// `session.runtime` before starting the loop. This struct only holds
+/// `thread.runtime` before starting the loop. This struct only holds
 /// the cancellation token which is orthogonal to the data model.
 #[derive(Debug, Clone, Default)]
 pub struct RunContext {
@@ -185,7 +185,7 @@ pub struct RunContext {
 }
 
 /// Runtime key: caller session id visible to tools.
-pub(crate) const TOOL_RUNTIME_CALLER_SESSION_ID_KEY: &str = "__agent_tool_caller_session_id";
+pub(crate) const TOOL_RUNTIME_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";
 /// Runtime key: caller agent id visible to tools.
 pub(crate) const TOOL_RUNTIME_CALLER_AGENT_ID_KEY: &str = "__agent_tool_caller_agent_id";
 /// Runtime key: caller state snapshot visible to tools.
@@ -533,16 +533,16 @@ fn take_step_side_effects(
     pending
 }
 
-fn apply_pending_patches(session: Session, pending: Vec<TrackedPatch>) -> Session {
+fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
     if pending.is_empty() {
-        session
+        thread
     } else {
-        session.with_patches(pending)
+        thread.with_patches(pending)
     }
 }
 
 async fn run_phase_block<R, Setup, Extract>(
-    session: &Session,
+    thread: &Thread,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
@@ -554,7 +554,7 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
     Extract: FnOnce(&mut StepContext<'_>) -> R,
 {
-    let mut step = scratchpad.new_step_context(session, tool_descriptors.to_vec());
+    let mut step = scratchpad.new_step_context(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
         emit_phase_checked(*phase, &mut step, plugins).await?;
@@ -566,7 +566,7 @@ where
 
 async fn emit_phase_block<Setup>(
     phase: Phase,
-    session: &Session,
+    thread: &Thread,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
@@ -576,7 +576,7 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
 {
     let (_, pending) = run_phase_block(
-        session,
+        thread,
         scratchpad,
         tool_descriptors,
         plugins,
@@ -589,16 +589,16 @@ where
 }
 
 async fn emit_cleanup_phases_and_apply(
-    session: Session,
+    thread: Thread,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     error_type: &'static str,
     message: String,
-) -> Result<Session, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     let pending = emit_phase_block(
         Phase::AfterInference,
-        &session,
+        &thread,
         scratchpad,
         tool_descriptors,
         plugins,
@@ -610,54 +610,54 @@ async fn emit_cleanup_phases_and_apply(
         },
     )
     .await?;
-    let session = apply_pending_patches(session, pending);
+    let thread = apply_pending_patches(thread, pending);
     let pending = emit_phase_block(
         Phase::StepEnd,
-        &session,
+        &thread,
         scratchpad,
         tool_descriptors,
         plugins,
         |_| {},
     )
     .await?;
-    Ok(apply_pending_patches(session, pending))
+    Ok(apply_pending_patches(thread, pending))
 }
 
 /// Emit SessionEnd phase and apply any resulting patches to the session.
 async fn emit_session_end(
-    session: Session,
+    thread: Thread,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Session {
+) -> Thread {
     let pending = {
-        let mut step = scratchpad.new_step_context(&session, tool_descriptors.to_vec());
+        let mut step = scratchpad.new_step_context(&thread, tool_descriptors.to_vec());
         if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, plugins).await {
             tracing::warn!(error = %e, "SessionEnd plugin phase validation failed");
         }
         take_step_side_effects(scratchpad, &mut step)
     };
-    apply_pending_patches(session, pending)
+    apply_pending_patches(thread, pending)
 }
 
 /// Build terminal error events after running SessionEnd cleanup.
 async fn prepare_stream_error_termination(
-    session: Session,
+    thread: Thread,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     run_id: &str,
     message: String,
-) -> (Session, AgentEvent, AgentEvent) {
-    let session = emit_session_end(session, scratchpad, tool_descriptors, plugins).await;
+) -> (Thread, AgentEvent, AgentEvent) {
+    let thread = emit_session_end(thread, scratchpad, tool_descriptors, plugins).await;
     let error = AgentEvent::Error { message };
     let finish = AgentEvent::RunFinish {
-        thread_id: session.id.clone(),
+        thread_id: thread.id.clone(),
         run_id: run_id.to_string(),
         result: None,
         stop_reason: None,
     };
-    (session, error, finish)
+    (thread, error, finish)
 }
 
 /// Build initial scratchpad map.
@@ -686,10 +686,10 @@ impl ScratchpadRuntimeData {
 
     fn new_step_context<'a>(
         &self,
-        session: &'a Session,
+        thread: &'a Thread,
         tools: Vec<ToolDescriptor>,
     ) -> StepContext<'a> {
-        let mut step = StepContext::new(session, tools);
+        let mut step = StepContext::new(thread, tools);
         step.set_scratchpad_map(self.data.clone());
         step
     }
@@ -731,13 +731,13 @@ fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
         messages.push(Message::system(system));
     }
 
-    // [2] Session Context
+    // [2] Thread Context
     for ctx in &step.session_context {
         messages.push(Message::system(ctx.clone()));
     }
 
     // [3+] History from session (Arc messages, cheap to clone)
-    for msg in &step.session.messages {
+    for msg in &step.thread.messages {
         messages.push((**msg).clone());
     }
 
@@ -763,9 +763,9 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
 /// Finds the tool message matching `tool_call_id` that contains "awaiting approval"
 /// and replaces its content with the real tool result message.
 /// If no placeholder exists, append the real tool message.
-fn replace_placeholder_tool_message(session: &mut Session, tool_call_id: &str, real_msg: Message) {
+fn replace_placeholder_tool_message(thread: &mut Thread, tool_call_id: &str, real_msg: Message) {
     // Find the placeholder message index (searching from end)
-    if let Some(index) = session
+    if let Some(index) = thread
         .messages
         .iter()
         .rposition(|m| {
@@ -775,16 +775,16 @@ fn replace_placeholder_tool_message(session: &mut Session, tool_call_id: &str, r
         })
     {
         // Replace the Arc with a new one containing the updated message
-        session.messages[index] = std::sync::Arc::new(real_msg);
+        thread.messages[index] = std::sync::Arc::new(real_msg);
         return;
     }
 
     // No placeholder found, append as new message
-    session.messages.push(std::sync::Arc::new(real_msg));
+    thread.messages.push(std::sync::Arc::new(real_msg));
 }
 
 struct AppliedToolResults {
-    session: Session,
+    thread: Thread,
     pending_interaction: Option<Interaction>,
     state_snapshot: Option<Value>,
 }
@@ -832,7 +832,7 @@ fn validate_parallel_state_patch_conflicts(
 }
 
 fn apply_tool_results_to_session(
-    session: Session,
+    thread: Thread,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     parallel_tools: bool,
@@ -908,20 +908,20 @@ fn apply_tool_results_to_session(
         })
         .collect();
 
-    let mut session = session.with_patches(patches).with_messages(tool_messages);
+    let mut thread = thread.with_patches(patches).with_messages(tool_messages);
 
     if let Some(interaction) = pending_interaction.clone() {
-        let state = session
+        let state = thread
             .rebuild_state()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
             state_changed = true;
-            session = session.with_patch(patch);
+            thread = thread.with_patch(patch);
         }
         let state_snapshot = if state_changed {
             Some(
-                session
+                thread
                     .rebuild_state()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
             )
@@ -929,7 +929,7 @@ fn apply_tool_results_to_session(
             None
         };
         return Ok(AppliedToolResults {
-            session,
+            thread,
             pending_interaction: Some(interaction),
             state_snapshot,
         });
@@ -937,7 +937,7 @@ fn apply_tool_results_to_session(
 
     // If a previous run left a persisted pending interaction, clear it once we successfully
     // complete tool execution without creating a new pending interaction.
-    let state = session
+    let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     if state
@@ -948,13 +948,13 @@ fn apply_tool_results_to_session(
         let patch = clear_agent_pending_interaction(&state);
         if !patch.patch().is_empty() {
             state_changed = true;
-            session = session.with_patch(patch);
+            thread = thread.with_patch(patch);
         }
     }
 
     let state_snapshot = if state_changed {
         Some(
-            session
+            thread
                 .rebuild_state()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
         )
@@ -963,7 +963,7 @@ fn apply_tool_results_to_session(
     };
 
     Ok(AppliedToolResults {
-        session,
+        thread,
         pending_interaction: None,
         state_snapshot,
     })
@@ -997,20 +997,20 @@ fn appended_user_messages_from_tool_result(result: &ToolResult) -> Vec<String> {
     }
 }
 
-fn tool_result_metadata_from_session(session: &Session) -> Option<MessageMetadata> {
-    let run_id = session
+fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
+    let run_id = thread
         .runtime
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .or_else(|| {
-            session.messages.iter().rev().find_map(|m| {
+            thread.messages.iter().rev().find_map(|m| {
                 m.metadata
                     .as_ref()
                     .and_then(|meta| meta.run_id.as_ref().cloned())
             })
         });
 
-    let step_index = session
+    let step_index = thread
         .messages
         .iter()
         .rev()
@@ -1023,8 +1023,8 @@ fn tool_result_metadata_from_session(session: &Session) -> Option<MessageMetadat
     }
 }
 
-fn next_step_index(session: &Session) -> u32 {
-    session
+fn next_step_index(thread: &Thread) -> u32 {
+    thread
         .messages
         .iter()
         .filter_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index))
@@ -1045,14 +1045,14 @@ fn next_step_index(session: &Session) -> u32 {
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Session, StreamResult), AgentLoopError> {
+) -> Result<(Thread, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
     let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
     let phase_block = run_phase_block(
-        &session,
+        &thread,
         &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
@@ -1072,12 +1072,12 @@ pub async fn run_step(
     )
     .await?;
     let ((messages, filtered_tools, skip_inference, tracing_span), pending) = phase_block;
-    let session = apply_pending_patches(session, pending);
+    let thread = apply_pending_patches(thread, pending);
 
     // Skip inference if requested
     if skip_inference {
         return Ok((
-            session,
+            thread,
             StreamResult {
                 text: String::new(),
                 tool_calls: vec![],
@@ -1108,7 +1108,7 @@ pub async fn run_step(
         Err(e) => {
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
             let _session = emit_cleanup_phases_and_apply(
-                session,
+                thread,
                 &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
@@ -1142,7 +1142,7 @@ pub async fn run_step(
     // Phase: AfterInference (with new context)
     let pending = emit_phase_block(
         Phase::AfterInference,
-        &session,
+        &thread,
         &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
@@ -1151,20 +1151,20 @@ pub async fn run_step(
         },
     )
     .await?;
-    let session = apply_pending_patches(session, pending);
+    let thread = apply_pending_patches(thread, pending);
 
     // Add assistant message
     let step_meta = MessageMetadata {
-        run_id: session
+        run_id: thread
             .runtime
             .value("run_id")
             .and_then(|v| v.as_str().map(String::from)),
-        step_index: Some(next_step_index(&session)),
+        step_index: Some(next_step_index(&thread)),
     };
-    let session = if result.tool_calls.is_empty() {
-        session.with_message(assistant_message(&result.text).with_metadata(step_meta))
+    let thread = if result.tool_calls.is_empty() {
+        thread.with_message(assistant_message(&result.text).with_metadata(step_meta))
     } else {
-        session.with_message(
+        thread.with_message(
             assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta),
         )
     };
@@ -1172,76 +1172,76 @@ pub async fn run_step(
     // Phase: StepEnd (with new context)
     let pending = emit_phase_block(
         Phase::StepEnd,
-        &session,
+        &thread,
         &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         |_| {},
     )
     .await?;
-    let session = apply_pending_patches(session, pending);
+    let thread = apply_pending_patches(thread, pending);
 
-    Ok((session, result))
+    Ok((thread, result))
 }
 
 /// Execute tool calls (simplified version without plugins).
 ///
 /// This is the simpler API for tests and cases where plugins aren't needed.
 pub async fn execute_tools(
-    session: Session,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
-) -> Result<Session, AgentLoopError> {
-    execute_tools_with_plugins(session, result, tools, parallel, &[]).await
+) -> Result<Thread, AgentLoopError> {
+    execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
 }
 
 /// Execute tool calls with phase-based plugin hooks.
 pub async fn execute_tools_with_config(
-    mut session: Session,
+    mut thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-) -> Result<Session, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
         config.allowed_tools.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
         config.excluded_tools.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY,
         config.allowed_skills.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_EXCLUDED_SKILLS_KEY,
         config.excluded_skills.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY,
         config.allowed_agents.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     crate::tool_filter::set_runtime_filter_if_absent(
-        &mut session.runtime,
+        &mut thread.runtime,
         crate::tool_filter::RUNTIME_EXCLUDED_AGENTS_KEY,
         config.excluded_agents.as_deref(),
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     execute_tools_with_plugins(
-        session,
+        thread,
         result,
         tools,
         config.parallel_tools,
@@ -1251,13 +1251,13 @@ pub async fn execute_tools_with_config(
 }
 
 fn runtime_with_tool_caller_context(
-    session: &Session,
+    thread: &Thread,
     state: &Value,
     config: Option<&AgentConfig>,
 ) -> Result<carve_state::Runtime, AgentLoopError> {
-    let mut rt = session.runtime.clone();
-    if rt.value(TOOL_RUNTIME_CALLER_SESSION_ID_KEY).is_none() {
-        rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, session.id.clone())
+    let mut rt = thread.runtime.clone();
+    if rt.value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY).is_none() {
+        rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, thread.id.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if rt.value(TOOL_RUNTIME_CALLER_STATE_KEY).is_none() {
@@ -1265,7 +1265,7 @@ fn runtime_with_tool_caller_context(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if rt.value(TOOL_RUNTIME_CALLER_MESSAGES_KEY).is_none() {
-        rt.set(TOOL_RUNTIME_CALLER_MESSAGES_KEY, session.messages.clone())
+        rt.set(TOOL_RUNTIME_CALLER_MESSAGES_KEY, thread.messages.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if let Some(cfg) = config {
@@ -1311,24 +1311,24 @@ fn runtime_with_tool_caller_context(
 
 /// Execute tool calls with plugin hooks (backward compatible).
 pub async fn execute_tools_with_plugins(
-    session: Session,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<Session, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     if result.tool_calls.is_empty() {
-        return Ok(session);
+        return Ok(thread);
     }
 
-    let state = session
+    let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let scratchpad = initial_scratchpad(plugins);
-    let rt_for_tools = runtime_with_tool_caller_context(&session, &state, None)?;
+    let rt_for_tools = runtime_with_tool_caller_context(&thread, &state, None)?;
 
     let results = if parallel {
         execute_tools_parallel_with_phases(
@@ -1340,7 +1340,7 @@ pub async fn execute_tools_with_plugins(
             scratchpad,
             None,
             Some(&rt_for_tools),
-            &session.id,
+            &thread.id,
         )
         .await
     } else {
@@ -1353,20 +1353,20 @@ pub async fn execute_tools_with_plugins(
             scratchpad,
             None,
             Some(&rt_for_tools),
-            &session.id,
+            &thread.id,
         )
         .await
     }?;
 
-    let metadata = tool_result_metadata_from_session(&session);
-    let applied = apply_tool_results_to_session(session, &results, metadata, parallel)?;
+    let metadata = tool_result_metadata_from_session(&thread);
+    let applied = apply_tool_results_to_session(thread, &results, metadata, parallel)?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            session: Box::new(applied.session),
+            thread: Box::new(applied.thread),
             interaction: Box::new(interaction),
         });
     }
-    Ok(applied.session)
+    Ok(applied.thread)
 }
 
 /// Execute tools in parallel with phase hooks.
@@ -1379,13 +1379,13 @@ async fn execute_tools_parallel_with_phases(
     scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
-    session_id: &str,
+    thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
     // Clone runtime for parallel tasks (Runtime is Clone).
     let runtime_owned = runtime.cloned();
-    let session_id = session_id.to_string();
+    let thread_id = thread_id.to_string();
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
@@ -1396,7 +1396,7 @@ async fn execute_tools_parallel_with_phases(
         let scratchpad = scratchpad.clone();
         let activity_manager = activity_manager.clone();
         let rt = runtime_owned.clone();
-        let sid = session_id.clone();
+        let sid = thread_id.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -1428,7 +1428,7 @@ async fn execute_tools_sequential_with_phases(
     mut scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
-    session_id: &str,
+    thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
 
@@ -1446,7 +1446,7 @@ async fn execute_tools_sequential_with_phases(
             scratchpad.clone(),
             activity_manager.clone(),
             runtime,
-            session_id,
+            thread_id,
         )
         .await?;
 
@@ -1583,16 +1583,16 @@ async fn execute_single_tool_with_phases(
     scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
-    session_id: &str,
+    thread_id: &str,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
-    // Create a session stub so plugins see the real session id and runtime.
-    let mut temp_session = Session::with_initial_state(session_id, state.clone());
+    // Create a thread stub so plugins see the real thread id and runtime.
+    let mut temp_thread = Thread::with_initial_state(thread_id, state.clone());
     if let Some(rt) = runtime {
-        temp_session.runtime = rt.clone();
+        temp_thread.runtime = rt.clone();
     }
 
     // Create StepContext for this tool
-    let mut step = StepContext::new(&temp_session, tool_descriptors.to_vec());
+    let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
     step.set_scratchpad_map(scratchpad);
     step.tool = Some(ToolContext::new(call));
 
@@ -1758,7 +1758,7 @@ impl LoopState {
     fn to_check_context<'a>(
         &'a self,
         result: &'a StreamResult,
-        session: &'a Session,
+        thread: &'a Thread,
     ) -> StopCheckContext<'a> {
         StopCheckContext {
             rounds: self.rounds,
@@ -1769,7 +1769,7 @@ impl LoopState {
             last_tool_calls: &result.tool_calls,
             last_text: &result.text,
             tool_call_history: &self.tool_call_history,
-            session,
+            thread,
         }
     }
 }
@@ -1795,20 +1795,20 @@ fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopCondition>
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
-    mut session: Session,
+    mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Session, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(config);
     let mut last_text = String::new();
     let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
-    let run_id = session
+    let run_id = thread
         .runtime
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| {
             let id = uuid_v7();
-            let _ = session.runtime.set("run_id", &id);
+            let _ = thread.runtime.set("run_id", &id);
             id
         });
 
@@ -1817,19 +1817,19 @@ pub async fn run_loop(
     // Phase: SessionStart
     let pending = emit_phase_block(
         Phase::SessionStart,
-        &session,
+        &thread,
         &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         |_| {},
     )
     .await?;
-    session = apply_pending_patches(session, pending);
+    thread = apply_pending_patches(thread, pending);
 
     loop {
         // Phase: StepStart and BeforeInference
         let step_prepare = run_phase_block(
-            &session,
+            &thread,
             &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
@@ -1853,12 +1853,12 @@ pub async fn run_loop(
             Ok(v) => v,
             Err(e) => {
                 let _finalized =
-                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
             }
         };
-        session = apply_pending_patches(session, pending);
+        thread = apply_pending_patches(thread, pending);
 
         if skip_inference {
             break;
@@ -1885,8 +1885,8 @@ pub async fn run_loop(
             Ok(r) => r,
             Err(e) => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                session = match emit_cleanup_phases_and_apply(
-                    session.clone(),
+                thread = match emit_cleanup_phases_and_apply(
+                    thread.clone(),
                     &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
@@ -1898,7 +1898,7 @@ pub async fn run_loop(
                     Ok(s) => s,
                     Err(phase_error) => {
                         let _finalized = emit_session_end(
-                            session,
+                            thread,
                             &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
@@ -1908,7 +1908,7 @@ pub async fn run_loop(
                     }
                 };
                 let _finalized =
-                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
@@ -1939,7 +1939,7 @@ pub async fn run_loop(
         // Phase: AfterInference
         match emit_phase_block(
             Phase::AfterInference,
-            &session,
+            &thread,
             &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
@@ -1950,11 +1950,11 @@ pub async fn run_loop(
         .await
         {
             Ok(pending) => {
-                session = apply_pending_patches(session, pending);
+                thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
                 let _finalized =
-                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
             }
@@ -1965,10 +1965,10 @@ pub async fn run_loop(
             run_id: Some(run_id.clone()),
             step_index: Some(loop_state.rounds as u32),
         };
-        session = if result.tool_calls.is_empty() {
-            session.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
+        thread = if result.tool_calls.is_empty() {
+            thread.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
         } else {
-            session.with_message(
+            thread.with_message(
                 assistant_tool_calls(&result.text, result.tool_calls.clone())
                     .with_metadata(step_meta.clone()),
             )
@@ -1977,7 +1977,7 @@ pub async fn run_loop(
         // Phase: StepEnd
         match emit_phase_block(
             Phase::StepEnd,
-            &session,
+            &thread,
             &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
@@ -1986,11 +1986,11 @@ pub async fn run_loop(
         .await
         {
             Ok(pending) => {
-                session = apply_pending_patches(session, pending);
+                thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
                 let _finalized =
-                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
             }
@@ -2001,18 +2001,18 @@ pub async fn run_loop(
         }
 
         // Execute tools with phase hooks (respect config.parallel_tools).
-        let state = match session.rebuild_state() {
+        let state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                     .await;
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
-        let rt_for_tools = match runtime_with_tool_caller_context(&session, &state, Some(config)) {
+        let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
-                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                     .await;
                 return Err(e);
             }
@@ -2028,7 +2028,7 @@ pub async fn run_loop(
                 scratchpad.data.clone(),
                 None,
                 Some(&rt_for_tools),
-                &session.id,
+                &thread.id,
             )
             .await
         } else {
@@ -2041,7 +2041,7 @@ pub async fn run_loop(
                 scratchpad.data.clone(),
                 None,
                 Some(&rt_for_tools),
-                &session.id,
+                &thread.id,
             )
             .await
         };
@@ -2050,7 +2050,7 @@ pub async fn run_loop(
             Ok(r) => r,
             Err(e) => {
                 let _finalized =
-                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
             }
@@ -2065,7 +2065,7 @@ pub async fn run_loop(
                 Ok(v) => v,
                 Err(e) => {
                     let _finalized = emit_session_end(
-                        session,
+                        thread,
                         &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
@@ -2078,9 +2078,9 @@ pub async fn run_loop(
             scratchpad.data = last.scratchpad.clone();
         }
 
-        let session_before_apply = session.clone();
+        let session_before_apply = thread.clone();
         let applied = match apply_tool_results_to_session(
-            session,
+            thread,
             &results,
             Some(step_meta),
             config.parallel_tools,
@@ -2097,15 +2097,15 @@ pub async fn run_loop(
                 return Err(e);
             }
         };
-        session = applied.session;
+        thread = applied.thread;
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            session =
-                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+            thread =
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                     .await;
             return Err(AgentLoopError::PendingInteraction {
-                session: Box::new(session),
+                thread: Box::new(thread),
                 interaction: Box::new(interaction),
             });
         }
@@ -2119,22 +2119,22 @@ pub async fn run_loop(
         loop_state.rounds += 1;
 
         // Check stop conditions.
-        let stop_ctx = loop_state.to_check_context(&result, &session);
+        let stop_ctx = loop_state.to_check_context(&result, &thread);
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-            session =
-                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+            thread =
+                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
                     .await;
             return Err(AgentLoopError::Stopped {
-                session: Box::new(session),
+                thread: Box::new(thread),
                 reason,
             });
         }
     }
 
     // Phase: SessionEnd
-    session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+    thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
 
-    Ok((session, last_text))
+    Ok((thread, last_text))
 }
 
 /// Run the agent loop with streaming output.
@@ -2143,14 +2143,14 @@ pub async fn run_loop(
 pub fn run_loop_stream(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     run_loop_stream_impl_with_provider(
         Arc::new(client),
         config,
-        session,
+        thread,
         tools,
         run_ctx,
         None,
@@ -2158,17 +2158,17 @@ pub fn run_loop_stream(
     )
 }
 
-/// A streaming agent run with access to the final `Session`.
+/// A streaming agent run with access to the final `Thread`.
 ///
 /// This is primarily intended for transports (HTTP, NATS) that need to persist
 /// the updated session after the stream completes.
-pub struct StreamWithSession {
+pub struct StreamWithThread {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    pub final_session: tokio::sync::oneshot::Receiver<Session>,
+    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionCheckpointReason {
+pub enum ThreadCheckpointReason {
     /// An assistant turn was committed to the session (final text and/or tool calls).
     AssistantTurnCommitted,
     /// Tool results were applied to the session (tool messages and patches).
@@ -2176,9 +2176,9 @@ pub enum SessionCheckpointReason {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionCheckpoint {
-    pub reason: SessionCheckpointReason,
-    pub session: Session,
+pub struct ThreadCheckpoint {
+    pub reason: ThreadCheckpointReason,
+    pub thread: Thread,
 }
 
 /// A streaming agent run with access to intermediate session checkpoints.
@@ -2186,43 +2186,43 @@ pub struct SessionCheckpoint {
 /// Intended for persistence layers to save at durable boundaries while streaming.
 pub struct StreamWithCheckpoints {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<SessionCheckpoint>,
-    pub final_session: tokio::sync::oneshot::Receiver<Session>,
+    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadCheckpoint>,
+    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
-/// Run the agent loop and return a stream of `AgentEvent`s plus the final `Session`.
+/// Run the agent loop and return a stream of `AgentEvent`s plus the final `Thread`.
 ///
-/// The returned `final_session` receiver resolves when the stream finishes. If the
+/// The returned `final_thread` receiver resolves when the stream finishes. If the
 /// stream terminates in a way that consumes the session (rare error paths), the
 /// receiver will be closed without a value.
-pub fn run_loop_stream_with_session(
+pub fn run_loop_stream_with_thread(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> StreamWithSession {
+) -> StreamWithThread {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let events = run_loop_stream_impl_with_provider(
         Arc::new(client),
         config,
-        session,
+        thread,
         tools,
         run_ctx,
         Some(tx),
         None,
     );
-    StreamWithSession {
+    StreamWithThread {
         events,
-        final_session: rx,
+        final_thread: rx,
     }
 }
 
-/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints and the final `Session`.
+/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints and the final `Thread`.
 pub fn run_loop_stream_with_checkpoints(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> StreamWithCheckpoints {
@@ -2231,7 +2231,7 @@ pub fn run_loop_stream_with_checkpoints(
     let events = run_loop_stream_impl_with_provider(
         Arc::new(client),
         config,
-        session,
+        thread,
         tools,
         run_ctx,
         Some(final_tx),
@@ -2240,21 +2240,21 @@ pub fn run_loop_stream_with_checkpoints(
     StreamWithCheckpoints {
         events,
         checkpoints: checkpoint_rx,
-        final_session: final_rx,
+        final_thread: final_rx,
     }
 }
 
 fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-    mut final_session_tx: Option<tokio::sync::oneshot::Sender<Session>>,
-    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<SessionCheckpoint>>,
+    mut final_thread_tx: Option<tokio::sync::oneshot::Sender<Thread>>,
+    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadCheckpoint>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
-    let mut session = session;
+    let mut thread = thread;
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(&config);
     let cancel_token = run_ctx.cancellation_token.clone();
@@ -2269,21 +2269,21 @@ fn run_loop_stream_impl_with_provider(
         // runtime is transient (not persisted) and the owned-builder pattern
         // (`with_runtime`) is impractical inside the loop where `session` is
         // borrowed across yield points.
-        let run_id = session.runtime.value("run_id")
+        let run_id = thread.runtime.value("run_id")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| {
                 let id = uuid_v7();
                 // Best-effort: set into runtime (may already be set).
-                let _ = session.runtime.set("run_id", &id);
+                let _ = thread.runtime.set("run_id", &id);
                 id
             });
-        let parent_run_id = session.runtime.value("parent_run_id")
+        let parent_run_id = thread.runtime.value("parent_run_id")
             .and_then(|v| v.as_str().map(String::from));
 
         macro_rules! terminate_stream_error {
             ($message:expr) => {{
                 let (finalized, error, finish) = prepare_stream_error_termination(
-                    session,
+                    thread,
                     &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
@@ -2291,11 +2291,11 @@ fn run_loop_stream_impl_with_provider(
                     $message,
                 )
                 .await;
-                session = finalized;
+                thread = finalized;
                 yield error;
                 yield finish;
-                if let Some(tx) = final_session_tx.take() {
-                    let _ = tx.send(session);
+                if let Some(tx) = final_thread_tx.take() {
+                    let _ = tx.send(thread);
                 }
                 return;
             }};
@@ -2304,7 +2304,7 @@ fn run_loop_stream_impl_with_provider(
         // Phase: SessionStart (use scoped block to manage borrow)
         match emit_phase_block(
             Phase::SessionStart,
-            &session,
+            &thread,
             &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
@@ -2313,7 +2313,7 @@ fn run_loop_stream_impl_with_provider(
         .await
         {
             Ok(pending) => {
-                session = apply_pending_patches(session, pending);
+                thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
                 terminate_stream_error!(e.to_string());
@@ -2321,7 +2321,7 @@ fn run_loop_stream_impl_with_provider(
         }
 
         yield AgentEvent::RunStart {
-            thread_id: session.id.clone(),
+            thread_id: thread.id.clone(),
             run_id: run_id.clone(),
             parent_run_id,
         };
@@ -2343,7 +2343,7 @@ fn run_loop_stream_impl_with_provider(
             scratchpad.data.remove("__replay_tool_calls");
             let mut replay_state_changed = false;
             for tool_call in &replay_calls {
-                let state = match session.rebuild_state() {
+                let state = match thread.rebuild_state() {
                     Ok(s) => s,
                     Err(e) => {
                         terminate_stream_error!(format!(
@@ -2355,7 +2355,7 @@ fn run_loop_stream_impl_with_provider(
 
                 let tool = tools.get(&tool_call.name).cloned();
                 let rt_for_replay =
-                    match runtime_with_tool_caller_context(&session, &state, Some(&config)) {
+                    match runtime_with_tool_caller_context(&thread, &state, Some(&config)) {
                     Ok(rt) => rt,
                     Err(e) => {
                         terminate_stream_error!(e.to_string());
@@ -2370,7 +2370,7 @@ fn run_loop_stream_impl_with_provider(
                     scratchpad.data.clone(),
                     None,
                     Some(&rt_for_replay),
-                    &session.id,
+                    &thread.id,
                 )
                 .await
                 {
@@ -2390,7 +2390,7 @@ fn run_loop_stream_impl_with_provider(
 
                 // Replace the placeholder message with the real tool result.
                 let real_msg = tool_response(&tool_call.id, &replay_result.execution.result);
-                replace_placeholder_tool_message(&mut session, &tool_call.id, real_msg);
+                replace_placeholder_tool_message(&mut thread, &tool_call.id, real_msg);
 
                 // Preserve reminder emission semantics for replayed tool calls.
                 if !replay_result.reminders.is_empty() {
@@ -2400,16 +2400,16 @@ fn run_loop_stream_impl_with_provider(
                             reminder
                         ))
                     });
-                    session = session.with_messages(msgs);
+                    thread = thread.with_messages(msgs);
                 }
 
                 if let Some(patch) = replay_result.execution.patch.clone() {
                     replay_state_changed = true;
-                    session = session.with_patch(patch);
+                    thread = thread.with_patch(patch);
                 }
                 if !replay_result.pending_patches.is_empty() {
                     replay_state_changed = true;
-                    session = session.with_patches(replay_result.pending_patches.clone());
+                    thread = thread.with_patches(replay_result.pending_patches.clone());
                 }
 
                 yield AgentEvent::ToolCallDone {
@@ -2420,7 +2420,7 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Clear pending_interaction state after replaying tools.
-            let state = match session.rebuild_state() {
+            let state = match thread.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
                     terminate_stream_error!(format!("failed to rebuild state after replay: {e}"));
@@ -2430,11 +2430,11 @@ fn run_loop_stream_impl_with_provider(
             let clear_patch = clear_agent_pending_interaction(&state);
             if !clear_patch.patch().is_empty() {
                 replay_state_changed = true;
-                session = session.with_patch(clear_patch);
+                thread = thread.with_patch(clear_patch);
             }
 
             if replay_state_changed {
-                let snapshot = match session.rebuild_state() {
+                let snapshot = match thread.rebuild_state() {
                     Ok(s) => s,
                     Err(e) => {
                         terminate_stream_error!(format!("failed to rebuild replay snapshot: {e}"));
@@ -2450,15 +2450,15 @@ fn run_loop_stream_impl_with_provider(
             // Check cancellation at the top of each iteration.
             if let Some(ref token) = cancel_token {
                 if token.is_cancelled() {
-                    session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                    thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                     yield AgentEvent::RunFinish {
-                        thread_id: session.id.clone(),
+                        thread_id: thread.id.clone(),
                         run_id: run_id.clone(),
                         result: None,
                         stop_reason: Some(StopReason::Cancelled),
                     };
-                    if let Some(tx) = final_session_tx.take() {
-                        let _ = tx.send(session);
+                    if let Some(tx) = final_thread_tx.take() {
+                        let _ = tx.send(thread);
                     }
                     return;
                 }
@@ -2466,7 +2466,7 @@ fn run_loop_stream_impl_with_provider(
 
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let step_prepare = run_phase_block(
-                &session,
+                &thread,
                 &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
@@ -2488,11 +2488,11 @@ fn run_loop_stream_impl_with_provider(
                         terminate_stream_error!(e.to_string());
                     }
                 };
-            session = apply_pending_patches(session, pending);
+            thread = apply_pending_patches(thread, pending);
 
             // Skip inference if requested
             if skip_inference {
-                let pending_interaction = session
+                let pending_interaction = thread
                     .rebuild_state()
                     .ok()
                     .and_then(|s| {
@@ -2504,9 +2504,9 @@ fn run_loop_stream_impl_with_provider(
                 if let Some(interaction) = pending_interaction.clone() {
                     yield AgentEvent::Pending { interaction };
                 }
-                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
-                    thread_id: session.id.clone(),
+                    thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
                     stop_reason: if pending_interaction.is_some() {
@@ -2515,8 +2515,8 @@ fn run_loop_stream_impl_with_provider(
                         Some(StopReason::PluginRequested)
                     },
                 };
-                if let Some(tx) = final_session_tx.take() {
-                    let _ = tx.send(session);
+                if let Some(tx) = final_thread_tx.take() {
+                    let _ = tx.send(thread);
                 }
                 return;
             }
@@ -2547,7 +2547,7 @@ fn run_loop_stream_impl_with_provider(
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                     match emit_cleanup_phases_and_apply(
-                        session.clone(),
+                        thread.clone(),
                         &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
@@ -2556,8 +2556,8 @@ fn run_loop_stream_impl_with_provider(
                     )
                     .await
                     {
-                        Ok(next_session) => {
-                            session = next_session;
+                        Ok(next_thread) => {
+                            thread = next_thread;
                         }
                         Err(phase_error) => {
                             terminate_stream_error!(phase_error.to_string());
@@ -2576,15 +2576,15 @@ fn run_loop_stream_impl_with_provider(
                 let next_event = if let Some(ref token) = cancel_token {
                     tokio::select! {
                         _ = token.cancelled() => {
-                            session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                            thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                             yield AgentEvent::RunFinish {
-                                thread_id: session.id.clone(),
+                                thread_id: thread.id.clone(),
                                 run_id: run_id.clone(),
                                 result: None,
                                 stop_reason: Some(StopReason::Cancelled),
                             };
-                            if let Some(tx) = final_session_tx.take() {
-                                let _ = tx.send(session);
+                            if let Some(tx) = final_thread_tx.take() {
+                                let _ = tx.send(thread);
                             }
                             return;
                         }
@@ -2617,7 +2617,7 @@ fn run_loop_stream_impl_with_provider(
                     Err(e) => {
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match emit_cleanup_phases_and_apply(
-                            session.clone(),
+                            thread.clone(),
                             &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
@@ -2626,8 +2626,8 @@ fn run_loop_stream_impl_with_provider(
                         )
                         .await
                         {
-                            Ok(next_session) => {
-                                session = next_session;
+                            Ok(next_thread) => {
+                                thread = next_thread;
                             }
                             Err(phase_error) => {
                                 terminate_stream_error!(phase_error.to_string());
@@ -2651,7 +2651,7 @@ fn run_loop_stream_impl_with_provider(
             // Phase: AfterInference (with new context)
             match emit_phase_block(
                 Phase::AfterInference,
-                &session,
+                &thread,
                 &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
@@ -2662,7 +2662,7 @@ fn run_loop_stream_impl_with_provider(
             .await
             {
                 Ok(pending) => {
-                    session = apply_pending_patches(session, pending);
+                    thread = apply_pending_patches(thread, pending);
                 }
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
@@ -2674,16 +2674,16 @@ fn run_loop_stream_impl_with_provider(
                 run_id: Some(run_id.clone()),
                 step_index: Some(loop_state.rounds as u32),
             };
-            session = if result.tool_calls.is_empty() {
-                session.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
+            thread = if result.tool_calls.is_empty() {
+                thread.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
             } else {
-                session.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta.clone()))
+                thread.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta.clone()))
             };
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
             match emit_phase_block(
                 Phase::StepEnd,
-                &session,
+                &thread,
                 &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
@@ -2692,7 +2692,7 @@ fn run_loop_stream_impl_with_provider(
             .await
             {
                 Ok(pending) => {
-                    session = apply_pending_patches(session, pending);
+                    thread = apply_pending_patches(thread, pending);
                 }
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
@@ -2700,9 +2700,9 @@ fn run_loop_stream_impl_with_provider(
             }
 
             if let Some(tx) = checkpoint_tx.as_ref() {
-                let _ = tx.send(SessionCheckpoint {
-                    reason: SessionCheckpointReason::AssistantTurnCommitted,
-                    session: session.clone(),
+                let _ = tx.send(ThreadCheckpoint {
+                    reason: ThreadCheckpointReason::AssistantTurnCommitted,
+                    thread: thread.clone(),
                 });
             }
 
@@ -2711,7 +2711,7 @@ fn run_loop_stream_impl_with_provider(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
-                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
 
                 let result_value = if result.text.is_empty() {
                     None
@@ -2719,13 +2719,13 @@ fn run_loop_stream_impl_with_provider(
                     Some(serde_json::json!({"response": result.text}))
                 };
                 yield AgentEvent::RunFinish {
-                    thread_id: session.id.clone(),
+                    thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: result_value,
                     stop_reason: Some(StopReason::NaturalEnd),
                 };
-                if let Some(tx) = final_session_tx.take() {
-                    let _ = tx.send(session);
+                if let Some(tx) = final_thread_tx.take() {
+                    let _ = tx.send(thread);
                 }
                 return;
             }
@@ -2740,7 +2740,7 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Execute tools with phase hooks
-            let state = match session.rebuild_state() {
+            let state = match thread.rebuild_state() {
                 Ok(s) => s,
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
@@ -2748,13 +2748,13 @@ fn run_loop_stream_impl_with_provider(
             };
 
             let rt_for_tools =
-                match runtime_with_tool_caller_context(&session, &state, Some(&config)) {
+                match runtime_with_tool_caller_context(&thread, &state, Some(&config)) {
                 Ok(rt) => rt,
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
                 }
             };
-            let sid_for_tools = session.id.clone();
+            let sid_for_tools = thread.id.clone();
             let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
                 if config.parallel_tools {
                     Box::pin(execute_tools_parallel_with_phases(
@@ -2791,15 +2791,15 @@ fn run_loop_stream_impl_with_provider(
                             futures::future::pending::<()>().await;
                         }
                     } => {
-                        session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                        thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                         yield AgentEvent::RunFinish {
-                            thread_id: session.id.clone(),
+                            thread_id: thread.id.clone(),
                             run_id: run_id.clone(),
                             result: None,
                             stop_reason: Some(StopReason::Cancelled),
                         };
-                        if let Some(tx) = final_session_tx.take() {
-                            let _ = tx.send(session);
+                        if let Some(tx) = final_thread_tx.take() {
+                            let _ = tx.send(thread);
                         }
                         return;
                     }
@@ -2853,25 +2853,25 @@ fn run_loop_stream_impl_with_provider(
                     };
                 }
             }
-            let session_before_apply = session.clone();
+            let session_before_apply = thread.clone();
             let applied = match apply_tool_results_to_session(
-                session,
+                thread,
                 &results,
                 Some(step_meta),
                 config.parallel_tools,
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    session = session_before_apply;
+                    thread = session_before_apply;
                     terminate_stream_error!(e.to_string());
                 }
             };
-            session = applied.session;
+            thread = applied.thread;
 
             if let Some(tx) = checkpoint_tx.as_ref() {
-                let _ = tx.send(SessionCheckpoint {
-                    reason: SessionCheckpointReason::ToolResultsCommitted,
-                    session: session.clone(),
+                let _ = tx.send(ThreadCheckpoint {
+                    reason: ThreadCheckpointReason::ToolResultsCommitted,
+                    thread: thread.clone(),
                 });
             }
 
@@ -2894,15 +2894,15 @@ fn run_loop_stream_impl_with_provider(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
-                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
-                    thread_id: session.id.clone(),
+                    thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
                     stop_reason: None, // Pause, not a stop
                 };
-                if let Some(tx) = final_session_tx.take() {
-                    let _ = tx.send(session);
+                if let Some(tx) = final_thread_tx.take() {
+                    let _ = tx.send(thread);
                 }
                 return;
             }
@@ -2916,17 +2916,17 @@ fn run_loop_stream_impl_with_provider(
             loop_state.rounds += 1;
 
             // Check stop conditions.
-            let stop_ctx = loop_state.to_check_context(&result, &session);
+            let stop_ctx = loop_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
-                    thread_id: session.id.clone(),
+                    thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
                     stop_reason: Some(reason),
                 };
-                if let Some(tx) = final_session_tx.take() {
-                    let _ = tx.send(session);
+                if let Some(tx) = final_thread_tx.take() {
+                    let _ = tx.send(thread);
                 }
                 return;
             }
@@ -2940,10 +2940,10 @@ fn run_loop_stream_impl_with_provider(
 #[derive(Debug)]
 pub enum RoundResult {
     /// LLM responded with text, no tools needed.
-    Done { session: Session, response: String },
+    Done { thread: Thread, response: String },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
-        session: Session,
+        thread: Thread,
         text: String,
         tool_calls: Vec<crate::types::ToolCall>,
     },
@@ -2955,24 +2955,24 @@ pub enum RoundResult {
 pub async fn run_round(
     client: &Client,
     config: &AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<RoundResult, AgentLoopError> {
     // Run one step
-    let (session, result) = run_step(client, config, session, tools).await?;
+    let (thread, result) = run_step(client, config, thread, tools).await?;
 
     if !result.needs_tools() {
         return Ok(RoundResult::Done {
-            session,
+            thread,
             response: result.text,
         });
     }
 
     // Execute tools
-    let session = execute_tools_with_config(session, &result, tools, config).await?;
+    let thread = execute_tools_with_config(thread, &result, tools, config).await?;
 
     Ok(RoundResult::ToolsExecuted {
-        session,
+        thread,
         text: result.text,
         tool_calls: result.tool_calls,
     })
@@ -2991,7 +2991,7 @@ pub enum AgentLoopError {
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
-        session: Box<Session>,
+        thread: Box<Thread>,
         reason: StopReason,
     },
     /// Pending user interaction; execution should pause until the client responds.
@@ -3000,7 +3000,7 @@ pub enum AgentLoopError {
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        session: Box<Session>,
+        thread: Box<Thread>,
         interaction: Box<Interaction>,
     },
 }
@@ -3090,8 +3090,8 @@ mod tests {
 
         async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
             let rt = ctx.runtime_ref().expect("runtime should exist");
-            let session_id = rt
-                .value(TOOL_RUNTIME_CALLER_SESSION_ID_KEY)
+            let thread_id = rt
+                .value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
@@ -3108,7 +3108,7 @@ mod tests {
             Ok(ToolResult::success(
                 "runtime_snapshot",
                 json!({
-                    "session_id": session_id,
+                    "thread_id": thread_id,
                     "state": state,
                     "messages_len": messages_len
                 }),
@@ -3246,7 +3246,7 @@ mod tests {
         assert!(err.to_string().contains("timeout"));
 
         let err = AgentLoopError::Stopped {
-            session: Box::new(Session::new("test")),
+            thread: Box::new(Thread::new("test")),
             reason: StopReason::MaxRoundsReached,
         };
         assert!(err.to_string().contains("MaxRoundsReached"));
@@ -3256,7 +3256,7 @@ mod tests {
     fn test_execute_tools_empty() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Hello".to_string(),
                 tool_calls: vec![],
@@ -3264,8 +3264,8 @@ mod tests {
             };
             let tools = HashMap::new();
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-            assert_eq!(session.message_count(), 0);
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+            assert_eq!(thread.message_count(), 0);
         });
     }
 
@@ -3273,7 +3273,7 @@ mod tests {
     fn test_execute_tools_with_calls() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Calling tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -3285,10 +3285,10 @@ mod tests {
             };
             let tools = tool_map([EchoTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+            assert_eq!(thread.message_count(), 1);
+            assert_eq!(thread.messages[0].role, crate::types::Role::Tool);
         });
     }
 
@@ -3296,7 +3296,7 @@ mod tests {
     fn test_execute_tools_injects_caller_runtime_context_for_tools() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::with_initial_state("caller-s", json!({"k":"v"}))
+            let thread = Thread::with_initial_state("caller-s", json!({"k":"v"}))
                 .with_message(crate::Message::user("hello"));
             let result = StreamResult {
                 text: "Calling tool".to_string(),
@@ -3309,16 +3309,16 @@ mod tests {
             };
             let tools = tool_map([RuntimeSnapshotTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
-            assert_eq!(session.message_count(), 2);
-            let tool_msg = session
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
+            assert_eq!(thread.message_count(), 2);
+            let tool_msg = thread
                 .messages
                 .last()
                 .expect("tool result message should exist");
             let tool_result: ToolResult =
                 serde_json::from_str(&tool_msg.content).expect("tool result json");
             assert_eq!(tool_result.status, crate::ToolStatus::Success);
-            assert_eq!(tool_result.data["session_id"], json!("caller-s"));
+            assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
             assert_eq!(tool_result.data["state"]["k"], json!("v"));
             assert_eq!(tool_result.data["messages_len"], json!(1));
         });
@@ -3505,7 +3505,7 @@ mod tests {
     fn test_execute_tools_with_state_changes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
+            let thread = Thread::with_initial_state("test", json!({"counter": 0}));
             let result = StreamResult {
                 text: "Incrementing".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -3517,27 +3517,27 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            assert_eq!(session.patch_count(), 1);
+            assert_eq!(thread.message_count(), 1);
+            assert_eq!(thread.patch_count(), 1);
 
-            let state = session.rebuild_state().unwrap();
+            let state = thread.rebuild_state().unwrap();
             assert_eq!(state["counter"], 5);
         });
     }
 
     #[test]
     fn test_round_result_variants() {
-        let session = Session::new("test");
+        let thread = Thread::new("test");
 
         let done = RoundResult::Done {
-            session: session.clone(),
+            thread: thread.clone(),
             response: "Hello".to_string(),
         };
 
         let tools_executed = RoundResult::ToolsExecuted {
-            session,
+            thread,
             text: "Calling tools".to_string(),
             tool_calls: vec![],
         };
@@ -3572,7 +3572,7 @@ mod tests {
     fn test_execute_tools_with_failing_tool() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Calling failing tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new("call_1", "failing", json!({}))],
@@ -3580,10 +3580,10 @@ mod tests {
             };
             let tools = tool_map([FailingTool]);
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert!(msg.content.contains("error") || msg.content.contains("fail"));
         });
     }
@@ -3614,7 +3614,7 @@ mod tests {
                     step.system("Test system context");
                 }
                 Phase::BeforeInference => {
-                    step.session("Test session context");
+                    step.thread("Test thread context");
                 }
                 Phase::AfterToolExecute => {
                     if step.tool_name() == Some("echo") {
@@ -3654,7 +3654,7 @@ mod tests {
     fn test_execute_tools_with_blocking_phase_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Blocked".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -3667,12 +3667,12 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(BlockingPhasePlugin)];
 
-            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+            let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
                 .await
                 .unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert!(
                 msg.content.contains("blocked") || msg.content.contains("Error"),
                 "Expected blocked/error in message, got: {}",
@@ -3700,7 +3700,7 @@ mod tests {
     fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "invalid".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -3713,7 +3713,7 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(InvalidAfterToolMutationPlugin)];
 
-            let err = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+            let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
                 .await
                 .expect_err("phase mutation outside BeforeToolExecute should fail");
 
@@ -3747,7 +3747,7 @@ mod tests {
     fn test_execute_tools_with_reminder_phase_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "With reminder".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -3760,14 +3760,14 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ReminderPhasePlugin)];
 
-            let session = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+            let thread = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
                 .await
                 .unwrap();
 
             // Should have tool response + reminder message
-            assert_eq!(session.message_count(), 2);
-            assert!(session.messages[1].content.contains("system-reminder"));
-            assert!(session.messages[1]
+            assert_eq!(thread.message_count(), 2);
+            assert!(thread.messages[1].content.contains("system-reminder"));
+            assert!(thread.messages[1]
                 .content
                 .contains("Tool execution completed"));
         });
@@ -3775,13 +3775,13 @@ mod tests {
 
     #[test]
     fn test_build_messages_with_context() {
-        let session = Session::new("test").with_message(Message::user("Hello"));
+        let thread = Thread::new("test").with_message(Message::user("Hello"));
         let tool_descriptors = vec![ToolDescriptor::new("test", "Test", "Test tool")];
-        let mut step = StepContext::new(&session, tool_descriptors);
+        let mut step = StepContext::new(&thread, tool_descriptors);
 
         step.system("System context 1");
         step.system("System context 2");
-        step.session("Session context");
+        step.thread("Thread context");
 
         let messages = build_messages(&step, "Base system prompt");
 
@@ -3789,14 +3789,14 @@ mod tests {
         assert!(messages[0].content.contains("Base system prompt"));
         assert!(messages[0].content.contains("System context 1"));
         assert!(messages[0].content.contains("System context 2"));
-        assert_eq!(messages[1].content, "Session context");
+        assert_eq!(messages[1].content, "Thread context");
         assert_eq!(messages[2].content, "Hello");
     }
 
     #[test]
     fn test_build_messages_empty_system() {
-        let session = Session::new("test").with_message(Message::user("Hello"));
-        let step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test").with_message(Message::user("Hello"));
+        let step = StepContext::new(&thread, vec![]);
 
         let messages = build_messages(&step, "");
 
@@ -3823,12 +3823,12 @@ mod tests {
     fn test_tool_filtering_via_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let tool_descriptors = vec![
                 ToolDescriptor::new("safe_tool", "Safe", "Safe tool"),
                 ToolDescriptor::new("dangerous_tool", "Dangerous", "Dangerous tool"),
             ];
-            let mut step = StepContext::new(&session, tool_descriptors);
+            let mut step = StepContext::new(&thread, tool_descriptors);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
 
             emit_phase_checked(Phase::BeforeInference, &mut step, &plugins)
@@ -3857,8 +3857,8 @@ mod tests {
             }
         }
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
         let runtime_data = ScratchpadRuntimeData::new(&plugins);
         step.set_scratchpad_map(runtime_data.data);
@@ -3976,8 +3976,8 @@ mod tests {
 
             async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
                 if phase == Phase::BeforeToolExecute {
-                    assert_eq!(step.session.id, "real-session-42");
-                    assert_eq!(step.session.runtime.value("user_id"), Some(&json!("u-abc")),);
+                    assert_eq!(step.thread.id, "real-thread-42");
+                    assert_eq!(step.thread.runtime.value("user_id"), Some(&json!("u-abc")),);
                     VERIFIED.store(true, Ordering::SeqCst);
                 }
             }
@@ -4003,7 +4003,7 @@ mod tests {
             HashMap::new(),
             None,
             Some(&rt),
-            "real-session-42",
+            "real-thread-42",
         )
         .await
         .expect("tool execution should succeed");
@@ -4043,18 +4043,18 @@ mod tests {
             }
         }
 
-        let session = Session::new("test");
+        let thread = Thread::new("test");
         let tools = vec![];
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(LifecyclePlugin)];
         let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
-        let mut session_step = scratchpad.new_step_context(&session, tools.clone());
+        let mut session_step = scratchpad.new_step_context(&thread, tools.clone());
         emit_phase_checked(Phase::SessionStart, &mut session_step, &plugins)
             .await
             .expect("SessionStart should not fail");
         scratchpad.sync_from_step(&session_step);
 
-        let mut step = scratchpad.new_step_context(&session, tools);
+        let mut step = scratchpad.new_step_context(&thread, tools);
         emit_phase_checked(Phase::StepStart, &mut step, &plugins)
             .await
             .expect("StepStart should not fail");
@@ -4095,7 +4095,7 @@ mod tests {
             }
         }
 
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
         let phases = Arc::new(Mutex::new(Vec::new()));
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PhaseBlockPlugin {
@@ -4104,7 +4104,7 @@ mod tests {
         let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
         let (extracted, pending) = run_phase_block(
-            &session,
+            &thread,
             &mut scratchpad,
             &tool_descriptors,
             &plugins,
@@ -4130,7 +4130,7 @@ mod tests {
         assert_eq!(extracted.2, Some(true));
         assert_eq!(pending.len(), 1);
 
-        let updated = apply_pending_patches(session, pending);
+        let updated = apply_pending_patches(thread, pending);
         let state = updated
             .rebuild_state()
             .expect("state rebuild should succeed");
@@ -4175,7 +4175,7 @@ mod tests {
             }
         }
 
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
         let phases = Arc::new(Mutex::new(Vec::new()));
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(CleanupPlugin {
@@ -4184,7 +4184,7 @@ mod tests {
         let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
         let updated = emit_cleanup_phases_and_apply(
-            session,
+            thread,
             &mut scratchpad,
             &tool_descriptors,
             &plugins,
@@ -4225,7 +4225,7 @@ mod tests {
                         step.scratchpad_set("counter", next);
                     }
                     Phase::SessionEnd => {
-                        let Ok(state) = step.session.rebuild_state() else {
+                        let Ok(state) = step.thread.rebuild_state() else {
                             return;
                         };
                         let run_count = state
@@ -4257,28 +4257,28 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(RunScopedScratchpadPlugin) as Arc<dyn AgentPlugin>);
         let tools = HashMap::new();
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
 
-        let (_, first_session) = run_mock_stream_with_final_session(
+        let (_, first_thread) = run_mock_stream_with_final_thread(
             MockStreamProvider::new(vec![MockResponse::text("done")]),
             config.clone(),
-            session,
+            thread,
             tools.clone(),
         )
         .await;
-        let first_state = first_session.rebuild_state().unwrap();
+        let first_state = first_thread.rebuild_state().unwrap();
         assert_eq!(first_state["debug"]["run_count"], 1);
         assert_eq!(first_state["debug"]["last_scratchpad_counter"], 2);
         assert!(first_state.get("counter").is_none());
 
-        let (_, second_session) = run_mock_stream_with_final_session(
+        let (_, second_thread) = run_mock_stream_with_final_thread(
             MockStreamProvider::new(vec![MockResponse::text("done")]),
             config,
-            first_session,
+            first_thread,
             tools,
         )
         .await;
-        let second_state = second_session.rebuild_state().unwrap();
+        let second_state = second_thread.rebuild_state().unwrap();
         assert_eq!(second_state["debug"]["run_count"], 2);
         assert_eq!(
             second_state["debug"]["last_scratchpad_counter"], 2,
@@ -4348,7 +4348,7 @@ mod tests {
     fn test_execute_tools_with_pending_phase_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Pending".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4361,15 +4361,15 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingPhasePlugin)];
 
-            let err = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+            let err = execute_tools_with_plugins(thread, &result, &tools, true, &plugins)
                 .await
                 .unwrap_err();
 
-            let (session, interaction) = match err {
+            let (thread, interaction) = match err {
                 AgentLoopError::PendingInteraction {
-                    session,
+                    thread,
                     interaction,
-                } => (session, interaction),
+                } => (thread, interaction),
                 other => panic!("Expected PendingInteraction error, got: {:?}", other),
             };
 
@@ -4377,19 +4377,19 @@ mod tests {
             assert_eq!(interaction.action, "confirm");
 
             // Pending tool gets a placeholder tool result to keep message sequence valid.
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert_eq!(msg.role, crate::types::Role::Tool);
             assert!(msg.content.contains("awaiting approval"));
 
-            let state = session.rebuild_state().unwrap();
+            let state = thread.rebuild_state().unwrap();
             assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
         });
     }
 
     #[test]
     fn test_apply_tool_results_rejects_multiple_pending_interactions() {
-        let session = Session::new("test");
+        let thread = Thread::new("test");
 
         let mut first = scratchpad_result("call_1", scratchpad_map(vec![]));
         first.pending_interaction =
@@ -4399,7 +4399,7 @@ mod tests {
         second.pending_interaction =
             Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
-        let result = apply_tool_results_to_session(session, &[first, second], None, false);
+        let result = apply_tool_results_to_session(thread, &[first, second], None, false);
         assert!(
             matches!(result, Err(AgentLoopError::StateError(_))),
             "expected StateError when multiple pending interactions exist"
@@ -4408,51 +4408,51 @@ mod tests {
 
     #[test]
     fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
 
-        let applied = apply_tool_results_to_session(session, &[result], None, false)
+        let applied = apply_tool_results_to_session(thread, &[result], None, false)
             .expect("apply_tool_results_to_session should succeed");
 
-        assert_eq!(applied.session.message_count(), 2);
-        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
-        assert_eq!(applied.session.messages[1].role, crate::types::Role::User);
-        assert_eq!(applied.session.messages[1].content, "## DOCX\nUse docx-js.");
+        assert_eq!(applied.thread.message_count(), 2);
+        assert_eq!(applied.thread.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.thread.messages[1].role, crate::types::Role::User);
+        assert_eq!(applied.thread.messages[1].content, "## DOCX\nUse docx-js.");
     }
 
     #[test]
     fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
         let meta = MessageMetadata {
             run_id: Some("run-1".to_string()),
             step_index: Some(3),
         };
 
-        let applied = apply_tool_results_to_session(session, &[result], Some(meta.clone()), false)
+        let applied = apply_tool_results_to_session(thread, &[result], Some(meta.clone()), false)
             .expect("apply_tool_results_to_session should succeed");
 
-        assert_eq!(applied.session.message_count(), 2);
-        let user_msg = &applied.session.messages[1];
+        assert_eq!(applied.thread.message_count(), 2);
+        let user_msg = &applied.thread.messages[1];
         assert_eq!(user_msg.role, crate::types::Role::User);
         assert_eq!(user_msg.metadata.as_ref(), Some(&meta));
     }
 
     #[test]
     fn test_apply_tool_results_skill_without_instruction_does_not_append_user_message() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let result = skill_activation_result("call_1", "docx", None);
 
-        let applied = apply_tool_results_to_session(session, &[result], None, false)
+        let applied = apply_tool_results_to_session(thread, &[result], None, false)
             .expect("apply_tool_results_to_session should succeed");
 
-        assert_eq!(applied.session.message_count(), 1);
-        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.thread.message_count(), 1);
+        assert_eq!(applied.thread.messages[0].role, crate::types::Role::Tool);
     }
 
     #[test]
     fn test_apply_tool_results_appends_user_messages_from_tool_result_metadata() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let result = ToolExecutionResult {
             execution: crate::execute::ToolExecution {
                 call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
@@ -4468,20 +4468,20 @@ mod tests {
             pending_patches: Vec::new(),
         };
 
-        let applied = apply_tool_results_to_session(session, &[result], None, false)
+        let applied = apply_tool_results_to_session(thread, &[result], None, false)
             .expect("apply should succeed");
 
-        assert_eq!(applied.session.message_count(), 3);
-        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
-        assert_eq!(applied.session.messages[1].role, crate::types::Role::User);
-        assert_eq!(applied.session.messages[1].content, "first");
-        assert_eq!(applied.session.messages[2].role, crate::types::Role::User);
-        assert_eq!(applied.session.messages[2].content, "second");
+        assert_eq!(applied.thread.message_count(), 3);
+        assert_eq!(applied.thread.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.thread.messages[1].role, crate::types::Role::User);
+        assert_eq!(applied.thread.messages[1].content, "first");
+        assert_eq!(applied.thread.messages[2].role, crate::types::Role::User);
+        assert_eq!(applied.thread.messages[2].content, "second");
     }
 
     #[test]
     fn test_apply_tool_results_ignores_invalid_append_user_messages_metadata() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let result = ToolExecutionResult {
             execution: crate::execute::ToolExecution {
                 call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
@@ -4497,22 +4497,22 @@ mod tests {
             pending_patches: Vec::new(),
         };
 
-        let applied = apply_tool_results_to_session(session, &[result], None, false)
+        let applied = apply_tool_results_to_session(thread, &[result], None, false)
             .expect("apply should succeed");
 
-        assert_eq!(applied.session.message_count(), 1);
-        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.thread.message_count(), 1);
+        assert_eq!(applied.thread.messages[0].role, crate::types::Role::Tool);
     }
 
     #[test]
     fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
-        let session = Session::with_initial_state("test", json!({}));
+        let thread = Thread::with_initial_state("test", json!({}));
         let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
         let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
 
         let applied =
-            apply_tool_results_to_session(session, &[first, second], None, true).expect("apply");
-        let messages = &applied.session.messages;
+            apply_tool_results_to_session(thread, &[first, second], None, true).expect("apply");
+        let messages = &applied.thread.messages;
 
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, crate::types::Role::Tool);
@@ -4536,7 +4536,7 @@ mod tests {
     fn test_execute_tools_missing_tool() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Calling unknown tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4548,10 +4548,10 @@ mod tests {
             };
             let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new(); // Empty tools
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert!(
                 msg.content.contains("not found") || msg.content.contains("Error"),
                 "Expected 'not found' error in message, got: {}",
@@ -4564,7 +4564,7 @@ mod tests {
     fn test_execute_tools_with_config_empty_calls() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "No tools".to_string(),
                 tool_calls: vec![],
@@ -4573,12 +4573,12 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
             // No messages should be added when there are no tool calls
-            assert_eq!(session.message_count(), 0);
+            assert_eq!(thread.message_count(), 0);
         });
     }
 
@@ -4586,7 +4586,7 @@ mod tests {
     fn test_execute_tools_with_config_basic() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Calling tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4599,12 +4599,12 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+            assert_eq!(thread.message_count(), 1);
+            assert_eq!(thread.messages[0].role, crate::types::Role::Tool);
         });
     }
 
@@ -4612,7 +4612,7 @@ mod tests {
     fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Calling tool".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4625,12 +4625,12 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4").with_allowed_tools(vec!["other".to_string()]);
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             let result: ToolResult = serde_json::from_str(&msg.content).expect("tool result");
             assert!(result.is_error());
             assert!(result
@@ -4644,7 +4644,7 @@ mod tests {
     fn test_execute_tools_with_config_attaches_runtime_run_metadata() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let mut session = Session::new("test").with_message(
+            let mut thread = Thread::new("test").with_message(
                 Message::assistant_with_tool_calls(
                     "calling tool",
                     vec![crate::types::ToolCall::new(
@@ -4658,7 +4658,7 @@ mod tests {
                     step_index: Some(7),
                 }),
             );
-            session.runtime.set("run_id", "run-meta-1").unwrap();
+            thread.runtime.set("run_id", "run-meta-1").unwrap();
 
             let result = StreamResult {
                 text: "Calling tool".to_string(),
@@ -4672,12 +4672,12 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
-            assert_eq!(session.message_count(), 2);
-            let tool_msg = session.messages.last().expect("tool message should exist");
+            assert_eq!(thread.message_count(), 2);
+            let tool_msg = thread.messages.last().expect("tool message should exist");
             assert_eq!(tool_msg.role, crate::types::Role::Tool);
             let meta = tool_msg
                 .metadata
@@ -4692,7 +4692,7 @@ mod tests {
     fn test_execute_tools_with_config_with_blocking_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Blocked".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4706,12 +4706,12 @@ mod tests {
             let config = AgentConfig::new("gpt-4")
                 .with_plugin(Arc::new(BlockingPhasePlugin) as Arc<dyn AgentPlugin>);
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert!(
                 msg.content.contains("blocked") || msg.content.contains("Error"),
                 "Expected blocked error in message, got: {}",
@@ -4724,7 +4724,7 @@ mod tests {
     fn test_execute_tools_with_config_with_pending_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Pending".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4738,15 +4738,15 @@ mod tests {
             let config = AgentConfig::new("gpt-4")
                 .with_plugin(Arc::new(PendingPhasePlugin) as Arc<dyn AgentPlugin>);
 
-            let err = execute_tools_with_config(session, &result, &tools, &config)
+            let err = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap_err();
 
-            let (session, interaction) = match err {
+            let (thread, interaction) = match err {
                 AgentLoopError::PendingInteraction {
-                    session,
+                    thread,
                     interaction,
-                } => (session, interaction),
+                } => (thread, interaction),
                 other => panic!("Expected PendingInteraction error, got: {:?}", other),
             };
 
@@ -4754,13 +4754,13 @@ mod tests {
             assert_eq!(interaction.action, "confirm");
 
             // Pending tool gets a placeholder tool result to keep message sequence valid.
-            assert_eq!(session.message_count(), 1);
-            let msg = &session.messages[0];
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
             assert_eq!(msg.role, crate::types::Role::Tool);
             assert!(msg.content.contains("awaiting approval"));
 
             // Pending interaction should be persisted via AgentState.
-            let state = session.rebuild_state().unwrap();
+            let state = thread.rebuild_state().unwrap();
             assert_eq!(state["agent"]["pending_interaction"]["id"], "confirm_1");
         });
     }
@@ -4769,7 +4769,7 @@ mod tests {
     fn test_execute_tools_with_config_with_reminder_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "With reminder".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -4783,13 +4783,13 @@ mod tests {
             let config = AgentConfig::new("gpt-4")
                 .with_plugin(Arc::new(ReminderPhasePlugin) as Arc<dyn AgentPlugin>);
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
             // Should have tool response + reminder message
-            assert_eq!(session.message_count(), 2);
-            assert!(session.messages[1].content.contains("system-reminder"));
+            assert_eq!(thread.message_count(), 2);
+            assert!(thread.messages[1].content.contains("system-reminder"));
         });
     }
 
@@ -4803,7 +4803,7 @@ mod tests {
                 &base_state,
                 Interaction::new("confirm_1", "confirm").with_message("ok"),
             );
-            let session = Session::with_initial_state("test", base_state).with_patch(pending_patch);
+            let thread = Thread::with_initial_state("test", base_state).with_patch(pending_patch);
 
             let result = StreamResult {
                 text: "Calling tool".to_string(),
@@ -4817,11 +4817,11 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let config = AgentConfig::new("gpt-4");
 
-            let session = execute_tools_with_config(session, &result, &tools, &config)
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
                 .await
                 .unwrap();
 
-            let state = session.rebuild_state().unwrap();
+            let state = thread.rebuild_state().unwrap();
             let pending = state
                 .get("agent")
                 .and_then(|a| a.get("pending_interaction"));
@@ -4860,7 +4860,7 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Call tools".to_string(),
                 tool_calls: vec![
@@ -4876,7 +4876,7 @@ mod tests {
             let plugins: Vec<Arc<dyn AgentPlugin>> =
                 vec![Arc::new(FirstCallIntermediatePatchPlugin)];
 
-            let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+            let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
                 .await
                 .expect_err("sequential apply errors should surface");
             assert!(matches!(err, AgentLoopError::StateError(_)));
@@ -4936,13 +4936,13 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
 
         let stream = run_loop_stream(
             Client::default(),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -4987,13 +4987,13 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
 
         let stream = run_loop_stream(
             Client::default(),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -5026,7 +5026,7 @@ mod tests {
                 if phase != Phase::BeforeInference {
                     return;
                 }
-                let state = step.session.rebuild_state().expect("state should rebuild");
+                let state = step.thread.rebuild_state().expect("state should rebuild");
                 let patch = set_agent_pending_interaction(
                     &state,
                     Interaction::new("agent_recovery_run-1", "recover_agent_run")
@@ -5039,13 +5039,13 @@ mod tests {
 
         let config = AgentConfig::new("gpt-4o-mini")
             .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
 
         let events = collect_stream_events(run_loop_stream(
             Client::default(),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
         ))
@@ -5073,11 +5073,11 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
         let client = Client::default();
 
-        let result = run_loop(&client, &config, session, &tools).await;
+        let result = run_loop(&client, &config, thread, &tools).await;
         assert!(result.is_ok());
 
         let recorded = phases.lock().unwrap().clone();
@@ -5103,14 +5103,14 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
         let client = Client::default();
 
-        let (final_session, _response) = run_loop(&client, &config, session, &tools)
+        let (final_thread, _response) = run_loop(&client, &config, thread, &tools)
             .await
             .expect("run_loop should succeed");
-        let run_id = final_session
+        let run_id = final_thread
             .runtime
             .value("run_id")
             .and_then(|v| v.as_str())
@@ -5137,11 +5137,11 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
         let client = Client::default();
 
-        let result = run_loop(&client, &config, session, &tools).await;
+        let result = run_loop(&client, &config, thread, &tools).await;
         assert!(result.is_ok());
 
         let recorded = phases.lock().unwrap().clone();
@@ -5177,11 +5177,11 @@ mod tests {
 
         let config = AgentConfig::new("gpt-4o-mini")
             .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
         let client = Client::default();
 
-        let result = run_loop(&client, &config, session, &tools).await;
+        let result = run_loop(&client, &config, thread, &tools).await;
         assert!(
             matches!(
                 result,
@@ -5211,10 +5211,10 @@ mod tests {
 
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(Message::user("hi"));
+        let thread = Thread::new("test").with_message(Message::user("hi"));
         let tools = HashMap::new();
 
-        let events = run_mock_stream(MockStreamProvider::new(vec![]), config, session, tools).await;
+        let events = run_mock_stream(MockStreamProvider::new(vec![]), config, thread, tools).await;
 
         assert!(
             events.iter().any(|event| matches!(
@@ -5236,13 +5236,13 @@ mod tests {
         let config =
             AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("my-session").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("my-thread").with_message(crate::types::Message::user("hello"));
         let tools = HashMap::new();
 
         let stream = run_loop_stream(
             Client::default(),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -5262,7 +5262,7 @@ mod tests {
             start_tid, finish_tid,
             "RunStart and RunFinish thread_ids must match"
         );
-        assert_eq!(start_tid.as_deref(), Some("my-session"));
+        assert_eq!(start_tid.as_deref(), Some("my-thread"));
     }
 
     // ========================================================================
@@ -5294,15 +5294,15 @@ mod tests {
 
     #[test]
     fn test_runtime_run_id_in_session() {
-        let mut session = Session::new("test");
-        session.runtime.set("run_id", "my-run").unwrap();
-        session.runtime.set("parent_run_id", "parent-run").unwrap();
+        let mut thread = Thread::new("test");
+        thread.runtime.set("run_id", "my-run").unwrap();
+        thread.runtime.set("parent_run_id", "parent-run").unwrap();
         assert_eq!(
-            session.runtime.value("run_id").and_then(|v| v.as_str()),
+            thread.runtime.value("run_id").and_then(|v| v.as_str()),
             Some("my-run")
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value("parent_run_id")
                 .and_then(|v| v.as_str()),
@@ -5419,13 +5419,13 @@ mod tests {
     async fn run_mock_stream(
         provider: MockStreamProvider,
         config: AgentConfig,
-        session: Session,
+        thread: Thread,
         tools: HashMap<String, Arc<dyn Tool>>,
     ) -> Vec<AgentEvent> {
         let stream = run_loop_stream_impl_with_provider(
             Arc::new(provider),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
             None,
@@ -5435,25 +5435,25 @@ mod tests {
     }
 
     /// Helper: run a mock stream and collect events plus final session.
-    async fn run_mock_stream_with_final_session(
+    async fn run_mock_stream_with_final_thread(
         provider: MockStreamProvider,
         config: AgentConfig,
-        session: Session,
+        thread: Thread,
         tools: HashMap<String, Arc<dyn Tool>>,
-    ) -> (Vec<AgentEvent>, Session) {
+    ) -> (Vec<AgentEvent>, Thread) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let stream = run_loop_stream_impl_with_provider(
             Arc::new(provider),
             config,
-            session,
+            thread,
             tools,
             RunContext::default(),
             Some(tx),
             None,
         );
         let events = collect_stream_events(stream).await;
-        let final_session = rx.await.expect("final session should be available");
-        (events, final_session)
+        let final_thread = rx.await.expect("final thread should be available");
+        (events, final_thread)
     }
 
     /// Extract the stop_reason from the RunFinish event.
@@ -5483,13 +5483,13 @@ mod tests {
 
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(InvalidReplayPayloadPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(Message::user("resume"));
+        let thread = Thread::new("test").with_message(Message::user("resume"));
         let tools = tool_map([EchoTool]);
 
         let events = run_mock_stream(
             MockStreamProvider::new(vec![MockResponse::text("should not run")]),
             config,
-            session,
+            thread,
             tools,
         )
         .await;
@@ -5549,7 +5549,7 @@ mod tests {
             Patch::new().with_op(Op::increment(carve_state::path!("missing_counter"), 1_i64)),
         )
         .with_source("test:broken_state");
-        let session = Session::with_initial_state("test", json!({}))
+        let thread = Thread::with_initial_state("test", json!({}))
             .with_message(Message::user("resume"))
             .with_patch(broken_patch);
 
@@ -5560,7 +5560,7 @@ mod tests {
         let events = run_mock_stream(
             MockStreamProvider::new(vec![MockResponse::text("should not run")]),
             config,
-            session,
+            thread,
             tools,
         )
         .await;
@@ -5618,13 +5618,13 @@ mod tests {
 
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(ReplayBlockingPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(Message::user("resume"));
+        let thread = Thread::new("test").with_message(Message::user("resume"));
         let tools = tool_map([EchoTool]);
 
         let events = run_mock_stream(
             MockStreamProvider::new(vec![MockResponse::text("done")]),
             config,
-            session,
+            thread,
             tools,
         )
         .await;
@@ -5677,18 +5677,18 @@ mod tests {
 
         let config =
             AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(Message::user("resume"));
+        let thread = Thread::new("test").with_message(Message::user("resume"));
         let tools = tool_map([EchoTool]);
 
-        let (_events, final_session) = run_mock_stream_with_final_session(
+        let (_events, final_thread) = run_mock_stream_with_final_thread(
             MockStreamProvider::new(vec![MockResponse::text("unused")]),
             config,
-            session,
+            thread,
             tools,
         )
         .await;
 
-        let msg = final_session
+        let msg = final_thread
             .messages
             .iter()
             .find(|m| {
@@ -5743,14 +5743,14 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(PendingAndSessionEndPlugin) as Arc<dyn AgentPlugin>)
             .with_parallel_tools(true);
-        let session = Session::new("test").with_message(Message::user("run tools"));
+        let thread = Thread::new("test").with_message(Message::user("run tools"));
         let responses = vec![MockResponse::text("run both")
             .with_tool_call("call_1", "echo", json!({"message": "a"}))
             .with_tool_call("call_2", "echo", json!({"message": "b"}))];
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
         assert!(
             events.iter().any(|e| matches!(
@@ -5785,11 +5785,11 @@ mod tests {
             .collect();
 
         let config = AgentConfig::new("mock").with_stop_condition(crate::stop::MaxRounds(2));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::MaxRoundsReached)
@@ -5801,10 +5801,10 @@ mod tests {
         // LLM returns text only → NaturalEnd.
         let provider = MockStreamProvider::new(vec![MockResponse::text("Hello!")]);
         let config = AgentConfig::new("mock");
-        let session = Session::new("test").with_message(Message::user("hi"));
+        let thread = Thread::new("test").with_message(Message::user("hi"));
         let tools = HashMap::new();
 
-        let events = run_mock_stream(provider, config, session, tools).await;
+        let events = run_mock_stream(provider, config, thread, tools).await;
         assert_eq!(extract_stop_reason(&events), Some(StopReason::NaturalEnd));
     }
 
@@ -5858,21 +5858,21 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_plugin(Arc::new(ParallelScratchpadRecorder) as Arc<dyn AgentPlugin>)
             .with_parallel_tools(true);
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
 
         let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         tools.insert("echo".to_string(), Arc::new(EchoTool));
         tools.insert("counter".to_string(), Arc::new(CounterTool));
 
-        let (_events, final_session) = run_mock_stream_with_final_session(
+        let (_events, final_thread) = run_mock_stream_with_final_thread(
             MockStreamProvider::new(responses),
             config,
-            session,
+            thread,
             tools,
         )
         .await;
 
-        let state = final_session.rebuild_state().unwrap();
+        let state = final_thread.rebuild_state().unwrap();
         assert_eq!(state["debug"]["seen_parallel_count"], 2);
     }
 
@@ -6052,11 +6052,11 @@ mod tests {
         let (recorder, _) = RecordAndSkipPlugin::new();
         let config =
             AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(Message::user("hi"));
+        let thread = Thread::new("test").with_message(Message::user("hi"));
         let tools = HashMap::new();
 
         let provider = MockStreamProvider::new(vec![]);
-        let events = run_mock_stream(provider, config, session, tools).await;
+        let events = run_mock_stream(provider, config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::PluginRequested)
@@ -6088,14 +6088,14 @@ mod tests {
 
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::StopOnTool("finish_tool".to_string()));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
 
         let mut tools = tool_map([EchoTool]);
         let ft: Arc<dyn Tool> = Arc::new(FinishTool);
         tools.insert("finish_tool".to_string(), ft);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::ToolCalled("finish_tool".to_string()))
@@ -6117,11 +6117,11 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::ContentMatch("FINAL_ANSWER".to_string()))
             .with_stop_condition(crate::stop::MaxRounds(10));
-        let session = Session::new("test").with_message(Message::user("solve"));
+        let thread = Thread::new("test").with_message(Message::user("solve"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::ContentMatched("FINAL_ANSWER".to_string()))
@@ -6143,11 +6143,11 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::TokenBudget { max_total: 500 })
             .with_stop_condition(crate::stop::MaxRounds(10));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::TokenBudgetExceeded)
@@ -6170,11 +6170,11 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::ConsecutiveErrors(2))
             .with_stop_condition(crate::stop::MaxRounds(10));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([FailingTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::ConsecutiveErrorsExceeded)
@@ -6197,11 +6197,11 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::LoopDetection { window: 3 })
             .with_stop_condition(crate::stop::MaxRounds(10));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(extract_stop_reason(&events), Some(StopReason::LoopDetected));
     }
 
@@ -6213,13 +6213,13 @@ mod tests {
 
         let provider = MockStreamProvider::new(vec![MockResponse::text("never")]);
         let config = AgentConfig::new("mock");
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = HashMap::new();
 
         let stream = run_loop_stream_impl_with_provider(
             Arc::new(provider),
             config,
-            session,
+            thread,
             tools,
             RunContext {
                 cancellation_token: Some(token),
@@ -6261,7 +6261,7 @@ mod tests {
         let stream = run_loop_stream_impl_with_provider(
             Arc::new(HangingStreamProvider),
             AgentConfig::new("mock"),
-            Session::new("test").with_message(Message::user("go")),
+            Thread::new("test").with_message(Message::user("go")),
             HashMap::new(),
             RunContext {
                 cancellation_token: Some(token.clone()),
@@ -6293,11 +6293,11 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::MaxRounds(1))
             .with_stop_condition(crate::stop::TokenBudget { max_total: 50 });
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         // MaxRounds listed first → wins
         assert_eq!(
             extract_stop_reason(&events),
@@ -6319,11 +6319,11 @@ mod tests {
             .collect();
 
         let config = AgentConfig::new("mock").with_max_rounds(2);
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         assert_eq!(
             extract_stop_reason(&events),
             Some(StopReason::MaxRoundsReached)
@@ -6337,11 +6337,11 @@ mod tests {
             vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
 
         let config = AgentConfig::new("mock").with_stop_condition(crate::stop::MaxRounds(1));
-        let session = Session::new("test-thread").with_message(Message::user("go"));
+        let thread = Thread::new("test-thread").with_message(Message::user("go"));
         let tools = tool_map([EchoTool]);
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
 
         let finish = events
             .iter()
@@ -6377,10 +6377,10 @@ mod tests {
         let config = AgentConfig::new("mock")
             .with_stop_condition(crate::stop::ConsecutiveErrors(2))
             .with_stop_condition(crate::stop::MaxRounds(3));
-        let session = Session::new("test").with_message(Message::user("go"));
+        let thread = Thread::new("test").with_message(Message::user("go"));
 
         let events =
-            run_mock_stream(MockStreamProvider::new(responses), config, session, tools).await;
+            run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
         // Should hit MaxRounds(3), not ConsecutiveErrors
         assert_eq!(
             extract_stop_reason(&events),
@@ -6466,7 +6466,7 @@ mod tests {
         // message, while the successful tool should still complete.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Call both".to_string(),
                 tool_calls: vec![
@@ -6483,17 +6483,17 @@ mod tests {
                 Arc::new(FailingTool) as Arc<dyn Tool>,
             );
 
-            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
             // Both tools produce messages.
             assert_eq!(
-                session.message_count(),
+                thread.message_count(),
                 2,
                 "Both tools should produce a message"
             );
 
             // One should be success, one should be error.
-            let contents: Vec<&str> = session
+            let contents: Vec<&str> = thread
                 .messages
                 .iter()
                 .map(|m| m.content.as_str())
@@ -6515,7 +6515,7 @@ mod tests {
     fn test_parallel_tools_conflicting_state_patches_return_error() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::with_initial_state("test", json!({"counter": 0}));
+            let thread = Thread::with_initial_state("test", json!({"counter": 0}));
             let result = StreamResult {
                 text: "conflicting calls".to_string(),
                 tool_calls: vec![
@@ -6526,7 +6526,7 @@ mod tests {
             };
             let tools = tool_map([CounterTool]);
 
-            let err = execute_tools(session, &result, &tools, true)
+            let err = execute_tools(thread, &result, &tools, true)
                 .await
                 .expect_err("parallel conflicting patches should fail");
             assert!(
@@ -6541,7 +6541,7 @@ mod tests {
         // Same test but with sequential execution.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Call both".to_string(),
                 tool_calls: vec![
@@ -6558,16 +6558,16 @@ mod tests {
                 Arc::new(FailingTool) as Arc<dyn Tool>,
             );
 
-            let session = execute_tools(session, &result, &tools, false)
+            let thread = execute_tools(thread, &result, &tools, false)
                 .await
                 .unwrap();
 
             assert_eq!(
-                session.message_count(),
+                thread.message_count(),
                 2,
                 "Both tools should produce a message"
             );
-            let contents: Vec<&str> = session
+            let contents: Vec<&str> = thread
                 .messages
                 .iter()
                 .map(|m| m.content.as_str())
@@ -6625,7 +6625,7 @@ mod tests {
                 order_log: Arc::clone(&log),
             };
 
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Test".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -6638,7 +6638,7 @@ mod tests {
             let tools = tool_map([EchoTool]);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(plugin_a), Arc::new(plugin_b)];
 
-            let _ = execute_tools_with_plugins(session, &result, &tools, false, &plugins).await;
+            let _ = execute_tools_with_plugins(thread, &result, &tools, false, &plugins).await;
 
             let entries = log.lock().unwrap().clone();
 
@@ -6695,7 +6695,7 @@ mod tests {
         // then PendingPhasePlugin sets pending. Net result: pending (not blocked).
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let session = Session::new("test");
+            let thread = Thread::new("test");
             let result = StreamResult {
                 text: "Test".to_string(),
                 tool_calls: vec![crate::types::ToolCall::new(
@@ -6713,7 +6713,7 @@ mod tests {
                 Arc::new(ConditionalBlockPlugin),
             ];
             let r1 = execute_tools_with_plugins(
-                session.clone(),
+                thread.clone(),
                 &result,
                 &tools,
                 false,
@@ -6736,7 +6736,7 @@ mod tests {
                 Arc::new(PendingPhasePlugin),
             ];
             let r2 =
-                execute_tools_with_plugins(session, &result, &tools, false, &plugins_order2).await;
+                execute_tools_with_plugins(thread, &result, &tools, false, &plugins_order2).await;
             // Should be PendingInteraction (not blocked).
             assert!(r2.is_err(), "Order 2 should result in PendingInteraction");
             match r2.unwrap_err() {

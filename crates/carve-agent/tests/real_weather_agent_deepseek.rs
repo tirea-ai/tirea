@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use carve_agent::{
-    AgentDefinition, AgentEvent, AgentOs, Message, Session, Tool, ToolDescriptor, ToolError,
+    AgentDefinition, AgentEvent, AgentOs, Message, Thread, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use futures::StreamExt;
@@ -196,11 +196,11 @@ Rules:\n\
         .build()
         .unwrap();
 
-    let session = Session::new("real-weather-smoke").with_message(Message::user(
+    let thread = Thread::new("real-weather-smoke").with_message(Message::user(
         "What's the current weather in San Francisco? Use the tool.",
     ));
 
-    let stream = os.run_stream("weather", session).unwrap();
+    let stream = os.run_stream("weather", thread).unwrap();
     tokio::pin!(stream);
 
     let mut saw_weather_ready = false;

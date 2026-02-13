@@ -7,8 +7,8 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
-    apply_agui_request_to_session, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
-    RunContext, Session, SessionListPage, SessionListQuery, SortOrder, Storage, Visibility,
+    apply_agui_request_to_thread, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
+    RunContext, Thread, ThreadListPage, ThreadListQuery, SortOrder, Storage, Visibility,
     AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
@@ -31,8 +31,8 @@ pub enum ApiError {
     #[error("agent not found: {0}")]
     AgentNotFound(String),
 
-    #[error("session not found: {0}")]
-    SessionNotFound(String),
+    #[error("thread not found: {0}")]
+    ThreadNotFound(String),
 
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -45,7 +45,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (code, msg) = match &self {
             ApiError::AgentNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
-            ApiError::SessionNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::ThreadNotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, self.to_string()),
         };
@@ -57,9 +57,9 @@ impl IntoResponse for ApiError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/v1/sessions", get(list_sessions))
-        .route("/v1/sessions/:id", get(get_session))
-        .route("/v1/sessions/:id/messages", get(get_session_messages))
+        .route("/v1/threads", get(list_threads))
+        .route("/v1/threads/:id", get(get_thread))
+        .route("/v1/threads/:id/messages", get(get_thread_messages))
         .route("/v1/agents/:agent_id/runs/ai-sdk/sse", post(run_ai_sdk_sse))
         .route("/v1/agents/:agent_id/runs/ag-ui/sse", post(run_ag_ui_sse))
         .with_state(state)
@@ -81,11 +81,11 @@ struct SessionListParams {
     limit: usize,
 }
 
-async fn list_sessions(
+async fn list_threads(
     State(st): State<AppState>,
     Query(params): Query<SessionListParams>,
-) -> Result<Json<SessionListPage>, ApiError> {
-    let query = SessionListQuery {
+) -> Result<Json<ThreadListPage>, ApiError> {
+    let query = ThreadListQuery {
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
         resource_id: None,
@@ -97,19 +97,19 @@ async fn list_sessions(
         .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
-async fn get_session(
+async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Session>, ApiError> {
-    let Some(session) = st
+) -> Result<Json<Thread>, ApiError> {
+    let Some(thread) = st
         .storage
         .load(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     else {
-        return Err(ApiError::SessionNotFound(id));
+        return Err(ApiError::ThreadNotFound(id));
     };
-    Ok(Json(session))
+    Ok(Json(thread))
 }
 
 fn default_message_limit() -> usize {
@@ -134,7 +134,7 @@ struct MessageQueryParams {
     run_id: Option<String>,
 }
 
-async fn get_session_messages(
+async fn get_thread_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
@@ -163,7 +163,7 @@ async fn get_session_messages(
         .await
         .map(Json)
         .map_err(|e| match e {
-            carve_agent::StorageError::NotFound(_) => ApiError::SessionNotFound(id),
+            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
             other => ApiError::Internal(other.to_string()),
         })
 }
@@ -171,7 +171,7 @@ async fn get_session_messages(
 #[derive(Debug, Clone, Deserialize)]
 pub struct AiSdkRunRequest {
     #[serde(rename = "sessionId")]
-    pub session_id: String,
+    pub thread_id: String,
     pub input: String,
     #[serde(rename = "runId")]
     pub run_id: Option<String>,
@@ -190,7 +190,7 @@ async fn run_ai_sdk_sse(
     Path(agent_id): Path<String>,
     Json(req): Json<AiSdkRunRequest>,
 ) -> Result<Response, ApiError> {
-    if req.session_id.trim().is_empty() {
+    if req.thread_id.trim().is_empty() {
         return Err(ApiError::BadRequest(
             "sessionId cannot be empty".to_string(),
         ));
@@ -205,27 +205,27 @@ async fn run_ai_sdk_sse(
         other => ApiError::BadRequest(other.to_string()),
     })?;
 
-    let session_id = req.session_id.clone();
+    let thread_id = req.thread_id.clone();
     let input = req.input.clone();
 
     // Prepare session.
-    let mut session = st
+    let mut thread = st
         .storage
-        .load(&session_id)
+        .load(&thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .unwrap_or_else(|| Session::new(session_id.clone()));
-    session = session.with_message(Message::user(input));
+        .unwrap_or_else(|| Thread::new(thread_id.clone()));
+    thread = thread.with_message(Message::user(input));
 
     // Industry-common: persist the user message immediately so it isn't lost if the run crashes.
     st.storage
-        .save(&session)
+        .save(&thread)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     // Set run_id on the session runtime if provided; otherwise it will be auto-generated by the loop
     let run_id = if let Some(run_id) = req.run_id.clone() {
-        let _ = session.runtime.set("run_id", run_id.clone());
+        let _ = thread.runtime.set("run_id", run_id.clone());
         run_id
     } else {
         // Generate a run_id for the encoder, but don't set it on runtime - let the loop auto-generate
@@ -238,7 +238,7 @@ async fn run_ai_sdk_sse(
 
     let stream_with_checkpoints = st
         .os
-        .run_stream_with_checkpoints(&agent_id, session, run_ctx)
+        .run_stream_with_checkpoints(&agent_id, thread, run_ctx)
         .map_err(|e| match e {
             carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
             other => ApiError::BadRequest(other.to_string()),
@@ -281,7 +281,7 @@ async fn run_ai_sdk_sse(
             let run_info = UIStreamEvent::data(
                 "run-info",
                 serde_json::to_value(RunInfo {
-                    thread_id: session_id.clone(),
+                    thread_id: thread_id.clone(),
                     run_id: actual_run_id.clone(),
                 })
                 .unwrap_or_default(),
@@ -342,17 +342,17 @@ async fn run_ai_sdk_sse(
     // Persist intermediate checkpoints and the final session.
     {
         let mut checkpoints = stream_with_checkpoints.checkpoints;
-        let final_session = stream_with_checkpoints.final_session;
+        let final_thread = stream_with_checkpoints.final_thread;
         let storage = storage.clone();
         tokio::spawn(async move {
             while let Some(cp) = checkpoints.recv().await {
-                if let Err(e) = storage.save(&cp.session).await {
-                    tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                if let Err(e) = storage.save(&cp.thread).await {
+                    tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
                 }
             }
-            if let Ok(final_session) = final_session.await {
-                if let Err(e) = storage.save(&final_session).await {
-                    tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+            if let Ok(final_thread) = final_thread.await {
+                if let Err(e) = storage.save(&final_thread).await {
+                    tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
                 }
             }
         });
@@ -388,14 +388,14 @@ async fn run_ag_ui_sse(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_else(|| {
             if let Some(state) = req.state.clone() {
-                Session::with_initial_state(req.thread_id.clone(), state)
+                Thread::with_initial_state(req.thread_id.clone(), state)
             } else {
-                Session::new(req.thread_id.clone())
+                Thread::new(req.thread_id.clone())
             }
         });
     if base.id != req.thread_id {
         return Err(ApiError::BadRequest(
-            "stored session id does not match threadId".to_string(),
+            "stored thread id does not match threadId".to_string(),
         ));
     }
 
@@ -403,21 +403,21 @@ async fn run_ag_ui_sse(
     let before_messages = base.messages.len();
     let before_patches = base.patches.len();
     let before_state = base.state.clone();
-    let mut session = apply_agui_request_to_session(base, &req);
-    if session.messages.len() != before_messages
-        || session.patches.len() != before_patches
-        || session.state != before_state
+    let mut thread = apply_agui_request_to_thread(base, &req);
+    if thread.messages.len() != before_messages
+        || thread.patches.len() != before_patches
+        || thread.state != before_state
     {
         st.storage
-            .save(&session)
+            .save(&thread)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
-    let _ = session
+    let _ = thread
         .runtime
         .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, req.run_id.clone());
 
-    let (client, cfg, tools, session) = st.os.resolve(&agent_id, session).map_err(|e| match e {
+    let (client, cfg, tools, thread) = st.os.resolve(&agent_id, thread).map_err(|e| match e {
         carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),
         other => ApiError::BadRequest(other.to_string()),
     })?;
@@ -425,7 +425,7 @@ async fn run_ag_ui_sse(
     let stream_with_checkpoints = carve_agent::run_agent_events_with_request_checkpoints(
         client,
         cfg,
-        session,
+        thread,
         tools,
         req.clone(),
     );
@@ -469,17 +469,17 @@ async fn run_ag_ui_sse(
     // Persist intermediate checkpoints and the final session.
     {
         let mut checkpoints = stream_with_checkpoints.checkpoints;
-        let final_session = stream_with_checkpoints.final_session;
+        let final_thread = stream_with_checkpoints.final_thread;
         let storage = storage.clone();
         tokio::spawn(async move {
             while let Some(cp) = checkpoints.recv().await {
-                if let Err(e) = storage.save(&cp.session).await {
-                    tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                if let Err(e) = storage.save(&cp.thread).await {
+                    tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
                 }
             }
-            if let Ok(final_session) = final_session.await {
-                if let Err(e) = storage.save(&final_session).await {
-                    tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+            if let Ok(final_thread) = final_thread.await {
+                if let Err(e) = storage.save(&final_thread).await {
+                    tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
                 }
             }
         });

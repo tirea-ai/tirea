@@ -54,7 +54,7 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::skills::{FsSkillRegistry, SkillRegistry};
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
@@ -76,7 +76,7 @@ mod tests {
         let discovery = SkillDiscoveryPlugin::new(reg);
         let plugin = SkillPlugin::new(discovery);
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -96,7 +96,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 2);

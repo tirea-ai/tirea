@@ -4,7 +4,7 @@ use crate::plugin::AgentPlugin;
 use crate::plugins::{resolve_permission_behavior_for_tool, PERMISSION_STATE_PATH};
 pub(crate) use crate::r#loop::TOOL_RUNTIME_CALLER_AGENT_ID_KEY as RUNTIME_CALLER_AGENT_ID_KEY;
 use crate::r#loop::{
-    RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY, TOOL_RUNTIME_CALLER_SESSION_ID_KEY,
+    RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY,
 };
 use crate::state_types::{
@@ -26,7 +26,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-const RUNTIME_CALLER_SESSION_ID_KEY: &str = TOOL_RUNTIME_CALLER_SESSION_ID_KEY;
+const RUNTIME_CALLER_SESSION_ID_KEY: &str = TOOL_RUNTIME_CALLER_THREAD_ID_KEY;
 const RUNTIME_CALLER_STATE_KEY: &str = TOOL_RUNTIME_CALLER_STATE_KEY;
 const RUNTIME_CALLER_MESSAGES_KEY: &str = TOOL_RUNTIME_CALLER_MESSAGES_KEY;
 const RUNTIME_RUN_ID_KEY: &str = "run_id";
@@ -44,11 +44,11 @@ pub struct AgentRunSummary {
 #[derive(Debug, Clone)]
 struct AgentRunRecord {
     epoch: u64,
-    owner_session_id: String,
+    owner_thread_id: String,
     target_agent_id: String,
     parent_run_id: Option<String>,
     status: AgentRunStatus,
-    session: crate::Session,
+    thread: crate::Thread,
     assistant: Option<String>,
     error: Option<String>,
     stop_requested: bool,
@@ -67,12 +67,12 @@ impl AgentRunManager {
 
     pub async fn get_owned_summary(
         &self,
-        owner_session_id: &str,
+        owner_thread_id: &str,
         run_id: &str,
     ) -> Option<AgentRunSummary> {
         let runs = self.runs.lock().await;
         let rec = runs.get(run_id)?;
-        if rec.owner_session_id != owner_session_id {
+        if rec.owner_thread_id != owner_thread_id {
             return None;
         }
         Some(AgentRunSummary {
@@ -86,13 +86,13 @@ impl AgentRunManager {
 
     pub async fn running_or_stopped_for_owner(
         &self,
-        owner_session_id: &str,
+        owner_thread_id: &str,
     ) -> Vec<AgentRunSummary> {
         let runs = self.runs.lock().await;
         let mut out: Vec<AgentRunSummary> = runs
             .iter()
             .filter_map(|(run_id, rec)| {
-                if rec.owner_session_id != owner_session_id {
+                if rec.owner_thread_id != owner_thread_id {
                     return None;
                 }
                 match rec.status {
@@ -111,12 +111,12 @@ impl AgentRunManager {
         out
     }
 
-    pub async fn all_for_owner(&self, owner_session_id: &str) -> Vec<AgentRunSummary> {
+    pub async fn all_for_owner(&self, owner_thread_id: &str) -> Vec<AgentRunSummary> {
         let runs = self.runs.lock().await;
         let mut out: Vec<AgentRunSummary> = runs
             .iter()
             .filter_map(|(run_id, rec)| {
-                if rec.owner_session_id != owner_session_id {
+                if rec.owner_thread_id != owner_thread_id {
                     return None;
                 }
                 Some(AgentRunSummary {
@@ -132,25 +132,25 @@ impl AgentRunManager {
         out
     }
 
-    async fn owned_record(&self, owner_session_id: &str, run_id: &str) -> Option<crate::Session> {
+    async fn owned_record(&self, owner_thread_id: &str, run_id: &str) -> Option<crate::Thread> {
         let runs = self.runs.lock().await;
         let rec = runs.get(run_id)?;
-        if rec.owner_session_id != owner_session_id {
+        if rec.owner_thread_id != owner_thread_id {
             return None;
         }
-        Some(rec.session.clone())
+        Some(rec.thread.clone())
     }
 
     pub async fn stop_owned(
         &self,
-        owner_session_id: &str,
+        owner_thread_id: &str,
         run_id: &str,
     ) -> Result<AgentRunSummary, String> {
         let mut runs = self.runs.lock().await;
         let Some(rec) = runs.get_mut(run_id) else {
             return Err(format!("Unknown run_id: {run_id}"));
         };
-        if rec.owner_session_id != owner_session_id {
+        if rec.owner_thread_id != owner_thread_id {
             return Err(format!("Unknown run_id: {run_id}"));
         }
         if rec.status != AgentRunStatus::Running {
@@ -175,7 +175,7 @@ impl AgentRunManager {
 
     pub async fn stop_owned_tree(
         &self,
-        owner_session_id: &str,
+        owner_thread_id: &str,
         run_id: &str,
     ) -> Result<Vec<AgentRunSummary>, String> {
         let mut runs = self.runs.lock().await;
@@ -184,12 +184,12 @@ impl AgentRunManager {
         };
         if runs
             .get(run_id)
-            .is_some_and(|r| r.owner_session_id != owner_session_id)
+            .is_some_and(|r| r.owner_thread_id != owner_thread_id)
         {
             return Err(format!("Unknown run_id: {run_id}"));
         }
 
-        let run_ids = collect_descendant_run_ids_by_parent(&runs, owner_session_id, run_id, true);
+        let run_ids = collect_descendant_run_ids_by_parent(&runs, owner_thread_id, run_id, true);
         if run_ids.is_empty() {
             return Err(format!(
                 "Run '{run_id}' is not running (current status: {})",
@@ -232,10 +232,10 @@ impl AgentRunManager {
     async fn put_running(
         &self,
         run_id: &str,
-        owner_session_id: String,
+        owner_thread_id: String,
         target_agent_id: String,
         parent_run_id: Option<String>,
-        session: crate::Session,
+        thread: crate::Thread,
         cancellation_token: Option<CancellationToken>,
     ) -> u64 {
         let mut runs = self.runs.lock().await;
@@ -244,11 +244,11 @@ impl AgentRunManager {
             run_id.to_string(),
             AgentRunRecord {
                 epoch,
-                owner_session_id,
+                owner_thread_id,
                 target_agent_id,
                 parent_run_id,
                 status: AgentRunStatus::Running,
-                session,
+                thread,
                 assistant: None,
                 error: None,
                 stop_requested: false,
@@ -270,7 +270,7 @@ impl AgentRunManager {
             // Stale completion from a previous generation (e.g. stopped run that was resumed).
             return None;
         }
-        rec.session = completion.session;
+        rec.thread = completion.thread;
         rec.assistant = completion.assistant;
         rec.error = completion.error;
 
@@ -293,14 +293,14 @@ impl AgentRunManager {
 
     async fn record_for_resume(
         &self,
-        owner_session_id: &str,
+        owner_thread_id: &str,
         run_id: &str,
     ) -> Result<AgentRunRecord, String> {
         let runs = self.runs.lock().await;
         let Some(rec) = runs.get(run_id) else {
             return Err(format!("Unknown run_id: {run_id}"));
         };
-        if rec.owner_session_id != owner_session_id {
+        if rec.owner_thread_id != owner_thread_id {
             return Err(format!("Unknown run_id: {run_id}"));
         }
         Ok(rec.clone())
@@ -309,14 +309,14 @@ impl AgentRunManager {
 
 #[derive(Debug)]
 struct AgentRunCompletion {
-    session: crate::Session,
+    thread: crate::Thread,
     status: AgentRunStatus,
     assistant: Option<String>,
     error: Option<String>,
 }
 
-fn last_assistant_message(session: &crate::Session) -> Option<String> {
-    session
+fn last_assistant_message(thread: &crate::Thread) -> Option<String> {
+    thread
         .messages
         .iter()
         .rev()
@@ -327,15 +327,15 @@ fn last_assistant_message(session: &crate::Session) -> Option<String> {
 async fn execute_target_agent(
     os: AgentOs,
     target_agent_id: String,
-    session: crate::Session,
+    thread: crate::Thread,
     cancellation_token: Option<CancellationToken>,
 ) -> AgentRunCompletion {
     let run_ctx = RunContext { cancellation_token };
-    let stream = match os.run_stream_with_session(&target_agent_id, session.clone(), run_ctx) {
+    let stream = match os.run_stream_with_session(&target_agent_id, thread.clone(), run_ctx) {
         Ok(stream) => stream,
         Err(e) => {
             return AgentRunCompletion {
-                session,
+                thread,
                 status: AgentRunStatus::Failed,
                 assistant: None,
                 error: Some(e.to_string()),
@@ -364,12 +364,12 @@ async fn execute_target_agent(
         }
     }
 
-    let final_session = stream.final_session.await.unwrap_or(session);
-    let assistant = last_assistant_message(&final_session);
+    let final_thread = stream.final_thread.await.unwrap_or(thread);
+    let assistant = last_assistant_message(&final_thread);
 
     if saw_error.is_some() {
         return AgentRunCompletion {
-            session: final_session,
+            thread: final_thread,
             status: AgentRunStatus::Failed,
             assistant,
             error: saw_error,
@@ -382,7 +382,7 @@ async fn execute_target_agent(
     };
 
     AgentRunCompletion {
-        session: final_session,
+        thread: final_thread,
         status,
         assistant,
         error: None,
@@ -426,16 +426,16 @@ fn runtime_run_id(runtime: Option<&carve_state::Runtime>) -> Option<String> {
 }
 
 fn bind_child_lineage(
-    mut session: crate::Session,
+    mut thread: crate::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
-) -> crate::Session {
-    let current_run_id = session
+) -> crate::Thread {
+    let current_run_id = thread
         .runtime
         .value(RUNTIME_RUN_ID_KEY)
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let current_parent_run_id = session
+    let current_parent_run_id = thread
         .runtime
         .value(RUNTIME_PARENT_RUN_ID_KEY)
         .and_then(|v| v.as_str())
@@ -449,31 +449,31 @@ fn bind_child_lineage(
     let run_mismatch = current_run_id.as_deref().is_some_and(|cur| cur != run_id);
 
     if run_mismatch || parent_mismatch {
-        session = session.with_runtime(carve_state::Runtime::new());
+        thread = thread.with_runtime(carve_state::Runtime::new());
     }
 
-    if session.runtime.value(RUNTIME_RUN_ID_KEY).is_none() {
-        let _ = session.runtime.set(RUNTIME_RUN_ID_KEY, run_id);
+    if thread.runtime.value(RUNTIME_RUN_ID_KEY).is_none() {
+        let _ = thread.runtime.set(RUNTIME_RUN_ID_KEY, run_id);
     }
     if let Some(parent_run_id) = parent_run_id {
-        if session.runtime.value(RUNTIME_PARENT_RUN_ID_KEY).is_none() {
-            let _ = session
+        if thread.runtime.value(RUNTIME_PARENT_RUN_ID_KEY).is_none() {
+            let _ = thread
                 .runtime
                 .set(RUNTIME_PARENT_RUN_ID_KEY, parent_run_id);
         }
     }
-    session
+    thread
 }
 
-fn parent_run_id_from_session(session: Option<&crate::Session>) -> Option<String> {
-    session
+fn parent_run_id_from_thread(thread: Option<&crate::Thread>) -> Option<String> {
+    thread
         .and_then(|s| s.runtime.value(RUNTIME_PARENT_RUN_ID_KEY))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
 
-fn as_agent_run_state(summary: &AgentRunSummary, session: Option<crate::Session>) -> AgentRunState {
-    let parent_run_id = parent_run_id_from_session(session.as_ref());
+fn as_agent_run_state(summary: &AgentRunSummary, thread: Option<crate::Thread>) -> AgentRunState {
+    let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     AgentRunState {
         run_id: summary.run_id.clone(),
         parent_run_id,
@@ -481,7 +481,7 @@ fn as_agent_run_state(summary: &AgentRunSummary, session: Option<crate::Session>
         status: summary.status,
         assistant: summary.assistant.clone(),
         error: summary.error.clone(),
-        session,
+        thread,
     }
 }
 
@@ -522,13 +522,13 @@ fn make_orphaned_running_state(run: &AgentRunState) -> AgentRunState {
 
 fn collect_descendant_run_ids_by_parent(
     runs: &HashMap<String, AgentRunRecord>,
-    owner_session_id: &str,
+    owner_thread_id: &str,
     root_run_id: &str,
     include_root: bool,
 ) -> Vec<String> {
     let owned = runs
         .iter()
-        .filter(|(_, rec)| rec.owner_session_id == owner_session_id)
+        .filter(|(_, rec)| rec.owner_thread_id == owner_thread_id)
         .collect::<Vec<_>>();
     if !owned.iter().any(|(id, _)| id.as_str() == root_run_id) {
         return Vec::new();
@@ -700,10 +700,10 @@ fn set_agent_runs_patch_from_state_doc(
 
 async fn reconcile_persisted_runs(
     manager: &AgentRunManager,
-    owner_session_id: &str,
+    owner_thread_id: &str,
     runs: &mut HashMap<String, AgentRunState>,
 ) -> ReconcileOutcome {
-    let summaries = manager.all_for_owner(owner_session_id).await;
+    let summaries = manager.all_for_owner(owner_thread_id).await;
     let mut by_id: HashMap<String, AgentRunSummary> = HashMap::new();
     for summary in summaries {
         by_id.insert(summary.run_id.clone(), summary);
@@ -719,8 +719,8 @@ async fn reconcile_persisted_runs(
             continue;
         };
         if let Some(summary) = by_id.get(&run_id) {
-            let session = manager.owned_record(owner_session_id, &run_id).await;
-            let mut next = as_agent_run_state(summary, session.or_else(|| current.session.clone()));
+            let thread = manager.owned_record(owner_thread_id, &run_id).await;
+            let mut next = as_agent_run_state(summary, thread.or_else(|| current.thread.clone()));
             if next.parent_run_id.is_none() {
                 next.parent_run_id = current.parent_run_id.clone();
             }
@@ -728,7 +728,7 @@ async fn reconcile_persisted_runs(
                 || current.assistant != next.assistant
                 || current.error != next.error
                 || current.parent_run_id != next.parent_run_id
-                || current.session.as_ref().map(|s| &s.id) != next.session.as_ref().map(|s| &s.id)
+                || current.thread.as_ref().map(|s| &s.id) != next.thread.as_ref().map(|s| &s.id)
             {
                 runs.insert(run_id.clone(), next);
                 changed = true;
@@ -747,8 +747,8 @@ async fn reconcile_persisted_runs(
         if runs.contains_key(&run_id) {
             continue;
         }
-        let session = manager.owned_record(owner_session_id, &run_id).await;
-        runs.insert(run_id.clone(), as_agent_run_state(&summary, session));
+        let thread = manager.owned_record(owner_thread_id, &run_id).await;
+        runs.insert(run_id.clone(), as_agent_run_state(&summary, thread));
         changed = true;
     }
 
@@ -858,15 +858,15 @@ impl Tool for AgentRunTool {
         let fork_context = required_bool(&args, "fork_context", false);
 
         let runtime = ctx.runtime_ref();
-        let owner_session_id = runtime
+        let owner_thread_id = runtime
             .and_then(|rt| rt.value(RUNTIME_CALLER_SESSION_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let Some(owner_session_id) = owner_session_id else {
+        let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
                 "missing_runtime",
-                "missing caller session context",
+                "missing caller thread context",
             ));
         };
         let caller_agent_id = runtime
@@ -878,21 +878,21 @@ impl Tool for AgentRunTool {
         if let Some(run_id) = run_id {
             if let Some(existing) = self
                 .manager
-                .get_owned_summary(&owner_session_id, &run_id)
+                .get_owned_summary(&owner_thread_id, &run_id)
                 .await
             {
                 match existing.status {
                     AgentRunStatus::Running
                     | AgentRunStatus::Completed
                     | AgentRunStatus::Failed => {
-                        let session = self.manager.owned_record(&owner_session_id, &run_id).await;
-                        set_persisted_run(ctx, &run_id, as_agent_run_state(&existing, session));
+                        let thread = self.manager.owned_record(&owner_thread_id, &run_id).await;
+                        set_persisted_run(ctx, &run_id, as_agent_run_state(&existing, thread));
                         return Ok(to_tool_result(tool_name, existing));
                     }
                     AgentRunStatus::Stopped => {
                         let mut record = match self
                             .manager
-                            .record_for_resume(&owner_session_id, &run_id)
+                            .record_for_resume(&owner_thread_id, &run_id)
                             .await
                         {
                             Ok(v) => v,
@@ -915,11 +915,11 @@ impl Tool for AgentRunTool {
                             ));
                         }
 
-                        record.session =
-                            bind_child_lineage(record.session, &run_id, caller_run_id.as_deref());
+                        record.thread =
+                            bind_child_lineage(record.thread, &run_id, caller_run_id.as_deref());
 
                         if let Some(prompt) = optional_string(&args, "prompt") {
-                            record.session = record.session.with_message(Message::user(prompt));
+                            record.thread = record.thread.with_message(Message::user(prompt));
                         }
 
                         if background {
@@ -928,10 +928,10 @@ impl Tool for AgentRunTool {
                                 .manager
                                 .put_running(
                                     &run_id,
-                                    owner_session_id.clone(),
+                                    owner_thread_id.clone(),
                                     record.target_agent_id.clone(),
                                     caller_run_id.clone(),
-                                    record.session.clone(),
+                                    record.thread.clone(),
                                     Some(token.clone()),
                                 )
                                 .await;
@@ -939,10 +939,10 @@ impl Tool for AgentRunTool {
                             let os = self.os.clone();
                             let run_id_bg = run_id.clone();
                             let agent_id_bg = record.target_agent_id.clone();
-                            let session_bg = record.session.clone();
+                            let thread_bg = record.thread.clone();
                             tokio::spawn(async move {
                                 let completion =
-                                    execute_target_agent(os, agent_id_bg, session_bg, Some(token))
+                                    execute_target_agent(os, agent_id_bg, thread_bg, Some(token))
                                         .await;
                                 let _ = manager
                                     .update_after_completion(&run_id_bg, epoch, completion)
@@ -951,7 +951,7 @@ impl Tool for AgentRunTool {
 
                             let summary = self
                                 .manager
-                                .get_owned_summary(&owner_session_id, &run_id)
+                                .get_owned_summary(&owner_thread_id, &run_id)
                                 .await
                                 .expect("summary must exist right after put_running");
                             set_persisted_run(
@@ -964,7 +964,7 @@ impl Tool for AgentRunTool {
                                     status: AgentRunStatus::Running,
                                     assistant: None,
                                     error: None,
-                                    session: Some(record.session),
+                                    thread: Some(record.thread),
                                 },
                             );
                             return Ok(to_tool_result(tool_name, summary));
@@ -974,17 +974,17 @@ impl Tool for AgentRunTool {
                             .manager
                             .put_running(
                                 &run_id,
-                                owner_session_id.clone(),
+                                owner_thread_id.clone(),
                                 record.target_agent_id.clone(),
                                 caller_run_id.clone(),
-                                record.session.clone(),
+                                record.thread.clone(),
                                 None,
                             )
                             .await;
                         let completion = execute_target_agent(
                             self.os.clone(),
                             record.target_agent_id.clone(),
-                            record.session.clone(),
+                            record.thread.clone(),
                             None,
                         )
                         .await;
@@ -995,7 +995,7 @@ impl Tool for AgentRunTool {
                             status: completion.status,
                             assistant: completion.assistant.clone(),
                             error: completion.error.clone(),
-                            session: Some(completion.session.clone()),
+                            thread: Some(completion.thread.clone()),
                         };
                         let summary = self
                             .manager
@@ -1050,21 +1050,21 @@ impl Tool for AgentRunTool {
                         ));
                     }
 
-                    let mut child_session = match persisted.session {
+                    let mut child_thread = match persisted.thread {
                         Some(s) => s,
                         None => {
                             return Ok(tool_error(
                                 tool_name,
                                 "invalid_state",
-                                format!("Run '{run_id}' cannot be resumed: missing child session"),
+                                format!("Run '{run_id}' cannot be resumed: missing child thread"),
                             ))
                         }
                     };
-                    child_session =
-                        bind_child_lineage(child_session, &run_id, caller_run_id.as_deref());
+                    child_thread =
+                        bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref());
 
                     if let Some(prompt) = optional_string(&args, "prompt") {
-                        child_session = child_session.with_message(Message::user(prompt));
+                        child_thread = child_thread.with_message(Message::user(prompt));
                     }
 
                     if background {
@@ -1073,10 +1073,10 @@ impl Tool for AgentRunTool {
                             .manager
                             .put_running(
                                 &run_id,
-                                owner_session_id.clone(),
+                                owner_thread_id.clone(),
                                 persisted.target_agent_id.clone(),
                                 caller_run_id.clone(),
-                                child_session.clone(),
+                                child_thread.clone(),
                                 Some(token.clone()),
                             )
                             .await;
@@ -1086,7 +1086,7 @@ impl Tool for AgentRunTool {
                         let agent_id_bg = persisted.target_agent_id.clone();
                         tokio::spawn(async move {
                             let completion =
-                                execute_target_agent(os, agent_id_bg, child_session, Some(token))
+                                execute_target_agent(os, agent_id_bg, child_thread, Some(token))
                                     .await;
                             let _ = manager
                                 .update_after_completion(&run_id_bg, epoch, completion)
@@ -1095,7 +1095,7 @@ impl Tool for AgentRunTool {
 
                         let summary = self
                             .manager
-                            .get_owned_summary(&owner_session_id, &run_id)
+                            .get_owned_summary(&owner_thread_id, &run_id)
                             .await
                             .expect("summary must exist right after put_running");
                         set_persisted_run(
@@ -1108,9 +1108,9 @@ impl Tool for AgentRunTool {
                                 status: AgentRunStatus::Running,
                                 assistant: None,
                                 error: None,
-                                session: self
+                                thread: self
                                     .manager
-                                    .owned_record(&owner_session_id, &run_id)
+                                    .owned_record(&owner_thread_id, &run_id)
                                     .await,
                             },
                         );
@@ -1121,17 +1121,17 @@ impl Tool for AgentRunTool {
                         .manager
                         .put_running(
                             &run_id,
-                            owner_session_id.clone(),
+                            owner_thread_id.clone(),
                             persisted.target_agent_id.clone(),
                             caller_run_id.clone(),
-                            child_session.clone(),
+                            child_thread.clone(),
                             None,
                         )
                         .await;
                     let completion = execute_target_agent(
                         self.os.clone(),
                         persisted.target_agent_id.clone(),
-                        child_session,
+                        child_thread,
                         None,
                     )
                     .await;
@@ -1142,7 +1142,7 @@ impl Tool for AgentRunTool {
                         status: completion.status,
                         assistant: completion.assistant.clone(),
                         error: completion.error.clone(),
-                        session: Some(completion.session.clone()),
+                        thread: Some(completion.thread.clone()),
                     };
                     let summary = self
                         .manager
@@ -1178,23 +1178,23 @@ impl Tool for AgentRunTool {
         }
 
         let run_id = uuid::Uuid::now_v7().to_string();
-        let session_id = format!("agent-run-{run_id}");
+        let thread_id = format!("agent-run-{run_id}");
 
-        let mut child_session = if fork_context {
+        let mut child_thread = if fork_context {
             let fork_state = runtime
                 .and_then(|rt| rt.value(RUNTIME_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut forked = crate::Session::with_initial_state(session_id, fork_state);
+            let mut forked = crate::Thread::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(runtime) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::Session::new(session_id)
+            crate::Thread::new(thread_id)
         };
-        child_session = child_session.with_message(Message::user(prompt));
-        child_session = bind_child_lineage(child_session, &run_id, caller_run_id.as_deref());
+        child_thread = child_thread.with_message(Message::user(prompt));
+        child_thread = bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref());
 
         if background {
             let token = CancellationToken::new();
@@ -1202,10 +1202,10 @@ impl Tool for AgentRunTool {
                 .manager
                 .put_running(
                     &run_id,
-                    owner_session_id.clone(),
+                    owner_thread_id.clone(),
                     target_agent_id.clone(),
                     caller_run_id.clone(),
-                    child_session.clone(),
+                    child_thread.clone(),
                     Some(token.clone()),
                 )
                 .await;
@@ -1213,10 +1213,10 @@ impl Tool for AgentRunTool {
             let os = self.os.clone();
             let run_id_bg = run_id.clone();
             let target_agent_id_bg = target_agent_id.clone();
-            let child_session_bg = child_session.clone();
+            let child_thread_bg = child_thread.clone();
             tokio::spawn(async move {
                 let completion =
-                    execute_target_agent(os, target_agent_id_bg, child_session_bg, Some(token))
+                    execute_target_agent(os, target_agent_id_bg, child_thread_bg, Some(token))
                         .await;
                 let _ = manager
                     .update_after_completion(&run_id_bg, epoch, completion)
@@ -1225,7 +1225,7 @@ impl Tool for AgentRunTool {
 
             let summary = self
                 .manager
-                .get_owned_summary(&owner_session_id, &run_id)
+                .get_owned_summary(&owner_thread_id, &run_id)
                 .await
                 .expect("summary must exist right after put_running");
             set_persisted_run(
@@ -1238,7 +1238,7 @@ impl Tool for AgentRunTool {
                     status: AgentRunStatus::Running,
                     assistant: None,
                     error: None,
-                    session: Some(child_session),
+                    thread: Some(child_thread),
                 },
             );
             return Ok(to_tool_result(tool_name, summary));
@@ -1248,17 +1248,17 @@ impl Tool for AgentRunTool {
             .manager
             .put_running(
                 &run_id,
-                owner_session_id.clone(),
+                owner_thread_id.clone(),
                 target_agent_id.clone(),
                 caller_run_id.clone(),
-                child_session.clone(),
+                child_thread.clone(),
                 None,
             )
             .await;
         let completion = execute_target_agent(
             self.os.clone(),
             target_agent_id.clone(),
-            child_session,
+            child_thread,
             None,
         )
         .await;
@@ -1269,7 +1269,7 @@ impl Tool for AgentRunTool {
             status: completion.status,
             assistant: completion.assistant.clone(),
             error: completion.error.clone(),
-            session: Some(completion.session.clone()),
+            thread: Some(completion.thread.clone()),
         };
         let summary = self
             .manager
@@ -1319,16 +1319,16 @@ impl Tool for AgentStopTool {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
-        let owner_session_id = ctx
+        let owner_thread_id = ctx
             .runtime_ref()
             .and_then(|rt| rt.value(RUNTIME_CALLER_SESSION_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let Some(owner_session_id) = owner_session_id else {
+        let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
                 "missing_runtime",
-                "missing caller session context",
+                "missing caller thread context",
             ));
         };
 
@@ -1343,7 +1343,7 @@ impl Tool for AgentStopTool {
 
         match self
             .manager
-            .stop_owned_tree(&owner_session_id, &run_id)
+            .stop_owned_tree(&owner_thread_id, &run_id)
             .await
         {
             Ok(stopped) => {
@@ -1427,7 +1427,7 @@ impl AgentRecoveryPlugin {
     }
 
     async fn on_session_start(&self, step: &mut StepContext<'_>) {
-        let state = match step.session.rebuild_state() {
+        let state = match step.thread.rebuild_state() {
             Ok(v) => v,
             Err(_) => return,
         };
@@ -1442,12 +1442,12 @@ impl AgentRecoveryPlugin {
             .is_some_and(|v| !v.is_null());
 
         let outcome =
-            reconcile_persisted_runs(self.manager.as_ref(), &step.session.id, &mut runs).await;
+            reconcile_persisted_runs(self.manager.as_ref(), &step.thread.id, &mut runs).await;
         if outcome.changed {
             if let Some(patch) = set_agent_runs_patch_from_state_doc(
                 &state,
                 runs.clone(),
-                &format!("agent_recovery_reconcile_{}", step.session.id),
+                &format!("agent_recovery_reconcile_{}", step.thread.id),
             ) {
                 step.pending_patches.push(patch);
             }
@@ -1483,7 +1483,7 @@ impl AgentRecoveryPlugin {
     }
 
     async fn on_before_inference(&self, step: &mut StepContext<'_>) {
-        let state = match step.session.rebuild_state() {
+        let state = match step.thread.rebuild_state() {
             Ok(v) => v,
             Err(_) => return,
         };
@@ -1598,10 +1598,10 @@ impl AgentToolsPlugin {
     }
 
     async fn maybe_reminder(&self, step: &mut StepContext<'_>) {
-        let owner_session_id = step.session.id.as_str();
+        let owner_thread_id = step.thread.id.as_str();
         let runs = self
             .manager
-            .running_or_stopped_for_owner(owner_session_id)
+            .running_or_stopped_for_owner(owner_thread_id)
             .await;
         if runs.is_empty() {
             return;
@@ -1648,12 +1648,12 @@ impl AgentPlugin for AgentToolsPlugin {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
-                    .session
+                    .thread
                     .runtime
                     .value(RUNTIME_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
                 let rendered =
-                    self.render_available_agents(caller_agent, Some(&step.session.runtime));
+                    self.render_available_agents(caller_agent, Some(&step.thread.runtime));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }
@@ -1678,9 +1678,9 @@ mod tests {
     use crate::agent_os::InMemoryAgentRegistry;
     use crate::r#loop::{
         TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
-        TOOL_RUNTIME_CALLER_SESSION_ID_KEY, TOOL_RUNTIME_CALLER_STATE_KEY,
+        TOOL_RUNTIME_CALLER_THREAD_ID_KEY, TOOL_RUNTIME_CALLER_STATE_KEY,
     };
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::traits::tool::ToolStatus;
     use async_trait::async_trait;
     use carve_state::apply_patches;
@@ -1724,13 +1724,13 @@ mod tests {
                 "owner-1".to_string(),
                 "worker".to_string(),
                 None,
-                Session::new("child-1"),
+                Thread::new("child-1"),
                 None,
             )
             .await;
         assert_eq!(epoch, 1);
 
-        let owner = Session::new("owner-1");
+        let owner = Thread::new("owner-1");
         let mut step = StepContext::new(&owner, vec![]);
         plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
         let reminder = step
@@ -1758,7 +1758,7 @@ mod tests {
                 "owner".to_string(),
                 "agent-a".to_string(),
                 None,
-                Session::new("s-1"),
+                Thread::new("s-1"),
                 None,
             )
             .await;
@@ -1770,7 +1770,7 @@ mod tests {
                 "owner".to_string(),
                 "agent-a".to_string(),
                 None,
-                Session::new("s-2"),
+                Thread::new("s-2"),
                 None,
             )
             .await;
@@ -1781,7 +1781,7 @@ mod tests {
                 "run-1",
                 epoch1,
                 AgentRunCompletion {
-                    session: Session::new("old"),
+                    thread: Thread::new("old"),
                     status: AgentRunStatus::Completed,
                     assistant: Some("old".to_string()),
                     error: None,
@@ -1801,7 +1801,7 @@ mod tests {
                 "run-1",
                 epoch2,
                 AgentRunCompletion {
-                    session: Session::new("new"),
+                    thread: Thread::new("new"),
                     status: AgentRunStatus::Completed,
                     assistant: Some("new".to_string()),
                     error: None,
@@ -1833,7 +1833,7 @@ mod tests {
         assert!(result
             .message
             .unwrap_or_default()
-            .contains("missing caller session context"));
+            .contains("missing caller thread context"));
     }
 
     #[tokio::test]
@@ -1885,7 +1885,7 @@ mod tests {
         run_id: &str,
     ) -> carve_state::Runtime {
         let mut rt = carve_state::Runtime::new();
-        rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, "owner-session")
+        rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, "owner-thread")
             .unwrap();
         rt.set(TOOL_RUNTIME_CALLER_AGENT_ID_KEY, "caller").unwrap();
         rt.set(RUNTIME_RUN_ID_KEY, run_id).unwrap();
@@ -1974,30 +1974,30 @@ mod tests {
         manager
             .put_running(
                 "parent-run",
-                "owner-session".to_string(),
+                "owner-thread".to_string(),
                 "agent-a".to_string(),
                 None,
-                Session::new("parent-run-session"),
+                Thread::new("parent-run-thread"),
                 None,
             )
             .await;
         manager
             .put_running(
                 "child-run",
-                "owner-session".to_string(),
+                "owner-thread".to_string(),
                 "agent-a".to_string(),
                 Some("parent-run".to_string()),
-                Session::new("child-run-session"),
+                Thread::new("child-run-thread"),
                 None,
             )
             .await;
         manager
             .put_running(
                 "grandchild-run",
-                "owner-session".to_string(),
+                "owner-thread".to_string(),
                 "agent-a".to_string(),
                 Some("child-run".to_string()),
-                Session::new("grandchild-run-session"),
+                Thread::new("grandchild-run-thread"),
                 None,
             )
             .await;
@@ -2007,38 +2007,38 @@ mod tests {
                 "other-owner".to_string(),
                 "agent-b".to_string(),
                 Some("parent-run".to_string()),
-                Session::new("other-owner-session"),
+                Thread::new("other-owner-thread"),
                 None,
             )
             .await;
 
         let stopped = manager
-            .stop_owned_tree("owner-session", "parent-run")
+            .stop_owned_tree("owner-thread", "parent-run")
             .await
             .unwrap();
 
         assert_eq!(stopped.len(), 3);
 
         let parent = manager
-            .get_owned_summary("owner-session", "parent-run")
+            .get_owned_summary("owner-thread", "parent-run")
             .await
             .expect("parent run should exist");
         assert_eq!(parent.status, AgentRunStatus::Stopped);
 
         let child = manager
-            .get_owned_summary("owner-session", "child-run")
+            .get_owned_summary("owner-thread", "child-run")
             .await
             .expect("child run should exist");
         assert_eq!(child.status, AgentRunStatus::Stopped);
 
         let grandchild = manager
-            .get_owned_summary("owner-session", "grandchild-run")
+            .get_owned_summary("owner-thread", "grandchild-run")
             .await
             .expect("grandchild run should exist");
         assert_eq!(grandchild.status, AgentRunStatus::Stopped);
 
         let denied = manager
-            .stop_owned_tree("owner-session", "other-owner-run")
+            .stop_owned_tree("owner-thread", "other-owner-run")
             .await;
         assert!(denied.is_err());
     }
@@ -2120,19 +2120,19 @@ mod tests {
             .expect("run_id should exist")
             .to_string();
 
-        let child_session = manager
-            .owned_record("owner-session", &run_id)
+        let child_thread = manager
+            .owned_record("owner-thread", &run_id)
             .await
-            .expect("child session should be tracked");
+            .expect("child thread should be tracked");
         assert_eq!(
-            child_session
+            child_thread
                 .runtime
                 .value(RUNTIME_RUN_ID_KEY)
                 .and_then(|v| v.as_str()),
             Some(run_id.as_str())
         );
         assert_eq!(
-            child_session
+            child_thread
                 .runtime
                 .value(RUNTIME_PARENT_RUN_ID_KEY)
                 .and_then(|v| v.as_str()),
@@ -2158,8 +2158,8 @@ mod tests {
             .unwrap();
         let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2167,7 +2167,7 @@ mod tests {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
                         "status": "stopped",
-                        "session": serde_json::to_value(&child_session).unwrap()
+                        "thread": serde_json::to_value(&child_thread).unwrap()
                     }
                 }
             }
@@ -2202,8 +2202,8 @@ mod tests {
         let manager = Arc::new(AgentRunManager::new());
         let run_tool = AgentRunTool::new(os, manager.clone());
 
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2212,7 +2212,7 @@ mod tests {
                         "parent_run_id": "old-parent",
                         "target_agent_id": "worker",
                         "status": "stopped",
-                        "session": serde_json::to_value(&child_session).unwrap()
+                        "thread": serde_json::to_value(&child_thread).unwrap()
                     }
                 }
             }
@@ -2233,19 +2233,19 @@ mod tests {
             .unwrap();
         assert_eq!(resumed.status, ToolStatus::Success);
 
-        let child_session = manager
-            .owned_record("owner-session", "run-1")
+        let child_thread = manager
+            .owned_record("owner-thread", "run-1")
             .await
             .expect("resumed run should be tracked");
         assert_eq!(
-            child_session
+            child_thread
                 .runtime
                 .value(RUNTIME_RUN_ID_KEY)
                 .and_then(|v| v.as_str()),
             Some("run-1")
         );
         assert_eq!(
-            child_session
+            child_thread
                 .runtime
                 .value(RUNTIME_PARENT_RUN_ID_KEY)
                 .and_then(|v| v.as_str()),
@@ -2271,8 +2271,8 @@ mod tests {
             .unwrap();
         let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2280,7 +2280,7 @@ mod tests {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
                         "status": "running",
-                        "session": serde_json::to_value(&child_session).unwrap()
+                        "thread": serde_json::to_value(&child_thread).unwrap()
                     }
                 }
             }
@@ -2306,11 +2306,11 @@ mod tests {
     async fn agent_stop_tool_stops_descendant_runs() {
         let manager = Arc::new(AgentRunManager::new());
         let stop_tool = AgentStopTool::new(manager.clone());
-        let os_session = Session::new("owner-session");
+        let os_thread = Thread::new("owner-thread");
 
-        let parent_session = Session::new("parent-s");
-        let child_session = Session::new("child-s");
-        let grandchild_session = Session::new("grandchild-s");
+        let parent_thread = Thread::new("parent-s");
+        let child_thread = Thread::new("child-s");
+        let grandchild_thread = Thread::new("grandchild-s");
         let parent_run_id = "run-parent";
         let child_run_id = "run-child";
         let grandchild_run_id = "run-grandchild";
@@ -2318,30 +2318,30 @@ mod tests {
         manager
             .put_running(
                 parent_run_id,
-                os_session.id.clone(),
+                os_thread.id.clone(),
                 "worker".to_string(),
                 None,
-                parent_session.clone(),
+                parent_thread.clone(),
                 None,
             )
             .await;
         manager
             .put_running(
                 child_run_id,
-                os_session.id.clone(),
+                os_thread.id.clone(),
                 "worker".to_string(),
                 Some(parent_run_id.to_string()),
-                child_session.clone(),
+                child_thread.clone(),
                 None,
             )
             .await;
         manager
             .put_running(
                 grandchild_run_id,
-                os_session.id.clone(),
+                os_thread.id.clone(),
                 "worker".to_string(),
                 Some(child_run_id.to_string()),
-                grandchild_session.clone(),
+                grandchild_thread.clone(),
                 None,
             )
             .await;
@@ -2353,28 +2353,28 @@ mod tests {
                         "run_id": parent_run_id,
                         "target_agent_id": "worker",
                         "status": "running",
-                        "session": serde_json::to_value(parent_session).unwrap()
+                        "thread": serde_json::to_value(parent_thread).unwrap()
                     },
                     child_run_id: {
                         "run_id": child_run_id,
                         "parent_run_id": parent_run_id,
                         "target_agent_id": "worker",
                         "status": "running",
-                        "session": serde_json::to_value(child_session).unwrap()
+                        "thread": serde_json::to_value(child_thread).unwrap()
                     },
                     grandchild_run_id: {
                         "run_id": grandchild_run_id,
                         "parent_run_id": child_run_id,
                         "target_agent_id": "worker",
                         "status": "running",
-                        "session": serde_json::to_value(grandchild_session).unwrap()
+                        "thread": serde_json::to_value(grandchild_thread).unwrap()
                     }
                 }
             }
         });
 
         let mut rt = carve_state::Runtime::new();
-        rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, os_session.id.clone())
+        rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, os_thread.id.clone())
             .unwrap();
         let ctx =
             carve_state::Context::new(&doc, "call-stop", "tool:agent_stop").with_runtime(Some(&rt));
@@ -2386,17 +2386,17 @@ mod tests {
         assert_eq!(result.data["status"], json!("stopped"));
 
         let parent = manager
-            .get_owned_summary(&os_session.id, parent_run_id)
+            .get_owned_summary(&os_thread.id, parent_run_id)
             .await
             .expect("parent run should exist");
         assert_eq!(parent.status, AgentRunStatus::Stopped);
         let child = manager
-            .get_owned_summary(&os_session.id, child_run_id)
+            .get_owned_summary(&os_thread.id, child_run_id)
             .await
             .expect("child run should exist");
         assert_eq!(child.status, AgentRunStatus::Stopped);
         let grandchild = manager
-            .get_owned_summary(&os_session.id, grandchild_run_id)
+            .get_owned_summary(&os_thread.id, grandchild_run_id)
             .await
             .expect("grandchild run should exist");
         assert_eq!(grandchild.status, AgentRunStatus::Stopped);
@@ -2420,9 +2420,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "agent": {
@@ -2431,13 +2431,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
         assert!(
             !step.pending_patches.is_empty(),
@@ -2445,7 +2445,7 @@ mod tests {
         );
         assert!(!step.skip_inference);
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches.clone())
             .rebuild_state()
@@ -2463,8 +2463,8 @@ mod tests {
             json!("run-1")
         );
 
-        let updated_session = session.clone().with_patches(step.pending_patches);
-        let mut before = StepContext::new(&updated_session, vec![]);
+        let updated_thread = thread.clone().with_patches(step.pending_patches);
+        let mut before = StepContext::new(&updated_thread, vec![]);
         plugin.on_phase(Phase::BeforeInference, &mut before).await;
         assert!(
             before.skip_inference,
@@ -2475,9 +2475,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_does_not_override_existing_pending_interaction() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "agent": {
@@ -2490,21 +2490,21 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
 
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
         assert!(
             !step.skip_inference,
             "existing pending interaction should not be replaced"
         );
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
@@ -2518,9 +2518,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_approve_when_permission_allow() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "permissions": {
@@ -2535,13 +2535,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -2551,7 +2551,7 @@ mod tests {
         assert_eq!(replay_calls[0].name, "agent_run");
         assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
@@ -2569,9 +2569,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_deny_when_permission_deny() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "permissions": {
@@ -2586,13 +2586,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -2600,7 +2600,7 @@ mod tests {
             .unwrap_or_default();
         assert!(replay_calls.is_empty());
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
@@ -2618,9 +2618,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "permissions": {
@@ -2633,13 +2633,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -2649,7 +2649,7 @@ mod tests {
         assert_eq!(replay_calls[0].name, "agent_run");
         assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
@@ -2663,9 +2663,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "permissions": {
@@ -2678,13 +2678,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -2695,7 +2695,7 @@ mod tests {
             "deny should not schedule recovery replay"
         );
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
@@ -2709,9 +2709,9 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_session =
-            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
-        let session = Session::with_initial_state(
+        let child_thread =
+            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let thread = Thread::with_initial_state(
             "owner-1",
             json!({
                 "permissions": {
@@ -2726,13 +2726,13 @@ mod tests {
                             "run_id": "run-1",
                             "target_agent_id": "worker",
                             "status": "running",
-                            "session": serde_json::to_value(&child_session).unwrap()
+                            "thread": serde_json::to_value(&child_thread).unwrap()
                         }
                     }
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         let replay_calls: Vec<ToolCall> = step
@@ -2743,7 +2743,7 @@ mod tests {
             "tool-level ask should override default allow"
         );
 
-        let updated = session
+        let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()

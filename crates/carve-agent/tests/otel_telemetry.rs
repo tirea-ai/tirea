@@ -1,6 +1,6 @@
 use carve_agent::{
     execute_tools_with_plugins, run_step, AgentConfig, AgentPlugin, InMemorySink, LLMMetryPlugin,
-    Message, Session, StreamResult, ToolCall, ToolResult,
+    Message, Thread, StreamResult, ToolCall, ToolResult,
 };
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;
@@ -116,7 +116,7 @@ async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
     let plugin =
         Arc::new(LLMMetryPlugin::new(sink).with_provider("test-provider")) as Arc<dyn AgentPlugin>;
 
-    let session = Session::with_initial_state("t", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("t", json!({})).with_message(Message::user("hi"));
     let result = StreamResult {
         text: "tools".into(),
         tool_calls: vec![
@@ -132,7 +132,7 @@ async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
     tools.insert("t2".into(), Arc::new(NoopTool { id: "t2" }));
     tools.insert("t3".into(), Arc::new(NoopTool { id: "t3" }));
 
-    let _session = execute_tools_with_plugins(session, &result, &tools, true, &[plugin])
+    let _session = execute_tools_with_plugins(thread, &result, &tools, true, &[plugin])
         .await
         .unwrap();
 
@@ -196,10 +196,10 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
-    let (_session, result) = run_step(&client, &config, session, &tools).await.unwrap();
+    let (_thread, result) = run_step(&client, &config, thread, &tools).await.unwrap();
     let usage = result
         .usage
         .expect("expected usage in non-streaming result");
@@ -246,10 +246,10 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
-    let err = run_step(&client, &config, session, &tools)
+    let err = run_step(&client, &config, thread, &tools)
         .await
         .err()
         .unwrap();
@@ -307,11 +307,11 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
     let events: Vec<_> =
-        carve_agent::run_loop_stream(client, config, session, tools, Default::default())
+        carve_agent::run_loop_stream(client, config, thread, tools, Default::default())
             .collect()
             .await;
     assert!(events
@@ -369,11 +369,11 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
 
     let events: Vec<_> =
-        carve_agent::run_loop_stream(client, config, session, tools, Default::default())
+        carve_agent::run_loop_stream(client, config, thread, tools, Default::default())
             .collect()
             .await;
     assert!(events

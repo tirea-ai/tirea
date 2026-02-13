@@ -122,7 +122,7 @@ impl AgentPlugin for SkillRuntimePlugin {
             return;
         }
 
-        let state = match step.session.rebuild_state() {
+        let state = match step.thread.rebuild_state() {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -136,7 +136,7 @@ impl AgentPlugin for SkillRuntimePlugin {
             Err(_) => return,
         };
 
-        let rendered = Self::render_context(&parsed, Some(&step.session.runtime));
+        let rendered = Self::render_context(&parsed, Some(&step.thread.runtime));
         if rendered.is_empty() {
             return;
         }
@@ -155,13 +155,13 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
 
     #[tokio::test]
     async fn plugin_does_not_inject_skill_instructions_from_state() {
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -172,7 +172,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
@@ -180,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_sorts_references_and_scripts_by_path() {
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -201,7 +201,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
@@ -222,7 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_filters_injected_skill_materials_by_runtime_policy() {
-        let mut session = Session::with_initial_state(
+        let mut thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -237,12 +237,12 @@ mod tests {
                 }
             }),
         );
-        session
+        thread
             .runtime
             .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a"])
             .unwrap();
 
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);

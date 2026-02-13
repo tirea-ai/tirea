@@ -11,7 +11,7 @@ struct Args {
     #[arg(long, env = "AGENTOS_HTTP_ADDR", default_value = "127.0.0.1:8080")]
     http_addr: String,
 
-    #[arg(long, env = "AGENTOS_STORAGE_DIR", default_value = "./sessions")]
+    #[arg(long, env = "AGENTOS_STORAGE_DIR", default_value = "./threads")]
     storage_dir: PathBuf,
 
     #[arg(long, env = "AGENTOS_CONFIG")]

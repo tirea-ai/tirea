@@ -12,12 +12,12 @@
 //! let AiSdkSseStream {
 //!     events,
 //!     checkpoints,
-//!     final_session,
-//! } = run_ai_sdk_sse(client, config, session, tools, run_id);
+//!     final_thread,
+//! } = run_ai_sdk_sse(client, config, thread, tools, run_id);
 //!
 //! // `events` is a Stream<Item = String> of SSE `data: {json}\n\n` lines.
 //! // `checkpoints` can be drained for intermediate persistence.
-//! // `final_session` resolves to the completed Session.
+//! // `final_thread` resolves to the completed Thread.
 //! ```
 
 use std::collections::HashMap;
@@ -27,10 +27,10 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 
 use crate::r#loop::{
-    run_loop_stream_with_checkpoints, AgentConfig, RunContext, SessionCheckpoint,
+    run_loop_stream_with_checkpoints, AgentConfig, RunContext, ThreadCheckpoint,
     StreamWithCheckpoints,
 };
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use crate::ui_stream::{AiSdkAdapter, AiSdkEncoder};
 use genai::Client;
@@ -44,10 +44,10 @@ pub struct AiSdkSseStream {
     pub events: Pin<Box<dyn Stream<Item = String> + Send>>,
 
     /// Intermediate session checkpoints for crash-recovery persistence.
-    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<SessionCheckpoint>,
+    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadCheckpoint>,
 
-    /// Resolves to the final [`Session`] when the stream completes.
-    pub final_session: tokio::sync::oneshot::Receiver<Session>,
+    /// Resolves to the final [`Thread`] when the stream completes.
+    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 
     /// The [`AiSdkAdapter`] used for this stream (exposes `message_id`,
     /// `text_id`, `run_id` for callers that need them).
@@ -72,15 +72,15 @@ pub type EventHook = Box<dyn Fn(&crate::stream::AgentEvent) + Send>;
 /// 4. `text-end` + `finish` (on `RunFinish`)
 ///
 /// The returned [`AiSdkSseStream`] also exposes `checkpoints` and
-/// `final_session` for the caller to implement persistence.
+/// `final_thread` for the caller to implement persistence.
 pub fn run_ai_sdk_sse(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_id: String,
 ) -> AiSdkSseStream {
-    run_ai_sdk_sse_with_hook(client, config, session, tools, run_id, None, None)
+    run_ai_sdk_sse_with_hook(client, config, thread, tools, run_id, None, None)
 }
 
 /// Like [`run_ai_sdk_sse`] but with an optional parent run ID and an optional
@@ -88,7 +88,7 @@ pub fn run_ai_sdk_sse(
 pub fn run_ai_sdk_sse_with_hook(
     client: Client,
     config: AgentConfig,
-    mut session: Session,
+    mut thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_id: String,
     parent_run_id: Option<String>,
@@ -97,19 +97,19 @@ pub fn run_ai_sdk_sse_with_hook(
     let adapter = AiSdkAdapter::new(run_id.clone());
 
     // Set run_id and parent_run_id on the session runtime
-    let _ = session.runtime.set("run_id", run_id.clone());
+    let _ = thread.runtime.set("run_id", run_id.clone());
     if let Some(parent) = parent_run_id.clone() {
-        let _ = session.runtime.set("parent_run_id", parent);
+        let _ = thread.runtime.set("parent_run_id", parent);
     }
 
     let StreamWithCheckpoints {
         events: mut agent_events,
         checkpoints,
-        final_session,
+        final_thread,
     } = run_loop_stream_with_checkpoints(
         client,
         config,
-        session,
+        thread,
         tools,
         RunContext {
             cancellation_token: None,
@@ -141,7 +141,7 @@ pub fn run_ai_sdk_sse_with_hook(
     AiSdkSseStream {
         events: Box::pin(sse_stream),
         checkpoints,
-        final_session,
+        final_thread,
         adapter,
     }
 }

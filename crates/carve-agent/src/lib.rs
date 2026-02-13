@@ -19,7 +19,7 @@
 //!                          ▼
 //! ┌─────────────────────────────────────────────────────┐
 //! │  Pure Functions                                      │
-//! │  - build_request, StreamCollector, Session::with_*  │
+//! │  - build_request, StreamCollector, Thread::with_*  │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //!                          ▼
@@ -33,7 +33,7 @@
 //!
 //! - **Tool**: Trait for implementing agent tools (reads/writes state via Context)
 //! - **Context**: Provides typed state access with automatic patch collection
-//! - **Session**: Immutable conversation state with messages and patches
+//! - **Thread**: Immutable conversation state with messages and patches
 //! - **StreamCollector**: Collects streaming LLM responses
 //! - **Storage**: Trait for session persistence
 //!
@@ -68,16 +68,16 @@
 //! # Example: Using Sessions
 //!
 //! ```ignore
-//! use carve_agent::{Session, Message, Storage, FileStorage};
+//! use carve_agent::{Thread, Message, Storage, FileStorage};
 //!
 //! // Create or load session
-//! let session = Session::new("session-1")
+//! let thread = Thread::new("session-1")
 //!     .with_message(Message::user("Hello"))
 //!     .with_message(Message::assistant("Hi!"));
 //!
 //! // Save session
 //! let storage = FileStorage::new("./sessions");
-//! storage.save(&session).await?;
+//! storage.save(&thread).await?;
 //! ```
 
 pub mod activity;
@@ -92,7 +92,6 @@ pub mod phase;
 pub mod plugin;
 pub mod plugins;
 pub mod prelude;
-pub mod session;
 pub mod skills;
 pub mod state_types;
 pub mod stop;
@@ -118,15 +117,15 @@ pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 // Type exports
 pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
 
-// Thread/Session exports
-pub use thread::{Session, SessionMetadata, Thread, ThreadMetadata};
+// Thread exports
+pub use thread::{Thread, ThreadMetadata};
 
 // Storage exports
 #[cfg(feature = "postgres")]
 pub use storage::PostgresStorage;
 pub use storage::{
-    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, SessionListPage,
-    SessionListQuery, SortOrder, Storage, StorageError,
+    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, ThreadListPage,
+    ThreadListQuery, SortOrder, Storage, StorageError,
 };
 
 // Stream exports
@@ -156,7 +155,7 @@ pub use ai_sdk_sse::{run_ai_sdk_sse, run_ai_sdk_sse_with_hook, AiSdkSseStream, E
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    apply_agui_request_to_session, run_agent_events_with_request,
+    apply_agui_request_to_thread, run_agent_events_with_request,
     run_agent_events_with_request_checkpoints, run_agent_stream, run_agent_stream_sse,
     run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIContextEntry,
     AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
@@ -190,10 +189,10 @@ pub use agent_os::{
 // Loop exports
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
+    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_thread,
     run_round, run_step, tool_map, tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError,
-    RoundResult, RunContext, ScratchpadMergePolicy, SessionCheckpoint, SessionCheckpointReason,
-    StreamWithCheckpoints, StreamWithSession,
+    RoundResult, RunContext, ScratchpadMergePolicy, ThreadCheckpoint, ThreadCheckpointReason,
+    StreamWithCheckpoints, StreamWithThread,
 };
 
 // Stop condition exports

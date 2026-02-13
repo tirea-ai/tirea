@@ -154,14 +154,14 @@ async fn test_nats_agui_happy_path() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let saved = storage.load("nats-agui-1").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
         saved
             .messages
             .iter()
             .any(|m| m.content.contains("hello via nats")),
-        "user message not found in persisted session"
+        "user message not found in persisted thread"
     );
 }
 
@@ -232,14 +232,14 @@ async fn test_nats_aisdk_happy_path() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let saved = storage.load("nats-sdk-1").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
         saved
             .messages
             .iter()
             .any(|m| m.content.contains("hi from nats sdk")),
-        "user message not found in persisted session"
+        "user message not found in persisted thread"
     );
 }
 
@@ -333,7 +333,7 @@ async fn test_nats_aisdk_agent_not_found() {
     let saved = storage.load("s1").await.unwrap();
     assert!(
         saved.is_none(),
-        "session should not be persisted when agent is missing"
+        "thread should not be persisted when agent is missing"
     );
 }
 

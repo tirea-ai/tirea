@@ -54,7 +54,7 @@ name = "message_cloning"
 harness = false
 
 [[bench]]
-name = "session_operations"
+name = "thread_operations"
 harness = false
 
 [[bench]]

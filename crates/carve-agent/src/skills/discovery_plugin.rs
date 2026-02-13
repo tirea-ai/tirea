@@ -131,7 +131,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 
         // Read active skills from session state (if present) to annotate the catalog.
         let mut active: HashSet<String> = HashSet::new();
-        if let Ok(state) = step.session.rebuild_state() {
+        if let Ok(state) = step.thread.rebuild_state() {
             if let Some(skills_value) = state.get(SKILLS_STATE_PATH).cloned() {
                 if let Ok(parsed) = serde_json::from_value::<SkillState>(skills_value) {
                     active.extend(parsed.active);
@@ -139,7 +139,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             }
         }
 
-        let rendered = self.render_catalog(&active, Some(&step.session.runtime));
+        let rendered = self.render_catalog(&active, Some(&step.thread.runtime));
         if rendered.is_empty() {
             return;
         }
@@ -156,7 +156,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::skills::FsSkillRegistry;
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
@@ -186,8 +186,8 @@ mod tests {
     async fn injects_catalog_with_usage() {
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 8 * 1024);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
@@ -203,7 +203,7 @@ mod tests {
     async fn marks_active_skills() {
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -214,7 +214,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         // Does not include active annotations; active skills are handled by runtime plugin injection.
@@ -228,8 +228,8 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
@@ -249,8 +249,8 @@ mod tests {
         assert!(reg.list().is_empty());
 
         let p = SkillDiscoveryPlugin::new(reg);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
@@ -274,8 +274,8 @@ mod tests {
 
         let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
@@ -301,8 +301,8 @@ mod tests {
         }
         let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
@@ -323,8 +323,8 @@ mod tests {
         .unwrap();
         let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
-        let session = Session::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let thread = Thread::with_initial_state("s", json!({}));
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
@@ -334,12 +334,12 @@ mod tests {
     async fn filters_catalog_by_runtime_skill_policy() {
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
-        let mut session = Session::with_initial_state("s", json!({}));
-        session
+        let mut thread = Thread::with_initial_state("s", json!({}));
+        thread
             .runtime
             .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];

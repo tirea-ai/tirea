@@ -1,7 +1,7 @@
 use crate::plugin::AgentPlugin;
 use crate::r#loop::{
-    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
-    RunContext, StreamWithCheckpoints, StreamWithSession,
+    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_thread,
+    RunContext, StreamWithCheckpoints, StreamWithThread,
 };
 pub(crate) mod agent_tools;
 mod registry;
@@ -15,7 +15,7 @@ use crate::tool_filter::{
     RUNTIME_EXCLUDED_TOOLS_KEY,
 };
 use crate::traits::tool::Tool;
-use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
+use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Thread};
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     RUNTIME_CALLER_AGENT_ID_KEY,
@@ -31,7 +31,7 @@ pub use registry::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Session);
+type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillsMode {
@@ -808,45 +808,45 @@ impl AgentOs {
     pub fn resolve(
         &self,
         agent_id: &str,
-        mut session: Session,
+        mut thread: Thread,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let def = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        if session.runtime.value(RUNTIME_CALLER_AGENT_ID_KEY).is_none() {
-            let _ = session
+        if thread.runtime.value(RUNTIME_CALLER_AGENT_ID_KEY).is_none() {
+            let _ = thread
                 .runtime
                 .set(RUNTIME_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_ALLOWED_TOOLS_KEY,
             def.allowed_tools.as_deref(),
         );
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_EXCLUDED_TOOLS_KEY,
             def.excluded_tools.as_deref(),
         );
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_ALLOWED_SKILLS_KEY,
             def.allowed_skills.as_deref(),
         );
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_EXCLUDED_SKILLS_KEY,
             def.excluded_skills.as_deref(),
         );
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_ALLOWED_AGENTS_KEY,
             def.allowed_agents.as_deref(),
         );
         let _ = set_runtime_filter_if_absent(
-            &mut session.runtime,
+            &mut thread.runtime,
             RUNTIME_EXCLUDED_AGENTS_KEY,
             def.excluded_agents.as_deref(),
         );
@@ -854,29 +854,29 @@ impl AgentOs {
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;
         let client = self.resolve_model(&mut cfg)?;
-        Ok((client, cfg, tools, session))
+        Ok((client, cfg, tools, thread))
     }
 
     pub async fn run(
         &self,
         agent_id: &str,
-        session: Session,
-    ) -> Result<(Session, String), AgentOsRunError> {
-        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        let (session, text) = run_loop(&client, &cfg, session, &tools).await?;
-        Ok((session, text))
+        thread: Thread,
+    ) -> Result<(Thread, String), AgentOsRunError> {
+        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
+        let (thread, text) = run_loop(&client, &cfg, thread, &tools).await?;
+        Ok((thread, text))
     }
 
     pub fn run_stream(
         &self,
         agent_id: &str,
-        session: Session,
+        thread: Thread,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
-        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
         Ok(run_loop_stream(
             client,
             cfg,
-            session,
+            thread,
             tools,
             RunContext::default(),
         ))
@@ -885,34 +885,34 @@ impl AgentOs {
     pub fn run_stream_with_context(
         &self,
         agent_id: &str,
-        session: Session,
+        thread: Thread,
         run_ctx: RunContext,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
-        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream(client, cfg, session, tools, run_ctx))
+        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
+        Ok(run_loop_stream(client, cfg, thread, tools, run_ctx))
     }
 
     pub fn run_stream_with_session(
         &self,
         agent_id: &str,
-        session: Session,
+        thread: Thread,
         run_ctx: RunContext,
-    ) -> Result<StreamWithSession, AgentOsResolveError> {
-        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
-        Ok(run_loop_stream_with_session(
-            client, cfg, session, tools, run_ctx,
+    ) -> Result<StreamWithThread, AgentOsResolveError> {
+        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
+        Ok(run_loop_stream_with_thread(
+            client, cfg, thread, tools, run_ctx,
         ))
     }
 
     pub fn run_stream_with_checkpoints(
         &self,
         agent_id: &str,
-        session: Session,
+        thread: Thread,
         run_ctx: RunContext,
     ) -> Result<StreamWithCheckpoints, AgentOsResolveError> {
-        let (client, cfg, tools, session) = self.resolve(agent_id, session)?;
+        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
         Ok(run_loop_stream_with_checkpoints(
-            client, cfg, session, tools, run_ctx,
+            client, cfg, thread, tools, run_ctx,
         ))
     }
 }
@@ -921,7 +921,7 @@ impl AgentOs {
 mod tests {
     use super::*;
     use crate::phase::{Phase, StepContext};
-    use crate::session::Session;
+    use crate::thread::Thread;
     use crate::skills::FsSkillRegistry;
     use crate::traits::tool::ToolDescriptor;
     use crate::traits::tool::{ToolError, ToolResult};
@@ -967,7 +967,7 @@ mod tests {
         assert_eq!(cfg.plugins[0].id(), "skills");
 
         // Verify injection does not panic and includes catalog.
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -978,7 +978,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         cfg.plugins[0]
             .on_phase(Phase::BeforeInference, &mut step)
             .await;
@@ -1005,7 +1005,7 @@ mod tests {
         assert_eq!(cfg.plugins.len(), 1);
         assert_eq!(cfg.plugins[0].id(), "skills_runtime");
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -1016,7 +1016,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         cfg.plugins[0]
             .on_phase(Phase::BeforeInference, &mut step)
             .await;
@@ -1153,8 +1153,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(ref id))
@@ -1184,8 +1184,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(
@@ -1197,8 +1197,8 @@ mod tests {
     #[test]
     fn resolve_errors_if_agent_missing() {
         let os = AgentOs::builder().build().unwrap();
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("missing", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("missing", thread).err().unwrap();
         assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
     }
 
@@ -1237,8 +1237,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
 
         assert_eq!(cfg.id, "a1");
         assert!(tools.contains_key("base_tool"));
@@ -1274,12 +1274,12 @@ mod tests {
         let def = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipInferencePlugin));
         let os = AgentOs::builder().with_agent("a1", def).build().unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_session, text) = os.run("a1", session).await.unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_thread, text) = os.run("a1", thread).await.unwrap();
         assert_eq!(text, "");
 
-        let session = Session::with_initial_state("s2", json!({}));
-        let mut stream = os.run_stream("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s2", json!({}));
+        let mut stream = os.run_stream("a1", thread).unwrap();
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
         assert!(matches!(ev, AgentEvent::RunStart { .. }));
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
@@ -1298,29 +1298,29 @@ mod tests {
             )
             .build()
             .unwrap();
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, _cfg, _tools, session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, _cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value(RUNTIME_CALLER_AGENT_ID_KEY)
                 .and_then(|v| v.as_str()),
             Some("a1")
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value(crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY),
             Some(&json!(["s1"]))
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value(crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY),
             Some(&json!(["worker"]))
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value(crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY),
             Some(&json!(["echo"]))
@@ -1362,8 +1362,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::SkillsToolIdConflict(ref id))
@@ -1378,8 +1378,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
         assert!(tools.contains_key("agent_run"));
         assert!(tools.contains_key("agent_stop"));
         assert_eq!(cfg.plugins[0].id(), "agent_tools");
@@ -1415,8 +1415,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolIdConflict(ref id))
@@ -1450,8 +1450,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(
             matches!(err, AgentOsResolveError::ModelNotFound(ref id) if id == "missing_model_ref")
         );
@@ -1466,8 +1466,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
         assert_eq!(cfg.model, "gpt-4o-mini");
     }
 
@@ -1498,11 +1498,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, _tools, _session) = os.resolve("a1", session.clone()).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, _tools, _thread) = os.resolve("a1", thread.clone()).unwrap();
         assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
-        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         for p in &cfg.plugins {
             p.on_phase(Phase::BeforeInference, &mut step).await;
         }
@@ -1523,8 +1523,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
         assert_eq!(cfg.plugins[0].id(), "agent_tools");
         assert_eq!(cfg.plugins[1].id(), "agent_recovery");
         assert_eq!(cfg.plugins[2].id(), "policy1");
@@ -1552,8 +1552,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
@@ -1613,8 +1613,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::PluginAlreadyInstalled(ref id)) if id == "p1"
@@ -1638,8 +1638,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::PluginAlreadyInstalled(ref id)) if id == "p1"
@@ -1695,8 +1695,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
@@ -1717,8 +1717,8 @@ mod tests {
             .build()
             .unwrap();
 
-        let session = Session::with_initial_state("s", json!({}));
-        let err = os.resolve("a1", session).err().unwrap();
+        let thread = Thread::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", thread).err().unwrap();
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"

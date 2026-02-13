@@ -4,9 +4,9 @@
 //! creating subagents, and managing background agent tasks.
 
 use crate::r#loop::{
-    run_loop_stream, run_loop_stream_with_session, AgentDefinition, AgentLoopError, RunContext,
+    run_loop_stream, run_loop_stream_with_thread, AgentDefinition, AgentLoopError, RunContext,
 };
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::storage::{Storage, StorageError};
 use crate::stream::AgentEvent;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -38,7 +38,7 @@ pub fn filter_tools(
 #[derive(Debug, Clone)]
 pub struct SubAgentResult {
     /// The final session state.
-    pub session: Session,
+    pub thread: Thread,
     /// The final text response.
     pub response: String,
 }
@@ -47,7 +47,7 @@ pub struct SubAgentResult {
 pub struct SubAgentHandle {
     /// The agent definition id.
     pub agent_id: String,
-    session_id: String,
+    thread_id: String,
     join: JoinHandle<Result<SubAgentResult, AgentLoopError>>,
     cancel: CancellationToken,
 }
@@ -72,8 +72,8 @@ impl SubAgentHandle {
     }
 
     /// Get the session id of the subagent.
-    pub fn session_id(&self) -> &str {
-        &self.session_id
+    pub fn thread_id(&self) -> &str {
+        &self.thread_id
     }
 }
 
@@ -121,12 +121,12 @@ impl Agent {
     }
 
     /// Run the agent loop, returning a stream of events.
-    pub fn run(&self, session: Session) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    pub fn run(&self, thread: Thread) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
         let filtered = filter_tools(&self.tools, &self.definition);
         run_loop_stream(
             self.client.clone(),
             self.definition.clone(),
-            session,
+            thread,
             filtered,
             RunContext::default(),
         )
@@ -147,25 +147,25 @@ impl Agent {
     pub fn run_subagent(
         &self,
         prompt: impl Into<String>,
-        resume_session: Option<Session>,
+        resume_thread: Option<Thread>,
     ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
         let prompt = prompt.into();
-        let session = match resume_session {
+        let thread = match resume_thread {
             Some(s) => s.with_message(crate::types::Message::user(&prompt)),
             None => {
                 let id = format!("sub-{}-{}", self.definition.id, uuid_v7());
-                Session::new(id).with_message(crate::types::Message::user(prompt))
+                Thread::new(id).with_message(crate::types::Message::user(prompt))
             }
         };
-        self.run(session)
+        self.run(thread)
     }
 
     /// Spawn a subagent in the background.
     pub fn spawn(&self, prompt: impl Into<String>) -> SubAgentHandle {
         let prompt = prompt.into();
-        let session_id = format!("sub-{}-{}", self.definition.id, uuid_v7());
-        let session =
-            Session::new(session_id.clone()).with_message(crate::types::Message::user(&prompt));
+        let thread_id = format!("sub-{}-{}", self.definition.id, uuid_v7());
+        let thread =
+            Thread::new(thread_id.clone()).with_message(crate::types::Message::user(&prompt));
 
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
@@ -177,10 +177,10 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let stream_with_session = run_loop_stream_with_session(
+            let stream_with_session = run_loop_stream_with_thread(
                 client,
                 definition,
-                session.clone(),
+                thread.clone(),
                 filtered,
                 RunContext::default(),
             );
@@ -209,26 +209,26 @@ impl Agent {
                 }
             }
 
-            let final_session = if saw_run_finish {
-                stream_with_session.final_session.await.unwrap_or(session)
+            let final_thread = if saw_run_finish {
+                stream_with_session.final_thread.await.unwrap_or(thread)
             } else {
-                session
+                thread
             };
 
             // Save session if storage available
             if let Some(ref storage) = storage {
-                let _ = storage.save(&final_session).await;
+                let _ = storage.save(&final_thread).await;
             }
 
             Ok(SubAgentResult {
-                session: final_session,
+                thread: final_thread,
                 response: last_response,
             })
         });
 
         SubAgentHandle {
             agent_id,
-            session_id,
+            thread_id,
             join,
             cancel,
         }
@@ -237,7 +237,7 @@ impl Agent {
     /// Resume a previously saved session.
     pub async fn resume(
         &self,
-        session_id: &str,
+        thread_id: &str,
         prompt: impl Into<String>,
     ) -> Result<Pin<Box<dyn Stream<Item = AgentEvent> + Send>>, StorageError> {
         let storage = self
@@ -245,13 +245,13 @@ impl Agent {
             .as_ref()
             .ok_or_else(|| StorageError::Io(std::io::Error::other("No storage configured")))?;
 
-        let session = storage
-            .load(session_id)
+        let thread = storage
+            .load(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
 
-        let session = session.with_message(crate::types::Message::user(prompt.into()));
-        Ok(self.run(session))
+        let thread = thread.with_message(crate::types::Message::user(prompt.into()));
+        Ok(self.run(thread))
     }
 }
 
@@ -283,9 +283,9 @@ impl Tool for SubAgentTool {
                     "type": "string",
                     "description": "The prompt/instruction for the subagent"
                 },
-                "resume_session_id": {
+                "resume_thread_id": {
                     "type": "string",
-                    "description": "Optional session ID to resume from"
+                    "description": "Optional thread ID to resume from"
                 }
             },
             "required": ["prompt"]
@@ -301,7 +301,7 @@ impl Tool for SubAgentTool {
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'prompt' argument".to_string()))?;
 
-        let resume_id = args["resume_session_id"].as_str();
+        let resume_id = args["resume_thread_id"].as_str();
 
         let mut stream = if let Some(id) = resume_id {
             match self.agent.resume(id, prompt).await {
@@ -319,11 +319,11 @@ impl Tool for SubAgentTool {
 
         // Consume stream to get final response
         let mut response = String::new();
-        let mut session_id = String::new();
+        let mut thread_id = String::new();
         while let Some(event) = stream.next().await {
             match event {
-                AgentEvent::RunStart { thread_id, .. } => {
-                    session_id = thread_id;
+                AgentEvent::RunStart { thread_id: tid, .. } => {
+                    thread_id = tid;
                 }
                 AgentEvent::RunFinish { result, .. } => {
                     response = AgentEvent::extract_response(&result);
@@ -340,7 +340,7 @@ impl Tool for SubAgentTool {
             &self.name,
             json!({
                 "response": response,
-                "session_id": session_id,
+                "thread_id": thread_id,
             }),
         ))
     }
@@ -440,20 +440,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subagent_handle_session_id() {
+    async fn test_subagent_handle_thread_id() {
         let cancel = CancellationToken::new();
         let handle = SubAgentHandle {
             agent_id: "test".into(),
-            session_id: "session-123".into(),
+            thread_id: "thread-123".into(),
             join: tokio::spawn(async {
                 Ok(SubAgentResult {
-                    session: Session::new("s"),
+                    thread: Thread::new("s"),
                     response: "done".into(),
                 })
             }),
             cancel,
         };
-        assert_eq!(handle.session_id(), "session-123");
+        assert_eq!(handle.thread_id(), "thread-123");
         assert_eq!(handle.agent_id, "test");
         assert!(!handle.is_finished() || handle.is_finished()); // just test the method exists
         let result = handle.wait().await.unwrap();
@@ -775,10 +775,10 @@ mod tests {
     async fn test_subagent_handle_wait_returns_result() {
         let handle = SubAgentHandle {
             agent_id: "a".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             join: tokio::spawn(async {
                 Ok(SubAgentResult {
-                    session: Session::new("s"),
+                    thread: Thread::new("s"),
                     response: "hello".into(),
                 })
             }),
@@ -787,17 +787,17 @@ mod tests {
 
         let result = handle.wait().await.unwrap();
         assert_eq!(result.response, "hello");
-        assert_eq!(result.session.id, "s");
+        assert_eq!(result.thread.id, "s");
     }
 
     #[tokio::test]
     async fn test_subagent_handle_wait_propagates_error() {
         let handle = SubAgentHandle {
             agent_id: "a".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             join: tokio::spawn(async {
                 Err(AgentLoopError::Stopped {
-                    session: Box::new(Session::new("s")),
+                    thread: Box::new(Thread::new("s")),
                     reason: crate::stop::StopReason::MaxRoundsReached,
                 })
             }),
@@ -819,7 +819,7 @@ mod tests {
         let cancel_clone = cancel.clone();
         let handle = SubAgentHandle {
             agent_id: "a".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             join: tokio::spawn(async move {
                 cancel_clone.cancelled().await;
                 Err(AgentLoopError::LlmError("Cancelled".into()))
@@ -838,11 +838,11 @@ mod tests {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         let handle = SubAgentHandle {
             agent_id: "a".into(),
-            session_id: "s".into(),
+            thread_id: "s".into(),
             join: tokio::spawn(async move {
                 rx.await.ok();
                 Ok(SubAgentResult {
-                    session: Session::new("s"),
+                    thread: Thread::new("s"),
                     response: "done".into(),
                 })
             }),
@@ -864,18 +864,18 @@ mod tests {
     #[test]
     fn test_subagent_result_clone() {
         let result = SubAgentResult {
-            session: Session::new("s1"),
+            thread: Thread::new("s1"),
             response: "answer".into(),
         };
         let cloned = result.clone();
-        assert_eq!(cloned.session.id, "s1");
+        assert_eq!(cloned.thread.id, "s1");
         assert_eq!(cloned.response, "answer");
     }
 
     #[test]
     fn test_subagent_result_debug() {
         let result = SubAgentResult {
-            session: Session::new("s1"),
+            thread: Thread::new("s1"),
             response: "test".into(),
         };
         let debug = format!("{:?}", result);
@@ -898,7 +898,7 @@ mod tests {
         let params = &desc.parameters;
         assert_eq!(params["type"], "object");
         assert!(params["properties"]["prompt"].is_object());
-        assert!(params["properties"]["resume_session_id"].is_object());
+        assert!(params["properties"]["resume_thread_id"].is_object());
         let required = params["required"].as_array().unwrap();
         assert_eq!(required.len(), 1);
         assert_eq!(required[0], "prompt");
@@ -928,7 +928,7 @@ mod tests {
     #[tokio::test]
     async fn test_resume_without_storage_returns_error() {
         let agent = Agent::new(AgentDefinition::default(), Client::default());
-        match agent.resume("some-session", "continue").await {
+        match agent.resume("some-thread", "continue").await {
             Err(StorageError::Io(e)) => {
                 assert!(e.to_string().contains("No storage configured"));
             }
@@ -953,16 +953,16 @@ mod tests {
     #[tokio::test]
     async fn test_resume_with_existing_session() {
         let storage = Arc::new(crate::storage::MemoryStorage::new());
-        let session = Session::new("saved-session")
+        let thread = Thread::new("saved-thread")
             .with_message(crate::types::Message::user("original prompt"));
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
 
         let storage_arc: Arc<dyn Storage> = storage;
         let agent =
             Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage_arc);
 
         // resume returns a stream (will fail on LLM call, but that's ok - we just test it loads)
-        let result = agent.resume("saved-session", "follow up").await;
+        let result = agent.resume("saved-thread", "follow up").await;
         assert!(result.is_ok());
     }
 
@@ -977,7 +977,7 @@ mod tests {
         let handle = agent.spawn("do something");
 
         assert_eq!(handle.agent_id, "spawner");
-        assert!(handle.session_id().starts_with("sub-spawner-"));
+        assert!(handle.thread_id().starts_with("sub-spawner-"));
         handle.abort();
     }
 
@@ -988,26 +988,26 @@ mod tests {
         let handle = agent.spawn("do something");
 
         let suffix = handle
-            .session_id()
+            .thread_id()
             .rsplit_once('-')
             .map(|(_, right)| right)
             .unwrap_or_else(|| {
                 panic!(
-                    "session id must contain uuid suffix: {}",
-                    handle.session_id()
+                    "thread id must contain uuid suffix: {}",
+                    handle.thread_id()
                 )
             });
         let parsed = uuid::Uuid::parse_str(suffix)
-            .unwrap_or_else(|_| panic!("session suffix must be parseable UUID, got: {suffix}"));
+            .unwrap_or_else(|_| panic!("thread suffix must be parseable UUID, got: {suffix}"));
         assert_eq!(
             parsed.get_variant(),
             uuid::Variant::RFC4122,
-            "session suffix must be RFC4122 UUID, got: {suffix}"
+            "thread suffix must be RFC4122 UUID, got: {suffix}"
         );
         assert_eq!(
             parsed.get_version_num(),
             7,
-            "session suffix must be version 7 UUID, got: {suffix}"
+            "thread suffix must be version 7 UUID, got: {suffix}"
         );
 
         handle.abort();
@@ -1021,7 +1021,7 @@ mod tests {
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         let h2 = agent.spawn("task 2");
 
-        assert_ne!(h1.session_id(), h2.session_id());
+        assert_ne!(h1.thread_id(), h2.thread_id());
         h1.abort();
         h2.abort();
     }
@@ -1040,9 +1040,9 @@ mod tests {
     }
 
     #[test]
-    fn test_run_subagent_with_resume_session() {
+    fn test_run_subagent_with_resume_thread() {
         let agent = make_agent_with_tools(&["a"]);
-        let existing = Session::new("existing")
+        let existing = Thread::new("existing")
             .with_message(crate::types::Message::user("original"))
             .with_message(crate::types::Message::assistant("response"));
 
@@ -1123,10 +1123,10 @@ mod tests {
     }
 
     /// Plugin that writes a marker into session state during SessionEnd.
-    struct SessionEndStatePatchPlugin;
+    struct ThreadEndStatePatchPlugin;
 
     #[async_trait]
-    impl AgentPlugin for SessionEndStatePatchPlugin {
+    impl AgentPlugin for ThreadEndStatePatchPlugin {
         fn id(&self) -> &str {
             "session_end_state_patch"
         }
@@ -1207,12 +1207,12 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c", "d"]);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(
             Client::default(),
             def,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -1233,12 +1233,12 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c"]);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(
             Client::default(),
             def,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -1259,12 +1259,12 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c", "d"]);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(
             Client::default(),
             def,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -1283,12 +1283,12 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["x", "y", "z"]);
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
         let stream = run_loop_stream(
             Client::default(),
             def,
-            session,
+            thread,
             tools,
             RunContext::default(),
         );
@@ -1313,10 +1313,10 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
         let tools = make_tools(&["a", "b", "c"]);
-        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hi"));
 
         // run_step will skip inference → return empty result
-        let result = run_step(&Client::default(), &def, session, &tools).await;
+        let result = run_step(&Client::default(), &def, thread, &tools).await;
         assert!(result.is_ok());
 
         let snapshots = recorded.lock().unwrap();
@@ -1348,7 +1348,7 @@ mod tests {
     }
 
     // ========================================================================
-    // 3. SubAgentTool.execute with resume_session_id
+    // 3. SubAgentTool.execute with resume_thread_id
     // ========================================================================
 
     #[tokio::test]
@@ -1363,7 +1363,7 @@ mod tests {
         let ctx = carve_state::Context::new(&state, "call_1", "test");
         let result = tool
             .execute(
-                json!({"prompt": "continue", "resume_session_id": "old-session"}),
+                json!({"prompt": "continue", "resume_thread_id": "old-thread"}),
                 &ctx,
             )
             .await
@@ -1382,12 +1382,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_subagent_tool_execute_with_resume_session_found() {
+    async fn test_subagent_tool_execute_with_resume_thread_found() {
         let storage = Arc::new(crate::storage::MemoryStorage::new());
-        let saved_session = Session::new("old-session")
+        let saved_thread = Thread::new("old-thread")
             .with_message(crate::types::Message::user("first question"))
             .with_message(crate::types::Message::assistant("first answer"));
-        storage.save(&saved_session).await.unwrap();
+        storage.save(&saved_thread).await.unwrap();
 
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
@@ -1398,7 +1398,7 @@ mod tests {
         let ctx = carve_state::Context::new(&state, "call_1", "test");
         let result = tool
             .execute(
-                json!({"prompt": "continue", "resume_session_id": "old-session"}),
+                json!({"prompt": "continue", "resume_thread_id": "old-thread"}),
                 &ctx,
             )
             .await
@@ -1421,44 +1421,44 @@ mod tests {
             Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn Storage>);
 
         let handle = agent.spawn("save this");
-        let session_id = handle.session_id().to_string();
+        let thread_id = handle.thread_id().to_string();
 
         // Wait for completion
         let result = handle.wait().await.unwrap();
         assert_eq!(result.response, "");
 
         // Verify session was saved to storage
-        let saved = storage.load(&session_id).await.unwrap();
+        let saved = storage.load(&thread_id).await.unwrap();
         assert!(
             saved.is_some(),
-            "Session '{}' should have been saved to storage",
-            session_id
+            "Thread '{}' should have been saved to storage",
+            thread_id
         );
         let saved = saved.unwrap();
-        assert_eq!(saved.id, session_id);
+        assert_eq!(saved.id, thread_id);
     }
 
     #[tokio::test]
-    async fn test_spawn_returns_and_persists_final_session_state() {
+    async fn test_spawn_returns_and_persists_final_thread_state() {
         let storage = Arc::new(crate::storage::MemoryStorage::new());
         let def = AgentDefinition::with_id("spawn-final-state", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
-            .with_plugin(Arc::new(SessionEndStatePatchPlugin) as Arc<dyn AgentPlugin>);
+            .with_plugin(Arc::new(ThreadEndStatePatchPlugin) as Arc<dyn AgentPlugin>);
         let agent =
             Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn Storage>);
 
-        let handle = agent.spawn("persist final session");
-        let session_id = handle.session_id().to_string();
+        let handle = agent.spawn("persist final thread");
+        let thread_id = handle.thread_id().to_string();
         let result = handle.wait().await.unwrap();
 
-        let result_state = result.session.rebuild_state().unwrap();
+        let result_state = result.thread.rebuild_state().unwrap();
         assert_eq!(result_state["spawn"]["finished"], true);
 
         let saved = storage
-            .load(&session_id)
+            .load(&thread_id)
             .await
             .unwrap()
-            .expect("session exists");
+            .expect("thread exists");
         let saved_state = saved.rebuild_state().unwrap();
         assert_eq!(saved_state["spawn"]["finished"], true);
     }
@@ -1527,9 +1527,9 @@ mod tests {
             .with_tool(DummyTool("a"))
             .with_tool(DummyTool("b"));
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
-        let events = collect_events(agent.run(session)).await;
+        let events = collect_events(agent.run(thread)).await;
 
         // With skip_inference, we should get RunStart and RunFinish events
         let finish_events: Vec<&AgentEvent> = events
@@ -1555,8 +1555,8 @@ mod tests {
         let mut agent = Agent::new(def, Client::default());
         agent.tools = make_tools(&["a", "b", "c"]);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
-        let _events = collect_events(agent.run(session)).await;
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
+        let _events = collect_events(agent.run(thread)).await;
 
         // Agent.run() applies filter_tools on its tools map, then run_loop_stream
         // also applies definition-level filtering on descriptors.
@@ -1592,13 +1592,13 @@ mod tests {
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default());
 
-        // We can't directly inspect session, but the spawn method uses same format
+        // We can't directly inspect thread, but the spawn method uses same format
         // Test via spawn which exposes session_id
         let handle = agent.spawn("test");
         assert!(
-            handle.session_id().starts_with("sub-researcher-"),
-            "Session ID '{}' should start with 'sub-researcher-'",
-            handle.session_id()
+            handle.thread_id().starts_with("sub-researcher-"),
+            "Thread ID '{}' should start with 'sub-researcher-'",
+            handle.thread_id()
         );
         handle.abort();
     }
@@ -1610,7 +1610,7 @@ mod tests {
             .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default());
 
-        let existing = Session::new("old")
+        let existing = Thread::new("old")
             .with_message(crate::types::Message::user("first"))
             .with_message(crate::types::Message::assistant("answer"));
 
@@ -1656,8 +1656,8 @@ mod tests {
         let mut agent = Agent::new(def, Client::default());
         agent.tools = make_tools(&["safe", "dangerous"]);
 
-        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
-        let _events = collect_events(agent.run(session)).await;
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hi"));
+        let _events = collect_events(agent.run(thread)).await;
 
         let snapshots = recorded.lock().unwrap();
         assert_eq!(snapshots[0], vec!["safe".to_string()]);
@@ -1671,12 +1671,12 @@ mod tests {
     async fn test_run_loop_stream_external_run_id_passthrough() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let mut session = Session::new("thread-42").with_message(crate::types::Message::user("hi"));
+        let mut thread = Thread::new("thread-42").with_message(crate::types::Message::user("hi"));
         let tools = HashMap::new();
 
         // Set run_id and parent_run_id on the session runtime
-        let _ = session.runtime.set("run_id", "external-run-id".to_string());
-        let _ = session
+        let _ = thread.runtime.set("run_id", "external-run-id".to_string());
+        let _ = thread
             .runtime
             .set("parent_run_id", "parent-run-id".to_string());
 
@@ -1684,7 +1684,7 @@ mod tests {
             cancellation_token: None,
         };
         let events =
-            collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+            collect_events(run_loop_stream(Client::default(), def, thread, tools, ctx)).await;
 
         // First event should be RunStart with our IDs
         let first = &events[0];
@@ -1718,13 +1718,13 @@ mod tests {
     async fn test_run_loop_stream_default_run_context_auto_generates() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("test").with_message(crate::types::Message::user("hi"));
+        let thread = Thread::new("test").with_message(crate::types::Message::user("hi"));
         let tools = HashMap::new();
 
         let events = collect_events(run_loop_stream(
             Client::default(),
             def,
-            session,
+            thread,
             tools,
             RunContext::default(),
         ))
@@ -1763,17 +1763,17 @@ mod tests {
     async fn test_run_loop_stream_run_id_consistent_across_events() {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let mut session = Session::new("s1").with_message(crate::types::Message::user("hi"));
+        let mut thread = Thread::new("s1").with_message(crate::types::Message::user("hi"));
         let tools = HashMap::new();
 
         // Set run_id on the session runtime
-        let _ = session.runtime.set("run_id", "consistent-id".to_string());
+        let _ = thread.runtime.set("run_id", "consistent-id".to_string());
 
         let ctx = RunContext {
             cancellation_token: None,
         };
         let events =
-            collect_events(run_loop_stream(Client::default(), def, session, tools, ctx)).await;
+            collect_events(run_loop_stream(Client::default(), def, thread, tools, ctx)).await;
 
         // Extract run_id from RunStart and RunFinish and verify they match
         let start_id = events

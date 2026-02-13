@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode};
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, MemoryStorage, Session, StepContext, Storage,
+    AgentDefinition, AgentOs, AgentOsBuilder, MemoryStorage, Thread, StepContext, Storage,
     StorageError,
 };
 use carve_agentos_server::http::{router, AppState};
@@ -45,7 +45,7 @@ fn make_os() -> AgentOs {
 
 #[derive(Default)]
 struct RecordingStorage {
-    sessions: RwLock<HashMap<String, Session>>,
+    threads: RwLock<HashMap<String, Thread>>,
     saves: AtomicUsize,
     notify: Notify,
 }
@@ -64,28 +64,28 @@ impl RecordingStorage {
 
 #[async_trait]
 impl Storage for RecordingStorage {
-    async fn load(&self, id: &str) -> Result<Option<Session>, carve_agent::StorageError> {
-        let sessions = self.sessions.read().await;
-        Ok(sessions.get(id).cloned())
+    async fn load(&self, id: &str) -> Result<Option<Thread>, carve_agent::StorageError> {
+        let threads = self.threads.read().await;
+        Ok(threads.get(id).cloned())
     }
 
-    async fn save(&self, session: &Session) -> Result<(), carve_agent::StorageError> {
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(session.id.clone(), session.clone());
+    async fn save(&self, thread: &Thread) -> Result<(), carve_agent::StorageError> {
+        let mut threads = self.threads.write().await;
+        threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
         self.notify.notify_waiters();
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), carve_agent::StorageError> {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(id);
+        let mut threads = self.threads.write().await;
+        threads.remove(id);
         Ok(())
     }
 
     async fn list(&self) -> Result<Vec<String>, carve_agent::StorageError> {
-        let sessions = self.sessions.read().await;
-        Ok(sessions.keys().cloned().collect())
+        let threads = self.threads.read().await;
+        Ok(threads.keys().cloned().collect())
     }
 }
 
@@ -94,8 +94,8 @@ async fn test_sessions_query_endpoints() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
 
-    let session = Session::new("s1").with_message(carve_agent::Message::user("hello"));
-    storage.save(&session).await.unwrap();
+    let thread = Thread::new("s1").with_message(carve_agent::Message::user("hello"));
+    storage.save(&thread).await.unwrap();
 
     let app = router(AppState { os, storage });
 
@@ -103,7 +103,7 @@ async fn test_sessions_query_endpoints() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/sessions")
+                .uri("/v1/threads")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -111,7 +111,7 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: carve_agent::SessionListPage = serde_json::from_slice(&body).unwrap();
+    let page: carve_agent::ThreadListPage = serde_json::from_slice(&body).unwrap();
     assert_eq!(page.items, vec!["s1".to_string()]);
     assert_eq!(page.total, 1);
     assert!(!page.has_more);
@@ -120,7 +120,7 @@ async fn test_sessions_query_endpoints() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/sessions/s1/messages")
+                .uri("/v1/threads/s1/messages")
                 .body(axum::body::Body::empty())
                 .unwrap(),
         )
@@ -496,7 +496,7 @@ async fn test_get_session_not_found() {
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/nonexistent").await;
+    let (status, body) = get_json(app, "/v1/threads/nonexistent").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),
@@ -514,7 +514,7 @@ async fn test_get_session_messages_not_found() {
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/nonexistent/messages").await;
+    let (status, body) = get_json(app, "/v1/threads/nonexistent/messages").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),
@@ -527,7 +527,7 @@ async fn test_get_session_messages_not_found() {
 // ============================================================================
 
 #[tokio::test]
-async fn test_ai_sdk_sse_empty_session_id() {
+async fn test_ai_sdk_sse_empty_thread_id() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
     let app = make_app(os, storage);
@@ -678,7 +678,7 @@ async fn test_agui_sse_session_id_mismatch() {
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
 
     // Pre-save a session with id "real-id".
-    storage.save(&Session::new("real-id")).await.unwrap();
+    storage.save(&Thread::new("real-id")).await.unwrap();
 
     let _app = make_app(os, storage);
 
@@ -694,14 +694,14 @@ struct FailingStorage;
 
 #[async_trait]
 impl Storage for FailingStorage {
-    async fn load(&self, _id: &str) -> Result<Option<Session>, StorageError> {
+    async fn load(&self, _id: &str) -> Result<Option<Thread>, StorageError> {
         Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk read denied",
         )))
     }
 
-    async fn save(&self, _session: &Session) -> Result<(), StorageError> {
+    async fn save(&self, _thread: &Thread) -> Result<(), StorageError> {
         Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -729,7 +729,7 @@ async fn test_list_sessions_storage_error() {
     let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions").await;
+    let (status, body) = get_json(app, "/v1/threads").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -743,7 +743,7 @@ async fn test_get_session_storage_error() {
     let storage: Arc<dyn Storage> = Arc::new(FailingStorage);
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/s1").await;
+    let (status, body) = get_json(app, "/v1/threads/s1").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -790,11 +790,11 @@ struct SaveFailStorage;
 
 #[async_trait]
 impl Storage for SaveFailStorage {
-    async fn load(&self, _id: &str) -> Result<Option<Session>, StorageError> {
+    async fn load(&self, _id: &str) -> Result<Option<Thread>, StorageError> {
         Ok(None)
     }
 
-    async fn save(&self, _session: &Session) -> Result<(), StorageError> {
+    async fn save(&self, _thread: &Thread) -> Result<(), StorageError> {
         Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -849,23 +849,23 @@ async fn test_agui_sse_storage_save_error() {
 // Message pagination tests
 // ============================================================================
 
-fn make_session_with_n_messages(id: &str, n: usize) -> Session {
-    let mut session = Session::new(id);
+fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
+    let mut thread = Thread::new(id);
     for i in 0..n {
-        session = session.with_message(carve_agent::Message::user(format!("msg-{}", i)));
+        thread = thread.with_message(carve_agent::Message::user(format!("msg-{}", i)));
     }
-    session
+    thread
 }
 
 #[tokio::test]
 async fn test_messages_pagination_default_params() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let session = make_session_with_n_messages("s1", 5);
-    storage.save(&session).await.unwrap();
+    let thread = make_session_with_n_messages("s1", 5);
+    storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/s1/messages").await;
+    let (status, body) = get_json(app, "/v1/threads/s1/messages").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 5);
@@ -878,11 +878,11 @@ async fn test_messages_pagination_default_params() {
 async fn test_messages_pagination_with_limit() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let session = make_session_with_n_messages("s1", 10);
-    storage.save(&session).await.unwrap();
+    let thread = make_session_with_n_messages("s1", 10);
+    storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/s1/messages?limit=3").await;
+    let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=3").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -895,11 +895,11 @@ async fn test_messages_pagination_with_limit() {
 async fn test_messages_pagination_cursor_forward() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let session = make_session_with_n_messages("s1", 10);
-    storage.save(&session).await.unwrap();
+    let thread = make_session_with_n_messages("s1", 10);
+    storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/s1/messages?after=4&limit=3").await;
+    let (status, body) = get_json(app, "/v1/threads/s1/messages?after=4&limit=3").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -911,12 +911,12 @@ async fn test_messages_pagination_cursor_forward() {
 async fn test_messages_pagination_desc_order() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let session = make_session_with_n_messages("s1", 10);
-    storage.save(&session).await.unwrap();
+    let thread = make_session_with_n_messages("s1", 10);
+    storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
     let (status, body) =
-        get_json(app, "/v1/sessions/s1/messages?order=desc&before=8&limit=3").await;
+        get_json(app, "/v1/threads/s1/messages?order=desc&before=8&limit=3").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
@@ -930,11 +930,11 @@ async fn test_messages_pagination_desc_order() {
 async fn test_messages_pagination_limit_clamped() {
     let os = Arc::new(make_os());
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
-    let session = make_session_with_n_messages("s1", 300);
-    storage.save(&session).await.unwrap();
+    let thread = make_session_with_n_messages("s1", 300);
+    storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/s1/messages?limit=999").await;
+    let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=999").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     // limit should be clamped to 200
@@ -948,7 +948,7 @@ async fn test_messages_pagination_not_found() {
     let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
     let app = make_app(os, storage);
 
-    let (status, body) = get_json(app, "/v1/sessions/nonexistent/messages?limit=10").await;
+    let (status, body) = get_json(app, "/v1/threads/nonexistent/messages?limit=10").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),

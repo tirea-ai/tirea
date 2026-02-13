@@ -1,8 +1,8 @@
-//! Benchmarks for Session/Thread operations including state rebuilding and patch application.
+//! Benchmarks for Thread/Thread operations including state rebuilding and patch application.
 //!
 //! Run with: cargo bench --package carve-agent --bench session_operations
 
-use carve_agent::session::Session;
+use carve_agent::thread::Thread;
 use carve_agent::types::Message;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
@@ -28,7 +28,7 @@ fn generate_state(size: &str) -> serde_json::Value {
         }),
         "medium" => {
             let mut obj = serde_json::Map::new();
-            obj.insert("session_id".to_string(), json!("sess-123"));
+            obj.insert("thread_id".to_string(), json!("sess-123"));
             obj.insert(
                 "user".to_string(),
                 json!({
@@ -149,26 +149,26 @@ fn bench_state_clone(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Session rebuild_state
+// Benchmark: Thread rebuild_state
 // ============================================================================
 
-fn bench_session_rebuild(c: &mut Criterion) {
+fn bench_thread_rebuild(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_rebuild_state");
 
     for patch_count in [0, 10, 50, 100, 500] {
         let state = generate_state("medium");
         let patches = generate_patches(patch_count);
 
-        let mut session = Session::with_initial_state("test", state);
+        let mut thread = Thread::with_initial_state("test", state);
         for patch in patches {
-            session = session.with_patch(patch);
+            thread = thread.with_patch(patch);
         }
 
         group.throughput(Throughput::Elements(patch_count as u64));
 
         group.bench_with_input(
             BenchmarkId::from_parameter(patch_count),
-            &session,
+            &thread,
             |b, sess| {
                 b.iter(|| {
                     let rebuilt = black_box(sess).rebuild_state();
@@ -182,19 +182,19 @@ fn bench_session_rebuild(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Session replay_to (time-travel)
+// Benchmark: Thread replay_to (time-travel)
 // ============================================================================
 
-fn bench_session_replay(c: &mut Criterion) {
+fn bench_thread_replay(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_replay_to");
 
     let patch_count = 100;
     let state = generate_state("medium");
     let patches = generate_patches(patch_count);
 
-    let mut session = Session::with_initial_state("test", state);
+    let mut thread = Thread::with_initial_state("test", state);
     for patch in patches {
-        session = session.with_patch(patch);
+        thread = thread.with_patch(patch);
     }
 
     // Replay to different points in history
@@ -204,7 +204,7 @@ fn bench_session_replay(c: &mut Criterion) {
             &target_index,
             |b, &idx| {
                 b.iter(|| {
-                    let replayed = black_box(&session).replay_to(idx);
+                    let replayed = black_box(&thread).replay_to(idx);
                     black_box(replayed)
                 });
             },
@@ -215,26 +215,26 @@ fn bench_session_replay(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Session snapshot
+// Benchmark: Thread snapshot
 // ============================================================================
 
-fn bench_session_snapshot(c: &mut Criterion) {
+fn bench_thread_snapshot(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_snapshot");
 
     for patch_count in [10, 50, 100, 500] {
         let state = generate_state("medium");
         let patches = generate_patches(patch_count);
 
-        let mut session = Session::with_initial_state("test", state);
+        let mut thread = Thread::with_initial_state("test", state);
         for patch in patches {
-            session = session.with_patch(patch);
+            thread = thread.with_patch(patch);
         }
 
         group.throughput(Throughput::Elements(patch_count as u64));
 
         group.bench_with_input(
             BenchmarkId::from_parameter(patch_count),
-            &session,
+            &thread,
             |b, sess| {
                 b.iter(|| {
                     let snapshotted = black_box(sess).clone().snapshot();
@@ -248,10 +248,10 @@ fn bench_session_snapshot(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Session with_message (builder pattern)
+// Benchmark: Thread with_message (builder pattern)
 // ============================================================================
 
-fn bench_session_with_message(c: &mut Criterion) {
+fn bench_thread_with_message(c: &mut Criterion) {
     let mut group = c.benchmark_group("session_with_message");
 
     for msg_count in [10, 50, 100, 200] {
@@ -264,11 +264,11 @@ fn bench_session_with_message(c: &mut Criterion) {
             &messages,
             |b, msgs| {
                 b.iter(|| {
-                    let mut session = Session::new("test");
+                    let mut thread = Thread::new("test");
                     for msg in msgs {
-                        session = session.with_message(msg.clone());
+                        thread = thread.with_message(msg.clone());
                     }
-                    black_box(session)
+                    black_box(thread)
                 });
             },
         );
@@ -278,10 +278,10 @@ fn bench_session_with_message(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Full session clone (messages + state + patches)
+// Benchmark: Full thread clone (messages + state + patches)
 // ============================================================================
 
-fn bench_full_session_clone(c: &mut Criterion) {
+fn bench_full_thread_clone(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_session_clone");
 
     for scenario in ["short", "medium", "long"] {
@@ -296,19 +296,19 @@ fn bench_full_session_clone(c: &mut Criterion) {
         let patches = generate_patches(patch_count);
         let state = generate_state("medium");
 
-        let mut session = Session::with_initial_state("test", state);
+        let mut thread = Thread::with_initial_state("test", state);
         for msg in messages {
-            session = session.with_message(msg);
+            thread = thread.with_message(msg);
         }
         for patch in patches {
-            session = session.with_patch(patch);
+            thread = thread.with_patch(patch);
         }
 
         group.throughput(Throughput::Elements((msg_count + patch_count) as u64));
 
         group.bench_with_input(
             BenchmarkId::new(scenario, msg_count),
-            &session,
+            &thread,
             |b, sess| {
                 b.iter(|| {
                     let cloned = black_box(sess).clone();
@@ -336,29 +336,29 @@ fn bench_agent_loop_simulation(c: &mut Criterion) {
             &initial_msgs,
             |b, &msg_count| {
                 b.iter(|| {
-                    let mut session = Session::with_initial_state("test", generate_state("medium"));
+                    let mut thread = Thread::with_initial_state("test", generate_state("medium"));
 
                     // Add initial messages
                     for msg in generate_messages(msg_count) {
-                        session = session.with_message(msg);
+                        thread = thread.with_message(msg);
                     }
 
                     // Simulate agent loop
                     for i in 0..turns {
-                        // 1. Clone session for processing (happens in agent loop)
-                        let _working_copy = session.clone();
+                        // 1. Clone thread for processing (happens in agent loop)
+                        let _working_copy = thread.clone();
 
                         // 2. Rebuild state (happens before LLM call)
-                        let _current_state = session.rebuild_state().unwrap();
+                        let _current_state = thread.rebuild_state().unwrap();
 
                         // 3. Add new message and patch (simulating tool execution)
-                        session = session.with_message(Message::assistant(format!("Turn {}", i)));
-                        session = session.with_patch(TrackedPatch::new(
+                        thread = thread.with_message(Message::assistant(format!("Turn {}", i)));
+                        thread = thread.with_patch(TrackedPatch::new(
                             Patch::new().with_op(Op::increment(path!("counter"), 1i64)),
                         ));
                     }
 
-                    black_box(session)
+                    black_box(thread)
                 });
             },
         );
@@ -370,11 +370,11 @@ fn bench_agent_loop_simulation(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_state_clone,
-    bench_session_rebuild,
-    bench_session_replay,
-    bench_session_snapshot,
-    bench_session_with_message,
-    bench_full_session_clone,
+    bench_thread_rebuild,
+    bench_thread_replay,
+    bench_thread_snapshot,
+    bench_thread_with_message,
+    bench_full_thread_clone,
     bench_agent_loop_simulation,
 );
 

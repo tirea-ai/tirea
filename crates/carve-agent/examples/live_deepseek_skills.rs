@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use carve_agent::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, Context,
-    FsSkillRegistry, Message, RunContext, Session, SkillSubsystem, Tool, ToolDescriptor, ToolError,
+    FsSkillRegistry, Message, RunContext, Thread, SkillSubsystem, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_state_derive::State;
@@ -215,7 +215,7 @@ async fn test_unit_converter(
         .with_max_rounds(5)
         .with_plugin(subsystem.plugin());
 
-    let session = Session::with_initial_state("test-unit-converter", json!({}))
+    let thread = Thread::with_initial_state("test-unit-converter", json!({}))
         .with_message(Message::system(
             "You are a helpful assistant with access to skills and tools. \
              When the user asks about unit conversions, first activate the \
@@ -226,16 +226,16 @@ async fn test_unit_converter(
             "Convert 100 miles to kilometers. Use the unit-converter skill.",
         ));
 
-    let (session, response) = run_loop(client, &config, session, tools)
+    let (thread, response) = run_loop(client, &config, thread, tools)
         .await
         .map_err(|e| format!("LLM error: {e}"))?;
 
     println!("User: Convert 100 miles to kilometers.");
     println!("Assistant: {response}");
-    println!("Messages: {}", session.message_count());
+    println!("Messages: {}", thread.message_count());
 
     // Check if skill was activated via tool calls
-    let skill_activated = session.messages.iter().any(|m| {
+    let skill_activated = thread.messages.iter().any(|m| {
         m.tool_calls
             .as_ref()
             .is_some_and(|calls| calls.iter().any(|c| c.name == "skill"))
@@ -248,7 +248,7 @@ async fn test_unit_converter(
     }
 
     // Check if calculator was used
-    let calc_used = session.messages.iter().any(|m| {
+    let calc_used = thread.messages.iter().any(|m| {
         m.tool_calls
             .as_ref()
             .is_some_and(|calls| calls.iter().any(|c| c.name == "calculator"))
@@ -270,7 +270,7 @@ async fn test_todo_manager_streaming(
         .with_max_rounds(8)
         .with_plugin(subsystem.plugin());
 
-    let session = Session::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
+    let thread = Thread::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant with access to skills and tools. \
              When managing tasks, first activate the todo-manager skill, \
@@ -287,7 +287,7 @@ async fn test_todo_manager_streaming(
     let mut stream = run_loop_stream(
         client.clone(),
         config,
-        session,
+        thread,
         tools.clone(),
         RunContext::default(),
     );
@@ -331,51 +331,51 @@ async fn test_multi_skill(
         .with_plugin(subsystem.plugin());
 
     // Multi-turn conversation activating both skills
-    let mut session = Session::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
+    let mut thread = Thread::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant with skills and tools. \
              Activate the appropriate skill before performing related tasks.",
         ));
 
     // Turn 1: Use unit converter
-    session = session.with_message(Message::user(
+    thread = thread.with_message(Message::user(
         "I need to convert 5 pounds to kilograms. Use the unit-converter skill.",
     ));
 
-    let (new_session, response) = run_loop(client, &config, session, tools)
+    let (new_thread, response) = run_loop(client, &config, thread, tools)
         .await
         .map_err(|e| format!("LLM error: {e}"))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Turn 1 - User: Convert 5 pounds to kilograms.");
     println!("Turn 1 - Assistant: {response}");
 
     // Turn 2: Use todo manager
-    session = session.with_message(Message::user(
+    thread = thread.with_message(Message::user(
         "Now activate the todo-manager skill and add a task: 'buy 2.27kg of flour'. \
          Use the counter to track tasks.",
     ));
 
-    let (new_session, response) = run_loop(client, &config, session, tools)
+    let (new_thread, response) = run_loop(client, &config, thread, tools)
         .await
         .map_err(|e| format!("LLM error: {e}"))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("\nTurn 2 - User: Add a task using todo-manager skill.");
     println!("Turn 2 - Assistant: {response}");
 
     // Summary
-    let final_state = session.rebuild_state()?;
+    let final_state = thread.rebuild_state()?;
     println!("\nSession summary:");
-    println!("  Total messages: {}", session.message_count());
-    println!("  Total patches: {}", session.patch_count());
+    println!("  Total messages: {}", thread.message_count());
+    println!("  Total patches: {}", thread.patch_count());
     println!(
         "  Final state: {}",
         serde_json::to_string_pretty(&final_state)?
     );
 
     // Check which skills were activated
-    let skill_calls: Vec<_> = session
+    let skill_calls: Vec<_> = thread
         .messages
         .iter()
         .filter_map(|m| m.tool_calls.as_ref())

@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use carve_agent::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
-    FileStorage, Message, RunContext, Session, Storage, Tool, ToolDescriptor, ToolError,
+    FileStorage, Message, RunContext, Thread, Storage, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_state_derive::State;
@@ -339,8 +339,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 6: Multi-run with Tools ---");
     test_multi_run_with_tools(&client).await?;
 
-    // Test 7: Session persistence and restore
-    println!("\n--- Test 7: Session Persistence & Restore ---");
+    // Test 7: Thread persistence and restore
+    println!("\n--- Test 7: Thread Persistence & Restore ---");
     test_session_persistence(&client).await?;
 
     // Test 8: Parallel tool calls
@@ -355,8 +355,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 10: Tool Failure Recovery ---");
     test_tool_failure_recovery(&client).await?;
 
-    // Test 11: Session snapshot continuation
-    println!("\n--- Test 11: Session Snapshot Continuation ---");
+    // Test 11: Thread snapshot continuation
+    println!("\n--- Test 11: Thread Snapshot Continuation ---");
     test_session_snapshot(&client).await?;
 
     // Test 12: State replay
@@ -374,16 +374,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_simple_conversation(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
-    let session =
-        Session::new("test-simple").with_message(Message::user("What is 2 + 2? Reply briefly."));
+    let thread =
+        Thread::new("test-simple").with_message(Message::user("What is 2 + 2? Reply briefly."));
 
-    let (session, response) = run_loop(client, &config, session, &std::collections::HashMap::new())
+    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
     println!("User: What is 2 + 2? Reply briefly.");
     println!("Assistant: {}", response);
-    println!("Messages in session: {}", session.message_count());
+    println!("Messages in thread: {}", thread.message_count());
 
     Ok(())
 }
@@ -394,21 +394,21 @@ async fn test_calculator(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
-    let session = Session::new("test-calc")
+    let thread = Thread::new("test-calc")
         .with_message(Message::system("You are a helpful assistant. Use the calculator tool when asked to perform calculations."))
         .with_message(Message::user("Please calculate 15 * 7 + 23 using the calculator tool."));
 
-    let (session, response) = run_loop(client, &config, session, tools)
+    let (thread, response) = run_loop(client, &config, thread, tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
     println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
     println!("Assistant: {}", response);
-    println!("Messages in session: {}", session.message_count());
-    println!("Patches in session: {}", session.patch_count());
+    println!("Messages in thread: {}", thread.message_count());
+    println!("Patches in thread: {}", thread.patch_count());
 
     // Show tool calls from messages
-    for msg in &session.messages {
+    for msg in &thread.messages {
         if let Some(ref calls) = msg.tool_calls {
             for call in calls {
                 println!("Tool called: {} with args: {}", call.name, call.arguments);
@@ -422,7 +422,7 @@ async fn test_calculator(
 async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
-    let session = Session::new("test-stream")
+    let thread = Thread::new("test-stream")
         .with_message(Message::user("Count from 1 to 5, one number per line."));
 
     let tools = std::collections::HashMap::new();
@@ -433,7 +433,7 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
     let mut stream = run_loop_stream(
         client.clone(),
         config,
-        session,
+        thread,
         tools,
         RunContext::default(),
     );
@@ -466,24 +466,24 @@ async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::err
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     // Create session with initial state
-    let session = Session::with_initial_state("test-counter", json!({ "counter": 0 }))
+    let thread = Thread::with_initial_state("test-counter", json!({ "counter": 0 }))
         .with_message(Message::system("You are a helpful assistant. Use the counter tool to manage a counter. Always use the tool when asked about the counter."))
         .with_message(Message::user("Please increment the counter by 5, then increment it by 3 more. Tell me the final value."));
 
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
-    let (session, response) = run_loop(client, &config, session, &tools)
+    let (thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
     println!("User: Please increment the counter by 5, then increment it by 3 more. Tell me the final value.");
     println!("Assistant: {}", response);
-    println!("Messages in session: {}", session.message_count());
-    println!("Patches in session: {}", session.patch_count());
+    println!("Messages in thread: {}", thread.message_count());
+    println!("Patches in thread: {}", thread.patch_count());
 
     // Rebuild state to see final counter value
-    let final_state = session.rebuild_state()?;
+    let final_state = thread.rebuild_state()?;
     println!(
         "Final state: {}",
         serde_json::to_string_pretty(&final_state)?
@@ -496,43 +496,43 @@ async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     // Run 1: Introduce a topic
-    let mut session = Session::new("test-multi-run")
+    let mut thread = Thread::new("test-multi-run")
         .with_message(Message::system(
             "You are a helpful assistant. Keep your answers brief.",
         ))
         .with_message(Message::user("My name is Alice. Remember it."));
 
-    let (new_session, response) =
-        run_loop(client, &config, session, &std::collections::HashMap::new())
+    let (new_thread, response) =
+        run_loop(client, &config, thread, &std::collections::HashMap::new())
             .await
             .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Run 1 - User: My name is Alice. Remember it.");
     println!("Run 1 - Assistant: {}", response);
 
     // Run 2: Test if context is remembered
-    session = session.with_message(Message::user("What is my name?"));
+    thread = thread.with_message(Message::user("What is my name?"));
 
-    let (new_session, response) =
-        run_loop(client, &config, session, &std::collections::HashMap::new())
+    let (new_thread, response) =
+        run_loop(client, &config, thread, &std::collections::HashMap::new())
             .await
             .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Run 2 - User: What is my name?");
     println!("Run 2 - Assistant: {}", response);
 
     // Run 3: Another follow-up
-    session = session.with_message(Message::user("Say my name backwards."));
+    thread = thread.with_message(Message::user("Say my name backwards."));
 
-    let (session, response) = run_loop(client, &config, session, &std::collections::HashMap::new())
+    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
     println!("Run 3 - User: Say my name backwards.");
     println!("Run 3 - Assistant: {}", response);
-    println!("Total messages in session: {}", session.message_count());
+    println!("Total messages in thread: {}", thread.message_count());
 
     // Verify context was maintained
     let response_lower = response.to_lowercase();
@@ -552,49 +552,49 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     let tools = tool_map_from_arc([counter_tool]);
 
     // Start with initial state
-    let mut session = Session::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
+    let mut thread = Thread::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool to manage a counter. \
              Always use the tool when asked about the counter.",
         ));
 
     // Run 1: Get current value
-    session = session.with_message(Message::user("What is the current counter value?"));
+    thread = thread.with_message(Message::user("What is the current counter value?"));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Run 1 - User: What is the current counter value?");
     println!("Run 1 - Assistant: {}", response);
 
     // Run 2: Increment
-    session = session.with_message(Message::user("Add 5 to it."));
+    thread = thread.with_message(Message::user("Add 5 to it."));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Run 2 - User: Add 5 to it.");
     println!("Run 2 - Assistant: {}", response);
 
     // Run 3: Decrement
-    session = session.with_message(Message::user("Now subtract 3."));
+    thread = thread.with_message(Message::user("Now subtract 3."));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("Run 3 - User: Now subtract 3.");
     println!("Run 3 - Assistant: {}", response);
 
     // Run 4: Verify final state
-    session = session.with_message(Message::user("What is the final value?"));
+    thread = thread.with_message(Message::user("What is the final value?"));
 
-    let (session, response) = run_loop(client, &config, session, &tools)
+    let (thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
@@ -602,12 +602,12 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     println!("Run 4 - Assistant: {}", response);
 
     // Check state
-    let final_state = session.rebuild_state()?;
+    let final_state = thread.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("\nSession summary:");
-    println!("  Total messages: {}", session.message_count());
-    println!("  Total patches: {}", session.patch_count());
+    println!("  Total messages: {}", thread.message_count());
+    println!("  Total patches: {}", thread.patch_count());
     println!(
         "  Final counter: {} (expected: 12 = 10 + 5 - 3)",
         final_counter
@@ -642,7 +642,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     // ========== Phase 1: Create session and have a conversation ==========
     println!("\n[Phase 1: Initial conversation]");
 
-    let mut session = Session::with_initial_state("persist-test", json!({ "counter": 100 }))
+    let mut thread = Thread::with_initial_state("persist-test", json!({ "counter": 100 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool. Keep responses brief.",
         ))
@@ -650,50 +650,50 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
             "My favorite number is 42. Remember it. Also, what is the counter?",
         ));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("User: My favorite number is 42. Remember it. Also, what is the counter?");
     println!("Assistant: {}", response);
 
     // Add another step
-    session = session.with_message(Message::user(
+    thread = thread.with_message(Message::user(
         "Increment the counter by my favorite number.",
     ));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("User: Increment the counter by my favorite number.");
     println!("Assistant: {}", response);
 
     // Save session
-    storage.save(&session).await?;
-    println!("\n✅ Session saved to disk");
-    println!("   Messages: {}", session.message_count());
-    println!("   Patches: {}", session.patch_count());
+    storage.save(&thread).await?;
+    println!("\n✅ Thread saved to disk");
+    println!("   Messages: {}", thread.message_count());
+    println!("   Patches: {}", thread.patch_count());
 
-    let state_before = session.rebuild_state()?;
+    let state_before = thread.rebuild_state()?;
     println!("   State: counter = {}", state_before["counter"]);
 
     // ========== Phase 2: Load session and continue conversation ==========
     println!("\n[Phase 2: Load and continue]");
 
     // Load the session (simulating app restart)
-    let loaded_session = storage
+    let loaded_thread = storage
         .load("persist-test")
         .await?
-        .ok_or("Session not found")?;
+        .ok_or("Thread not found")?;
 
-    println!("✅ Session loaded from disk");
-    println!("   Messages: {}", loaded_session.message_count());
-    println!("   Patches: {}", loaded_session.patch_count());
+    println!("✅ Thread loaded from disk");
+    println!("   Messages: {}", loaded_thread.message_count());
+    println!("   Patches: {}", loaded_thread.patch_count());
 
-    let state_after_load = loaded_session.rebuild_state()?;
+    let state_after_load = loaded_thread.rebuild_state()?;
     println!("   State: counter = {}", state_after_load["counter"]);
 
     // Verify state matches
@@ -703,15 +703,15 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     // Continue conversation with loaded session
-    let mut session = loaded_session;
-    session = session.with_message(Message::user(
+    let mut thread = loaded_thread;
+    thread = thread.with_message(Message::user(
         "What was my favorite number? And what is the counter now?",
     ));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("\nUser: What was my favorite number? And what is the counter now?");
     println!("Assistant: {}", response);
@@ -735,7 +735,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     }
 
     // Final state check
-    let final_state = session.rebuild_state()?;
+    let final_state = thread.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
     println!(
         "\nFinal state: counter = {} (expected: 142 = 100 + 42)",
@@ -743,7 +743,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     if final_counter == 142 {
-        println!("✅ Session persistence and restore working correctly!");
+        println!("✅ Thread persistence and restore working correctly!");
     } else {
         println!("⚠️ Counter value unexpected");
     }
@@ -766,7 +766,7 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
     let weather_tool: Arc<dyn Tool> = Arc::new(WeatherTool);
     let tools = tool_map_from_arc([calc_tool, weather_tool]);
 
-    let session = Session::new("test-parallel")
+    let thread = Thread::new("test-parallel")
         .with_message(Message::system(
             "You are a helpful assistant with access to a calculator and weather tool. \
              When asked to do multiple independent things, call multiple tools in parallel.",
@@ -777,7 +777,7 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
              2) Get the weather in Tokyo",
         ));
 
-    let (session, response) = run_loop(client, &config, session, &tools)
+    let (thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
@@ -787,7 +787,7 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
     // Count how many tool calls were made
     let mut tool_call_count = 0;
     let mut tools_in_single_message = 0;
-    for msg in &session.messages {
+    for msg in &thread.messages {
         if let Some(ref calls) = msg.tool_calls {
             let count = calls.len();
             tool_call_count += count;
@@ -829,7 +829,7 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
     let loop_tool: Arc<dyn Tool> = Arc::new(InfiniteLoopTool);
     let tools = tool_map_from_arc([loop_tool]);
 
-    let session = Session::new("test-max-rounds")
+    let thread = Thread::new("test-max-rounds")
         .with_message(Message::system(
             "You are a system monitor. Use the check_status tool to check all components. \
              Keep checking until all components report 'ok'. Always follow the tool's suggestions.",
@@ -838,16 +838,16 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
             "Check the status of the 'api' component completely.",
         ));
 
-    let result = run_loop(client, &config, session, &tools).await;
+    let result = run_loop(client, &config, thread, &tools).await;
 
     match result {
-        Ok((session, response)) => {
+        Ok((thread, response)) => {
             println!("User: Check the status (triggers potential infinite loop)");
             println!("Assistant: {}", response);
-            println!("Messages: {}", session.message_count());
+            println!("Messages: {}", thread.message_count());
 
             // Count tool calls
-            let tool_calls: usize = session
+            let tool_calls: usize = thread
                 .messages
                 .iter()
                 .filter_map(|m| m.tool_calls.as_ref())
@@ -887,7 +887,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     let unreliable_tool: Arc<dyn Tool> = Arc::new(UnreliableTool::new(2));
     let tools = tool_map_from_arc([unreliable_tool]);
 
-    let session = Session::new("test-failure-recovery")
+    let thread = Thread::new("test-failure-recovery")
         .with_message(Message::system(
             "You are a helpful assistant. Use the unreliable_api tool to process queries. \
              If the tool fails, try again. The API may need multiple attempts.",
@@ -896,7 +896,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
             "Please use the API to process the query 'hello world'.",
         ));
 
-    let (session, response) = run_loop(client, &config, session, &tools)
+    let (thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
@@ -906,7 +906,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     // Count tool calls and check for error messages
     let mut tool_calls = 0;
     let mut error_messages = 0;
-    for msg in &session.messages {
+    for msg in &thread.messages {
         if let Some(ref calls) = msg.tool_calls {
             tool_calls += calls.len();
         }
@@ -931,7 +931,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// Test 11: Session snapshot - collapse patches and continue
+/// Test 11: Thread snapshot - collapse patches and continue
 async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
@@ -940,7 +940,7 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
 
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
-    let mut session = Session::with_initial_state("test-snapshot", json!({ "counter": 0 }))
+    let mut thread = Thread::with_initial_state("test-snapshot", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool.",
         ))
@@ -948,35 +948,35 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
             "Increment the counter 3 times by 10 each time.",
         ));
 
-    let (new_session, response) = run_loop(client, &config, session, &tools)
+    let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
     println!("After increments:");
     println!("  Assistant: {}", response);
-    println!("  Patches: {}", session.patch_count());
-    println!("  State: {:?}", session.rebuild_state()?);
+    println!("  Patches: {}", thread.patch_count());
+    println!("  State: {:?}", thread.rebuild_state()?);
 
     // Phase 2: Snapshot to collapse patches
     println!("\n[Phase 2: Snapshot]");
-    let patches_before = session.patch_count();
-    let session = session.snapshot()?;
-    let patches_after = session.patch_count();
+    let patches_before = thread.patch_count();
+    let thread = thread.snapshot()?;
+    let patches_after = thread.patch_count();
 
     println!("  Patches before snapshot: {}", patches_before);
     println!("  Patches after snapshot: {}", patches_after);
-    println!("  State in session: {:?}", session.state);
+    println!("  State in thread: {:?}", thread.state);
 
     // Phase 3: Continue after snapshot
     println!("\n[Phase 3: Continue after snapshot]");
-    let session = session.with_message(Message::user("What is the counter now? Then add 5 more."));
+    let thread = thread.with_message(Message::user("What is the counter now? Then add 5 more."));
 
-    let (session, response) = run_loop(client, &config, session, &tools)
+    let (thread, response) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
 
-    let final_state = session.rebuild_state()?;
+    let final_state = thread.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("  Assistant: {}", response);
@@ -986,7 +986,7 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
         println!("✅ Snapshot collapsed patches to 0");
     }
     if final_counter >= 30 {
-        println!("✅ Session continued correctly after snapshot");
+        println!("✅ Thread continued correctly after snapshot");
     }
 
     Ok(())
@@ -1001,48 +1001,48 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     // Build session with multiple state changes
     println!("[Building state history]");
-    let mut session = Session::with_initial_state("test-replay", json!({ "counter": 0 }))
+    let mut thread = Thread::with_initial_state("test-replay", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool.",
         ));
 
     // Run 1: Set counter to 10
-    session = session.with_message(Message::user("Set the counter to 10."));
-    let (new_session, _) = run_loop(client, &config, session, &tools)
+    thread = thread.with_message(Message::user("Set the counter to 10."));
+    let (new_thread, _) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
-    let state_after_1 = session.rebuild_state()?;
-    let patches_after_1 = session.patch_count();
+    let state_after_1 = thread.rebuild_state()?;
+    let patches_after_1 = thread.patch_count();
     println!(
         "After run 1: counter = {}, patches = {}",
         state_after_1["counter"], patches_after_1
     );
 
     // Run 2: Add 20
-    session = session.with_message(Message::user("Now add 20 to the counter."));
-    let (new_session, _) = run_loop(client, &config, session, &tools)
+    thread = thread.with_message(Message::user("Now add 20 to the counter."));
+    let (new_thread, _) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
-    let state_after_2 = session.rebuild_state()?;
-    let patches_after_2 = session.patch_count();
+    let state_after_2 = thread.rebuild_state()?;
+    let patches_after_2 = thread.patch_count();
     println!(
         "After run 2: counter = {}, patches = {}",
         state_after_2["counter"], patches_after_2
     );
 
     // Run 3: Add 30
-    session = session.with_message(Message::user("Add 30 more."));
-    let (new_session, _) = run_loop(client, &config, session, &tools)
+    thread = thread.with_message(Message::user("Add 30 more."));
+    let (new_thread, _) = run_loop(client, &config, thread, &tools)
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
-    session = new_session;
+    thread = new_thread;
 
-    let state_after_3 = session.rebuild_state()?;
-    let patches_after_3 = session.patch_count();
+    let state_after_3 = thread.rebuild_state()?;
+    let patches_after_3 = thread.patch_count();
     println!(
         "After run 3: counter = {}, patches = {}",
         state_after_3["counter"], patches_after_3
@@ -1051,11 +1051,11 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
     // Now replay to earlier states
     println!("\n[Replaying to earlier states]");
 
-    let total_patches = session.patch_count();
+    let total_patches = thread.patch_count();
     if total_patches > 0 {
         // Replay through each patch point
         for i in 0..total_patches {
-            let replayed_state = session.replay_to(i)?;
+            let replayed_state = thread.replay_to(i)?;
             println!(
                 "  State at patch {}: counter = {}",
                 i, replayed_state["counter"]
@@ -1063,7 +1063,7 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
         }
 
         // Show final state for comparison
-        let final_state = session.rebuild_state()?;
+        let final_state = thread.rebuild_state()?;
         println!("  Final state: counter = {}", final_state["counter"]);
 
         println!(
@@ -1085,13 +1085,13 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let start_time = std::time::Instant::now();
 
     // Create a session with many messages
-    let mut session = Session::new("test-long-conv").with_message(Message::system(
+    let mut thread = Thread::new("test-long-conv").with_message(Message::system(
         "You are a helpful assistant. Keep answers brief.",
     ));
 
     // Add 20 runs of conversation history
     for i in 1..=20 {
-        session = session
+        thread = thread
             .with_message(Message::user(format!(
                 "Message {} from user. Remember the number {}.",
                 i,
@@ -1107,23 +1107,23 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let build_time = start_time.elapsed();
     println!(
         "  Built {} messages in {:?}",
-        session.message_count(),
+        thread.message_count(),
         build_time
     );
 
     // Now send a new message that requires remembering context
-    session = session.with_message(Message::user(
+    thread = thread.with_message(Message::user(
         "What was the number I mentioned in message 15? Reply with just the number.",
     ));
 
     let request_start = std::time::Instant::now();
-    let (session, response) = run_loop(client, &config, session, &std::collections::HashMap::new())
+    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
         .await
         .map_err(|e| format!("LLM error: {}", e))?;
     let request_time = request_start.elapsed();
 
     println!("\n[Results]");
-    println!("  Total messages: {}", session.message_count());
+    println!("  Total messages: {}", thread.message_count());
     println!("  Request time: {:?}", request_time);
     println!("  Assistant: {}", response);
 
@@ -1137,7 +1137,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     // Test session serialization performance with large history
     let storage = carve_agent::MemoryStorage::new();
     let save_start = std::time::Instant::now();
-    storage.save(&session).await?;
+    storage.save(&thread).await?;
     let save_time = save_start.elapsed();
 
     let load_start = std::time::Instant::now();

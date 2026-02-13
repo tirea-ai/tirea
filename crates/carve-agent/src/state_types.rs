@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::Session;
+use crate::Thread;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -174,7 +174,7 @@ pub struct AgentRunState {
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<Session>,
+    pub thread: Option<Thread>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = Session::new("child-1").with_message(crate::Message::user("seed"));
+        let child = Thread::new("child-1").with_message(crate::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),
@@ -355,13 +355,13 @@ mod tests {
             status: AgentRunStatus::Running,
             assistant: None,
             error: None,
-            session: Some(child),
+            thread: Some(child),
         };
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["run_id"], "run-1");
         assert_eq!(json["parent_run_id"], "parent-run-1");
         assert_eq!(json["target_agent_id"], "worker");
         assert_eq!(json["status"], "running");
-        assert_eq!(json["session"]["id"], "child-1");
+        assert_eq!(json["thread"]["id"], "child-1");
     }
 }

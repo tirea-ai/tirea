@@ -5,7 +5,7 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Context for the currently executing tool
 
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::state_types::Interaction;
 use crate::stream::StreamResult;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
-    /// Session started (called once).
+    /// Thread started (called once).
     SessionStart,
     /// Step started - prepare context.
     StepStart,
@@ -33,7 +33,7 @@ pub enum Phase {
     AfterToolExecute,
     /// Step ended.
     StepEnd,
-    /// Session ended (called once).
+    /// Thread ended (called once).
     SessionEnd,
 }
 
@@ -57,7 +57,7 @@ impl std::fmt::Display for Phase {
 pub enum StepOutcome {
     /// Continue to next step.
     Continue,
-    /// Session complete.
+    /// Thread complete.
     Complete,
     /// Pending user interaction.
     Pending(Interaction),
@@ -116,14 +116,14 @@ impl ToolContext {
 /// It provides access to session state, message building, tool filtering,
 /// and flow control.
 pub struct StepContext<'a> {
-    // === Session State (read-only) ===
+    // === Thread State (read-only) ===
     /// Current session.
-    pub session: &'a Session,
+    pub thread: &'a Thread,
 
     // === Message Building ===
     /// System context to append to system prompt [Position 1].
     pub system_context: Vec<String>,
-    /// Session context messages (before user messages) [Position 2].
+    /// Thread context messages (before user messages) [Position 2].
     pub session_context: Vec<String>,
     /// System reminders (after tool results) [Position 7].
     pub system_reminders: Vec<String>,
@@ -157,9 +157,9 @@ pub struct StepContext<'a> {
 
 impl<'a> StepContext<'a> {
     /// Create a new step context.
-    pub fn new(session: &'a Session, tools: Vec<ToolDescriptor>) -> Self {
+    pub fn new(thread: &'a Thread, tools: Vec<ToolDescriptor>) -> Self {
         Self {
-            session,
+            thread,
             system_context: Vec::new(),
             session_context: Vec::new(),
             system_reminders: Vec::new(),
@@ -205,7 +205,7 @@ impl<'a> StepContext<'a> {
     }
 
     /// Add session context message (before user messages) [Position 2].
-    pub fn session(&mut self, content: impl Into<String>) {
+    pub fn thread(&mut self, content: impl Into<String>) {
         self.session_context.push(content.into());
     }
 
@@ -392,8 +392,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
-    fn mock_session() -> Session {
-        Session::new("test-session")
+    fn mock_thread() -> Thread {
+        Thread::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -439,9 +439,9 @@ mod tests {
 
     #[test]
     fn test_step_context_new() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let ctx = StepContext::new(&session, tools.clone());
+        let ctx = StepContext::new(&thread, tools.clone());
 
         assert!(ctx.system_context.is_empty());
         assert!(ctx.session_context.is_empty());
@@ -454,12 +454,12 @@ mod tests {
 
     #[test]
     fn test_step_context_reset() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.system("test");
-        ctx.session("test");
+        ctx.thread("test");
         ctx.reminder("test");
         ctx.skip_inference = true;
 
@@ -477,8 +477,8 @@ mod tests {
 
     #[test]
     fn test_system_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -490,8 +490,8 @@ mod tests {
 
     #[test]
     fn test_set_system_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -503,8 +503,8 @@ mod tests {
 
     #[test]
     fn test_clear_system_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.system("Context 1");
         ctx.clear_system();
@@ -514,21 +514,21 @@ mod tests {
 
     #[test]
     fn test_session_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.session("Session 1");
-        ctx.session("Session 2");
+        ctx.thread("Thread 1");
+        ctx.thread("Thread 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }
 
     #[test]
     fn test_set_session_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.session("Session 1");
+        ctx.thread("Thread 1");
         ctx.set_session("Replaced");
 
         assert_eq!(ctx.session_context.len(), 1);
@@ -537,8 +537,8 @@ mod tests {
 
     #[test]
     fn test_reminder() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -548,8 +548,8 @@ mod tests {
 
     #[test]
     fn test_clear_reminders() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.clear_reminders();
@@ -563,9 +563,9 @@ mod tests {
 
     #[test]
     fn test_exclude_tool() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.exclude("delete_file");
 
@@ -575,9 +575,9 @@ mod tests {
 
     #[test]
     fn test_include_only_tools() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.include_only(&["read_file"]);
 
@@ -591,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_tool_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -606,8 +606,8 @@ mod tests {
 
     #[test]
     fn test_block_tool() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -623,8 +623,8 @@ mod tests {
 
     #[test]
     fn test_pending_tool() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -638,8 +638,8 @@ mod tests {
 
     #[test]
     fn test_confirm_tool() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -654,8 +654,8 @@ mod tests {
 
     #[test]
     fn test_set_tool_result() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -673,8 +673,8 @@ mod tests {
 
     #[test]
     fn test_set_get_data() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.scratchpad_set("counter", 42i32));
         let value: Option<i32> = ctx.scratchpad_get("counter");
@@ -684,8 +684,8 @@ mod tests {
 
     #[test]
     fn test_scratchpad_named_api_roundtrip() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.scratchpad_set("counter", 42i32));
         assert!(ctx.scratchpad_has("counter"));
@@ -699,8 +699,8 @@ mod tests {
 
     #[test]
     fn test_set_data_returns_false_when_serialize_fails() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         struct FailingSerialize;
         impl Serialize for FailingSerialize {
@@ -719,8 +719,8 @@ mod tests {
 
     #[test]
     fn test_get_nonexistent_data() {
-        let session = mock_session();
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let ctx = StepContext::new(&thread, vec![]);
 
         let value: Option<i32> = ctx.scratchpad_get("nonexistent");
         assert!(value.is_none());
@@ -728,8 +728,8 @@ mod tests {
 
     #[test]
     fn test_has_data() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         assert!(!ctx.scratchpad_has("key"));
         ctx.scratchpad_set("key", "value");
@@ -738,8 +738,8 @@ mod tests {
 
     #[test]
     fn test_remove_data() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.scratchpad_set("key", "value");
         let removed = ctx.scratchpad_remove("key");
@@ -750,8 +750,8 @@ mod tests {
 
     #[test]
     fn test_complex_data_types() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct Config {
@@ -776,16 +776,16 @@ mod tests {
 
     #[test]
     fn test_step_result_continue() {
-        let session = mock_session();
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let ctx = StepContext::new(&thread, vec![]);
 
         assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
     fn test_step_result_pending() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -801,8 +801,8 @@ mod tests {
 
     #[test]
     fn test_step_result_complete() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Done!".to_string(),
@@ -880,8 +880,8 @@ mod tests {
 
     #[test]
     fn test_step_context_empty_session() {
-        let session = Session::new("empty");
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = Thread::new("empty");
+        let ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.tools.is_empty());
         assert!(ctx.system_context.is_empty());
@@ -890,8 +890,8 @@ mod tests {
 
     #[test]
     fn test_step_context_multiple_system_contexts() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -904,19 +904,19 @@ mod tests {
 
     #[test]
     fn test_step_context_multiple_session_contexts() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.session("Session 1");
-        ctx.session("Session 2");
+        ctx.thread("Thread 1");
+        ctx.thread("Thread 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }
 
     #[test]
     fn test_step_context_multiple_reminders() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -927,10 +927,10 @@ mod tests {
 
     #[test]
     fn test_exclude_nonexistent_tool() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
         let original_len = tools.len();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.exclude("nonexistent_tool");
 
@@ -940,9 +940,9 @@ mod tests {
 
     #[test]
     fn test_exclude_multiple_tools() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.exclude("read_file");
         ctx.exclude("delete_file");
@@ -953,9 +953,9 @@ mod tests {
 
     #[test]
     fn test_include_only_empty_list() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.include_only(&[]);
 
@@ -964,9 +964,9 @@ mod tests {
 
     #[test]
     fn test_include_only_with_nonexistent() {
-        let session = mock_session();
+        let thread = mock_thread();
         let tools = mock_tools();
-        let mut ctx = StepContext::new(&session, tools);
+        let mut ctx = StepContext::new(&thread, tools);
 
         ctx.include_only(&["read_file", "nonexistent"]);
 
@@ -976,8 +976,8 @@ mod tests {
 
     #[test]
     fn test_block_without_tool_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         // No tool context, block should not panic
         ctx.block("test");
@@ -987,8 +987,8 @@ mod tests {
 
     #[test]
     fn test_pending_without_tool_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let interaction = Interaction::new("id", "confirm").with_message("test");
         ctx.pending(interaction);
@@ -998,8 +998,8 @@ mod tests {
 
     #[test]
     fn test_confirm_without_pending() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("call_1", "test", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -1012,16 +1012,16 @@ mod tests {
 
     #[test]
     fn test_tool_args_without_tool() {
-        let session = mock_session();
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.tool_args().is_none());
     }
 
     #[test]
     fn test_tool_name_without_tool() {
-        let session = mock_session();
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.tool_name().is_none());
         assert!(ctx.tool_call_id().is_none());
@@ -1029,16 +1029,16 @@ mod tests {
 
     #[test]
     fn test_tool_result_without_tool() {
-        let session = mock_session();
-        let ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.tool_result().is_none());
     }
 
     #[test]
     fn test_step_result_with_tool_calls() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Calling tools".to_string(),
@@ -1052,8 +1052,8 @@ mod tests {
 
     #[test]
     fn test_step_result_empty_text_no_tools() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.response = Some(StreamResult {
             text: String::new(),
@@ -1067,8 +1067,8 @@ mod tests {
 
     #[test]
     fn test_data_overwrite() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         ctx.scratchpad_set("key", 1i32);
         assert_eq!(ctx.scratchpad_get::<i32>("key"), Some(1));
@@ -1079,8 +1079,8 @@ mod tests {
 
     #[test]
     fn test_remove_nonexistent_key() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
         let removed = ctx.scratchpad_remove("nonexistent");
         assert!(removed.is_none());
@@ -1114,11 +1114,11 @@ mod tests {
 
     #[test]
     fn test_set_clear_session_context() {
-        let session = mock_session();
-        let mut ctx = StepContext::new(&session, vec![]);
+        let thread = mock_thread();
+        let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.session("Context 1");
-        ctx.session("Context 2");
+        ctx.thread("Context 1");
+        ctx.thread("Context 2");
         ctx.set_session("Only this");
 
         assert_eq!(ctx.session_context.len(), 1);

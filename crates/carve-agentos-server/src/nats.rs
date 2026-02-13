@@ -1,7 +1,7 @@
 use carve_agent::ag_ui::AGUIEvent;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
-    apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage,
+    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread, Storage,
     AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
@@ -107,43 +107,43 @@ impl NatsGateway {
             ));
         };
 
-        let session = self
+        let thread = self
             .storage
             .load(&req.request.thread_id)
             .await
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
             .unwrap_or_else(|| {
                 if let Some(state) = req.request.state.clone() {
-                    Session::with_initial_state(req.request.thread_id.clone(), state)
+                    Thread::with_initial_state(req.request.thread_id.clone(), state)
                 } else {
-                    Session::new(req.request.thread_id.clone())
+                    Thread::new(req.request.thread_id.clone())
                 }
             });
-        if session.id != req.request.thread_id {
+        if thread.id != req.request.thread_id {
             return Err(NatsGatewayError::BadRequest(
-                "stored session id does not match threadId".to_string(),
+                "stored thread id does not match threadId".to_string(),
             ));
         }
 
         // Industry-common: persist inbound messages/tool responses before running.
-        let before_messages = session.messages.len();
-        let before_patches = session.patches.len();
-        let before_state = session.state.clone();
-        let mut session = apply_agui_request_to_session(session, &req.request);
-        if session.messages.len() != before_messages
-            || session.patches.len() != before_patches
-            || session.state != before_state
+        let before_messages = thread.messages.len();
+        let before_patches = thread.patches.len();
+        let before_state = thread.state.clone();
+        let mut thread = apply_agui_request_to_thread(thread, &req.request);
+        if thread.messages.len() != before_messages
+            || thread.patches.len() != before_patches
+            || thread.state != before_state
         {
             self.storage
-                .save(&session)
+                .save(&thread)
                 .await
                 .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
         }
-        let _ = session
+        let _ = thread
             .runtime
             .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, req.request.run_id.clone());
 
-        let (client, cfg, tools, session) = match self.os.resolve(&req.agent_id, session) {
+        let (client, cfg, tools, thread) = match self.os.resolve(&req.agent_id, thread) {
             Ok(w) => w,
             Err(e) => {
                 let err = AGUIEvent::run_error(e.to_string(), None);
@@ -158,7 +158,7 @@ impl NatsGateway {
         let stream_with_checkpoints = carve_agent::run_agent_events_with_request_checkpoints(
             client,
             cfg,
-            session,
+            thread,
             tools,
             req.request.clone(),
         );
@@ -168,17 +168,17 @@ impl NatsGateway {
 
         {
             let mut checkpoints = stream_with_checkpoints.checkpoints;
-            let final_session = stream_with_checkpoints.final_session;
+            let final_thread = stream_with_checkpoints.final_thread;
             let storage = self.storage.clone();
             tokio::spawn(async move {
                 while let Some(cp) = checkpoints.recv().await {
-                    if let Err(e) = storage.save(&cp.session).await {
-                        tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                    if let Err(e) = storage.save(&cp.thread).await {
+                        tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
                     }
                 }
-                if let Ok(final_session) = final_session.await {
-                    if let Err(e) = storage.save(&final_session).await {
-                        tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                if let Ok(final_thread) = final_thread.await {
+                    if let Err(e) = storage.save(&final_thread).await {
+                        tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
                     }
                 }
             });
@@ -218,7 +218,7 @@ impl NatsGateway {
             #[serde(rename = "agentId")]
             agent_id: String,
             #[serde(rename = "sessionId")]
-            session_id: String,
+            thread_id: String,
             input: String,
             #[serde(rename = "runId")]
             run_id: Option<String>,
@@ -228,7 +228,7 @@ impl NatsGateway {
 
         let req: Req = serde_json::from_slice(&msg.payload)
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
-        if req.session_id.trim().is_empty() || req.input.trim().is_empty() {
+        if req.thread_id.trim().is_empty() || req.input.trim().is_empty() {
             return Err(NatsGatewayError::BadRequest(
                 "sessionId/input cannot be empty".to_string(),
             ));
@@ -254,23 +254,23 @@ impl NatsGateway {
             return Ok(());
         }
 
-        let mut session = self
+        let mut thread = self
             .storage
-            .load(&req.session_id)
+            .load(&req.thread_id)
             .await
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
-            .unwrap_or_else(|| Session::new(req.session_id.clone()));
-        session = session.with_message(Message::user(req.input));
+            .unwrap_or_else(|| Thread::new(req.thread_id.clone()));
+        thread = thread.with_message(Message::user(req.input));
 
         // Industry-common: persist the user message immediately.
         self.storage
-            .save(&session)
+            .save(&thread)
             .await
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
 
         // Set run_id on the session runtime if provided; otherwise it will be auto-generated by the loop
         let run_id = if let Some(run_id) = req.run_id.clone() {
-            let _ = session.runtime.set("run_id", run_id.clone());
+            let _ = thread.runtime.set("run_id", run_id.clone());
             run_id
         } else {
             // Generate a run_id for the encoder, but don't set it on runtime - let the loop auto-generate
@@ -284,7 +284,7 @@ impl NatsGateway {
         let stream_with_checkpoints =
             match self
                 .os
-                .run_stream_with_checkpoints(&req.agent_id, session, run_ctx)
+                .run_stream_with_checkpoints(&req.agent_id, thread, run_ctx)
             {
                 Ok(s) => s,
                 Err(e) => {
@@ -320,17 +320,17 @@ impl NatsGateway {
 
         {
             let mut checkpoints = stream_with_checkpoints.checkpoints;
-            let final_session = stream_with_checkpoints.final_session;
+            let final_thread = stream_with_checkpoints.final_thread;
             let storage = self.storage.clone();
             tokio::spawn(async move {
                 while let Some(cp) = checkpoints.recv().await {
-                    if let Err(e) = storage.save(&cp.session).await {
-                        tracing::error!(session_id = %cp.session.id, error = %e, "failed to save checkpoint");
+                    if let Err(e) = storage.save(&cp.thread).await {
+                        tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
                     }
                 }
-                if let Ok(final_session) = final_session.await {
-                    if let Err(e) = storage.save(&final_session).await {
-                        tracing::error!(session_id = %final_session.id, error = %e, "failed to save final session");
+                if let Ok(final_thread) = final_thread.await {
+                    if let Err(e) = storage.save(&final_thread).await {
+                        tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
                     }
                 }
             });

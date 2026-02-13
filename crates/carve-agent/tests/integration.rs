@@ -584,11 +584,11 @@ async fn test_tool_provider_reminder_integration() {
 }
 
 // ============================================================================
-// Session and Agent Loop Integration Tests
+// Thread and Agent Loop Integration Tests
 // ============================================================================
 
 use carve_agent::{
-    loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role, Session,
+    loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role, Thread,
     Storage, StreamResult,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
@@ -598,7 +598,7 @@ use tempfile::TempDir;
 #[tokio::test]
 async fn test_session_with_tool_workflow() {
     // Create session with initial state
-    let session = Session::with_initial_state("workflow-test", json!({"counter": 0}))
+    let thread = Thread::with_initial_state("workflow-test", json!({"counter": 0}))
         .with_message(Message::user("Increment the counter twice"));
 
     // Simulate first LLM response with tool call
@@ -613,19 +613,19 @@ async fn test_session_with_tool_workflow() {
     };
 
     // Add assistant message
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &result1.text,
         result1.tool_calls.clone(),
     ));
 
     // Execute tool
     let tools = tool_map([IncrementTool]);
-    let session = loop_execute_tools(session, &result1, &tools, true)
+    let thread = loop_execute_tools(thread, &result1, &tools, true)
         .await
         .unwrap();
 
     // Verify state after first tool call
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 1);
 
     // Simulate second LLM response
@@ -639,21 +639,21 @@ async fn test_session_with_tool_workflow() {
         usage: None,
     };
 
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &result2.text,
         result2.tool_calls.clone(),
     ));
 
-    let session = loop_execute_tools(session, &result2, &tools, true)
+    let thread = loop_execute_tools(thread, &result2, &tools, true)
         .await
         .unwrap();
 
     // Verify final state
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 2);
 
-    // Session should have all messages
-    assert_eq!(session.message_count(), 5); // user + 2*(assistant + tool)
+    // Thread should have all messages
+    assert_eq!(thread.message_count(), 5); // user + 2*(assistant + tool)
 }
 
 #[tokio::test]
@@ -661,14 +661,14 @@ async fn test_session_storage_roundtrip() {
     let storage = MemoryStorage::new();
 
     // Create and save session
-    let session = Session::with_initial_state("storage-test", json!({"data": "initial"}))
+    let thread = Thread::with_initial_state("storage-test", json!({"data": "initial"}))
         .with_message(Message::user("Hello"))
         .with_message(Message::assistant("Hi there!"))
         .with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("data"), json!("updated"))),
         ));
 
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Load session
     let loaded = storage.load("storage-test").await.unwrap().unwrap();
@@ -689,7 +689,7 @@ async fn test_file_storage_session_persistence() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Create complex session
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "persist-test",
         json!({
             "user": {"name": "Test", "level": 1},
@@ -704,7 +704,7 @@ async fn test_file_storage_session_persistence() {
             .with_op(Op::increment(path!("user").key("level"), 1)),
     ));
 
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Verify file exists
     let path = temp_dir.path().join("persist-test.json");
@@ -723,7 +723,7 @@ async fn test_session_snapshot_and_continue() {
     let storage = MemoryStorage::new();
 
     // Create session with patches
-    let session = Session::with_initial_state("snapshot-test", json!({"counter": 0}))
+    let thread = Thread::with_initial_state("snapshot-test", json!({"counter": 0}))
         .with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         ))
@@ -731,24 +731,24 @@ async fn test_session_snapshot_and_continue() {
             Patch::new().with_op(Op::set(path!("counter"), json!(10))),
         ));
 
-    assert_eq!(session.patch_count(), 2);
+    assert_eq!(thread.patch_count(), 2);
 
     // Snapshot to collapse patches
-    let session = session.snapshot().unwrap();
-    assert_eq!(session.patch_count(), 0);
-    assert_eq!(session.state["counter"], 10);
+    let thread = thread.snapshot().unwrap();
+    assert_eq!(thread.patch_count(), 0);
+    assert_eq!(thread.state["counter"], 10);
 
     // Save and load
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
     let loaded = storage.load("snapshot-test").await.unwrap().unwrap();
 
     // Continue with more patches
-    let session = loaded.with_patch(TrackedPatch::new(
+    let thread = loaded.with_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(path!("counter"), json!(15))),
     ));
 
-    assert_eq!(session.patch_count(), 1);
-    let state = session.rebuild_state().unwrap();
+    assert_eq!(thread.patch_count(), 1);
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"], 15);
 }
 
@@ -782,15 +782,15 @@ async fn test_tool_map_with_multiple_tools() {
 
 #[tokio::test]
 async fn test_session_message_types() {
-    let session = Session::new("msg-test")
+    let thread = Thread::new("msg-test")
         .with_message(Message::user("User message"))
         .with_message(Message::assistant("Assistant response"))
         .with_message(Message::tool("call_1", "Tool result"));
 
-    assert_eq!(session.messages.len(), 3);
-    assert_eq!(session.messages[0].role, Role::User);
-    assert_eq!(session.messages[1].role, Role::Assistant);
-    assert_eq!(session.messages[2].role, Role::Tool);
+    assert_eq!(thread.messages.len(), 3);
+    assert_eq!(thread.messages[0].role, Role::User);
+    assert_eq!(thread.messages[1].role, Role::Assistant);
+    assert_eq!(thread.messages[2].role, Role::Tool);
 }
 
 #[tokio::test]
@@ -798,25 +798,25 @@ async fn test_storage_list_and_delete() {
     let storage = MemoryStorage::new();
 
     // Create multiple sessions
-    storage.save(&Session::new("session-1")).await.unwrap();
-    storage.save(&Session::new("session-2")).await.unwrap();
-    storage.save(&Session::new("session-3")).await.unwrap();
+    storage.save(&Thread::new("thread-1")).await.unwrap();
+    storage.save(&Thread::new("thread-2")).await.unwrap();
+    storage.save(&Thread::new("thread-3")).await.unwrap();
 
     let ids = storage.list().await.unwrap();
     assert_eq!(ids.len(), 3);
 
     // Delete one
-    storage.delete("session-2").await.unwrap();
+    storage.delete("thread-2").await.unwrap();
 
     let ids = storage.list().await.unwrap();
     assert_eq!(ids.len(), 2);
-    assert!(!ids.contains(&"session-2".to_string()));
+    assert!(!ids.contains(&"thread-2".to_string()));
 }
 
 #[tokio::test]
 async fn test_parallel_tool_execution_order() {
     // Create session with initial state
-    let session = Session::with_initial_state("parallel-test", json!({"results": []}));
+    let thread = Thread::with_initial_state("parallel-test", json!({"results": []}));
 
     // Multiple tool calls
     let result = StreamResult {
@@ -830,7 +830,7 @@ async fn test_parallel_tool_execution_order() {
     };
 
     let tools = tool_map([AddTaskTool]);
-    let err = loop_execute_tools(session, &result, &tools, true)
+    let err = loop_execute_tools(thread, &result, &tools, true)
         .await
         .unwrap_err();
 
@@ -847,18 +847,18 @@ async fn test_parallel_tool_execution_order() {
 
 #[tokio::test]
 async fn test_session_needs_snapshot_threshold() {
-    let mut session = Session::new("threshold-test");
+    let mut thread = Thread::new("threshold-test");
 
     // Add patches
     for i in 0..5 {
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("value"), json!(i))),
         ));
     }
 
-    assert!(!session.needs_snapshot(10));
-    assert!(session.needs_snapshot(5));
-    assert!(session.needs_snapshot(3));
+    assert!(!thread.needs_snapshot(10));
+    assert!(thread.needs_snapshot(5));
+    assert!(thread.needs_snapshot(3));
 }
 
 // ============================================================================
@@ -915,11 +915,11 @@ async fn test_concurrent_storage_operations() {
         let storage = Arc::clone(&storage);
         let handle: tokio::task::JoinHandle<Result<(), carve_agent::StorageError>> =
             tokio::spawn(async move {
-                let session =
-                    Session::with_initial_state(format!("concurrent-{}", i), json!({"index": i}))
+                let thread =
+                    Thread::with_initial_state(format!("concurrent-{}", i), json!({"index": i}))
                         .with_message(Message::user(format!("Message {}", i)));
 
-                storage.save(&session).await
+                storage.save(&thread).await
             });
         handles.push(handle);
     }
@@ -939,10 +939,10 @@ async fn test_concurrent_storage_operations() {
 #[tokio::test]
 async fn test_concurrent_session_rebuild() {
     // Create a session with many patches
-    let mut session = Session::with_initial_state("rebuild-stress", json!({"counter": 0}));
+    let mut thread = Thread::with_initial_state("rebuild-stress", json!({"counter": 0}));
 
     for _ in 0..100 {
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
     }
@@ -950,8 +950,8 @@ async fn test_concurrent_session_rebuild() {
     // Concurrent rebuilds
     let mut handles = vec![];
     for _ in 0..50 {
-        let session = session.clone();
-        let handle = tokio::spawn(async move { session.rebuild_state() });
+        let thread = thread.clone();
+        let handle = tokio::spawn(async move { thread.rebuild_state() });
         handles.push(handle);
     }
 
@@ -965,45 +965,45 @@ async fn test_concurrent_session_rebuild() {
 }
 
 // ============================================================================
-// Large Session Tests (1000+ messages)
+// Large Thread Tests (1000+ messages)
 // ============================================================================
 
 #[tokio::test]
 async fn test_large_session_1000_messages() {
-    let mut session = Session::new("large-msg-test");
+    let mut thread = Thread::new("large-msg-test");
 
     // Add 1000 messages
     for i in 0..1000 {
         if i % 2 == 0 {
-            session = session.with_message(Message::user(format!("User message {}", i)));
+            thread = thread.with_message(Message::user(format!("User message {}", i)));
         } else {
-            session = session.with_message(Message::assistant(format!("Assistant response {}", i)));
+            thread = thread.with_message(Message::assistant(format!("Assistant response {}", i)));
         }
     }
 
-    assert_eq!(session.message_count(), 1000);
+    assert_eq!(thread.message_count(), 1000);
 
     // Verify first and last messages
-    assert!(session.messages[0].content.contains("0"));
-    assert!(session.messages[999].content.contains("999"));
+    assert!(thread.messages[0].content.contains("0"));
+    assert!(thread.messages[999].content.contains("999"));
 }
 
 #[tokio::test]
 async fn test_large_session_1000_patches() {
-    let mut session = Session::with_initial_state("large-patch-test", json!({"values": []}));
+    let mut thread = Thread::with_initial_state("large-patch-test", json!({"values": []}));
 
     // Add 1000 patches
     for i in 0..1000 {
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::append(path!("values"), json!(i))),
         ));
     }
 
-    assert_eq!(session.patch_count(), 1000);
-    assert!(session.needs_snapshot(500));
+    assert_eq!(thread.patch_count(), 1000);
+    assert!(thread.needs_snapshot(500));
 
     // Rebuild should work
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     let values = state["values"].as_array().unwrap();
     assert_eq!(values.len(), 1000);
     assert_eq!(values[0], 0);
@@ -1015,17 +1015,17 @@ async fn test_large_session_storage_roundtrip() {
     let storage = MemoryStorage::new();
 
     // Create large session
-    let mut session = Session::with_initial_state("large-storage-test", json!({"counter": 0}));
+    let mut thread = Thread::with_initial_state("large-storage-test", json!({"counter": 0}));
 
     for i in 0..500 {
-        session = session.with_message(Message::user(format!("Msg {}", i)));
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_message(Message::user(format!("Msg {}", i)));
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
     }
 
     // Save
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Load
     let loaded = storage.load("large-storage-test").await.unwrap().unwrap();
@@ -1039,11 +1039,11 @@ async fn test_large_session_storage_roundtrip() {
 
 #[tokio::test]
 async fn test_large_session_snapshot_performance() {
-    let mut session = Session::with_initial_state("snapshot-perf-test", json!({"data": {}}));
+    let mut thread = Thread::with_initial_state("snapshot-perf-test", json!({"data": {}}));
 
     // Add 200 patches with nested data
     for i in 0..200 {
-        session = session.with_patch(TrackedPatch::new(Patch::new().with_op(Op::set(
+        thread = thread.with_patch(TrackedPatch::new(Patch::new().with_op(Op::set(
             path!("data").key(format!("key_{}", i)),
             json!({
                 "index": i,
@@ -1054,10 +1054,10 @@ async fn test_large_session_snapshot_performance() {
 
     // Snapshot should collapse all patches
     let start = std::time::Instant::now();
-    let session = session.snapshot().unwrap();
+    let thread = thread.snapshot().unwrap();
     let duration = start.elapsed();
 
-    assert_eq!(session.patch_count(), 0);
+    assert_eq!(thread.patch_count(), 0);
     assert!(
         duration.as_millis() < 1000,
         "Snapshot took too long: {:?}",
@@ -1065,12 +1065,12 @@ async fn test_large_session_snapshot_performance() {
     );
 
     // Verify data
-    let keys_count = session.state["data"].as_object().unwrap().len();
+    let keys_count = thread.state["data"].as_object().unwrap().len();
     assert_eq!(keys_count, 200);
 }
 
 // ============================================================================
-// Session Interruption Recovery Tests
+// Thread Interruption Recovery Tests
 // ============================================================================
 
 #[tokio::test]
@@ -1079,7 +1079,7 @@ async fn test_session_recovery_after_partial_save() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Create session with multiple messages and patches
-    let session = Session::with_initial_state("recovery-test", json!({"step": 0}))
+    let thread = Thread::with_initial_state("recovery-test", json!({"step": 0}))
         .with_message(Message::user("Step 1"))
         .with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("step"), json!(1))),
@@ -1091,10 +1091,10 @@ async fn test_session_recovery_after_partial_save() {
         ));
 
     // Save checkpoint
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Simulate adding more work
-    let _session = session
+    let _session = thread
         .with_message(Message::assistant("Done step 2"))
         .with_message(Message::user("Step 3"))
         .with_patch(TrackedPatch::new(
@@ -1117,24 +1117,24 @@ async fn test_session_recovery_after_partial_save() {
 async fn test_session_incremental_checkpoints() {
     let storage = MemoryStorage::new();
 
-    let mut session = Session::with_initial_state("checkpoint-test", json!({"progress": 0}));
+    let mut thread = Thread::with_initial_state("checkpoint-test", json!({"progress": 0}));
 
     // Simulate long-running task with periodic checkpoints
     for checkpoint in 1..=5 {
         // Do some work
         for _ in 0..10 {
-            session = session.with_message(Message::user(format!(
+            thread = thread.with_message(Message::user(format!(
                 "Work item at checkpoint {}",
                 checkpoint
             )));
         }
 
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("progress"), json!(checkpoint * 10))),
         ));
 
         // Save checkpoint
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
     }
 
     // Verify final state
@@ -1149,32 +1149,32 @@ async fn test_session_recovery_with_snapshot() {
     let storage = MemoryStorage::new();
 
     // Create session with many patches
-    let mut session = Session::with_initial_state("snapshot-recovery", json!({"counter": 0}));
+    let mut thread = Thread::with_initial_state("snapshot-recovery", json!({"counter": 0}));
 
     for _ in 0..50 {
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
     }
 
     // Snapshot to optimize
-    let session = session.snapshot().unwrap();
-    assert_eq!(session.patch_count(), 0);
-    assert_eq!(session.state["counter"], 50);
+    let thread = thread.snapshot().unwrap();
+    assert_eq!(thread.patch_count(), 0);
+    assert_eq!(thread.state["counter"], 50);
 
     // Save
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Continue work
-    let mut session = storage.load("snapshot-recovery").await.unwrap().unwrap();
+    let mut thread = storage.load("snapshot-recovery").await.unwrap().unwrap();
     for _ in 0..25 {
-        session = session.with_patch(TrackedPatch::new(
+        thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
         ));
     }
 
     // Save again
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     // Load and verify
     let loaded = storage.load("snapshot-recovery").await.unwrap().unwrap();
@@ -1286,10 +1286,10 @@ async fn test_patch_conflict_array_operations() {
 
 #[tokio::test]
 async fn test_session_patch_ordering() {
-    let session = Session::with_initial_state("order-test", json!({"log": []}));
+    let thread = Thread::with_initial_state("order-test", json!({"log": []}));
 
     // Add patches in specific order
-    let session = session
+    let thread = thread
         .with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::append(path!("log"), json!("first"))),
         ))
@@ -1301,7 +1301,7 @@ async fn test_session_patch_ordering() {
         ));
 
     // Rebuild should preserve order
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     let log = state["log"].as_array().unwrap();
 
     assert_eq!(log[0], "first");
@@ -1414,13 +1414,13 @@ async fn test_multiple_tools_with_varying_timeouts() {
 #[tokio::test]
 async fn test_tool_timeout_cleanup() {
     // Test that partial state changes are not applied on timeout
-    let session = Session::with_initial_state("timeout-cleanup", json!({"value": "original"}));
+    let thread = Thread::with_initial_state("timeout-cleanup", json!({"value": "original"}));
 
     // Simulate a tool that would modify state but times out
     // In real scenario, the patch wouldn't be collected if tool times out
 
     // The session state should remain unchanged
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["value"], "original");
 }
 
@@ -1642,7 +1642,7 @@ async fn test_tool_error_does_not_corrupt_state() {
 
 #[tokio::test]
 async fn test_session_resilient_to_tool_errors() {
-    let session = Session::with_initial_state("error-resilient", json!({"counter": 0}));
+    let thread = Thread::with_initial_state("error-resilient", json!({"counter": 0}));
 
     // Simulate tool calls where some fail
     let tool_results = [
@@ -1653,22 +1653,22 @@ async fn test_session_resilient_to_tool_errors() {
     ];
 
     // Add all results as messages
-    let mut session = session;
+    let mut thread = thread;
     for (i, result) in tool_results.iter().enumerate() {
-        session = session.with_message(carve_agent::tool_response(format!("call_{}", i), result));
+        thread = thread.with_message(carve_agent::tool_response(format!("call_{}", i), result));
     }
 
-    // Session should have all messages regardless of success/error
-    assert_eq!(session.message_count(), 4);
+    // Thread should have all messages regardless of success/error
+    assert_eq!(thread.message_count(), 4);
 
     // Verify error messages are preserved
     assert!(
-        session.messages[1].content.contains("error")
-            || session.messages[1].content.contains("Network")
+        thread.messages[1].content.contains("error")
+            || thread.messages[1].content.contains("Network")
     );
     assert!(
-        session.messages[3].content.contains("error")
-            || session.messages[3].content.contains("Connection")
+        thread.messages[3].content.contains("error")
+            || thread.messages[3].content.contains("Connection")
     );
 }
 
@@ -1678,8 +1678,8 @@ async fn test_storage_error_recovery() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Save a valid session
-    let session = Session::new("valid-session").with_message(Message::user("Hello"));
-    storage.save(&session).await.unwrap();
+    let thread = Thread::new("valid-thread").with_message(Message::user("Hello"));
+    storage.save(&thread).await.unwrap();
 
     // Try to load non-existent session
     let result = storage.load("non-existent").await;
@@ -1687,7 +1687,7 @@ async fn test_storage_error_recovery() {
     assert!(result.unwrap().is_none());
 
     // Original session should still be loadable
-    let loaded = storage.load("valid-session").await.unwrap().unwrap();
+    let loaded = storage.load("valid-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 1);
 }
 
@@ -1696,24 +1696,24 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     let storage = Arc::new(MemoryStorage::new());
 
     // Save initial session
-    let session = Session::new("concurrent-test").with_message(Message::user("Initial"));
-    storage.save(&session).await.unwrap();
+    let thread = Thread::new("concurrent-test").with_message(Message::user("Initial"));
+    storage.save(&thread).await.unwrap();
 
     let mut handles = vec![];
 
     // 50 concurrent operations (mix of saves and loads)
     for i in 0..50 {
         let storage = Arc::clone(&storage);
-        let handle: tokio::task::JoinHandle<Result<Option<Session>, carve_agent::StorageError>> =
+        let handle: tokio::task::JoinHandle<Result<Option<Thread>, carve_agent::StorageError>> =
             tokio::spawn(async move {
                 if i % 3 == 0 {
                     // Load
                     storage.load("concurrent-test").await
                 } else {
                     // Save (potentially conflicting)
-                    let session = Session::new("concurrent-test")
+                    let thread = Thread::new("concurrent-test")
                         .with_message(Message::user(format!("Update {}", i)));
-                    storage.save(&session).await.map(|_| None)
+                    storage.save(&thread).await.map(|_| None)
                 }
             });
         handles.push(handle);
@@ -1722,8 +1722,8 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     futures::future::join_all(handles).await;
 
     // Storage should still be consistent
-    let final_session = storage.load("concurrent-test").await.unwrap().unwrap();
-    assert_eq!(final_session.message_count(), 1); // Should have one message
+    let final_thread = storage.load("concurrent-test").await.unwrap().unwrap();
+    assert_eq!(final_thread.message_count(), 1); // Should have one message
 }
 
 // ============================================================================
@@ -1909,7 +1909,7 @@ fn test_stream_result_needs_tools_variants() {
 
 #[tokio::test]
 async fn test_execute_tools_empty_result() {
-    let session = Session::new("empty-tools-test");
+    let thread = Thread::new("empty-tools-test");
 
     // Empty StreamResult (no tools)
     let result = StreamResult {
@@ -1921,11 +1921,11 @@ async fn test_execute_tools_empty_result() {
     let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
 
     // Should return session unchanged when no tools
-    let new_session = loop_execute_tools(session.clone(), &result, &tools, true)
+    let new_thread = loop_execute_tools(thread.clone(), &result, &tools, true)
         .await
         .unwrap();
 
-    assert_eq!(new_session.message_count(), session.message_count());
+    assert_eq!(new_thread.message_count(), thread.message_count());
 }
 
 #[test]
@@ -2197,7 +2197,7 @@ fn test_tool_call_creation_and_serialization() {
 
 #[tokio::test]
 async fn test_session_state_complex_operations() {
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "complex-state",
         json!({
             "users": [],
@@ -2207,7 +2207,7 @@ async fn test_session_state_complex_operations() {
     );
 
     // Add multiple patches
-    let session = session
+    let thread = thread
         .with_patch(TrackedPatch::new(
             Patch::new()
                 .with_op(Op::append(
@@ -2222,7 +2222,7 @@ async fn test_session_state_complex_operations() {
                 .with_op(Op::set(path!("settings").key("theme"), json!("light"))),
         ));
 
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
 
     assert_eq!(state["users"].as_array().unwrap().len(), 2);
     assert_eq!(state["users"][0]["name"], "Alice");
@@ -2254,11 +2254,11 @@ fn test_storage_error_variants() {
     );
 
     // Test NotFound error variant
-    let not_found = StorageError::NotFound("session-123".to_string());
+    let not_found = StorageError::NotFound("thread-123".to_string());
     let display = not_found.to_string();
     assert!(
         display.contains("not found")
-            || display.contains("session-123")
+            || display.contains("thread-123")
             || display.contains("Not found")
     );
 }
@@ -2400,7 +2400,7 @@ async fn test_parallel_execution_state_isolation() {
 /// Test parallel execution with patch conflict - multiple tools modify same field
 #[tokio::test]
 async fn test_parallel_execution_patch_conflict() {
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "parallel-conflict",
         json!({"counter": {"value": 0, "label": ""}}),
     );
@@ -2419,7 +2419,7 @@ async fn test_parallel_execution_patch_conflict() {
     let tools = tool_map([IncrementTool]);
 
     // Execute in parallel mode
-    let err = loop_execute_tools(session, &llm_response, &tools, true)
+    let err = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap_err();
 
@@ -2437,7 +2437,7 @@ async fn test_parallel_execution_patch_conflict() {
 /// Test parallel execution with different fields - no conflict
 #[tokio::test]
 async fn test_parallel_execution_different_fields() {
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "parallel-no-conflict",
         json!({
             "counter_a": {"value": 0, "label": ""},
@@ -2459,11 +2459,11 @@ async fn test_parallel_execution_different_fields() {
 
     let tools = tool_map([IncrementTool]);
 
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap();
 
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
 
     // All three counters should be 1 (no conflict)
     assert_eq!(state["counter_a"]["value"], 1);
@@ -2701,7 +2701,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 #[test]
 fn test_agent_loop_error_all_variants() {
     use carve_agent::AgentLoopError;
-    use carve_agent::{Interaction, Session};
+    use carve_agent::{Interaction, Thread};
 
     // LlmError
     let llm_err = AgentLoopError::LlmError("API rate limit exceeded".to_string());
@@ -2715,7 +2715,7 @@ fn test_agent_loop_error_all_variants() {
 
     // Stopped
     let stopped_err = AgentLoopError::Stopped {
-        session: Box::new(Session::new("s")),
+        thread: Box::new(Thread::new("s")),
         reason: carve_agent::StopReason::MaxRoundsReached,
     };
     let display = stopped_err.to_string();
@@ -2727,7 +2727,7 @@ fn test_agent_loop_error_all_variants() {
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
-        session: Box::new(Session::new("s")),
+        thread: Box::new(Thread::new("s")),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     let display = pending_err.to_string();
@@ -2742,15 +2742,15 @@ fn test_agent_loop_error_all_variants() {
 fn test_context_category_variants() {
     // Test all ContextCategory variants
     let tool_exec = ContextCategory::ToolExecution;
-    let session = ContextCategory::Session;
+    let thread = ContextCategory::Thread;
     let user_input = ContextCategory::UserInput;
 
     // Verify they are different (PartialEq)
     assert_eq!(tool_exec, ContextCategory::ToolExecution);
-    assert_eq!(session, ContextCategory::Session);
+    assert_eq!(thread, ContextCategory::Thread);
     assert_eq!(user_input, ContextCategory::UserInput);
-    assert_ne!(tool_exec, session);
-    assert_ne!(session, user_input);
+    assert_ne!(tool_exec, thread);
+    assert_ne!(thread, user_input);
     assert_ne!(user_input, tool_exec);
 }
 
@@ -2767,7 +2767,7 @@ async fn test_e2e_tool_execution_flow() {
     // Simulates: User asks -> LLM calls tool -> Tool executes -> Response
 
     // 1. Create session with initial state
-    let session = Session::with_initial_state("e2e-test", json!({"counter": 0}))
+    let thread = Thread::with_initial_state("e2e-test", json!({"counter": 0}))
         .with_message(Message::user("Increment the counter by 5"));
 
     // 2. Simulate LLM response with tool call
@@ -2782,32 +2782,32 @@ async fn test_e2e_tool_execution_flow() {
     };
 
     // 3. Add assistant message with tool calls
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &llm_response.text,
         llm_response.tool_calls.clone(),
     ));
 
     // 4. Execute tools
     let tools = tool_map([IncrementTool]);
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap();
 
     // 5. Verify state changed
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 1);
 
     // 6. Simulate final LLM response
-    let session = session.with_message(Message::assistant("Done! The counter is now 1."));
+    let thread = thread.with_message(Message::assistant("Done! The counter is now 1."));
 
-    assert_eq!(session.message_count(), 4); // user + assistant(tool) + tool_response + assistant
-    assert_eq!(session.patch_count(), 1);
+    assert_eq!(thread.message_count(), 4); // user + assistant(tool) + tool_response + assistant
+    assert_eq!(thread.patch_count(), 1);
 }
 
 /// Simulate parallel tool calls
 #[tokio::test]
 async fn test_e2e_parallel_tool_calls() {
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "e2e-parallel",
         json!({
             "counter": {"value": 0, "label": "test"},
@@ -2826,7 +2826,7 @@ async fn test_e2e_parallel_tool_calls() {
         usage: None,
     };
 
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &llm_response.text,
         llm_response.tool_calls.clone(),
     ));
@@ -2837,15 +2837,15 @@ async fn test_e2e_parallel_tool_calls() {
     tools.insert("increment".to_string(), Arc::new(IncrementTool));
     tools.insert("add_task".to_string(), Arc::new(AddTaskTool));
 
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap();
 
     // Both tools executed
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 1);
     assert_eq!(state["tasks"]["count"], 1);
-    assert_eq!(session.patch_count(), 2); // Two parallel patches
+    assert_eq!(thread.patch_count(), 2); // Two parallel patches
 }
 
 /// Simulate multi-step conversation with state accumulation
@@ -2854,8 +2854,8 @@ async fn test_e2e_multi_step_with_state() {
     let tools = tool_map([IncrementTool]);
 
     // Step 1
-    let mut session =
-        Session::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
+    let mut thread =
+        Thread::with_initial_state("e2e-multi", json!({"counter": {"value": 0, "label": ""}}))
             .with_message(Message::user("Increment"));
 
     let response1 = StreamResult {
@@ -2867,17 +2867,17 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(
+    thread = thread.with_message(carve_agent::assistant_tool_calls(
         &response1.text,
         response1.tool_calls.clone(),
     ));
-    session = loop_execute_tools(session, &response1, &tools, true)
+    thread = loop_execute_tools(thread, &response1, &tools, true)
         .await
         .unwrap();
-    session = session.with_message(Message::assistant("Counter is now 1."));
+    thread = thread.with_message(Message::assistant("Counter is now 1."));
 
     // Step 2
-    session = session.with_message(Message::user("Increment again"));
+    thread = thread.with_message(Message::user("Increment again"));
     let response2 = StreamResult {
         text: "Incrementing again.".to_string(),
         tool_calls: vec![carve_agent::ToolCall::new(
@@ -2887,17 +2887,17 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(
+    thread = thread.with_message(carve_agent::assistant_tool_calls(
         &response2.text,
         response2.tool_calls.clone(),
     ));
-    session = loop_execute_tools(session, &response2, &tools, true)
+    thread = loop_execute_tools(thread, &response2, &tools, true)
         .await
         .unwrap();
-    session = session.with_message(Message::assistant("Counter is now 2."));
+    thread = thread.with_message(Message::assistant("Counter is now 2."));
 
     // Step 3
-    session = session.with_message(Message::user("One more time"));
+    thread = thread.with_message(Message::user("One more time"));
     let response3 = StreamResult {
         text: "One more increment.".to_string(),
         tool_calls: vec![carve_agent::ToolCall::new(
@@ -2907,25 +2907,25 @@ async fn test_e2e_multi_step_with_state() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(
+    thread = thread.with_message(carve_agent::assistant_tool_calls(
         &response3.text,
         response3.tool_calls.clone(),
     ));
-    session = loop_execute_tools(session, &response3, &tools, true)
+    thread = loop_execute_tools(thread, &response3, &tools, true)
         .await
         .unwrap();
 
     // Verify accumulated state
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 3);
-    assert_eq!(session.patch_count(), 3);
+    assert_eq!(thread.patch_count(), 3);
 }
 
 /// Simulate tool failure and error message
 #[tokio::test]
 async fn test_e2e_tool_failure_handling() {
-    let session =
-        Session::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
+    let thread =
+        Thread::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
 
     // LLM calls a tool that doesn't exist
     let llm_response = StreamResult {
@@ -2938,7 +2938,7 @@ async fn test_e2e_tool_failure_handling() {
         usage: None,
     };
 
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &llm_response.text,
         llm_response.tool_calls.clone(),
     ));
@@ -2946,12 +2946,12 @@ async fn test_e2e_tool_failure_handling() {
     // Execute with empty tool map
     let tools: std::collections::HashMap<String, Arc<dyn Tool>> = std::collections::HashMap::new();
 
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap();
 
     // Tool response should contain error
-    let last_msg = session.messages.last().unwrap();
+    let last_msg = thread.messages.last().unwrap();
     assert_eq!(last_msg.role, Role::Tool);
     assert!(last_msg.content.contains("error") || last_msg.content.contains("not found"));
 }
@@ -2963,7 +2963,7 @@ async fn test_e2e_session_persistence_restore() {
     let tools = tool_map([IncrementTool]);
 
     // Phase 1: Start conversation
-    let mut session = Session::with_initial_state(
+    let mut thread = Thread::with_initial_state(
         "e2e-persist",
         json!({"counter": {"value": 10, "label": ""}}),
     )
@@ -2978,18 +2978,18 @@ async fn test_e2e_session_persistence_restore() {
         )],
         usage: None,
     };
-    session = session.with_message(carve_agent::assistant_tool_calls(
+    thread = thread.with_message(carve_agent::assistant_tool_calls(
         &response.text,
         response.tool_calls.clone(),
     ));
-    session = loop_execute_tools(session, &response, &tools, true)
+    thread = loop_execute_tools(thread, &response, &tools, true)
         .await
         .unwrap();
-    session = session.with_message(Message::assistant("Done!"));
+    thread = thread.with_message(Message::assistant("Done!"));
 
     // Save
-    storage.save(&session).await.unwrap();
-    let state_before = session.rebuild_state().unwrap();
+    storage.save(&thread).await.unwrap();
+    let state_before = thread.rebuild_state().unwrap();
 
     // Phase 2: "Restart" - load and continue
     let mut loaded = storage.load("e2e-persist").await.unwrap().unwrap();
@@ -3029,7 +3029,7 @@ async fn test_e2e_snapshot_and_continue() {
     let tools = tool_map([IncrementTool]);
 
     // Build up patches
-    let mut session = Session::with_initial_state(
+    let mut thread = Thread::with_initial_state(
         "e2e-snapshot",
         json!({"counter": {"value": 0, "label": ""}}),
     );
@@ -3044,19 +3044,19 @@ async fn test_e2e_snapshot_and_continue() {
             )],
             usage: None,
         };
-        session = loop_execute_tools(session, &response, &tools, true)
+        thread = loop_execute_tools(thread, &response, &tools, true)
             .await
             .unwrap();
     }
 
-    assert_eq!(session.patch_count(), 5);
-    let state_before = session.rebuild_state().unwrap();
+    assert_eq!(thread.patch_count(), 5);
+    let state_before = thread.rebuild_state().unwrap();
     assert_eq!(state_before["counter"]["value"], 5);
 
     // Snapshot
-    let session = session.snapshot().unwrap();
-    assert_eq!(session.patch_count(), 0);
-    assert_eq!(session.state["counter"]["value"], 5);
+    let thread = thread.snapshot().unwrap();
+    assert_eq!(thread.patch_count(), 0);
+    assert_eq!(thread.state["counter"]["value"], 5);
 
     // Continue after snapshot
     let response = StreamResult {
@@ -3068,13 +3068,13 @@ async fn test_e2e_snapshot_and_continue() {
         )],
         usage: None,
     };
-    let session = loop_execute_tools(session, &response, &tools, true)
+    let thread = loop_execute_tools(thread, &response, &tools, true)
         .await
         .unwrap();
 
-    let final_state = session.rebuild_state().unwrap();
+    let final_state = thread.rebuild_state().unwrap();
     assert_eq!(final_state["counter"]["value"], 6);
-    assert_eq!(session.patch_count(), 1); // Only new patch after snapshot
+    assert_eq!(thread.patch_count(), 1); // Only new patch after snapshot
 }
 
 /// Simulate state replay (time-travel debugging)
@@ -3082,8 +3082,8 @@ async fn test_e2e_snapshot_and_continue() {
 async fn test_e2e_state_replay() {
     let tools = tool_map([IncrementTool]);
 
-    let mut session =
-        Session::with_initial_state("e2e-replay", json!({"counter": {"value": 0, "label": ""}}));
+    let mut thread =
+        Thread::with_initial_state("e2e-replay", json!({"counter": {"value": 0, "label": ""}}));
 
     // Create history: 0 -> 1 -> 2 -> 3 -> 4 -> 5
     for i in 0..5 {
@@ -3096,39 +3096,39 @@ async fn test_e2e_state_replay() {
             )],
             usage: None,
         };
-        session = loop_execute_tools(session, &response, &tools, true)
+        thread = loop_execute_tools(thread, &response, &tools, true)
             .await
             .unwrap();
     }
 
     // Replay to each historical point
-    assert_eq!(session.replay_to(0).unwrap()["counter"]["value"], 1);
-    assert_eq!(session.replay_to(1).unwrap()["counter"]["value"], 2);
-    assert_eq!(session.replay_to(2).unwrap()["counter"]["value"], 3);
-    assert_eq!(session.replay_to(3).unwrap()["counter"]["value"], 4);
-    assert_eq!(session.replay_to(4).unwrap()["counter"]["value"], 5);
+    assert_eq!(thread.replay_to(0).unwrap()["counter"]["value"], 1);
+    assert_eq!(thread.replay_to(1).unwrap()["counter"]["value"], 2);
+    assert_eq!(thread.replay_to(2).unwrap()["counter"]["value"], 3);
+    assert_eq!(thread.replay_to(3).unwrap()["counter"]["value"], 4);
+    assert_eq!(thread.replay_to(4).unwrap()["counter"]["value"], 5);
 
     // Final state
-    assert_eq!(session.rebuild_state().unwrap()["counter"]["value"], 5);
+    assert_eq!(thread.rebuild_state().unwrap()["counter"]["value"], 5);
 }
 
 /// Simulate long conversation with many messages
 #[tokio::test]
 async fn test_e2e_long_conversation() {
-    let mut session = Session::new("e2e-long");
+    let mut thread = Thread::new("e2e-long");
 
     // Build 100 runs of conversation
     for i in 0..100 {
-        session = session
+        thread = thread
             .with_message(Message::user(format!("Message {}", i)))
             .with_message(Message::assistant(format!("Response {}", i)));
     }
 
-    assert_eq!(session.message_count(), 200);
+    assert_eq!(thread.message_count(), 200);
 
     // Storage should handle this efficiently
     let storage = MemoryStorage::new();
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
     let loaded = storage.load("e2e-long").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 200);
 }
@@ -3136,7 +3136,7 @@ async fn test_e2e_long_conversation() {
 /// Simulate sequential tool execution (non-parallel mode)
 #[tokio::test]
 async fn test_e2e_sequential_tool_execution() {
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "e2e-sequential",
         json!({"counter": {"value": 0, "label": ""}}),
     );
@@ -3155,13 +3155,13 @@ async fn test_e2e_sequential_tool_execution() {
     let tools = tool_map([IncrementTool]);
 
     // Execute in sequential mode (parallel = false)
-    let session = loop_execute_tools(session, &llm_response, &tools, false)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, false)
         .await
         .unwrap();
 
     // In sequential mode, each tool sees the previous tool's result
     // So counter should be 3 (0 -> 1 -> 2 -> 3)
-    let state = session.rebuild_state().unwrap();
+    let state = thread.rebuild_state().unwrap();
     assert_eq!(state["counter"]["value"], 3);
 }
 
@@ -3294,7 +3294,7 @@ async fn test_e2e_multiple_providers_priority() {
             "high_priority"
         }
         fn category(&self) -> ContextCategory {
-            ContextCategory::Session
+            ContextCategory::Thread
         }
         fn priority(&self) -> u32 {
             100
@@ -3311,7 +3311,7 @@ async fn test_e2e_multiple_providers_priority() {
             "low_priority"
         }
         fn category(&self) -> ContextCategory {
-            ContextCategory::Session
+            ContextCategory::Thread
         }
         fn priority(&self) -> u32 {
             10
@@ -3508,7 +3508,7 @@ async fn test_e2e_tool_warning_status() {
 
 #[tokio::test]
 async fn test_e2e_pending_tool_in_session_flow() {
-    let session = Session::new("pending-test").with_message(Message::user("Delete all files"));
+    let thread = Thread::new("pending-test").with_message(Message::user("Delete all files"));
 
     // Simulate LLM calling dangerous action without confirmation
     let llm_response = StreamResult {
@@ -3521,7 +3521,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
         usage: None,
     };
 
-    let session = session.with_message(carve_agent::assistant_tool_calls(
+    let thread = thread.with_message(carve_agent::assistant_tool_calls(
         &llm_response.text,
         llm_response.tool_calls.clone(),
     ));
@@ -3530,12 +3530,12 @@ async fn test_e2e_pending_tool_in_session_flow() {
         std::collections::HashMap::new();
     tools.insert("dangerous_action".to_string(), Arc::new(ConfirmationTool));
 
-    let session = loop_execute_tools(session, &llm_response, &tools, true)
+    let thread = loop_execute_tools(thread, &llm_response, &tools, true)
         .await
         .unwrap();
 
     // Check tool response contains pending status
-    let tool_msg = session.messages.last().unwrap();
+    let tool_msg = thread.messages.last().unwrap();
     assert_eq!(tool_msg.role, Role::Tool);
     assert!(tool_msg.content.contains("pending") || tool_msg.content.contains("confirmation"));
 }
@@ -3623,7 +3623,7 @@ fn test_stream_result_with_empty_tool_calls() {
 }
 
 // ============================================================================
-// Concurrent Session Operations Tests
+// Concurrent Thread Operations Tests
 // ============================================================================
 
 #[tokio::test]
@@ -3636,26 +3636,26 @@ async fn test_concurrent_session_modifications() {
     for i in 0..20 {
         let storage = Arc::clone(&storage);
         let handle = tokio::spawn(async move {
-            let session_id = format!("concurrent-session-{}", i);
+            let thread_id = format!("concurrent-thread-{}", i);
 
             // Create session
-            let mut session = Session::with_initial_state(&session_id, json!({"value": i}));
+            let mut thread = Thread::with_initial_state(&thread_id, json!({"value": i}));
 
             // Add messages
             for j in 0..5 {
-                session =
-                    session.with_message(Message::user(format!("Msg {} from session {}", j, i)));
+                thread =
+                    thread.with_message(Message::user(format!("Msg {} from thread {}", j, i)));
             }
 
             // Save
-            storage.save(&session).await.unwrap();
+            storage.save(&thread).await.unwrap();
 
             // Load and verify
-            let loaded = storage.load(&session_id).await.unwrap().unwrap();
+            let loaded = storage.load(&thread_id).await.unwrap().unwrap();
             assert_eq!(loaded.message_count(), 5);
             assert_eq!(loaded.state["value"], i);
 
-            session_id
+            thread_id
         });
         handles.push(handle);
     }
@@ -3678,8 +3678,8 @@ async fn test_concurrent_read_write_same_session() {
     let storage = Arc::new(MemoryStorage::new());
 
     // Create initial session
-    let session = Session::new("shared-session").with_message(Message::user("Initial message"));
-    storage.save(&session).await.unwrap();
+    let thread = Thread::new("shared-thread").with_message(Message::user("Initial message"));
+    storage.save(&thread).await.unwrap();
 
     let mut handles = vec![];
 
@@ -3689,13 +3689,13 @@ async fn test_concurrent_read_write_same_session() {
         let handle = tokio::spawn(async move {
             if i % 2 == 0 {
                 // Reader
-                let loaded = storage.load("shared-session").await.unwrap();
+                let loaded = storage.load("shared-thread").await.unwrap();
                 loaded.is_some()
             } else {
-                // Writer (updates the session)
-                let mut session = storage.load("shared-session").await.unwrap().unwrap();
-                session = session.with_message(Message::user(format!("Update {}", i)));
-                storage.save(&session).await.unwrap();
+                // Writer (updates the thread)
+                let mut thread = storage.load("shared-thread").await.unwrap().unwrap();
+                thread = thread.with_message(Message::user(format!("Update {}", i)));
+                storage.save(&thread).await.unwrap();
                 true
             }
         });
@@ -3712,8 +3712,8 @@ async fn test_concurrent_read_write_same_session() {
     assert!(results.iter().all(|&r| r));
 
     // Final session should have messages
-    let final_session = storage.load("shared-session").await.unwrap().unwrap();
-    assert!(final_session.message_count() >= 1);
+    let final_thread = storage.load("shared-thread").await.unwrap().unwrap();
+    assert!(final_thread.message_count() >= 1);
 }
 
 #[tokio::test]
@@ -3723,7 +3723,7 @@ async fn test_concurrent_tool_executions_isolated() {
 
     for i in 0..10 {
         let handle = tokio::spawn(async move {
-            let session = Session::with_initial_state(
+            let thread = Thread::with_initial_state(
                 format!("isolated-{}", i),
                 json!({"counter": {"value": i * 10, "label": ""}}),
             );
@@ -3739,11 +3739,11 @@ async fn test_concurrent_tool_executions_isolated() {
             };
 
             let tools = tool_map([IncrementTool]);
-            let session = loop_execute_tools(session, &response, &tools, true)
+            let thread = loop_execute_tools(thread, &response, &tools, true)
                 .await
                 .unwrap();
 
-            let state = session.rebuild_state().unwrap();
+            let state = thread.rebuild_state().unwrap();
             let expected = i * 10 + 1;
             state["counter"]["value"].as_i64().unwrap() == expected as i64
         });
@@ -3786,11 +3786,11 @@ async fn test_storage_overwrite_session() {
     let storage = MemoryStorage::new();
 
     // Create and save
-    let session1 = Session::new("overwrite-test").with_message(Message::user("First version"));
+    let session1 = Thread::new("overwrite-test").with_message(Message::user("First version"));
     storage.save(&session1).await.unwrap();
 
     // Overwrite
-    let session2 = Session::new("overwrite-test")
+    let session2 = Thread::new("overwrite-test")
         .with_message(Message::user("Second version"))
         .with_message(Message::assistant("Response"));
     storage.save(&session2).await.unwrap();
@@ -3806,11 +3806,11 @@ async fn test_file_storage_special_characters_in_id() {
     let temp_dir = TempDir::new().unwrap();
     let storage = FileStorage::new(temp_dir.path());
 
-    // Session ID with special characters (but filesystem-safe)
-    let session =
-        Session::new("session_with-special.chars_123").with_message(Message::user("Test"));
+    // Thread ID with special characters (but filesystem-safe)
+    let thread =
+        Thread::new("session_with-special.chars_123").with_message(Message::user("Test"));
 
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
     let loaded = storage
         .load("session_with-special.chars_123")
         .await
@@ -3834,9 +3834,9 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
     for i in 0..20 {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
-            let session = Session::new(&format!("session_{}", i))
-                .with_message(Message::user(&format!("Message from session {}", i)));
-            s.save(&session).await.unwrap();
+            let thread = Thread::new(&format!("session_{}", i))
+                .with_message(Message::user(&format!("Message from thread {}", i)));
+            s.save(&thread).await.unwrap();
         }));
     }
 
@@ -3850,7 +3850,7 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
         assert!(loaded.is_some(), "session_{} should exist", i);
         let s = loaded.unwrap();
         assert_eq!(s.message_count(), 1);
-        assert!(s.messages[0].content.contains(&format!("session {}", i)));
+        assert!(s.messages[0].content.contains(&format!("thread {}", i)));
     }
 }
 
@@ -3866,9 +3866,9 @@ async fn test_file_storage_concurrent_writes_same_session() {
     for i in 0..10 {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
-            let session =
-                Session::new("shared_session").with_message(Message::user(&format!("Write {}", i)));
-            s.save(&session).await.unwrap();
+            let thread =
+                Thread::new("shared_session").with_message(Message::user(&format!("Write {}", i)));
+            s.save(&thread).await.unwrap();
         }));
     }
 
@@ -3879,10 +3879,10 @@ async fn test_file_storage_concurrent_writes_same_session() {
     // The session file should be valid (no corruption).
     let loaded = storage.load("shared_session").await.unwrap();
     assert!(loaded.is_some(), "shared_session should exist");
-    let session = loaded.unwrap();
-    assert_eq!(session.message_count(), 1);
+    let thread = loaded.unwrap();
+    assert_eq!(thread.message_count(), 1);
     // The content should be from one of the writes.
-    assert!(session.messages[0].content.starts_with("Write "));
+    assert!(thread.messages[0].content.starts_with("Write "));
 }
 
 #[tokio::test]
@@ -3895,7 +3895,7 @@ async fn test_file_storage_read_write_interleaved() {
     let storage = Arc::new(FileStorage::new(temp_dir.path()));
 
     // Seed an initial session.
-    let initial = Session::new("interleaved").with_message(Message::user("initial"));
+    let initial = Thread::new("interleaved").with_message(Message::user("initial"));
     storage.save(&initial).await.unwrap();
 
     let mut handles = vec![];
@@ -3904,9 +3904,9 @@ async fn test_file_storage_read_write_interleaved() {
         if i % 2 == 0 {
             // Writers
             handles.push(tokio::spawn(async move {
-                let session = Session::new("interleaved")
+                let thread = Thread::new("interleaved")
                     .with_message(Message::user(&format!("update {}", i)));
-                s.save(&session).await.unwrap();
+                s.save(&thread).await.unwrap();
             }));
         } else {
             // Readers — may see partial writes, so just verify no panic.
@@ -3922,19 +3922,19 @@ async fn test_file_storage_read_write_interleaved() {
     }
 
     // After all writes complete, a final read should succeed.
-    let final_session = storage.load("interleaved").await.unwrap().unwrap();
-    assert!(final_session.message_count() >= 1);
+    let final_thread = storage.load("interleaved").await.unwrap().unwrap();
+    assert!(final_thread.message_count() >= 1);
 }
 
 #[tokio::test]
 async fn test_storage_empty_session() {
     let storage = MemoryStorage::new();
 
-    // Session with no messages or patches
-    let session = Session::new("empty-session");
-    storage.save(&session).await.unwrap();
+    // Thread with no messages or patches
+    let thread = Thread::new("empty-thread");
+    storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load("empty-session").await.unwrap().unwrap();
+    let loaded = storage.load("empty-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 0);
     assert_eq!(loaded.patch_count(), 0);
 }
@@ -3956,10 +3956,10 @@ async fn test_storage_large_state() {
         );
     }
 
-    let session = Session::with_initial_state("large-state", Value::Object(large_data))
+    let thread = Thread::with_initial_state("large-state", Value::Object(large_data))
         .with_message(Message::user("Test with large state"));
 
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     let loaded = storage.load("large-state").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
@@ -4013,7 +4013,7 @@ fn test_message_json_in_content() {
 
 #[test]
 fn test_session_with_all_message_types() {
-    let session = Session::new("all-types")
+    let thread = Thread::new("all-types")
         .with_message(Message::system("You are helpful."))
         .with_message(Message::user("Hello"))
         .with_message(Message::assistant("Hi there!"))
@@ -4023,21 +4023,21 @@ fn test_session_with_all_message_types() {
         ))
         .with_message(Message::tool("call_1", r#"{"result": "found"}"#));
 
-    assert_eq!(session.message_count(), 5);
+    assert_eq!(thread.message_count(), 5);
 
     // Verify each type
-    assert_eq!(session.messages[0].role, Role::System);
-    assert_eq!(session.messages[1].role, Role::User);
-    assert_eq!(session.messages[2].role, Role::Assistant);
-    assert_eq!(session.messages[3].role, Role::Assistant);
-    assert!(session.messages[3].tool_calls.is_some());
-    assert_eq!(session.messages[4].role, Role::Tool);
-    assert_eq!(session.messages[4].tool_call_id, Some("call_1".to_string()));
+    assert_eq!(thread.messages[0].role, Role::System);
+    assert_eq!(thread.messages[1].role, Role::User);
+    assert_eq!(thread.messages[2].role, Role::Assistant);
+    assert_eq!(thread.messages[3].role, Role::Assistant);
+    assert!(thread.messages[3].tool_calls.is_some());
+    assert_eq!(thread.messages[4].role, Role::Tool);
+    assert_eq!(thread.messages[4].tool_call_id, Some("call_1".to_string()));
 }
 
 #[tokio::test]
 async fn test_e2e_empty_user_message() {
-    let session = Session::new("empty-msg-test").with_message(Message::user(""));
+    let thread = Thread::new("empty-msg-test").with_message(Message::user(""));
 
     // Simulate LLM response to empty message
     let llm_response = StreamResult {
@@ -4046,17 +4046,17 @@ async fn test_e2e_empty_user_message() {
         usage: None,
     };
 
-    let session = session.with_message(Message::assistant(&llm_response.text));
+    let thread = thread.with_message(Message::assistant(&llm_response.text));
 
-    assert_eq!(session.message_count(), 2);
-    assert!(session.messages[0].content.is_empty());
-    assert!(!session.messages[1].content.is_empty());
+    assert_eq!(thread.message_count(), 2);
+    assert!(thread.messages[0].content.is_empty());
+    assert!(!thread.messages[1].content.is_empty());
 }
 
 #[tokio::test]
 async fn test_e2e_system_prompt_in_session() {
     // Test that system prompt is preserved throughout conversation
-    let session = Session::new("system-prompt-test")
+    let thread = Thread::new("system-prompt-test")
         .with_message(Message::system(
             "You are a calculator. Only respond with numbers.",
         ))
@@ -4067,7 +4067,7 @@ async fn test_e2e_system_prompt_in_session() {
 
     // Save and load
     let storage = MemoryStorage::new();
-    storage.save(&session).await.unwrap();
+    storage.save(&thread).await.unwrap();
 
     let loaded = storage.load("system-prompt-test").await.unwrap().unwrap();
 
@@ -4519,8 +4519,8 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     let plugin = AgUiInteractionPlugin::from_request(&request);
 
     // 3. Simulate agent calling a frontend tool
-    let session = Session::new("session_1");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("session_1");
+    let mut step = StepContext::new(&thread, vec![]);
 
     let tool_call = ToolCall::new(
         "call_001",
@@ -4583,7 +4583,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         .with_tool(AGUIToolDef::frontend("openDialog", "Dialog"));
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Simulate three frontend tool calls in sequence
     let tool_calls = vec![
@@ -4593,7 +4593,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
     ];
 
     for (call_id, tool_name, args) in tool_calls {
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
         step.tool = Some(ToolContext::new(&tool_call));
 
@@ -4621,8 +4621,8 @@ async fn test_scenario_frontend_tool_complex_args() {
         ["fileDialog".to_string()].into_iter().collect(),
     );
 
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     // Complex nested arguments
     let complex_args = json!({
@@ -4681,11 +4681,11 @@ async fn test_scenario_frontend_tool_empty_args() {
         ["getClipboard".to_string()].into_iter().collect(),
     );
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Test with empty object
     {
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
@@ -4704,7 +4704,7 @@ async fn test_scenario_frontend_tool_empty_args() {
 
     // Test with null
     {
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
         step.tool = Some(ToolContext::new(&tool_call));
 
@@ -4740,8 +4740,8 @@ async fn test_scenario_frontend_tool_special_names() {
             [tool_name.to_string()].into_iter().collect(),
         );
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
@@ -4778,7 +4778,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
         ["CopyToClipboard".to_string()].into_iter().collect(),
     );
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Different cases - only exact match should work
     let test_cases = vec![
@@ -4789,7 +4789,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
     ];
 
     for (tool_name, should_be_pending) in test_cases {
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
@@ -4858,8 +4858,8 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let plugin =
         AgUiInteractionPlugin::with_frontend_tools(["showModal".to_string()].into_iter().collect());
 
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     let tool_call = ToolCall::new(
         "modal_call_1",
@@ -4922,8 +4922,8 @@ async fn test_scenario_backend_tool_passthrough() {
         ["frontendOnly".to_string()].into_iter().collect(),
     );
 
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     // Backend tool call
     let tool_call = ToolCall::new(
@@ -4988,8 +4988,8 @@ use carve_agent::plugins::PermissionPlugin;
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
     // Phase 1: Agent requests permission
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     // Set up ask permission
     step.scratchpad_set(
@@ -5042,8 +5042,8 @@ async fn test_scenario_permission_approved_complete_flow() {
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
     // Phase 1: Agent requests permission
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     step.scratchpad_set(
         "permissions",
@@ -5093,8 +5093,8 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
 
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
 
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
     step.tool = Some(ToolContext::new(&tool_call));
@@ -5136,11 +5136,11 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 /// Test scenario: Multiple interactions in sequence
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
-    let session = Session::new("test");
+    let thread = Thread::new("test");
     let plugin = PermissionPlugin;
 
     // First tool: write_file
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5158,7 +5158,7 @@ async fn test_scenario_multiple_interactions_sequence() {
         .unwrap();
 
     // Second tool: read_file
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&thread, vec![]);
     step2.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5304,8 +5304,8 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    // Session must have a persisted pending interaction matching the denied ID.
-    let session = Session::with_initial_state(
+    // Thread must have a persisted pending interaction matching the denied ID.
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
     );
@@ -5317,7 +5317,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     );
 
     // Simulate tool call with matching interaction ID format
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(
         "permission_write_file",
         "write_file",
@@ -5344,8 +5344,8 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    // Session must have a persisted pending interaction matching the approved ID.
-    let session = Session::with_initial_state(
+    // Thread must have a persisted pending interaction matching the approved ID.
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
     );
@@ -5357,7 +5357,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     );
 
     // Simulate tool call
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(
         "permission_read_file",
         "read_file",
@@ -5377,11 +5377,11 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 async fn test_scenario_e2e_permission_to_response_flow() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Step 1: First run - PermissionPlugin creates pending interaction
     let permission_plugin = PermissionPlugin;
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5413,7 +5413,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 
     // Step 3: Second run - AgUiInteractionPlugin processes approval
     // The session must have the pending interaction persisted (as the real loop does).
-    let session2 = Session::with_initial_state(
+    let session2 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
@@ -5455,7 +5455,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 async fn test_scenario_frontend_tool_with_response_plugin() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Setup: Frontend tool request
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -5463,7 +5463,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 
     // Step 1: AgUiInteractionPlugin creates pending for frontend tool
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
     step1.tool = Some(ToolContext::new(&call));
 
@@ -5777,8 +5777,8 @@ async fn test_permission_flow_approval_e2e() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
     step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5819,7 +5819,7 @@ async fn test_permission_flow_approval_e2e() {
     assert!(response_plugin.has_responses());
 
     // Phase 5: On resume, tool should NOT be blocked
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&thread, vec![]);
     // Use the interaction ID as the tool call ID (as happens in resume)
     let tool_call2 = ToolCall::new(
         &interaction.id,
@@ -5841,8 +5841,8 @@ async fn test_permission_flow_denial_e2e() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
     step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5871,7 +5871,7 @@ async fn test_permission_flow_denial_e2e() {
 
     // Phase 3: On resume, tool should be blocked.
     // The session must have the pending interaction persisted (as the real loop does).
-    let session2 = Session::with_initial_state(
+    let session2 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
@@ -5898,10 +5898,10 @@ async fn test_permission_flow_denial_e2e() {
 async fn test_permission_flow_multiple_tools_mixed() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Tool 1: Will be approved
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5920,7 +5920,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
         .unwrap();
 
     // Tool 2: Will be denied
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&thread, vec![]);
     step2.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -5944,7 +5944,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
 
     // Verify first tool (approved) — session has its pending interaction persisted.
-    let session_r1 = Session::with_initial_state(
+    let session_r1 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
     );
@@ -5957,7 +5957,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     assert!(!resume1.tool_blocked(), "First tool should not be blocked");
 
     // Verify second tool (denied) — session has its pending interaction persisted.
-    let session_r2 = Session::with_initial_state(
+    let session_r2 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
     );
@@ -5982,8 +5982,8 @@ async fn test_permission_flow_multiple_tools_mixed() {
 async fn test_e2e_permission_suspend_with_real_tool() {
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
-    // Session with permissions.default_behavior = "ask"
-    let session = Session::with_initial_state(
+    // Thread with permissions.default_behavior = "ask"
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
     );
@@ -6002,15 +6002,15 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
 
     // execute_tools_with_plugins should return PendingInteraction error
-    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
         .unwrap_err();
 
-    let (suspended_session, interaction) = match err {
+    let (suspended_thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
-            session,
+            thread,
             interaction,
-        } => (*session, *interaction),
+        } => (*thread, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6021,19 +6021,19 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
     assert_eq!(
-        suspended_session.message_count(),
+        suspended_thread.message_count(),
         1,
         "Pending tool should have placeholder result"
     );
     assert!(
-        suspended_session.messages[0]
+        suspended_thread.messages[0]
             .content
             .contains("awaiting approval"),
         "Placeholder should mention awaiting approval"
     );
 
     // pending_interaction persisted in session state
-    let state = suspended_session.rebuild_state().unwrap();
+    let state = suspended_thread.rebuild_state().unwrap();
     let pending = &state["agent"]["pending_interaction"];
     assert_eq!(pending["id"], "permission_increment");
     assert_eq!(pending["action"], "confirm");
@@ -6053,7 +6053,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
     );
@@ -6072,15 +6072,15 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
-    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
         .unwrap_err();
 
-    let (suspended_session, interaction) = match err {
+    let (suspended_thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
-            session,
+            thread,
             interaction,
-        } => (*session, *interaction),
+        } => (*thread, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6103,8 +6103,8 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         usage: None,
     };
 
-    let resumed_session = execute_tools_with_plugins(
-        suspended_session,
+    let resumed_thread = execute_tools_with_plugins(
+        suspended_thread,
         &resume_result,
         &tools,
         false,
@@ -6115,11 +6115,11 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // 1 placeholder from suspend + 1 blocked result from deny resume
     assert_eq!(
-        resumed_session.message_count(),
+        resumed_thread.message_count(),
         2,
         "Blocked tool should produce a message"
     );
-    let msg = &resumed_session.messages[1];
+    let msg = &resumed_thread.messages[1];
     assert_eq!(msg.role, carve_agent::types::Role::Tool);
     assert!(
         msg.content.contains("denied")
@@ -6129,7 +6129,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         msg.content
     );
     // Counter should NOT have been incremented
-    let state = resumed_session.rebuild_state().unwrap();
+    let state = resumed_thread.rebuild_state().unwrap();
     assert!(
         state.get("counter").is_none(),
         "Counter should not exist when denied"
@@ -6144,7 +6144,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
     );
@@ -6163,15 +6163,15 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     let plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
-    let err = execute_tools_with_plugins(session, &result, &tools, false, &plugins)
+    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
         .await
         .unwrap_err();
 
-    let (suspended_session, interaction) = match err {
+    let (suspended_thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
-            session,
+            thread,
             interaction,
-        } => (*session, *interaction),
+        } => (*thread, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6194,8 +6194,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         usage: None,
     };
 
-    let resumed_session = execute_tools_with_plugins(
-        suspended_session,
+    let resumed_thread = execute_tools_with_plugins(
+        suspended_thread,
         &resume_result,
         &tools,
         false,
@@ -6206,11 +6206,11 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // 1 placeholder from suspend + 1 real result from approved resume
     assert_eq!(
-        resumed_session.message_count(),
+        resumed_thread.message_count(),
         2,
         "Tool response message should be present after approval"
     );
-    let msg = &resumed_session.messages[1];
+    let msg = &resumed_thread.messages[1];
     assert_eq!(msg.role, carve_agent::types::Role::Tool);
     assert!(
         msg.content.contains("new_value"),
@@ -6219,7 +6219,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     );
 
     // pending_interaction should be cleared
-    let state_after = resumed_session.rebuild_state().unwrap();
+    let state_after = resumed_thread.rebuild_state().unwrap();
     let pending_after = state_after
         .get("agent")
         .and_then(|a| a.get("pending_interaction"));
@@ -6244,9 +6244,9 @@ async fn test_frontend_tool_flow_creates_pending() {
     );
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(
         "call_copy",
         "copyToClipboard",
@@ -6294,10 +6294,10 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
         .with_tool(AGUIToolDef::backend("search", "Search files"));
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Backend tool - should NOT be pending
-    let mut step_backend = StepContext::new(&session, vec![]);
+    let mut step_backend = StepContext::new(&thread, vec![]);
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
     step_backend.tool = Some(ToolContext::new(&call_backend));
     plugin
@@ -6309,7 +6309,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     );
 
     // Frontend tool - should be pending
-    let mut step_frontend = StepContext::new(&session, vec![]);
+    let mut step_frontend = StepContext::new(&thread, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
     step_frontend.tool = Some(ToolContext::new(&call_frontend));
     plugin
@@ -6526,8 +6526,8 @@ async fn test_resume_flow_with_approval() {
     assert!(plugin.is_approved(interaction_id));
 
     // Tool execution should not be blocked
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
@@ -6548,12 +6548,12 @@ async fn test_resume_flow_with_denial() {
     let plugin = AgUiInteractionPlugin::from_request(&request);
     assert!(plugin.is_denied(interaction_id));
 
-    // Session must have the pending interaction persisted.
-    let session = Session::with_initial_state(
+    // Thread must have the pending interaction persisted.
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
     );
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
@@ -6580,11 +6580,11 @@ async fn test_resume_flow_multiple_responses() {
 
     // Test each tool — each needs a session with a matching persisted pending interaction.
     for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
         plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -6614,7 +6614,7 @@ async fn test_resume_flow_partial_responses() {
     assert!(!plugin.is_denied("perm_2")); // No response
 
     // Responded tool should not be blocked — session has matching pending interaction.
-    let session1 = Session::with_initial_state(
+    let session1 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
     );
@@ -6625,7 +6625,7 @@ async fn test_resume_flow_partial_responses() {
     assert!(!step1.tool_blocked());
 
     // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
-    let session2 = Session::new("test");
+    let session2 = Thread::new("test");
     let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -6653,10 +6653,10 @@ async fn test_plugin_interaction_frontend_and_response() {
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let response_plugin = AgUiInteractionPlugin::from_request(&request);
 
-    let session = Session::new("test");
+    let thread = Thread::new("test");
 
     // Test 1: Frontend tool should be pending (not affected by response plugin)
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     let call1 = ToolCall::new("call_new", "showNotification", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
@@ -6671,8 +6671,8 @@ async fn test_plugin_interaction_frontend_and_response() {
     assert!(!step1.tool_blocked());
 
     // Test 2: Previously pending tool should be allowed (response plugin approves).
-    // Session must have a persisted pending interaction matching the approved ID.
-    let session2 = Session::with_initial_state(
+    // Thread must have a persisted pending interaction matching the approved ID.
+    let session2 = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
     );
@@ -6703,12 +6703,12 @@ async fn test_plugin_interaction_execution_order() {
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let response_plugin = AgUiInteractionPlugin::from_request(&request);
 
-    // Session must have a persisted pending interaction matching the denied ID.
-    let session = Session::with_initial_state(
+    // Thread must have a persisted pending interaction matching the denied ID.
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
     );
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
@@ -6738,8 +6738,8 @@ async fn test_plugin_interaction_permission_and_frontend() {
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let permission_plugin = PermissionPlugin;
 
-    let session = Session::new("test");
-    let mut step = StepContext::new(&session, vec![]);
+    let thread = Thread::new("test");
+    let mut step = StepContext::new(&thread, vec![]);
     step.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -7144,7 +7144,7 @@ fn test_full_reconnection_scenario() {
 
     // 3. State snapshot (current state)
     let state_event = AgentEvent::StateSnapshot {
-        snapshot: json!({"session_id": "abc123", "active": true}),
+        snapshot: json!({"thread_id": "abc123", "active": true}),
     };
     reconnect_events.extend(agent_event_to_agui(&state_event, &mut ctx));
 
@@ -7224,11 +7224,11 @@ async fn test_multiple_interaction_responses() {
     ];
 
     for (id, should_block) in test_cases {
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -12037,7 +12037,7 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::{
-        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, Session, StepContext, StreamResult,
+        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, Thread, StepContext, StreamResult,
         ToolCall, ToolContext, ToolResult,
     };
     use serde_json::json;
@@ -12117,8 +12117,8 @@ mod llmmetry_tracing {
             .with_model("test-model")
             .with_provider("test-provider");
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -12158,8 +12158,8 @@ mod llmmetry_tracing {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new("tc1", "search", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -12197,10 +12197,10 @@ mod llmmetry_tracing {
             .with_model("gpt-4")
             .with_provider("openai");
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
-        // Session start
+        // Thread start
         plugin.on_phase(Phase::SessionStart, &mut step).await;
 
         // Inference
@@ -12220,7 +12220,7 @@ mod llmmetry_tracing {
             Some(ToolResult::success("search", json!({"results": []})));
         plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
 
-        // Session end
+        // Thread end
         plugin.on_phase(Phase::SessionEnd, &mut step).await;
 
         let new_spans: Vec<CapturedSpan> = {
@@ -12259,7 +12259,7 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
     //   1. A persisted pending_interaction in agent state
     //   2. An assistant message carrying the original tool call
     //   3. A placeholder tool result
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
@@ -12282,7 +12282,7 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
         vec![],                       // no denied
     );
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
 
     // Run SessionStart phase
     plugin.on_phase(Phase::SessionStart, &mut step).await;
@@ -12303,7 +12303,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
 
     let pending_id = "permission_add_trips";
 
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
@@ -12318,7 +12318,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
         vec![pending_id.to_string()], // denied
     );
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12333,11 +12333,11 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
 async fn test_interaction_response_session_start_no_pending() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let session = Session::with_initial_state("test", json!({ "agent": {} }));
+    let thread = Thread::with_initial_state("test", json!({ "agent": {} }));
 
     let plugin = AgUiInteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12352,7 +12352,7 @@ async fn test_interaction_response_session_start_no_pending() {
 async fn test_interaction_response_session_start_mismatched_id() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
     )
@@ -12364,7 +12364,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
     // Approved a different ID
     let plugin = AgUiInteractionPlugin::with_responses(vec!["permission_y".to_string()], vec![]);
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12381,8 +12381,8 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 
     let pending_id = "permission_add_trips";
 
-    // Session has pending interaction but no assistant message with tool calls
-    let session = Session::with_initial_state(
+    // Thread has pending interaction but no assistant message with tool calls
+    let thread = Thread::with_initial_state(
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
@@ -12392,7 +12392,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 
     let plugin = AgUiInteractionPlugin::with_responses(vec![pending_id.to_string()], vec![]);
 
-    let mut step = StepContext::new(&session, vec![]);
+    let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12414,9 +12414,9 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: PermissionPlugin creates pending interaction
-    let session = Session::new("test");
+    let thread = Thread::new("test");
     let permission_plugin = PermissionPlugin;
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     step1.scratchpad_set(
         "permissions",
         json!({ "default_behavior": "ask", "tools": {} }),
@@ -12441,7 +12441,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         .unwrap();
 
     // Phase 2: Simulate persisted session with pending_interaction + placeholder
-    let persisted_session = Session::with_initial_state(
+    let persisted_thread = Thread::with_initial_state(
         "test",
         json!({
             "agent": {
@@ -12472,7 +12472,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 
     // Phase 4: AgUiInteractionPlugin processes approval in SessionStart
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
-    let mut step2 = StepContext::new(&persisted_session, vec![]);
+    let mut step2 = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step2)
         .await;
@@ -12494,7 +12494,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 
     let pending_id = "permission_call_add";
 
-    let persisted_session = Session::with_initial_state(
+    let persisted_thread = Thread::with_initial_state(
         "test",
         json!({
             "agent": {
@@ -12516,7 +12516,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     assert!(!deny_request.is_interaction_approved(pending_id));
 
     let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
-    let mut step = StepContext::new(&persisted_session, vec![]);
+    let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step)
         .await;
@@ -12535,7 +12535,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
 
     let pending_id = "permission_multi";
 
-    let persisted_session = Session::with_initial_state(
+    let persisted_thread = Thread::with_initial_state(
         "test",
         json!({
             "agent": {
@@ -12558,7 +12558,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
         .with_message(AGUIMessage::tool("true", pending_id));
 
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
-    let mut step = StepContext::new(&persisted_session, vec![]);
+    let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step)
         .await;
@@ -12577,7 +12577,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
 
     let pending_id = "permission_phase_test";
 
-    let session = Session::with_initial_state(
+    let thread = Thread::with_initial_state(
         "test",
         json!({
             "agent": {
@@ -12598,7 +12598,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
 
     // SessionStart sets __replay_tool_calls
-    let mut step1 = StepContext::new(&session, vec![]);
+    let mut step1 = StepContext::new(&thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step1)
         .await;
@@ -12607,7 +12607,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
         .is_some());
 
     // BeforeToolExecute on different step context (independent)
-    let mut step2 = StepContext::new(&session, vec![]);
+    let mut step2 = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(pending_id, "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call));
     response_plugin

@@ -1,7 +1,6 @@
-//! Thread (conversation) management for Agent sessions.
+//! Thread (conversation) management.
 //!
 //! A `Thread` represents a conversation with messages and state history.
-//! The `Session` type alias is provided for backward compatibility.
 
 use crate::types::Message;
 use carve_state::{apply_patches, CarveError, CarveResult, Runtime, TrackedPatch};
@@ -52,10 +51,6 @@ pub struct ThreadMetadata {
     pub extra: serde_json::Map<String, Value>,
 }
 
-/// Backward-compatible alias.
-pub type Session = Thread;
-/// Backward-compatible alias.
-pub type SessionMetadata = ThreadMetadata;
 
 impl Thread {
     /// Create a new thread with the given ID.
@@ -228,13 +223,6 @@ mod tests {
         let err = thread.runtime.set("run_id", "run-2").unwrap_err();
         assert!(matches!(err, carve_state::RuntimeError::AlreadySet(key) if key == "run_id"));
         assert_eq!(thread.runtime.value("run_id"), Some(&json!("run-1")));
-    }
-
-    #[test]
-    fn test_session_alias() {
-        // Session is a type alias for Thread
-        let session: Session = Session::new("test-1");
-        assert_eq!(session.id, "test-1");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Storage backend trait for session persistence.
 
-use crate::session::Session;
+use crate::thread::Thread;
 use crate::types::{Message, Visibility};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ pub struct MessagePage {
 
 /// Pagination query for session lists.
 #[derive(Debug, Clone)]
-pub struct SessionListQuery {
+pub struct ThreadListQuery {
     /// Number of items to skip (0-based).
     pub offset: usize,
     /// Maximum number of items to return (clamped to 1..=200).
@@ -86,7 +86,7 @@ pub struct SessionListQuery {
     pub resource_id: Option<String>,
 }
 
-impl Default for SessionListQuery {
+impl Default for ThreadListQuery {
     fn default() -> Self {
         Self {
             offset: 0,
@@ -98,7 +98,7 @@ impl Default for SessionListQuery {
 
 /// Paginated session list response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionListPage {
+pub struct ThreadListPage {
     pub items: Vec<String>,
     pub total: usize,
     pub has_more: bool,
@@ -175,8 +175,8 @@ pub fn paginate_in_memory(messages: &[std::sync::Arc<Message>], query: &MessageQ
 /// Storage errors.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// Session not found.
-    #[error("Session not found: {0}")]
+    /// Thread not found.
+    #[error("Thread not found: {0}")]
     NotFound(String),
 
     /// IO error.
@@ -188,7 +188,7 @@ pub enum StorageError {
     Serialization(String),
 
     /// Invalid session ID (path traversal, control chars, etc.).
-    #[error("Invalid session id: {0}")]
+    #[error("Invalid thread id: {0}")]
     InvalidId(String),
 }
 
@@ -200,10 +200,10 @@ pub trait Storage: Send + Sync {
     /// Load a session by ID.
     ///
     /// Returns `Ok(None)` if the session doesn't exist.
-    async fn load(&self, id: &str) -> Result<Option<Session>, StorageError>;
+    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError>;
 
     /// Save a session.
-    async fn save(&self, session: &Session) -> Result<(), StorageError>;
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError>;
 
     /// Delete a session.
     async fn delete(&self, id: &str) -> Result<(), StorageError>;
@@ -216,25 +216,25 @@ pub trait Storage: Send + Sync {
     /// Default implementation loads the full session and paginates in-memory.
     async fn load_messages(
         &self,
-        session_id: &str,
+        thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
-        let session = self
-            .load(session_id)
+        let thread = self
+            .load(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
-        Ok(paginate_in_memory(&session.messages, query))
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
+        Ok(paginate_in_memory(&thread.messages, query))
     }
 
-    /// Get total message count for a session.
+    /// Get total message count for a thread.
     ///
-    /// Default implementation loads the full session and returns message count.
-    async fn message_count(&self, session_id: &str) -> Result<usize, StorageError> {
-        let session = self
-            .load(session_id)
+    /// Default implementation loads the full thread and returns message count.
+    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
+        let thread = self
+            .load(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(session_id.to_string()))?;
-        Ok(session.messages.len())
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
+        Ok(thread.messages.len())
     }
 
     /// List sessions with pagination.
@@ -242,16 +242,16 @@ pub trait Storage: Send + Sync {
     /// Default implementation calls `list()` and paginates in-memory.
     async fn list_paginated(
         &self,
-        query: &SessionListQuery,
-    ) -> Result<SessionListPage, StorageError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError> {
         let mut all = self.list().await?;
 
         // Filter by resource_id if specified.
         if let Some(ref resource_id) = query.resource_id {
             let mut filtered = Vec::new();
             for id in &all {
-                if let Some(session) = self.load(id).await? {
-                    if session.resource_id.as_deref() == Some(resource_id.as_str()) {
+                if let Some(thread) = self.load(id).await? {
+                    if thread.resource_id.as_deref() == Some(resource_id.as_str()) {
                         filtered.push(id.clone());
                     }
                 }
@@ -267,7 +267,7 @@ pub trait Storage: Send + Sync {
         let slice = &all[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(SessionListPage {
+        Ok(ThreadListPage {
             items,
             total,
             has_more,
@@ -288,27 +288,27 @@ impl FileStorage {
         }
     }
 
-    fn session_path(&self, id: &str) -> Result<PathBuf, StorageError> {
-        Self::validate_session_id(id)?;
+    fn thread_path(&self, id: &str) -> Result<PathBuf, StorageError> {
+        Self::validate_thread_id(id)?;
         Ok(self.base_path.join(format!("{}.json", id)))
     }
 
     /// Validate that a session ID is safe for use as a filename.
     /// Rejects path separators, `..`, and control characters.
-    fn validate_session_id(id: &str) -> Result<(), StorageError> {
+    fn validate_thread_id(id: &str) -> Result<(), StorageError> {
         if id.is_empty() {
             return Err(StorageError::InvalidId(
-                "session id cannot be empty".to_string(),
+                "thread id cannot be empty".to_string(),
             ));
         }
         if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
             return Err(StorageError::InvalidId(format!(
-                "session id contains invalid characters: {id:?}"
+                "thread id contains invalid characters: {id:?}"
             )));
         }
         if id.chars().any(|c| c.is_control()) {
             return Err(StorageError::InvalidId(format!(
-                "session id contains control characters: {id:?}"
+                "thread id contains control characters: {id:?}"
             )));
         }
         Ok(())
@@ -317,32 +317,32 @@ impl FileStorage {
 
 #[async_trait]
 impl Storage for FileStorage {
-    async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
-        let path = self.session_path(id)?;
+    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
+        let path = self.thread_path(id)?;
 
         if !path.exists() {
             return Ok(None);
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
-        let session: Session = serde_json::from_str(&content)
+        let thread: Thread = serde_json::from_str(&content)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
-        Ok(Some(session))
+        Ok(Some(thread))
     }
 
-    async fn save(&self, session: &Session) -> Result<(), StorageError> {
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
         // Ensure directory exists
         if !self.base_path.exists() {
             tokio::fs::create_dir_all(&self.base_path).await?;
         }
 
-        let path = self.session_path(&session.id)?;
-        let content = serde_json::to_string_pretty(session)
+        let path = self.thread_path(&thread.id)?;
+        let content = serde_json::to_string_pretty(thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         let tmp_path = self.base_path.join(format!(
             ".{}.{}.tmp",
-            session.id,
+            thread.id,
             uuid::Uuid::new_v4().simple()
         ));
 
@@ -373,7 +373,7 @@ impl Storage for FileStorage {
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let path = self.session_path(id)?;
+        let path = self.thread_path(id)?;
 
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
@@ -408,7 +408,7 @@ impl Storage for FileStorage {
 /// In-memory storage for testing.
 #[derive(Default)]
 pub struct MemoryStorage {
-    sessions: tokio::sync::RwLock<std::collections::HashMap<String, Session>>,
+    threads: tokio::sync::RwLock<std::collections::HashMap<String, Thread>>,
 }
 
 impl MemoryStorage {
@@ -420,26 +420,26 @@ impl MemoryStorage {
 
 #[async_trait]
 impl Storage for MemoryStorage {
-    async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
-        let sessions = self.sessions.read().await;
-        Ok(sessions.get(id).cloned())
+    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
+        let threads = self.threads.read().await;
+        Ok(threads.get(id).cloned())
     }
 
-    async fn save(&self, session: &Session) -> Result<(), StorageError> {
-        let mut sessions = self.sessions.write().await;
-        sessions.insert(session.id.clone(), session.clone());
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+        let mut threads = self.threads.write().await;
+        threads.insert(thread.id.clone(), thread.clone());
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let mut sessions = self.sessions.write().await;
-        sessions.remove(id);
+        let mut threads = self.threads.write().await;
+        threads.remove(id);
         Ok(())
     }
 
     async fn list(&self) -> Result<Vec<String>, StorageError> {
-        let sessions = self.sessions.read().await;
-        Ok(sessions.keys().cloned().collect())
+        let threads = self.threads.read().await;
+        Ok(threads.keys().cloned().collect())
     }
 }
 
@@ -513,14 +513,14 @@ impl PostgresStorage {
     pub async fn ensure_table(&self) -> Result<(), StorageError> {
         let sql = format!(
             r#"
-            CREATE TABLE IF NOT EXISTS {sessions} (
+            CREATE TABLE IF NOT EXISTS {threads} (
                 id         TEXT PRIMARY KEY,
                 data       JSONB NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
             CREATE TABLE IF NOT EXISTS {messages} (
                 seq        BIGSERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES {sessions}(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL REFERENCES {threads}(id) ON DELETE CASCADE,
                 message_id TEXT,
                 run_id     TEXT,
                 step_index INTEGER,
@@ -534,7 +534,7 @@ impl PostgresStorage {
             CREATE INDEX IF NOT EXISTS idx_{messages}_session_run
                 ON {messages} (session_id, run_id) WHERE run_id IS NOT NULL;
             "#,
-            sessions = self.table,
+            threads = self.table,
             messages = self.messages_table,
         );
         sqlx::query(&sql)
@@ -552,7 +552,7 @@ impl PostgresStorage {
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl Storage for PostgresStorage {
-    async fn load(&self, id: &str) -> Result<Option<Session>, StorageError> {
+    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
         // Load session skeleton (data has messages: []).
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
@@ -581,14 +581,14 @@ impl Storage for PostgresStorage {
             obj.insert("messages".to_string(), serde_json::Value::Array(messages));
         }
 
-        let session: Session =
+        let thread: Thread =
             serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        Ok(Some(session))
+        Ok(Some(thread))
     }
 
-    async fn save(&self, session: &Session) -> Result<(), StorageError> {
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
         // Serialize session skeleton (without messages).
-        let mut v = serde_json::to_value(session)
+        let mut v = serde_json::to_value(thread)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
@@ -608,7 +608,7 @@ impl Storage for PostgresStorage {
             self.table
         );
         sqlx::query(&upsert_sql)
-            .bind(&session.id)
+            .bind(&thread.id)
             .bind(&v)
             .execute(&mut *tx)
             .await
@@ -620,13 +620,13 @@ impl Storage for PostgresStorage {
             self.messages_table,
         );
         let existing_rows: Vec<(String,)> = sqlx::query_as(&existing_sql)
-            .bind(&session.id)
+            .bind(&thread.id)
             .fetch_all(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
         let existing_ids: HashSet<String> = existing_rows.into_iter().map(|(id,)| id).collect();
 
-        let new_messages: Vec<&Message> = session
+        let new_messages: Vec<&Message> = thread
             .messages
             .iter()
             .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
@@ -648,7 +648,7 @@ impl Storage for PostgresStorage {
                 .unwrap_or((None, None));
 
             sqlx::query(&insert_sql)
-                .bind(&session.id)
+                .bind(&thread.id)
                 .bind(message_id)
                 .bind(run_id)
                 .bind(step_index)
@@ -684,7 +684,7 @@ impl Storage for PostgresStorage {
 
     async fn load_messages(
         &self,
-        session_id: &str,
+        thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
         // Check session exists.
@@ -695,7 +695,7 @@ impl Storage for PostgresStorage {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(session_id.to_string()));
+            return Err(StorageError::NotFound(thread_id.to_string()));
         }
 
         let limit = query.limit.min(200).max(1);
@@ -804,7 +804,7 @@ impl Storage for PostgresStorage {
         })
     }
 
-    async fn message_count(&self, session_id: &str) -> Result<usize, StorageError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -813,7 +813,7 @@ impl Storage for PostgresStorage {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(session_id.to_string()));
+            return Err(StorageError::NotFound(thread_id.to_string()));
         }
 
         let sql = format!(
@@ -830,8 +830,8 @@ impl Storage for PostgresStorage {
 
     async fn list_paginated(
         &self,
-        query: &SessionListQuery,
-    ) -> Result<SessionListPage, StorageError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError> {
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
@@ -888,7 +888,7 @@ impl Storage for PostgresStorage {
         let has_more = rows.len() > limit;
         let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
 
-        Ok(SessionListPage {
+        Ok(ThreadListPage {
             items,
             total: total as usize,
             has_more,
@@ -907,9 +907,9 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_save_load() {
         let storage = MemoryStorage::new();
-        let session = Session::new("test-1").with_message(Message::user("Hello"));
+        let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
         let loaded = storage.load("test-1").await.unwrap();
 
         assert!(loaded.is_some());
@@ -928,9 +928,9 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_delete() {
         let storage = MemoryStorage::new();
-        let session = Session::new("test-1");
+        let thread = Thread::new("test-1");
 
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
         assert!(storage.load("test-1").await.unwrap().is_some());
 
         storage.delete("test-1").await.unwrap();
@@ -941,15 +941,15 @@ mod tests {
     async fn test_memory_storage_list() {
         let storage = MemoryStorage::new();
 
-        storage.save(&Session::new("session-1")).await.unwrap();
-        storage.save(&Session::new("session-2")).await.unwrap();
+        storage.save(&Thread::new("thread-1")).await.unwrap();
+        storage.save(&Thread::new("thread-2")).await.unwrap();
 
         let mut ids = storage.list().await.unwrap();
         ids.sort();
 
         assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"session-1".to_string()));
-        assert!(ids.contains(&"session-2".to_string()));
+        assert!(ids.contains(&"thread-1".to_string()));
+        assert!(ids.contains(&"thread-2".to_string()));
     }
 
     #[tokio::test]
@@ -957,12 +957,12 @@ mod tests {
         let storage = MemoryStorage::new();
 
         // Save initial session
-        let session = Session::new("test-1").with_message(Message::user("Hello"));
-        storage.save(&session).await.unwrap();
+        let thread = Thread::new("test-1").with_message(Message::user("Hello"));
+        storage.save(&thread).await.unwrap();
 
         // Update session
-        let session = session.with_message(Message::assistant("Hi!"));
-        storage.save(&session).await.unwrap();
+        let thread = thread.with_message(Message::assistant("Hi!"));
+        storage.save(&thread).await.unwrap();
 
         // Load and verify
         let loaded = storage.load("test-1").await.unwrap().unwrap();
@@ -973,13 +973,13 @@ mod tests {
     async fn test_memory_storage_with_state_and_patches() {
         let storage = MemoryStorage::new();
 
-        let session = Session::with_initial_state("test-1", json!({"counter": 0}))
+        let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
             .with_message(Message::user("Increment"))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
 
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
 
         let loaded = storage.load("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.patch_count(), 1);
@@ -1015,8 +1015,8 @@ mod tests {
             .map(|i| {
                 let storage = Arc::clone(&storage);
                 tokio::spawn(async move {
-                    let session = Session::new(format!("session-{}", i));
-                    storage.save(&session).await.unwrap();
+                    let thread = Thread::new(format!("thread-{}", i));
+                    storage.save(&thread).await.unwrap();
                 })
             })
             .collect();
@@ -1036,8 +1036,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let session = Session::new("test-1").with_message(Message::user("Hello"));
-        storage.save(&session).await.unwrap();
+        let thread = Thread::new("test-1").with_message(Message::user("Hello"));
+        storage.save(&thread).await.unwrap();
 
         let loaded = storage.load("test-1").await.unwrap();
         assert!(loaded.is_some());
@@ -1060,8 +1060,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let session = Session::new("test-1");
-        storage.save(&session).await.unwrap();
+        let thread = Thread::new("test-1");
+        storage.save(&thread).await.unwrap();
         assert!(storage.load("test-1").await.unwrap().is_some());
 
         storage.delete("test-1").await.unwrap();
@@ -1073,15 +1073,15 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        storage.save(&Session::new("session-a")).await.unwrap();
-        storage.save(&Session::new("session-b")).await.unwrap();
-        storage.save(&Session::new("session-c")).await.unwrap();
+        storage.save(&Thread::new("thread-a")).await.unwrap();
+        storage.save(&Thread::new("thread-b")).await.unwrap();
+        storage.save(&Thread::new("thread-c")).await.unwrap();
 
         let mut ids = storage.list().await.unwrap();
         ids.sort();
 
         assert_eq!(ids.len(), 3);
-        assert_eq!(ids, vec!["session-a", "session-b", "session-c"]);
+        assert_eq!(ids, vec!["thread-a", "thread-b", "thread-c"]);
     }
 
     #[tokio::test]
@@ -1103,11 +1103,11 @@ mod tests {
     #[tokio::test]
     async fn test_file_storage_creates_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let nested_path = temp_dir.path().join("nested").join("sessions");
+        let nested_path = temp_dir.path().join("nested").join("threads");
         let storage = FileStorage::new(&nested_path);
 
-        let session = Session::new("test-1");
-        storage.save(&session).await.unwrap();
+        let thread = Thread::new("test-1");
+        storage.save(&thread).await.unwrap();
 
         assert!(nested_path.exists());
         assert!(storage.load("test-1").await.unwrap().is_some());
@@ -1118,8 +1118,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let session = Session::with_initial_state(
-            "complex-session",
+        let thread = Thread::with_initial_state(
+            "complex-thread",
             json!({
                 "user": {"name": "Alice", "age": 30},
                 "items": [1, 2, 3],
@@ -1134,9 +1134,9 @@ mod tests {
                 .with_op(Op::append(path!("items"), json!(4))),
         ));
 
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load("complex-session").await.unwrap().unwrap();
+        let loaded = storage.load("complex-thread").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 2);
         assert_eq!(loaded.patch_count(), 1);
 
@@ -1150,14 +1150,14 @@ mod tests {
         let storage = FileStorage::new(temp_dir.path());
 
         // Save initial
-        let session = Session::new("test-1").with_message(Message::user("First"));
-        storage.save(&session).await.unwrap();
+        let thread = Thread::new("test-1").with_message(Message::user("First"));
+        storage.save(&thread).await.unwrap();
 
         // Update
-        let session = session
+        let thread = thread
             .with_message(Message::assistant("Second"))
             .with_message(Message::user("Third"));
-        storage.save(&session).await.unwrap();
+        storage.save(&thread).await.unwrap();
 
         // Verify
         let loaded = storage.load("test-1").await.unwrap().unwrap();
@@ -1174,7 +1174,7 @@ mod tests {
             .unwrap();
 
         let storage = FileStorage::new(temp_dir.path());
-        storage.save(&Session::new("valid")).await.unwrap();
+        storage.save(&Thread::new("valid")).await.unwrap();
 
         let ids = storage.list().await.unwrap();
         assert_eq!(ids.len(), 1);
@@ -1183,29 +1183,29 @@ mod tests {
 
     #[test]
     fn test_storage_error_display() {
-        let err = StorageError::NotFound("session-1".to_string());
+        let err = StorageError::NotFound("thread-1".to_string());
         assert!(err.to_string().contains("not found"));
-        assert!(err.to_string().contains("session-1"));
+        assert!(err.to_string().contains("thread-1"));
 
         let err = StorageError::Serialization("invalid json".to_string());
         assert!(err.to_string().contains("Serialization"));
     }
 
     #[test]
-    fn test_file_storage_session_path() {
+    fn test_file_storage_thread_path() {
         let storage = FileStorage::new("/base/path");
-        let path = storage.session_path("my-session").unwrap();
-        assert_eq!(path.to_string_lossy(), "/base/path/my-session.json");
+        let path = storage.thread_path("my-thread").unwrap();
+        assert_eq!(path.to_string_lossy(), "/base/path/my-thread.json");
     }
 
     #[test]
     fn test_file_storage_rejects_path_traversal() {
         let storage = FileStorage::new("/base/path");
-        assert!(storage.session_path("../../etc/passwd").is_err());
-        assert!(storage.session_path("foo/bar").is_err());
-        assert!(storage.session_path("foo\\bar").is_err());
-        assert!(storage.session_path("").is_err());
-        assert!(storage.session_path("foo\0bar").is_err());
+        assert!(storage.thread_path("../../etc/passwd").is_err());
+        assert!(storage.thread_path("foo/bar").is_err());
+        assert!(storage.thread_path("foo\\bar").is_err());
+        assert!(storage.thread_path("").is_err());
+        assert!(storage.thread_path("foo\0bar").is_err());
     }
 
     // ========================================================================
@@ -1218,13 +1218,13 @@ mod tests {
             .collect()
     }
 
-    fn make_session_with_messages(id: &str, n: usize) -> Session {
-        let mut session = Session::new(id);
+    fn make_thread_with_messages(id: &str, n: usize) -> Thread {
+        let mut thread = Thread::new(id);
         for msg in make_messages(n) {
             // Deref Arc to get Message for with_message
-            session = session.with_message((*msg).clone());
+            thread = thread.with_message((*msg).clone());
         }
-        session
+        thread
     }
 
     #[test]
@@ -1356,8 +1356,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_load_messages() {
         let storage = MemoryStorage::new();
-        let session = make_session_with_messages("test-1", 10);
-        storage.save(&session).await.unwrap();
+        let thread = make_thread_with_messages("test-1", 10);
+        storage.save(&thread).await.unwrap();
 
         let query = MessageQuery {
             limit: 3,
@@ -1381,8 +1381,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_message_count() {
         let storage = MemoryStorage::new();
-        let session = make_session_with_messages("test-1", 7);
-        storage.save(&session).await.unwrap();
+        let thread = make_thread_with_messages("test-1", 7);
+        storage.save(&thread).await.unwrap();
 
         let count = storage.message_count("test-1").await.unwrap();
         assert_eq!(count, 7);
@@ -1399,8 +1399,8 @@ mod tests {
     async fn test_file_storage_load_messages() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
-        let session = make_session_with_messages("test-1", 10);
-        storage.save(&session).await.unwrap();
+        let thread = make_thread_with_messages("test-1", 10);
+        storage.save(&thread).await.unwrap();
 
         let query = MessageQuery {
             after: Some(4),
@@ -1418,8 +1418,8 @@ mod tests {
     async fn test_file_storage_message_count() {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
-        let session = make_session_with_messages("test-1", 5);
-        storage.save(&session).await.unwrap();
+        let thread = make_thread_with_messages("test-1", 5);
+        storage.save(&thread).await.unwrap();
 
         let count = storage.message_count("test-1").await.unwrap();
         assert_eq!(count, 5);
@@ -1446,8 +1446,8 @@ mod tests {
     // Visibility tests
     // ========================================================================
 
-    fn make_mixed_visibility_session(id: &str) -> Session {
-        Session::new(id)
+    fn make_mixed_visibility_thread(id: &str) -> Thread {
+        Thread::new(id)
             .with_message(Message::user("user-0"))
             .with_message(Message::assistant("assistant-1"))
             .with_message(Message::internal_system("reminder-2"))
@@ -1458,13 +1458,13 @@ mod tests {
 
     #[test]
     fn test_paginate_visibility_all_default() {
-        let session = make_mixed_visibility_session("t");
+        let thread = make_mixed_visibility_thread("t");
         // Default query filters to Visibility::All (user-visible only).
         let query = MessageQuery {
             limit: 50,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         // Should exclude 2 internal messages (at indices 2 and 4).
         assert_eq!(page.messages.len(), 4);
@@ -1476,13 +1476,13 @@ mod tests {
 
     #[test]
     fn test_paginate_visibility_internal_only() {
-        let session = make_mixed_visibility_session("t");
+        let thread = make_mixed_visibility_thread("t");
         let query = MessageQuery {
             limit: 50,
             visibility: Some(Visibility::Internal),
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         assert_eq!(page.messages.len(), 2);
         assert_eq!(page.messages[0].message.content, "reminder-2");
@@ -1491,13 +1491,13 @@ mod tests {
 
     #[test]
     fn test_paginate_visibility_none_returns_all() {
-        let session = make_mixed_visibility_session("t");
+        let thread = make_mixed_visibility_thread("t");
         let query = MessageQuery {
             limit: 50,
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         // Should return all 6 messages.
         assert_eq!(page.messages.len(), 6);
@@ -1505,13 +1505,13 @@ mod tests {
 
     #[test]
     fn test_paginate_visibility_cursors_stable() {
-        let session = make_mixed_visibility_session("t");
+        let thread = make_mixed_visibility_thread("t");
         // With visibility=All, cursors should correspond to original indices.
         let query = MessageQuery {
             limit: 50,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         // Cursors should be 0, 1, 3, 5 (original indices, skipping internal at 2, 4).
         assert_eq!(page.messages[0].cursor, 0);
@@ -1522,14 +1522,14 @@ mod tests {
 
     #[test]
     fn test_paginate_visibility_with_cursor_pagination() {
-        let session = make_mixed_visibility_session("t");
+        let thread = make_mixed_visibility_thread("t");
         // Start after cursor 1 (assistant-1), visibility=All.
         let query = MessageQuery {
             after: Some(1),
             limit: 2,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         // Should return user-3 (cursor 3) and assistant-5 (cursor 5).
         assert_eq!(page.messages.len(), 2);
@@ -1567,8 +1567,8 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_load_messages_filters_visibility() {
         let storage = MemoryStorage::new();
-        let session = make_mixed_visibility_session("test-vis");
-        storage.save(&session).await.unwrap();
+        let thread = make_mixed_visibility_thread("test-vis");
+        storage.save(&thread).await.unwrap();
 
         // Default query (visibility = All)
         let page = storage
@@ -1592,8 +1592,8 @@ mod tests {
 
     use crate::types::MessageMetadata;
 
-    fn make_multi_run_session(id: &str) -> Session {
-        Session::new(id)
+    fn make_multi_run_thread(id: &str) -> Thread {
+        Thread::new(id)
             // User message (no run metadata)
             .with_message(Message::user("hello"))
             // Run A, step 0: assistant + tool
@@ -1625,7 +1625,7 @@ mod tests {
 
     #[test]
     fn test_paginate_filter_by_run_id() {
-        let session = make_multi_run_session("t");
+        let thread = make_multi_run_thread("t");
 
         // Filter to run-a only
         let query = MessageQuery {
@@ -1633,7 +1633,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
         assert_eq!(page.messages.len(), 3);
         assert_eq!(page.messages[0].message.content, "thinking...");
         assert_eq!(page.messages[2].message.content, "done");
@@ -1644,7 +1644,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
         assert_eq!(page.messages.len(), 1);
         assert_eq!(page.messages[0].message.content, "ok");
 
@@ -1653,13 +1653,13 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
         assert_eq!(page.messages.len(), 6);
     }
 
     #[test]
     fn test_paginate_run_id_with_cursor() {
-        let session = make_multi_run_session("t");
+        let thread = make_multi_run_thread("t");
 
         // Filter run-a, after cursor 1 (skip first run-a msg at cursor 1)
         let query = MessageQuery {
@@ -1668,27 +1668,27 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
         assert_eq!(page.messages.len(), 2); // tool (cursor 2) + final (cursor 3)
     }
 
     #[test]
     fn test_paginate_nonexistent_run_id() {
-        let session = make_multi_run_session("t");
+        let thread = make_multi_run_thread("t");
         let query = MessageQuery {
             run_id: Some("run-z".to_string()),
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
         assert!(page.messages.is_empty());
     }
 
     #[tokio::test]
     async fn test_memory_storage_load_messages_by_run_id() {
         let storage = MemoryStorage::new();
-        let session = make_multi_run_session("test-run");
-        storage.save(&session).await.unwrap();
+        let thread = make_multi_run_thread("test-run");
+        storage.save(&thread).await.unwrap();
 
         let query = MessageQuery {
             run_id: Some("run-a".to_string()),
@@ -1701,13 +1701,13 @@ mod tests {
 
     #[test]
     fn test_message_metadata_preserved_in_pagination() {
-        let session = make_multi_run_session("t");
+        let thread = make_multi_run_thread("t");
         let query = MessageQuery {
             run_id: Some("run-a".to_string()),
             visibility: None,
             ..Default::default()
         };
-        let page = paginate_in_memory(&session.messages, &query);
+        let page = paginate_in_memory(&thread.messages, &query);
 
         // Metadata should be preserved on the returned messages.
         let meta = page.messages[0].message.metadata.as_ref().unwrap();
@@ -1716,7 +1716,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Session list pagination tests
+    // Thread list pagination tests
     // ========================================================================
 
     #[tokio::test]
@@ -1724,12 +1724,12 @@ mod tests {
         let storage = MemoryStorage::new();
         for i in 0..5 {
             storage
-                .save(&Session::new(format!("s-{i:02}")))
+                .save(&Thread::new(format!("s-{i:02}")))
                 .await
                 .unwrap();
         }
         let page = storage
-            .list_paginated(&SessionListQuery::default())
+            .list_paginated(&ThreadListQuery::default())
             .await
             .unwrap();
         assert_eq!(page.items.len(), 5);
@@ -1742,12 +1742,12 @@ mod tests {
         let storage = MemoryStorage::new();
         for i in 0..10 {
             storage
-                .save(&Session::new(format!("s-{i:02}")))
+                .save(&Thread::new(format!("s-{i:02}")))
                 .await
                 .unwrap();
         }
         let page = storage
-            .list_paginated(&SessionListQuery {
+            .list_paginated(&ThreadListQuery {
                 offset: 0,
                 limit: 3,
                 ..Default::default()
@@ -1766,12 +1766,12 @@ mod tests {
         let storage = MemoryStorage::new();
         for i in 0..5 {
             storage
-                .save(&Session::new(format!("s-{i:02}")))
+                .save(&Thread::new(format!("s-{i:02}")))
                 .await
                 .unwrap();
         }
         let page = storage
-            .list_paginated(&SessionListQuery {
+            .list_paginated(&ThreadListQuery {
                 offset: 3,
                 limit: 10,
                 ..Default::default()
@@ -1789,12 +1789,12 @@ mod tests {
         let storage = MemoryStorage::new();
         for i in 0..3 {
             storage
-                .save(&Session::new(format!("s-{i:02}")))
+                .save(&Thread::new(format!("s-{i:02}")))
                 .await
                 .unwrap();
         }
         let page = storage
-            .list_paginated(&SessionListQuery {
+            .list_paginated(&ThreadListQuery {
                 offset: 100,
                 limit: 10,
                 ..Default::default()
@@ -1810,7 +1810,7 @@ mod tests {
     async fn test_list_paginated_empty() {
         let storage = MemoryStorage::new();
         let page = storage
-            .list_paginated(&SessionListQuery::default())
+            .list_paginated(&ThreadListQuery::default())
             .await
             .unwrap();
         assert!(page.items.is_empty());

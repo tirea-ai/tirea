@@ -234,11 +234,11 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let saved = storage.load("e2e-sdk").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
         saved.messages.iter().any(|m| m.content.contains("2+2")),
-        "user message not found in persisted session"
+        "user message not found in persisted thread"
     );
 }
 
@@ -287,14 +287,14 @@ async fn e2e_ag_ui_sse_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let saved = storage.load("e2e-agui").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
         saved
             .messages
             .iter()
             .any(|m| m.content.contains("3+3") || m.content.contains("3 + 3")),
-        "user message not found in persisted session"
+        "user message not found in persisted thread"
     );
 }
 
@@ -347,10 +347,10 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
         "LLM did not answer '51' for 17*3. Got: {answer}"
     );
 
-    // Session should be persisted with tool call history.
+    // Thread should be persisted with tool call history.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load("e2e-sdk-tool").await.unwrap();
-    assert!(saved.is_some(), "session not persisted");
+    assert!(saved.is_some(), "thread not persisted");
 }
 
 // ============================================================================

@@ -131,7 +131,7 @@ impl AgentPlugin for ReminderPlugin {
         }
 
         // Read reminders from session state
-        let state = match step.session.rebuild_state() {
+        let state = match step.thread.rebuild_state() {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -152,7 +152,7 @@ impl AgentPlugin for ReminderPlugin {
         }
 
         for text in &reminders {
-            step.session(format!("Reminder: {}", text));
+            step.thread(format!("Reminder: {}", text));
         }
 
         // Clear reminders from session state via pending patch
@@ -266,14 +266,14 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
         use crate::phase::{Phase, StepContext};
-        use crate::session::Session;
+        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "reminders": { "items": ["Test reminder"] } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -284,14 +284,14 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
         use crate::phase::{Phase, StepContext};
-        use crate::session::Session;
+        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -309,12 +309,12 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
         use crate::phase::{Phase, StepContext};
-        use crate::session::Session;
+        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
-        let session =
-            Session::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
-        let mut step = StepContext::new(&session, vec![]);
+        let thread =
+            Thread::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -326,11 +326,11 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
         use crate::phase::{Phase, StepContext};
-        use crate::session::Session;
+        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
-        let session = Session::with_initial_state("test", json!({ "reminders": { "items": [] } }));
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::with_initial_state("test", json!({ "reminders": { "items": [] } }));
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -341,11 +341,11 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
         use crate::phase::{Phase, StepContext};
-        use crate::session::Session;
+        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         plugin.on_phase(Phase::BeforeInference, &mut step).await;
 

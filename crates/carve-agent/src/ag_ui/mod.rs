@@ -1292,43 +1292,43 @@ fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
     }
 }
 
-fn should_seed_session_from_request(session: &Session, request: &RunAgentRequest) -> bool {
-    let session_state_is_empty_object = session.state.as_object().is_some_and(|m| m.is_empty());
+fn should_seed_session_from_request(thread: &Thread, request: &RunAgentRequest) -> bool {
+    let session_state_is_empty_object = thread.state.as_object().is_some_and(|m| m.is_empty());
 
     let request_has_state = request.state.as_ref().is_some_and(|s| !s.is_null());
     let request_has_messages = !request.messages.is_empty();
 
-    session.messages.is_empty()
-        && session.patches.is_empty()
+    thread.messages.is_empty()
+        && thread.patches.is_empty()
         && session_state_is_empty_object
         && (request_has_state || request_has_messages)
 }
 
-fn seed_session_from_request(session: Session, request: &RunAgentRequest) -> Session {
+fn seed_session_from_request(thread: Thread, request: &RunAgentRequest) -> Thread {
     // For AG-UI, thread_id is the session identity; if caller didn't provide
     // a session history/state, we seed it from the request payload.
     let state = request
         .state
         .clone()
-        .unwrap_or_else(|| session.state.clone());
+        .unwrap_or_else(|| thread.state.clone());
     let messages = request
         .messages
         .iter()
         .map(core_message_from_ag_ui)
         .collect::<Vec<_>>();
 
-    Session::with_initial_state(request.thread_id.clone(), state).with_messages(messages)
+    Thread::with_initial_state(request.thread_id.clone(), state).with_messages(messages)
 }
 
-fn session_has_message_id(session: &Session, id: &str) -> bool {
-    session
+fn session_has_message_id(thread: &Thread, id: &str) -> bool {
+    thread
         .messages
         .iter()
         .any(|m| m.id.as_deref().is_some_and(|mid| mid == id))
 }
 
-fn session_has_tool_call_id(session: &Session, tool_call_id: &str) -> bool {
-    session.messages.iter().any(|m| {
+fn session_has_tool_call_id(thread: &Thread, tool_call_id: &str) -> bool {
+    thread.messages.iter().any(|m| {
         m.tool_call_id
             .as_deref()
             .is_some_and(|tid| tid == tool_call_id)
@@ -1342,9 +1342,9 @@ fn session_has_tool_call_id(session: &Session, tool_call_id: &str) -> bool {
 ///   - tool role messages with `toolCallId`
 ///   - any message with a stable `id`
 ///   - id-less non-tool messages are appended as-is (same-run duplicates are valid user input)
-pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest) -> Session {
-    if should_seed_session_from_request(&session, request) {
-        return seed_session_from_request(session, request);
+pub fn apply_agui_request_to_thread(thread: Thread, request: &RunAgentRequest) -> Thread {
+    if should_seed_session_from_request(&thread, request) {
+        return seed_session_from_request(thread, request);
     }
 
     let mut new_msgs: Vec<crate::types::Message> = Vec::new();
@@ -1366,7 +1366,7 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
         // assistant text, causing "tool must follow tool_calls" LLM errors.
         if msg.role == MessageRole::Tool {
             if let Some(tool_call_id) = msg.tool_call_id.as_deref() {
-                if !session_has_tool_call_id(&session, tool_call_id) {
+                if !session_has_tool_call_id(&thread, tool_call_id) {
                     new_msgs.push(core_message_from_ag_ui(msg));
                 }
             }
@@ -1374,7 +1374,7 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
         }
 
         if let Some(id) = msg.id.as_deref() {
-            if !session_has_message_id(&session, id) {
+            if !session_has_message_id(&thread, id) {
                 new_msgs.push(core_message_from_ag_ui(msg));
             }
             continue;
@@ -1387,29 +1387,29 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
     }
 
     if new_msgs.is_empty() {
-        session
+        thread
     } else {
-        session.with_messages(new_msgs)
+        thread.with_messages(new_msgs)
     }
 }
 
 /// Runtime key used to mark that a specific AG-UI request has already been
-/// applied to a session, preventing duplicate ingress on re-entry.
+/// applied to a thread, preventing duplicate ingress on re-entry.
 pub const AGUI_REQUEST_APPLIED_RUNTIME_KEY: &str = "__agui_request_applied";
 
-fn ensure_agui_request_applied(mut session: Session, request: &RunAgentRequest) -> Session {
-    let already_applied = session
+fn ensure_agui_request_applied(mut thread: Thread, request: &RunAgentRequest) -> Thread {
+    let already_applied = thread
         .runtime
         .value(AGUI_REQUEST_APPLIED_RUNTIME_KEY)
         .and_then(|v| v.as_str())
         .is_some_and(|run_id| run_id == request.run_id);
     if !already_applied {
-        session = apply_agui_request_to_session(session, request);
+        thread = apply_agui_request_to_thread(thread, request);
     }
-    let _ = session
+    let _ = thread
         .runtime
         .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, request.run_id.clone());
-    session
+    thread
 }
 
 impl InteractionResponse {
@@ -1583,10 +1583,10 @@ fn apply_request_overrides(mut config: AgentConfig, request: &RunAgentRequest) -
     config
 }
 
-fn set_run_identity(session: &mut Session, run_id: &str, parent_run_id: Option<&str>) {
-    let _ = session.runtime.set("run_id", run_id.to_string());
+fn set_run_identity(thread: &mut Thread, run_id: &str, parent_run_id: Option<&str>) {
+    let _ = thread.runtime.set("run_id", run_id.to_string());
     if let Some(parent) = parent_run_id {
-        let _ = session.runtime.set("parent_run_id", parent.to_string());
+        let _ = thread.runtime.set("parent_run_id", parent.to_string());
     }
 }
 
@@ -1596,14 +1596,14 @@ fn should_skip_pending_event(interaction: &Interaction) -> bool {
 
 fn prepare_request_runtime(
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     mut tools: HashMap<String, Arc<dyn Tool>>,
     request: &RunAgentRequest,
-) -> (AgentConfig, Session, HashMap<String, Arc<dyn Tool>>) {
-    let session = ensure_agui_request_applied(session, request);
+) -> (AgentConfig, Thread, HashMap<String, Arc<dyn Tool>>) {
+    let thread = ensure_agui_request_applied(thread, request);
     let config = apply_request_overrides(config, request);
     let config = RequestWiring::from_request(request).apply(config, &mut tools, request);
-    (config, session, tools)
+    (config, thread, tools)
 }
 
 // ============================================================================
@@ -1611,8 +1611,8 @@ fn prepare_request_runtime(
 // ============================================================================
 
 use crate::r#loop::run_loop_stream_with_checkpoints;
-use crate::r#loop::{run_loop_stream, run_loop_stream_with_session, AgentConfig, RunContext};
-use crate::session::Session;
+use crate::r#loop::{run_loop_stream, run_loop_stream_with_thread, AgentConfig, RunContext};
+use crate::thread::Thread;
 use crate::stream::AgentEvent;
 use crate::traits::tool::Tool;
 use async_stream::stream;
@@ -1647,7 +1647,7 @@ use std::sync::Arc;
 /// let stream = run_agent_stream(
 ///     client,
 ///     config,
-///     session,
+///     thread,
 ///     tools,
 ///     "thread_123".to_string(),
 ///     "run_456".to_string(),
@@ -1662,19 +1662,19 @@ use std::sync::Arc;
 pub fn run_agent_stream(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
-    run_agent_stream_with_parent(client, config, session, tools, thread_id, run_id, None)
+    run_agent_stream_with_parent(client, config, thread, tools, thread_id, run_id, None)
 }
 
 /// Run the agent loop and return a stream of AG-UI events with an explicit parent run ID.
 pub fn run_agent_stream_with_parent(
     client: Client,
     config: AgentConfig,
-    mut session: Session,
+    mut thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
@@ -1683,12 +1683,12 @@ pub fn run_agent_stream_with_parent(
     Box::pin(stream! {
         let mut ctx = AGUIContext::new(thread_id.clone(), run_id.clone());
 
-        set_run_identity(&mut session, &run_id, parent_run_id.as_deref());
+        set_run_identity(&mut thread, &run_id, parent_run_id.as_deref());
 
         let run_ctx = RunContext {
             cancellation_token: None,
         };
-        let mut inner_stream = run_loop_stream(client, config, session, tools, run_ctx);
+        let mut inner_stream = run_loop_stream(client, config, thread, tools, run_ctx);
         let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
@@ -1741,19 +1741,19 @@ pub fn run_agent_stream_with_parent(
 pub fn run_agent_stream_sse(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    run_agent_stream_sse_with_parent(client, config, session, tools, thread_id, run_id, None)
+    run_agent_stream_sse_with_parent(client, config, thread, tools, thread_id, run_id, None)
 }
 
 /// Run the agent loop and return SSE strings with an explicit parent run ID.
 pub fn run_agent_stream_sse_with_parent(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     thread_id: String,
     run_id: String,
@@ -1763,7 +1763,7 @@ pub fn run_agent_stream_sse_with_parent(
         let mut inner = run_agent_stream_with_parent(
             client,
             config,
-            session,
+            thread,
             tools,
             thread_id,
             run_id,
@@ -1804,7 +1804,7 @@ pub fn run_agent_stream_sse_with_parent(
 /// let stream = run_agent_stream_with_request(
 ///     client,
 ///     config,
-///     session,
+///     thread,
 ///     tools,  // Only backend tools
 ///     request,
 /// );
@@ -1812,17 +1812,17 @@ pub fn run_agent_stream_sse_with_parent(
 pub fn run_agent_stream_with_request(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
-    let (config, session, tools) = prepare_request_runtime(config, session, tools, &request);
+    let (config, thread, tools) = prepare_request_runtime(config, thread, tools, &request);
 
     // Use existing run_agent_stream with the enhanced config
     run_agent_stream_with_parent(
         client,
         config,
-        session,
+        thread,
         tools,
         request.thread_id,
         request.run_id,
@@ -1830,7 +1830,7 @@ pub fn run_agent_stream_with_request(
     )
 }
 
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus the final `Session`.
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus the final `Thread`.
 ///
 /// This is useful for building transports (HTTP, NATS) that need to:
 /// - stream AG-UI compatible events to clients, and
@@ -1838,13 +1838,13 @@ pub fn run_agent_stream_with_request(
 pub fn run_agent_events_with_request(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
-) -> crate::r#loop::StreamWithSession {
-    let (config, mut session, tools) = prepare_request_runtime(config, session, tools, &request);
+) -> crate::r#loop::StreamWithThread {
+    let (config, mut thread, tools) = prepare_request_runtime(config, thread, tools, &request);
     set_run_identity(
-        &mut session,
+        &mut thread,
         &request.run_id,
         request.parent_run_id.as_deref(),
     );
@@ -1853,20 +1853,20 @@ pub fn run_agent_events_with_request(
         cancellation_token: None,
     };
 
-    run_loop_stream_with_session(client, config, session, tools, run_ctx)
+    run_loop_stream_with_thread(client, config, thread, tools, run_ctx)
 }
 
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints and the final `Session`.
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints and the final `Thread`.
 pub fn run_agent_events_with_request_checkpoints(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithCheckpoints {
-    let (config, mut session, tools) = prepare_request_runtime(config, session, tools, &request);
+    let (config, mut thread, tools) = prepare_request_runtime(config, thread, tools, &request);
     set_run_identity(
-        &mut session,
+        &mut thread,
         &request.run_id,
         request.parent_run_id.as_deref(),
     );
@@ -1875,7 +1875,7 @@ pub fn run_agent_events_with_request_checkpoints(
         cancellation_token: None,
     };
 
-    run_loop_stream_with_checkpoints(client, config, session, tools, run_ctx)
+    run_loop_stream_with_checkpoints(client, config, thread, tools, run_ctx)
 }
 
 /// Run the agent loop with an AG-UI request, returning SSE-formatted strings.
@@ -1885,12 +1885,12 @@ pub fn run_agent_events_with_request_checkpoints(
 pub fn run_agent_stream_with_request_sse(
     client: Client,
     config: AgentConfig,
-    session: Session,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     Box::pin(stream! {
-        let mut inner = run_agent_stream_with_request(client, config, session, tools, request);
+        let mut inner = run_agent_stream_with_request(client, config, thread, tools, request);
         while let Some(event) = inner.next().await {
             if let Ok(json) = serde_json::to_string(&event) {
                 yield format!("data: {}\n\n", json);
@@ -1931,13 +1931,13 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("test-session");
+        let thread = Thread::new("test-thread");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let mut request = RunAgentRequest::new("thread_1", "run_1");
         request.parent_run_id = Some("parent_123".to_string());
 
-        let mut stream = run_agent_stream_with_request(client, config, session, tools, request);
+        let mut stream = run_agent_stream_with_request(client, config, thread, tools, request);
         let first_event = stream.next().await.expect("first event");
 
         if let AGUIEvent::RunStarted { parent_run_id, .. } = first_event {
@@ -1955,13 +1955,13 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("test-session");
+        let thread = Thread::new("test-thread");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let mut stream = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "thread_1".to_string(),
             "run_1".to_string(),
@@ -1983,17 +1983,17 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("test-session");
+        let thread = Thread::new("test-thread");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         let mut request = RunAgentRequest::new("thread_1", "run_1");
         request.parent_run_id = Some("parent_123".to_string());
 
-        let mut run = run_agent_events_with_request(client, config, session, tools, request);
+        let mut run = run_agent_events_with_request(client, config, thread, tools, request);
         while run.events.next().await.is_some() {}
 
-        let session = run.final_session.await.expect("final session");
+        let thread = run.final_thread.await.expect("final thread");
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value("run_id")
                 .and_then(|v| v.as_str())
@@ -2001,7 +2001,7 @@ mod tests {
             Some("run_1".to_string())
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value("parent_run_id")
                 .and_then(|v| v.as_str())
@@ -2018,18 +2018,18 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("test-session");
+        let thread = Thread::new("test-thread");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         let mut request = RunAgentRequest::new("thread_1", "run_2");
         request.parent_run_id = Some("parent_456".to_string());
 
         let mut run =
-            run_agent_events_with_request_checkpoints(client, config, session, tools, request);
+            run_agent_events_with_request_checkpoints(client, config, thread, tools, request);
         while run.events.next().await.is_some() {}
 
-        let session = run.final_session.await.expect("final session");
+        let thread = run.final_thread.await.expect("final thread");
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value("run_id")
                 .and_then(|v| v.as_str())
@@ -2037,7 +2037,7 @@ mod tests {
             Some("run_2".to_string())
         );
         assert_eq!(
-            session
+            thread
                 .runtime
                 .value("parent_run_id")
                 .and_then(|v| v.as_str())
@@ -2048,7 +2048,7 @@ mod tests {
 
     #[test]
     fn test_seed_session_from_request_when_session_empty() {
-        let base = Session::new("base");
+        let base = Thread::new("base");
         let request = RunAgentRequest::new("thread_1", "run_1")
             .with_state(json!({"counter": 1}))
             .with_messages(vec![
@@ -2071,7 +2071,7 @@ mod tests {
 
     #[test]
     fn test_does_not_seed_session_from_request_when_session_non_empty() {
-        let base = Session::new("base").with_message(crate::types::Message::user("hello"));
+        let base = Thread::new("base").with_message(crate::types::Message::user("hello"));
         let request = RunAgentRequest::new("thread_1", "run_1")
             .with_state(json!({"counter": 1}))
             .with_message(AGUIMessage::user("ignored"));
@@ -4250,11 +4250,11 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_plugin_sets_pending_for_frontend_tool() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with frontend tool
         let mut tools = HashSet::new();
@@ -4288,11 +4288,11 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_plugin_ignores_backend_tool() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with frontend tool (not including "search")
         let mut tools = HashSet::new();
@@ -4314,11 +4314,11 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_plugin_ignores_other_phases() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         let mut tools = HashSet::new();
         tools.insert("copyToClipboard".to_string());
@@ -4350,7 +4350,7 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_complete_flow() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         // 1. Setup: Create plugin from request
@@ -4364,8 +4364,8 @@ mod tests {
         let plugin = FrontendToolPlugin::from_request(&request);
 
         // 2. Simulate tool call to frontend tool
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         let call = ToolCall::new(
             "call_123",
@@ -4439,7 +4439,7 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_plugin_mixed_tools() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -4450,11 +4450,11 @@ mod tests {
 
         let plugin = FrontendToolPlugin::from_request(&request);
 
-        let session = Session::new("test");
+        let thread = Thread::new("test");
 
         // Test backend tool - should not be pending
         {
-            let mut step = StepContext::new(&session, vec![]);
+            let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c1", "search", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -4466,7 +4466,7 @@ mod tests {
 
         // Test another backend tool
         {
-            let mut step = StepContext::new(&session, vec![]);
+            let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c2", "read_file", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -4478,7 +4478,7 @@ mod tests {
 
         // Test frontend tool - should be pending
         {
-            let mut step = StepContext::new(&session, vec![]);
+            let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c3", "copyToClipboard", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -4490,7 +4490,7 @@ mod tests {
 
         // Test another frontend tool
         {
-            let mut step = StepContext::new(&session, vec![]);
+            let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c4", "showNotification", json!({}));
             step.tool = Some(ToolContext::new(&call));
             plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
@@ -4504,16 +4504,16 @@ mod tests {
     #[tokio::test]
     async fn test_frontend_tool_plugin_skips_blocked() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         let frontend_tools: HashSet<String> =
             ["copyToClipboard"].iter().map(|s| s.to_string()).collect();
         let plugin = FrontendToolPlugin::new(frontend_tools);
-        let session = Session::new("test");
+        let thread = Thread::new("test");
 
         // Simulate a blocked frontend tool (e.g., blocked by PermissionPlugin)
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("c1", "copyToClipboard", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -4534,7 +4534,7 @@ mod tests {
     async fn test_frontend_tool_plugin_coordination_with_permission() {
         use crate::phase::ToolContext;
         use crate::plugins::PermissionPlugin;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
         use serde_json::json;
 
@@ -4544,7 +4544,7 @@ mod tests {
         let frontend_plugin = FrontendToolPlugin::new(frontend_tools);
         let permission_plugin = PermissionPlugin;
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({
                 "permissions": {
@@ -4553,7 +4553,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("c1", "frontend_action", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -4630,15 +4630,15 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_blocks_denied() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        // Session must have a persisted pending interaction matching the denied ID.
-        let session = Session::with_initial_state(
+        // Thread must have a persisted pending interaction matching the denied ID.
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with denied permission interaction
         let plugin =
@@ -4659,15 +4659,15 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_allows_approved() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        // Session must have a persisted pending interaction matching the approved ID.
-        let session = Session::with_initial_state(
+        // Thread must have a persisted pending interaction matching the approved ID.
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with approved permission interaction
         let plugin =
@@ -4688,15 +4688,15 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_frontend_tool_id() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        // Session must have a persisted pending interaction matching the frontend tool call ID.
-        let session = Session::with_initial_state(
+        // Thread must have a persisted pending interaction matching the frontend tool call ID.
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": "call_copy_1", "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         // FrontendToolPlugin uses the tool call ID as interaction ID
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
@@ -4715,12 +4715,12 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_ignores_without_pending_interaction() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        // Session has NO persisted pending interaction.
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        // Thread has NO persisted pending interaction.
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Client claims to have approved "permission_delete_file" — but there is no
         // matching pending interaction on the server, so this must be ignored.
@@ -4741,15 +4741,15 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_ignores_mismatched_pending_id() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         // Server has a pending interaction for a DIFFERENT tool.
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Client tries to approve "permission_delete_file" — does not match the pending ID.
         let plugin =
@@ -4767,11 +4767,11 @@ mod tests {
     #[tokio::test]
     async fn test_interaction_response_plugin_ignores_other_phases() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with denied interaction
         let plugin = InteractionResponsePlugin::new(vec![], vec!["permission_test".to_string()]);
@@ -4853,7 +4853,7 @@ mod tests {
     #[tokio::test]
     async fn test_agui_interaction_plugin_denied_frontend_call_stays_blocked() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -4861,11 +4861,11 @@ mod tests {
             .with_message(AGUIMessage::tool("false", "call_danger"));
         let plugin = AgUiInteractionPlugin::from_request(&request);
 
-        let session = Session::with_initial_state(
+        let thread = Thread::with_initial_state(
             "test",
             json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
         );
-        let mut step = StepContext::new(&session, vec![]);
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -4878,14 +4878,14 @@ mod tests {
     #[tokio::test]
     async fn test_agui_interaction_plugin_frontend_tool_sets_pending() {
         use crate::phase::ToolContext;
-        use crate::session::Session;
+        use crate::thread::Thread;
         use crate::types::ToolCall;
 
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("showNotification", "Show"));
         let plugin = AgUiInteractionPlugin::from_request(&request);
-        let session = Session::new("test");
-        let mut step = StepContext::new(&session, vec![]);
+        let thread = Thread::new("test");
+        let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_1", "showNotification", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
@@ -5703,13 +5703,13 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("thread-1");
+        let thread = Thread::new("thread-1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "thread-1".to_string(),
             "run-abc".to_string(),
@@ -5761,13 +5761,13 @@ mod tests {
         let client = Client::default();
         let config =
             AgentConfig::default().with_plugin(Arc::new(SkipPlugin) as Arc<dyn AgentPlugin>);
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "t1".to_string(),
             "run-xyz".to_string(),
@@ -5798,13 +5798,13 @@ mod tests {
 
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream_with_parent(
             client,
             config,
-            session,
+            thread,
             tools,
             "t1".to_string(),
             "run-1".to_string(),
@@ -5852,13 +5852,13 @@ mod tests {
         let client = Client::default();
         let config = AgentConfig::default()
             .with_plugin(Arc::new(SkipInferenceForAgUi) as Arc<dyn crate::plugin::AgentPlugin>);
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "t1".to_string(),
             "run-1".to_string(),
@@ -5895,13 +5895,13 @@ mod tests {
         let client = Client::default();
         let config = AgentConfig::default()
             .with_plugin(Arc::new(SkipInferenceForAgUi) as Arc<dyn crate::plugin::AgentPlugin>);
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "t1".to_string(),
             "run-1".to_string(),
@@ -5938,13 +5938,13 @@ mod tests {
         // and no real LLM. The stream will emit an Error event.
         let client = Client::default();
         let config = AgentConfig::default();
-        let session = Session::new("t1").with_message(crate::types::Message::user("hello"));
+        let thread = Thread::new("t1").with_message(crate::types::Message::user("hello"));
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let events: Vec<AGUIEvent> = run_agent_stream(
             client,
             config,
-            session,
+            thread,
             tools,
             "t1".to_string(),
             "run-err".to_string(),
@@ -6316,7 +6316,7 @@ mod tests {
         let config = AgentConfig::new("original-model")
             .with_plugin(Arc::new(plugin) as Arc<dyn AgentPlugin>);
 
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let request = RunAgentRequest::new("t1", "run-1")
@@ -6324,7 +6324,7 @@ mod tests {
             .with_message(AGUIMessage::user("hello"));
 
         let events: Vec<AGUIEvent> =
-            run_agent_stream_with_request(Client::default(), config, session, tools, request)
+            run_agent_stream_with_request(Client::default(), config, thread, tools, request)
                 .collect()
                 .await;
 
@@ -6355,7 +6355,7 @@ mod tests {
             .with_system_prompt("original prompt")
             .with_plugin(Arc::new(SkipInferenceForAgUi) as Arc<dyn crate::plugin::AgentPlugin>);
 
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
         let request = RunAgentRequest::new("t1", "run-1")
@@ -6363,7 +6363,7 @@ mod tests {
             .with_message(AGUIMessage::user("hello"));
 
         let events: Vec<AGUIEvent> =
-            run_agent_stream_with_request(Client::default(), config, session, tools, request)
+            run_agent_stream_with_request(Client::default(), config, thread, tools, request)
                 .collect()
                 .await;
 
@@ -6401,16 +6401,16 @@ mod tests {
     #[test]
     fn test_seed_session_state_fallback_when_request_state_is_none() {
         // When request.state is None, seed_session_from_request should use session's state
-        let session = Session::with_initial_state("t1", json!({"existing": true}));
+        let thread = Thread::with_initial_state("t1", json!({"existing": true}));
         let request = RunAgentRequest::new("t1", "run-1").with_message(AGUIMessage::user("hello"));
         // request.state is None
 
-        let seeded = seed_session_from_request(session, &request);
+        let seeded = seed_session_from_request(thread, &request);
 
         let state = seeded.rebuild_state().unwrap();
         assert_eq!(
             state["existing"], true,
-            "Session's original state should be preserved when request.state is None"
+            "Thread's original state should be preserved when request.state is None"
         );
     }
 
@@ -6512,12 +6512,12 @@ mod tests {
     }
 
     // ========================================================================
-    // Session Merging & Deduplication Tests
+    // Thread Merging & Deduplication Tests
     // ========================================================================
 
     #[test]
     fn test_session_has_message_id_finds_existing() {
-        let session = Session::new("s1").with_message(crate::types::Message {
+        let thread = Thread::new("s1").with_message(crate::types::Message {
             id: Some("msg-42".to_string()),
             role: crate::types::Role::User,
             content: "hello".to_string(),
@@ -6526,22 +6526,22 @@ mod tests {
             visibility: crate::types::Visibility::default(),
             metadata: None,
         });
-        assert!(super::session_has_message_id(&session, "msg-42"));
-        assert!(!super::session_has_message_id(&session, "msg-99"));
+        assert!(super::session_has_message_id(&thread, "msg-42"));
+        assert!(!super::session_has_message_id(&thread, "msg-99"));
     }
 
     #[test]
     fn test_session_has_message_id_ignores_none_ids() {
-        let session =
-            Session::new("s1").with_message(crate::types::Message::user("no id on this one"));
+        let thread =
+            Thread::new("s1").with_message(crate::types::Message::user("no id on this one"));
         // Message without id should not match any id
-        assert!(!super::session_has_message_id(&session, ""));
-        assert!(!super::session_has_message_id(&session, "anything"));
+        assert!(!super::session_has_message_id(&thread, ""));
+        assert!(!super::session_has_message_id(&thread, "anything"));
     }
 
     #[test]
     fn test_session_has_tool_call_id_finds_existing() {
-        let session = Session::new("s1").with_message(crate::types::Message {
+        let thread = Thread::new("s1").with_message(crate::types::Message {
             id: None,
             role: crate::types::Role::Tool,
             content: "result".to_string(),
@@ -6550,21 +6550,21 @@ mod tests {
             visibility: crate::types::Visibility::default(),
             metadata: None,
         });
-        assert!(super::session_has_tool_call_id(&session, "tc-1"));
-        assert!(!super::session_has_tool_call_id(&session, "tc-2"));
+        assert!(super::session_has_tool_call_id(&thread, "tc-1"));
+        assert!(!super::session_has_tool_call_id(&thread, "tc-2"));
     }
 
     #[test]
     fn test_session_has_tool_call_id_ignores_none() {
-        let session =
-            Session::new("s1").with_message(crate::types::Message::user("no tool_call_id"));
-        assert!(!super::session_has_tool_call_id(&session, "tc-1"));
+        let thread =
+            Thread::new("s1").with_message(crate::types::Message::user("no tool_call_id"));
+        assert!(!super::session_has_tool_call_id(&thread, "tc-1"));
     }
 
     #[test]
     fn test_apply_agui_request_deduplicates_by_message_id() {
-        // Session has a message with id "m1"
-        let session = Session::new("s1").with_message(crate::types::Message {
+        // Thread has a message with id "m1"
+        let thread = Thread::new("s1").with_message(crate::types::Message {
             id: Some("m1".to_string()),
             role: crate::types::Role::User,
             content: "original".to_string(),
@@ -6581,7 +6581,7 @@ mod tests {
         msg2.id = Some("m2".to_string());
 
         let request = RunAgentRequest::new("t1", "r1").with_messages(vec![msg1, msg2]);
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
 
         // Should have original m1 + new m2
         assert_eq!(result.messages.len(), 2);
@@ -6591,8 +6591,8 @@ mod tests {
 
     #[test]
     fn test_apply_agui_request_deduplicates_tool_by_tool_call_id() {
-        // Session already has a tool result for "tc-1"
-        let session = Session::new("s1").with_message(crate::types::Message {
+        // Thread already has a tool result for "tc-1"
+        let thread = Thread::new("s1").with_message(crate::types::Message {
             id: None,
             role: crate::types::Role::Tool,
             content: "existing result".to_string(),
@@ -6608,7 +6608,7 @@ mod tests {
             AGUIMessage::tool("new result", "tc-2"),
         ]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         assert_eq!(result.messages.len(), 2); // original tc-1 + new tc-2
         assert_eq!(result.messages[0].tool_call_id.as_deref(), Some("tc-1"));
         assert_eq!(result.messages[0].content, "existing result");
@@ -6617,7 +6617,7 @@ mod tests {
 
     #[test]
     fn test_apply_agui_request_double_apply_keeps_idless_user_duplicates() {
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1")
             .with_state(json!({"counter": 1}))
             .with_messages(vec![
@@ -6626,11 +6626,11 @@ mod tests {
             ]);
 
         // First apply: seeds
-        let s1 = super::apply_agui_request_to_session(session, &request);
+        let s1 = super::apply_agui_request_to_thread(thread, &request);
         assert_eq!(s1.messages.len(), 2);
 
         // Second apply: id-less user input is appended again (assistant is still skipped).
-        let s2 = super::apply_agui_request_to_session(s1, &request);
+        let s2 = super::apply_agui_request_to_thread(s1, &request);
         assert_eq!(s2.messages.len(), 3);
         assert_eq!(s2.messages[2].role, crate::types::Role::User);
         assert_eq!(s2.messages[2].content, "hello");
@@ -6639,13 +6639,13 @@ mod tests {
     #[test]
     fn test_apply_agui_request_imports_user_messages_without_id() {
         // Non-empty session (not seeding path)
-        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
 
         // Request with user message that has no id or tool_call_id.
         let request =
             RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("no-id message"));
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[1].role, crate::types::Role::User);
         assert_eq!(result.messages[1].content, "no-id message");
@@ -6653,12 +6653,12 @@ mod tests {
 
     #[test]
     fn test_apply_agui_request_user_message_without_id_duplicates_on_retry() {
-        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
         let request =
             RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("no-id message"));
 
-        let s1 = super::apply_agui_request_to_session(session, &request);
-        let s2 = super::apply_agui_request_to_session(s1, &request);
+        let s1 = super::apply_agui_request_to_thread(thread, &request);
+        let s2 = super::apply_agui_request_to_thread(s1, &request);
         assert_eq!(
             s2.messages.len(),
             3,
@@ -6668,11 +6668,11 @@ mod tests {
 
     #[test]
     fn test_apply_agui_request_preserves_duplicate_idless_messages_in_same_request() {
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1")
             .with_messages(vec![AGUIMessage::user("继续"), AGUIMessage::user("继续")]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[0].content, "继续");
         assert_eq!(result.messages[1].content, "继续");
@@ -6680,34 +6680,34 @@ mod tests {
 
     #[test]
     fn test_ensure_agui_request_applied_skips_second_application_when_marked() {
-        let mut session = Session::new("s1").with_message(crate::types::Message::user("existing"));
-        session
+        let mut thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
+        thread
             .runtime
             .set(super::AGUI_REQUEST_APPLIED_RUNTIME_KEY, "r1")
             .unwrap();
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("new input"));
 
-        let result = super::ensure_agui_request_applied(session, &request);
+        let result = super::ensure_agui_request_applied(thread, &request);
         assert_eq!(result.messages.len(), 1);
     }
 
     #[test]
     fn test_ensure_agui_request_applied_reapplies_for_different_run_id() {
-        let mut session = Session::new("s1").with_message(crate::types::Message::user("existing"));
-        session
+        let mut thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
+        thread
             .runtime
             .set(super::AGUI_REQUEST_APPLIED_RUNTIME_KEY, "r0")
             .unwrap();
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("new input"));
 
-        let result = super::ensure_agui_request_applied(session, &request);
+        let result = super::ensure_agui_request_applied(thread, &request);
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[1].content, "new input");
     }
 
     #[test]
     fn test_apply_agui_request_no_new_messages_returns_original() {
-        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
 
         // All messages in request already exist
         let mut msg = AGUIMessage::user("existing");
@@ -6715,7 +6715,7 @@ mod tests {
         let request = RunAgentRequest::new("t1", "r1").with_message(msg);
 
         // Pre-populate session with m1
-        let session = session.with_message(crate::types::Message {
+        let thread = thread.with_message(crate::types::Message {
             id: Some("m1".to_string()),
             role: crate::types::Role::User,
             content: "existing".to_string(),
@@ -6725,13 +6725,13 @@ mod tests {
             metadata: None,
         });
 
-        let result = super::apply_agui_request_to_session(session.clone(), &request);
-        assert_eq!(result.messages.len(), session.messages.len());
+        let result = super::apply_agui_request_to_thread(thread.clone(), &request);
+        assert_eq!(result.messages.len(), thread.messages.len());
     }
 
     #[test]
     fn test_apply_agui_request_mixed_message_types() {
-        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
 
         let mut user_msg = AGUIMessage::user("question");
         user_msg.id = Some("u1".to_string());
@@ -6742,7 +6742,7 @@ mod tests {
         let request =
             RunAgentRequest::new("t1", "r1").with_messages(vec![user_msg, assistant_msg, tool_msg]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         // Original 1 + user(u1) + tool(tc-99); assistant(a1) is skipped
         // (backend generates assistant messages itself)
         assert_eq!(result.messages.len(), 3);
@@ -6750,39 +6750,39 @@ mod tests {
 
     #[test]
     fn test_should_seed_empty_session_with_request_state() {
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1").with_state(json!({"x": 1}));
-        assert!(super::should_seed_session_from_request(&session, &request));
+        assert!(super::should_seed_session_from_request(&thread, &request));
     }
 
     #[test]
     fn test_should_seed_empty_session_with_request_messages() {
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hi"));
-        assert!(super::should_seed_session_from_request(&session, &request));
+        assert!(super::should_seed_session_from_request(&thread, &request));
     }
 
     #[test]
     fn test_should_not_seed_when_request_empty() {
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1");
         // No state, no messages — nothing to seed
-        assert!(!super::should_seed_session_from_request(&session, &request));
+        assert!(!super::should_seed_session_from_request(&thread, &request));
     }
 
     #[test]
     fn test_should_not_seed_when_session_has_patches() {
         use carve_state::{Patch, TrackedPatch};
-        let mut session = Session::new("s1");
-        session.patches.push(TrackedPatch::new(Patch::new()));
+        let mut thread = Thread::new("s1");
+        thread.patches.push(TrackedPatch::new(Patch::new()));
         let request = RunAgentRequest::new("t1", "r1").with_state(json!({"x": 1}));
-        assert!(!super::should_seed_session_from_request(&session, &request));
+        assert!(!super::should_seed_session_from_request(&thread, &request));
     }
 
     #[test]
     fn test_apply_agui_request_skips_assistant_in_nonseed() {
         // Non-empty session — backend already has its own assistant message
-        let session = Session::new("s1")
+        let thread = Thread::new("s1")
             .with_message(crate::types::Message::user("hello"))
             .with_message(crate::types::Message::assistant("Hi there!"));
 
@@ -6795,7 +6795,7 @@ mod tests {
 
         let request = RunAgentRequest::new("t1", "r1").with_messages(vec![assistant, user2]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         // Should only add user2, not the duplicate assistant
         assert_eq!(result.messages.len(), 3);
         assert_eq!(result.messages[2].content, "follow-up");
@@ -6804,7 +6804,7 @@ mod tests {
     #[test]
     fn test_apply_agui_request_seed_accepts_assistant() {
         // Empty session — seeding path accepts all messages including assistant
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
 
         let request = RunAgentRequest::new("t1", "r1").with_messages(vec![
             AGUIMessage::user("hello"),
@@ -6812,15 +6812,15 @@ mod tests {
             AGUIMessage::user("follow-up"),
         ]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         // Seeding: all messages accepted
         assert_eq!(result.messages.len(), 3);
     }
 
     #[test]
     fn test_apply_agui_request_prevents_tool_call_corruption() {
-        // Session has an assistant message with tool_calls (from agent loop)
-        let session = Session::new("s1")
+        // Thread has an assistant message with tool_calls (from agent loop)
+        let thread = Thread::new("s1")
             .with_message(crate::types::Message::user("add a task"))
             .with_message(crate::types::Message::assistant_with_tool_calls(
                 "",
@@ -6842,7 +6842,7 @@ mod tests {
         let request =
             RunAgentRequest::new("t1", "r1").with_messages(vec![ck_assistant, tool_result, user2]);
 
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
         // Should have: user, assistant+tool_calls, tool_result, user2
         // The CopilotKit assistant (without tool_calls) is skipped
         assert_eq!(result.messages.len(), 4);
@@ -7592,7 +7592,7 @@ mod tests {
         use std::sync::Arc;
 
         let config = AgentConfig::new("base-model").with_system_prompt("base prompt");
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
 
         let request = RunAgentRequest::new("t1", "run-1")
@@ -7617,8 +7617,8 @@ mod tests {
             value: json!([{"title": "Review PR"}]),
         }];
 
-        let (config, session, tools_out) =
-            super::prepare_request_runtime(config, session, tools, &request);
+        let (config, thread, tools_out) =
+            super::prepare_request_runtime(config, thread, tools, &request);
         tools = tools_out;
 
         // Verify model override
@@ -7630,8 +7630,8 @@ mod tests {
         assert!(config.system_prompt.contains("Review PR"));
 
         // Verify session was seeded
-        assert_eq!(session.messages.len(), 2);
-        assert_eq!(session.rebuild_state().unwrap()["counter"], 0);
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.rebuild_state().unwrap()["counter"], 0);
 
         // Verify frontend tools merged
         assert!(tools.contains_key("addTask"));
@@ -7690,10 +7690,10 @@ mod tests {
 
         for case in cases {
             let config = AgentConfig::new("m");
-            let session = Session::new("t1");
+            let thread = Thread::new("t1");
             let tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
-            let (config, _session, tools) =
-                super::prepare_request_runtime(config, session, tools, &case.request);
+            let (config, _thread, tools) =
+                super::prepare_request_runtime(config, thread, tools, &case.request);
 
             let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
             assert_eq!(
@@ -7716,14 +7716,14 @@ mod tests {
         use std::sync::Arc;
 
         let config = AgentConfig::new("m").with_plugin(Arc::new(crate::plugins::PermissionPlugin));
-        let session = Session::new("t1");
+        let thread = Thread::new("t1");
         let tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
         let request = RunAgentRequest::new("t1", "r1")
             .with_messages(vec![AGUIMessage::tool("true", "permission_write")])
             .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
 
-        let (config, _session, _tools) =
-            super::prepare_request_runtime(config, session, tools, &request);
+        let (config, _thread, _tools) =
+            super::prepare_request_runtime(config, thread, tools, &request);
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
         assert_eq!(plugin_ids, vec!["permission", "agui_interaction"]);
     }
@@ -8170,7 +8170,7 @@ mod tests {
     }
 
     // ========================================================================
-    // apply_agui_request_to_session: tool message with both tool_call_id AND id
+    // apply_agui_request_to_thread: tool message with both tool_call_id AND id
     // ========================================================================
 
     #[test]
@@ -8178,7 +8178,7 @@ mod tests {
         // Tool messages dedup by tool_call_id FIRST (line 1352-1358).
         // Even if the message has a unique `id`, it should still be deduped
         // by tool_call_id.
-        let session = Session::new("s1").with_message(crate::types::Message {
+        let thread = Thread::new("s1").with_message(crate::types::Message {
             id: None,
             role: crate::types::Role::Tool,
             content: "existing result".to_string(),
@@ -8193,7 +8193,7 @@ mod tests {
         tool_msg.id = Some("unique-id-123".to_string());
 
         let request = RunAgentRequest::new("t1", "r1").with_message(tool_msg);
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
 
         // Should NOT add the tool message — dedup by tool_call_id takes priority
         assert_eq!(result.messages.len(), 1);
@@ -8204,14 +8204,14 @@ mod tests {
     fn test_apply_agui_request_tool_msg_without_tool_call_id_skipped() {
         // Tool message with no tool_call_id should be skipped entirely
         // (the `continue` at line 1358 exits the loop iteration).
-        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
 
         let mut tool_msg = AGUIMessage::tool("orphan result", "");
         tool_msg.id = Some("orphan-id".to_string());
         tool_msg.tool_call_id = None;
 
         let request = RunAgentRequest::new("t1", "r1").with_message(tool_msg);
-        let result = super::apply_agui_request_to_session(session, &request);
+        let result = super::apply_agui_request_to_thread(thread, &request);
 
         // Tool msg without tool_call_id is skipped by the `continue` at line 1358
         assert_eq!(result.messages.len(), 1);
@@ -8225,14 +8225,14 @@ mod tests {
     fn test_should_not_seed_when_request_state_is_null() {
         // request.state = Some(Value::Null) — should_seed returns false
         // because `!s.is_null()` on line 1284 is false.
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1")
             .with_state(Value::Null)
             .with_message(AGUIMessage::user("hello"));
 
         // Even though request has messages, state is Null → request_has_state is false.
         // But request_has_messages is true, so it should STILL seed.
-        let should = super::should_seed_session_from_request(&session, &request);
+        let should = super::should_seed_session_from_request(&thread, &request);
         assert!(
             should,
             "should seed when request has messages even if state is null"
@@ -8243,12 +8243,12 @@ mod tests {
     fn test_seed_session_with_null_state_uses_session_state() {
         // When request.state is Some(Null), seed_session_from_request should
         // fall back to session's original state (line 1296-1299).
-        let session = Session::with_initial_state("s1", json!({"existing": true}));
+        let thread = Thread::with_initial_state("s1", json!({"existing": true}));
         let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         request.state = Some(Value::Null);
 
-        let seeded = super::seed_session_from_request(session, &request);
-        // seed_session uses request.state.unwrap_or(session.state) — since
+        let seeded = super::seed_session_from_request(thread, &request);
+        // seed_session uses request.state.unwrap_or(thread.state) — since
         // request.state is Some(Null), it will use Null, NOT session state.
         // This documents the current behavior.
         assert_eq!(seeded.state, Value::Null);
@@ -8257,10 +8257,10 @@ mod tests {
     #[test]
     fn test_should_not_seed_when_only_null_state_no_messages() {
         // request.state = Some(Null), no messages → should NOT seed
-        let session = Session::new("s1");
+        let thread = Thread::new("s1");
         let request = RunAgentRequest::new("t1", "r1").with_state(Value::Null);
 
-        let should = super::should_seed_session_from_request(&session, &request);
+        let should = super::should_seed_session_from_request(&thread, &request);
         assert!(!should, "null state alone should not trigger seeding");
     }
 
