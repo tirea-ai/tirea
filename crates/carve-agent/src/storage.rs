@@ -3,10 +3,13 @@
 use crate::thread::Thread;
 use crate::types::{Message, Visibility};
 use async_trait::async_trait;
+use carve_state::TrackedPatch;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 #[cfg(feature = "postgres")]
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
@@ -84,6 +87,8 @@ pub struct ThreadListQuery {
     pub limit: usize,
     /// Filter by resource_id (owner). `None` means no filtering.
     pub resource_id: Option<String>,
+    /// Filter by parent_thread_id. `None` means no filtering.
+    pub parent_thread_id: Option<String>,
 }
 
 impl Default for ThreadListQuery {
@@ -92,6 +97,7 @@ impl Default for ThreadListQuery {
             offset: 0,
             limit: 50,
             resource_id: None,
+            parent_thread_id: None,
         }
     }
 }
@@ -187,9 +193,132 @@ pub enum StorageError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
-    /// Invalid session ID (path traversal, control chars, etc.).
+    /// Invalid thread ID (path traversal, control chars, etc.).
     #[error("Invalid thread id: {0}")]
     InvalidId(String),
+
+    /// Optimistic concurrency conflict.
+    #[error("Version conflict: expected {expected}, actual {actual}")]
+    VersionConflict {
+        expected: Version,
+        actual: Version,
+    },
+
+    /// Thread already exists (for create operations).
+    #[error("Thread already exists")]
+    AlreadyExists,
+}
+
+// ============================================================================
+// Delta-based storage types
+// ============================================================================
+
+/// Monotonically increasing version for optimistic concurrency.
+pub type Version = u64;
+
+/// Acknowledgement returned after a successful write.
+#[derive(Debug, Clone, Copy)]
+pub struct Committed {
+    pub version: Version,
+}
+
+/// A thread together with its current storage version.
+#[derive(Debug, Clone)]
+pub struct ThreadHead {
+    pub thread: Thread,
+    pub version: Version,
+}
+
+/// Reason for a checkpoint (delta).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CheckpointReason {
+    UserMessage,
+    AssistantTurnCommitted,
+    ToolResultsCommitted,
+    RunFinished,
+}
+
+/// An incremental change to a thread produced by a single step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadDelta {
+    /// Which run produced this delta.
+    pub run_id: String,
+    /// Parent run (for sub-agent deltas).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    /// Why this delta was created.
+    pub reason: CheckpointReason,
+    /// New messages appended in this step.
+    pub messages: Vec<Arc<Message>>,
+    /// New patches appended in this step.
+    pub patches: Vec<TrackedPatch>,
+    /// If `Some`, a full state snapshot was taken (replaces base state).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Value>,
+}
+
+// ============================================================================
+// New storage traits
+// ============================================================================
+
+/// Core thread storage — all backends must implement this.
+#[async_trait]
+pub trait ThreadStore: Send + Sync {
+    /// Create a new thread. Returns `AlreadyExists` if the id is taken.
+    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError>;
+
+    /// Append a delta to an existing thread.
+    ///
+    /// `base_version` is the version the caller last read; if it doesn't match
+    /// the current version the backend returns `VersionConflict`.
+    async fn append(
+        &self,
+        id: &str,
+        base_version: Version,
+        delta: &ThreadDelta,
+    ) -> Result<Committed, StorageError>;
+
+    /// Load a thread and its current version.
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError>;
+
+    /// Delete a thread.
+    async fn delete(&self, id: &str) -> Result<(), StorageError>;
+}
+
+/// Query operations — default impls based on `ThreadStore::load()`.
+///
+/// Database backends should override with efficient queries.
+#[async_trait]
+pub trait ThreadQuery: ThreadStore {
+    /// Load a paginated slice of messages for a thread.
+    async fn load_messages(
+        &self,
+        id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        let head = self
+            .load(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+        Ok(paginate_in_memory(&head.thread.messages, query))
+    }
+
+    /// List threads with pagination.
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError>;
+}
+
+/// Sync operations — for backends with delta replay capability.
+#[async_trait]
+pub trait ThreadSync: ThreadStore {
+    /// Load deltas appended after `after_version`.
+    async fn load_deltas(
+        &self,
+        id: &str,
+        after_version: Version,
+    ) -> Result<Vec<ThreadDelta>, StorageError>;
 }
 
 /// Storage backend trait for session persistence.
@@ -405,10 +534,166 @@ impl Storage for FileStorage {
     }
 }
 
+// --- New ThreadStore / ThreadQuery for FileStorage ---
+
+#[async_trait]
+impl ThreadStore for FileStorage {
+    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
+        let path = self.thread_path(&thread.id)?;
+        if path.exists() {
+            return Err(StorageError::AlreadyExists);
+        }
+        // Serialize with version=0 embedded
+        let head = ThreadHead {
+            thread: thread.clone(),
+            version: 0,
+        };
+        self.save_head(&head).await?;
+        Ok(Committed { version: 0 })
+    }
+
+    async fn append(
+        &self,
+        id: &str,
+        base_version: Version,
+        delta: &ThreadDelta,
+    ) -> Result<Committed, StorageError> {
+        let head = self
+            .load_head(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+
+        if head.version != base_version {
+            return Err(StorageError::VersionConflict {
+                expected: base_version,
+                actual: head.version,
+            });
+        }
+
+        let mut thread = head.thread;
+        apply_delta(&mut thread, delta);
+        let new_version = head.version + 1;
+        let new_head = ThreadHead {
+            thread,
+            version: new_version,
+        };
+        self.save_head(&new_head).await?;
+        Ok(Committed {
+            version: new_version,
+        })
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        self.load_head(id).await
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        <Self as Storage>::delete(self, id).await
+    }
+}
+
+#[async_trait]
+impl ThreadQuery for FileStorage {
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError> {
+        // Delegate to legacy list_paginated (which iterates files)
+        <Self as Storage>::list_paginated(self, query).await
+    }
+}
+
+impl FileStorage {
+    /// Load a thread head (thread + version) from file.
+    async fn load_head(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let path = self.thread_path(id)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = tokio::fs::read_to_string(&path).await?;
+        // Try to parse as ThreadHead first (new format with version).
+        if let Ok(head) = serde_json::from_str::<VersionedThread>(&content) {
+            let thread: Thread = serde_json::from_str(&content)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            Ok(Some(ThreadHead {
+                thread,
+                version: head._version.unwrap_or(0),
+            }))
+        } else {
+            let thread: Thread = serde_json::from_str(&content)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            Ok(Some(ThreadHead { thread, version: 0 }))
+        }
+    }
+
+    /// Save a thread head (thread + version) to file atomically.
+    async fn save_head(&self, head: &ThreadHead) -> Result<(), StorageError> {
+        if !self.base_path.exists() {
+            tokio::fs::create_dir_all(&self.base_path).await?;
+        }
+        let path = self.thread_path(&head.thread.id)?;
+
+        // Embed version into the JSON
+        let mut v = serde_json::to_value(&head.thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("_version".to_string(), serde_json::json!(head.version));
+        }
+        let content =
+            serde_json::to_string_pretty(&v).map_err(|e| StorageError::Serialization(e.to_string()))?;
+
+        let tmp_path = self.base_path.join(format!(
+            ".{}.{}.tmp",
+            head.thread.id,
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        let write_result = async {
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            file.write_all(content.as_bytes()).await?;
+            file.flush().await?;
+            file.sync_all().await?;
+            drop(file);
+            match tokio::fs::rename(&tmp_path, &path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    tokio::fs::remove_file(&path).await?;
+                    tokio::fs::rename(&tmp_path, &path).await?;
+                }
+                Err(e) => return Err(e),
+            }
+            Ok::<(), std::io::Error>(())
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(StorageError::Io(e));
+        }
+        Ok(())
+    }
+}
+
+/// Helper for extracting the `_version` field from serialized thread JSON.
+#[derive(Deserialize)]
+struct VersionedThread {
+    #[serde(default)]
+    _version: Option<Version>,
+}
+
+/// In-memory storage entry.
+struct MemoryEntry {
+    thread: Thread,
+    version: Version,
+    deltas: Vec<ThreadDelta>,
+}
+
 /// In-memory storage for testing.
+///
+/// Implements both the legacy `Storage` trait and the new `ThreadStore`/`ThreadQuery`/`ThreadSync` traits.
 #[derive(Default)]
 pub struct MemoryStorage {
-    threads: tokio::sync::RwLock<std::collections::HashMap<String, Thread>>,
+    entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
 }
 
 impl MemoryStorage {
@@ -418,28 +703,167 @@ impl MemoryStorage {
     }
 }
 
+/// Apply a delta to a thread in-place.
+fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
+    thread.messages.extend(delta.messages.iter().cloned());
+    thread.patches.extend(delta.patches.iter().cloned());
+    if let Some(ref snapshot) = delta.snapshot {
+        thread.state = snapshot.clone();
+        thread.patches.clear();
+    }
+}
+
+// --- Legacy Storage trait (delegates to the entries map) ---
+
 #[async_trait]
 impl Storage for MemoryStorage {
     async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
-        let threads = self.threads.read().await;
-        Ok(threads.get(id).cloned())
+        let entries = self.entries.read().await;
+        Ok(entries.get(id).map(|e| e.thread.clone()))
     }
 
     async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
-        let mut threads = self.threads.write().await;
-        threads.insert(thread.id.clone(), thread.clone());
+        let mut entries = self.entries.write().await;
+        let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
+        entries.insert(
+            thread.id.clone(),
+            MemoryEntry {
+                thread: thread.clone(),
+                version,
+                deltas: Vec::new(),
+            },
+        );
         Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let mut threads = self.threads.write().await;
-        threads.remove(id);
+        let mut entries = self.entries.write().await;
+        entries.remove(id);
         Ok(())
     }
 
     async fn list(&self) -> Result<Vec<String>, StorageError> {
-        let threads = self.threads.read().await;
-        Ok(threads.keys().cloned().collect())
+        let entries = self.entries.read().await;
+        Ok(entries.keys().cloned().collect())
+    }
+}
+
+// --- New ThreadStore / ThreadQuery / ThreadSync traits ---
+
+#[async_trait]
+impl ThreadStore for MemoryStorage {
+    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
+        let mut entries = self.entries.write().await;
+        if entries.contains_key(&thread.id) {
+            return Err(StorageError::AlreadyExists);
+        }
+        entries.insert(
+            thread.id.clone(),
+            MemoryEntry {
+                thread: thread.clone(),
+                version: 0,
+                deltas: Vec::new(),
+            },
+        );
+        Ok(Committed { version: 0 })
+    }
+
+    async fn append(
+        &self,
+        id: &str,
+        base_version: Version,
+        delta: &ThreadDelta,
+    ) -> Result<Committed, StorageError> {
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(id)
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+
+        if entry.version != base_version {
+            return Err(StorageError::VersionConflict {
+                expected: base_version,
+                actual: entry.version,
+            });
+        }
+
+        apply_delta(&mut entry.thread, delta);
+        entry.version += 1;
+        entry.deltas.push(delta.clone());
+        Ok(Committed {
+            version: entry.version,
+        })
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let entries = self.entries.read().await;
+        Ok(entries.get(id).map(|e| ThreadHead {
+            thread: e.thread.clone(),
+            version: e.version,
+        }))
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        let mut entries = self.entries.write().await;
+        entries.remove(id);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ThreadQuery for MemoryStorage {
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError> {
+        let entries = self.entries.read().await;
+        let mut ids: Vec<String> = entries
+            .iter()
+            .filter(|(_, e)| {
+                if let Some(ref rid) = query.resource_id {
+                    e.thread.resource_id.as_deref() == Some(rid.as_str())
+                } else {
+                    true
+                }
+            })
+            .filter(|(_, e)| {
+                if let Some(ref pid) = query.parent_thread_id {
+                    e.thread.parent_thread_id.as_deref() == Some(pid.as_str())
+                } else {
+                    true
+                }
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        let total = ids.len();
+        let limit = query.limit.clamp(1, 200);
+        let offset = query.offset.min(total);
+        let end = (offset + limit + 1).min(total);
+        let slice = &ids[offset..end];
+        let has_more = slice.len() > limit;
+        let items: Vec<String> = slice.iter().take(limit).cloned().collect();
+        Ok(ThreadListPage {
+            items,
+            total,
+            has_more,
+        })
+    }
+}
+
+#[async_trait]
+impl ThreadSync for MemoryStorage {
+    async fn load_deltas(
+        &self,
+        id: &str,
+        after_version: Version,
+    ) -> Result<Vec<ThreadDelta>, StorageError> {
+        let entries = self.entries.read().await;
+        let entry = entries
+            .get(id)
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+        // Deltas are 1-indexed: delta[0] produced version 1, delta[1] produced version 2, etc.
+        let skip = after_version as usize;
+        Ok(entry.deltas[skip..].to_vec())
     }
 }
 
@@ -690,7 +1114,7 @@ impl Storage for PostgresStorage {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(session_id)
+            .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -755,7 +1179,7 @@ impl Storage for PostgresStorage {
         let rows: Vec<(i64, serde_json::Value)> = match query.order {
             SortOrder::Asc => {
                 let mut q = sqlx::query_as(&sql)
-                    .bind(session_id)
+                    .bind(thread_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
                 if let Some(ref rid) = query.run_id {
@@ -768,7 +1192,7 @@ impl Storage for PostgresStorage {
             }
             SortOrder::Desc => {
                 let mut q = sqlx::query_as(&sql)
-                    .bind(session_id)
+                    .bind(thread_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
                 if let Some(ref rid) = query.run_id {
@@ -808,7 +1232,7 @@ impl Storage for PostgresStorage {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(session_id)
+            .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -821,7 +1245,7 @@ impl Storage for PostgresStorage {
             self.messages_table
         );
         let row: (i64,) = sqlx::query_as(&sql)
-            .bind(session_id)
+            .bind(thread_id)
             .fetch_one(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -896,6 +1320,344 @@ impl Storage for PostgresStorage {
     }
 }
 
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl ThreadStore for PostgresStorage {
+    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
+        let mut v = serde_json::to_value(thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
+            obj.insert("_version".to_string(), serde_json::Value::Number(0.into()));
+        }
+
+        let sql = format!(
+            "INSERT INTO {} (id, data, updated_at) VALUES ($1, $2, now())",
+            self.table
+        );
+        sqlx::query(&sql)
+            .bind(&thread.id)
+            .bind(&v)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("duplicate key")
+                    || e.to_string().contains("unique constraint")
+                {
+                    StorageError::AlreadyExists
+                } else {
+                    Self::sql_err(e)
+                }
+            })?;
+
+        // Insert messages into separate table.
+        let insert_sql = format!(
+            "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
+            self.messages_table,
+        );
+        for msg in &thread.messages {
+            let data = serde_json::to_value(msg.as_ref())
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let message_id = msg.id.as_deref();
+            let (run_id, step_index) = msg
+                .metadata
+                .as_ref()
+                .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
+                .unwrap_or((None, None));
+            sqlx::query(&insert_sql)
+                .bind(&thread.id)
+                .bind(message_id)
+                .bind(run_id)
+                .bind(step_index)
+                .bind(&data)
+                .execute(&self.pool)
+                .await
+                .map_err(Self::sql_err)?;
+        }
+
+        Ok(Committed { version: 0 })
+    }
+
+    async fn append(
+        &self,
+        id: &str,
+        base_version: Version,
+        delta: &ThreadDelta,
+    ) -> Result<Committed, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
+
+        // Optimistic concurrency: check version.
+        let sql = format!(
+            "SELECT data FROM {} WHERE id = $1 FOR UPDATE",
+            self.table
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let Some((mut v,)) = row else {
+            return Err(StorageError::NotFound(id.to_string()));
+        };
+
+        let current_version = v
+            .get("_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if current_version != base_version {
+            return Err(StorageError::VersionConflict {
+                expected: base_version,
+                actual: current_version,
+            });
+        }
+
+        let new_version = current_version + 1;
+
+        // Apply snapshot or patches to stored data.
+        if let Some(ref snapshot) = delta.snapshot {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("state".to_string(), snapshot.clone());
+                obj.insert("patches".to_string(), serde_json::Value::Array(Vec::new()));
+            }
+        } else if !delta.patches.is_empty() {
+            let patches_arr = v
+                .get("patches")
+                .cloned()
+                .unwrap_or(serde_json::Value::Array(Vec::new()));
+            let mut patches: Vec<serde_json::Value> = if let serde_json::Value::Array(arr) = patches_arr {
+                arr
+            } else {
+                Vec::new()
+            };
+            for p in &delta.patches {
+                if let Ok(pv) = serde_json::to_value(p) {
+                    patches.push(pv);
+                }
+            }
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("patches".to_string(), serde_json::Value::Array(patches));
+            }
+        }
+
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("_version".to_string(), serde_json::Value::Number(new_version.into()));
+        }
+
+        let update_sql = format!(
+            "UPDATE {} SET data = $1, updated_at = now() WHERE id = $2",
+            self.table
+        );
+        sqlx::query(&update_sql)
+            .bind(&v)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+
+        // Append new messages.
+        if !delta.messages.is_empty() {
+            let insert_sql = format!(
+                "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
+                self.messages_table,
+            );
+            for msg in &delta.messages {
+                let data = serde_json::to_value(msg.as_ref())
+                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                let message_id = msg.id.as_deref();
+                let (run_id, step_index) = msg
+                    .metadata
+                    .as_ref()
+                    .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
+                    .unwrap_or((None, None));
+                sqlx::query(&insert_sql)
+                    .bind(id)
+                    .bind(message_id)
+                    .bind(run_id)
+                    .bind(step_index)
+                    .bind(&data)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(Self::sql_err)?;
+            }
+        }
+
+        tx.commit().await.map_err(Self::sql_err)?;
+        Ok(Committed { version: new_version })
+    }
+
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let Some((mut v,)) = row else {
+            return Ok(None);
+        };
+
+        let version = v
+            .get("_version")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Load messages from separate table.
+        let msg_sql = format!(
+            "SELECT data FROM {} WHERE session_id = $1 ORDER BY seq",
+            self.messages_table
+        );
+        let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
+            .bind(id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let messages: Vec<serde_json::Value> = msg_rows.into_iter().map(|(d,)| d).collect();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("messages".to_string(), serde_json::Value::Array(messages));
+            obj.remove("_version");
+        }
+
+        let thread: Thread =
+            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(ThreadHead { thread, version }))
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+        Storage::delete(self, id).await
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait]
+impl ThreadQuery for PostgresStorage {
+    async fn load_messages(
+        &self,
+        id: &str,
+        query: &MessageQuery,
+    ) -> Result<MessagePage, StorageError> {
+        Storage::load_messages(self, id, query).await
+    }
+
+    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
+        // Enhanced with parent_thread_id filter via JSONB.
+        let limit = query.limit.clamp(1, 200);
+        let fetch_limit = (limit + 1) as i64;
+        let offset = query.offset as i64;
+
+        let mut where_clauses = Vec::new();
+        let mut param_idx = 3; // $1=limit, $2=offset
+
+        if query.resource_id.is_some() {
+            where_clauses.push(format!("data->>'resource_id' = ${param_idx}"));
+            param_idx += 1;
+        }
+        if query.parent_thread_id.is_some() {
+            where_clauses.push(format!("data->>'parent_thread_id' = ${param_idx}"));
+            // param_idx += 1; // unused after this
+        }
+
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint FROM {}{}",
+            self.table, where_sql
+        );
+        let sql = format!(
+            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
+            self.table, where_sql
+        );
+
+        // Build and execute count query.
+        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+        // Note: count query does not use $1/$2 (limit/offset) — bind filter params directly.
+        // We need to rebind for the count query which doesn't have $1/$2.
+        // Actually, let's simplify: build count and data queries with proper param ordering.
+
+        // Simpler approach: build WHERE clause starting from $1 for count, $3 for data.
+        let mut filter_clauses_count = Vec::new();
+        let mut count_param_idx = 1;
+        if query.resource_id.is_some() {
+            filter_clauses_count.push(format!("data->>'resource_id' = ${count_param_idx}"));
+            count_param_idx += 1;
+        }
+        if query.parent_thread_id.is_some() {
+            filter_clauses_count.push(format!("data->>'parent_thread_id' = ${count_param_idx}"));
+            // count_param_idx += 1;
+        }
+        let where_count = if filter_clauses_count.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filter_clauses_count.join(" AND "))
+        };
+
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint FROM {}{}",
+            self.table, where_count
+        );
+        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+        if let Some(ref rid) = query.resource_id {
+            count_q = count_q.bind(rid);
+        }
+        if let Some(ref pid) = query.parent_thread_id {
+            count_q = count_q.bind(pid);
+        }
+        let (total,): (i64,) = count_q
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        // Data query: $1=limit, $2=offset, $3+=filters
+        let mut data_clauses = Vec::new();
+        let mut data_param_idx = 3;
+        if query.resource_id.is_some() {
+            data_clauses.push(format!("data->>'resource_id' = ${data_param_idx}"));
+            data_param_idx += 1;
+        }
+        if query.parent_thread_id.is_some() {
+            data_clauses.push(format!("data->>'parent_thread_id' = ${data_param_idx}"));
+            // data_param_idx += 1;
+        }
+        let where_data = if data_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", data_clauses.join(" AND "))
+        };
+        let data_sql = format!(
+            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
+            self.table, where_data
+        );
+        let mut data_q = sqlx::query_as::<_, (String,)>(&data_sql)
+            .bind(fetch_limit)
+            .bind(offset);
+        if let Some(ref rid) = query.resource_id {
+            data_q = data_q.bind(rid);
+        }
+        if let Some(ref pid) = query.parent_thread_id {
+            data_q = data_q.bind(pid);
+        }
+        let rows: Vec<(String,)> = data_q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let has_more = rows.len() > limit;
+        let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
+
+        Ok(ThreadListPage {
+            items,
+            total: total as usize,
+            has_more,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,7 +1672,7 @@ mod tests {
         let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
         storage.save(&thread).await.unwrap();
-        let loaded = storage.load("test-1").await.unwrap();
+        let loaded = Storage::load(&storage, "test-1").await.unwrap();
 
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
@@ -921,7 +1683,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_load_not_found() {
         let storage = MemoryStorage::new();
-        let loaded = storage.load("nonexistent").await.unwrap();
+        let loaded = Storage::load(&storage, "nonexistent").await.unwrap();
         assert!(loaded.is_none());
     }
 
@@ -931,10 +1693,10 @@ mod tests {
         let thread = Thread::new("test-1");
 
         storage.save(&thread).await.unwrap();
-        assert!(storage.load("test-1").await.unwrap().is_some());
+        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
 
-        storage.delete("test-1").await.unwrap();
-        assert!(storage.load("test-1").await.unwrap().is_none());
+        Storage::delete(&storage, "test-1").await.unwrap();
+        assert!(Storage::load(&storage, "test-1").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -965,7 +1727,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Load and verify
-        let loaded = storage.load("test-1").await.unwrap().unwrap();
+        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 2);
     }
 
@@ -981,7 +1743,7 @@ mod tests {
 
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load("test-1").await.unwrap().unwrap();
+        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
         assert_eq!(loaded.patch_count(), 1);
         assert_eq!(loaded.state["counter"], 0);
 
@@ -994,7 +1756,7 @@ mod tests {
     async fn test_memory_storage_delete_nonexistent() {
         let storage = MemoryStorage::new();
         // Deleting non-existent session should not error
-        storage.delete("nonexistent").await.unwrap();
+        Storage::delete(&storage, "nonexistent").await.unwrap();
     }
 
     #[tokio::test]
@@ -1039,7 +1801,7 @@ mod tests {
         let thread = Thread::new("test-1").with_message(Message::user("Hello"));
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load("test-1").await.unwrap();
+        let loaded = Storage::load(&storage, "test-1").await.unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.id, "test-1");
@@ -1051,7 +1813,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let loaded = storage.load("nonexistent").await.unwrap();
+        let loaded = Storage::load(&storage, "nonexistent").await.unwrap();
         assert!(loaded.is_none());
     }
 
@@ -1062,10 +1824,10 @@ mod tests {
 
         let thread = Thread::new("test-1");
         storage.save(&thread).await.unwrap();
-        assert!(storage.load("test-1").await.unwrap().is_some());
+        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
 
-        storage.delete("test-1").await.unwrap();
-        assert!(storage.load("test-1").await.unwrap().is_none());
+        Storage::delete(&storage, "test-1").await.unwrap();
+        assert!(Storage::load(&storage, "test-1").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1110,7 +1872,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         assert!(nested_path.exists());
-        assert!(storage.load("test-1").await.unwrap().is_some());
+        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1136,7 +1898,7 @@ mod tests {
 
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load("complex-thread").await.unwrap().unwrap();
+        let loaded = Storage::load(&storage, "complex-thread").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 2);
         assert_eq!(loaded.patch_count(), 1);
 
@@ -1160,7 +1922,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Verify
-        let loaded = storage.load("test-1").await.unwrap().unwrap();
+        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 3);
     }
 
@@ -1363,7 +2125,7 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = storage.load_messages("test-1", &query).await.unwrap();
+        let page = Storage::load_messages(&storage, "test-1", &query).await.unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert!(page.has_more);
@@ -1374,7 +2136,7 @@ mod tests {
     async fn test_memory_storage_load_messages_not_found() {
         let storage = MemoryStorage::new();
         let query = MessageQuery::default();
-        let result = storage.load_messages("nonexistent", &query).await;
+        let result = Storage::load_messages(&storage, "nonexistent", &query).await;
         assert!(matches!(result, Err(StorageError::NotFound(_))));
     }
 
@@ -1407,7 +2169,7 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = storage.load_messages("test-1", &query).await.unwrap();
+        let page = Storage::load_messages(&storage, "test-1", &query).await.unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert_eq!(page.messages[0].cursor, 5);
@@ -1571,8 +2333,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Default query (visibility = All)
-        let page = storage
-            .load_messages("test-vis", &MessageQuery::default())
+        let page = Storage::load_messages(&storage, "test-vis", &MessageQuery::default())
             .await
             .unwrap();
         assert_eq!(page.messages.len(), 4);
@@ -1582,7 +2343,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = storage.load_messages("test-vis", &query).await.unwrap();
+        let page = Storage::load_messages(&storage, "test-vis", &query).await.unwrap();
         assert_eq!(page.messages.len(), 6);
     }
 
@@ -1695,7 +2456,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = storage.load_messages("test-run", &query).await.unwrap();
+        let page = Storage::load_messages(&storage, "test-run", &query).await.unwrap();
         assert_eq!(page.messages.len(), 3);
     }
 
@@ -1816,5 +2577,267 @@ mod tests {
         assert!(page.items.is_empty());
         assert_eq!(page.total, 0);
         assert!(!page.has_more);
+    }
+
+    // ========================================================================
+    // ThreadStore / ThreadQuery / ThreadSync tests
+    // ========================================================================
+
+    fn sample_delta(run_id: &str, reason: CheckpointReason) -> ThreadDelta {
+        ThreadDelta {
+            run_id: run_id.to_string(),
+            parent_run_id: None,
+            reason,
+            messages: vec![Arc::new(Message::assistant("hello"))],
+            patches: vec![],
+            snapshot: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_create_and_load() {
+        let store = MemoryStorage::new();
+        let thread = Thread::new("t1").with_message(Message::user("hi"));
+        let committed = store.create(&thread).await.unwrap();
+        assert_eq!(committed.version, 0);
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 0);
+        assert_eq!(head.thread.id, "t1");
+        assert_eq!(head.thread.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_create_already_exists() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+        let err = store.create(&Thread::new("t1")).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists));
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_append() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
+        let committed = store.append("t1", 0, &delta).await.unwrap();
+        assert_eq!(committed.version, 1);
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 1);
+        assert_eq!(head.thread.message_count(), 1); // from delta
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_append_version_conflict() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let delta = sample_delta("run-1", CheckpointReason::UserMessage);
+        store.append("t1", 0, &delta).await.unwrap(); // version -> 1
+
+        // Try to append with stale version
+        let err = store.append("t1", 0, &delta).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::VersionConflict {
+                expected: 0,
+                actual: 1
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_append_not_found() {
+        let store = MemoryStorage::new();
+        let delta = sample_delta("run-1", CheckpointReason::RunFinished);
+        let err = store.append("missing", 0, &delta).await.unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_delete() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+        ThreadStore::delete(&store, "t1").await.unwrap();
+        assert!(ThreadStore::load(&store, "t1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_thread_store_append_with_snapshot() {
+        let store = MemoryStorage::new();
+        let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
+        store.create(&thread).await.unwrap();
+
+        let delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::RunFinished,
+            messages: vec![],
+            patches: vec![],
+            snapshot: Some(json!({"counter": 42})),
+        };
+        store.append("t1", 0, &delta).await.unwrap();
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.thread.state, json!({"counter": 42}));
+        assert!(head.thread.patches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_thread_sync_load_deltas() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let d1 = sample_delta("run-1", CheckpointReason::UserMessage);
+        let d2 = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
+        let d3 = sample_delta("run-1", CheckpointReason::RunFinished);
+        store.append("t1", 0, &d1).await.unwrap();
+        store.append("t1", 1, &d2).await.unwrap();
+        store.append("t1", 2, &d3).await.unwrap();
+
+        // All deltas
+        let deltas = store.load_deltas("t1", 0).await.unwrap();
+        assert_eq!(deltas.len(), 3);
+
+        // Deltas after version 1
+        let deltas = store.load_deltas("t1", 1).await.unwrap();
+        assert_eq!(deltas.len(), 2);
+
+        // Deltas after version 3 (none)
+        let deltas = store.load_deltas("t1", 3).await.unwrap();
+        assert_eq!(deltas.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_thread_query_list_threads() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+        store.create(&Thread::new("t2")).await.unwrap();
+
+        let page = store.list_threads(&ThreadListQuery::default()).await.unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.total, 2);
+    }
+
+    #[tokio::test]
+    async fn test_thread_query_list_threads_by_parent() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("parent")).await.unwrap();
+        store
+            .create(&Thread::new("child-1").with_parent_thread_id("parent"))
+            .await
+            .unwrap();
+        store
+            .create(&Thread::new("child-2").with_parent_thread_id("parent"))
+            .await
+            .unwrap();
+        store
+            .create(&Thread::new("unrelated"))
+            .await
+            .unwrap();
+
+        let query = ThreadListQuery {
+            parent_thread_id: Some("parent".to_string()),
+            ..Default::default()
+        };
+        let page = store.list_threads(&query).await.unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(page.items.contains(&"child-1".to_string()));
+        assert!(page.items.contains(&"child-2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_thread_query_load_messages() {
+        let store = MemoryStorage::new();
+        let thread = Thread::new("t1")
+            .with_message(Message::user("hello"))
+            .with_message(Message::assistant("hi"));
+        store.create(&thread).await.unwrap();
+
+        let page = ThreadQuery::load_messages(
+            &store,
+            "t1",
+            &MessageQuery {
+                limit: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert!(page.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_parent_thread_id_persisted() {
+        let thread = Thread::new("child-1").with_parent_thread_id("parent-1");
+        let json_str = serde_json::to_string(&thread).unwrap();
+        assert!(json_str.contains("parent_thread_id"));
+
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(restored.parent_thread_id.as_deref(), Some("parent-1"));
+    }
+
+    #[tokio::test]
+    async fn test_parent_thread_id_none_omitted() {
+        let thread = Thread::new("t1");
+        let json_str = serde_json::to_string(&thread).unwrap();
+        assert!(!json_str.contains("parent_thread_id"));
+    }
+
+    // ========================================================================
+    // FileStorage ThreadStore tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_file_thread_store_create_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStorage::new(temp_dir.path());
+        let thread = Thread::new("t1").with_message(Message::user("hi"));
+        let committed = store.create(&thread).await.unwrap();
+        assert_eq!(committed.version, 0);
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 0);
+        assert_eq!(head.thread.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_file_thread_store_append_and_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStorage::new(temp_dir.path());
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
+        let committed = store.append("t1", 0, &delta).await.unwrap();
+        assert_eq!(committed.version, 1);
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 1);
+        assert_eq!(head.thread.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_file_thread_store_version_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStorage::new(temp_dir.path());
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let delta = sample_delta("run-1", CheckpointReason::UserMessage);
+        store.append("t1", 0, &delta).await.unwrap();
+
+        let err = store.append("t1", 0, &delta).await.unwrap_err();
+        assert!(matches!(err, StorageError::VersionConflict { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_file_thread_store_already_exists() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStorage::new(temp_dir.path());
+        store.create(&Thread::new("t1")).await.unwrap();
+        let err = store.create(&Thread::new("t1")).await.unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists));
     }
 }

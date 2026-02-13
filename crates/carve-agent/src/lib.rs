@@ -124,8 +124,9 @@ pub use thread::{Thread, ThreadMetadata};
 #[cfg(feature = "postgres")]
 pub use storage::PostgresStorage;
 pub use storage::{
-    FileStorage, MemoryStorage, MessagePage, MessageQuery, MessageWithCursor, ThreadListPage,
-    ThreadListQuery, SortOrder, Storage, StorageError,
+    CheckpointReason, Committed, FileStorage, MemoryStorage, MessagePage, MessageQuery,
+    MessageWithCursor, SortOrder, Storage, StorageError, ThreadDelta, ThreadHead, ThreadListPage,
+    ThreadListQuery, ThreadQuery, ThreadStore, ThreadSync, Version,
 };
 
 // Stream exports

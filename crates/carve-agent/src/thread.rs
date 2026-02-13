@@ -23,6 +23,9 @@ pub struct Thread {
     /// Owner/resource identifier (e.g., user_id, org_id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
+    /// Parent thread identifier (links child → parent for sub-agent lineage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_thread_id: Option<String>,
     /// Conversation messages (Arc-wrapped for efficient cloning).
     pub messages: Vec<Arc<Message>>,
     /// Initial/snapshot state.
@@ -58,6 +61,7 @@ impl Thread {
         Self {
             id: id.into(),
             resource_id: None,
+            parent_thread_id: None,
             messages: Vec::new(),
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
@@ -71,6 +75,7 @@ impl Thread {
         Self {
             id: id.into(),
             resource_id: None,
+            parent_thread_id: None,
             messages: Vec::new(),
             state,
             patches: Vec::new(),
@@ -83,6 +88,13 @@ impl Thread {
     #[must_use]
     pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
         self.resource_id = Some(resource_id.into());
+        self
+    }
+
+    /// Set the parent_thread_id (pure function, returns new Thread).
+    #[must_use]
+    pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
+        self.parent_thread_id = Some(parent_thread_id.into());
         self
     }
 
@@ -163,6 +175,7 @@ impl Thread {
         Ok(Self {
             id: self.id,
             resource_id: self.resource_id,
+            parent_thread_id: self.parent_thread_id,
             messages: self.messages,
             state: current_state,
             patches: Vec::new(),

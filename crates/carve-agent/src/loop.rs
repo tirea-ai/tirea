@@ -39,6 +39,7 @@
 //! ```
 
 use crate::activity::ActivityHub;
+use crate::storage::{CheckpointReason, ThreadDelta};
 use crate::agent::uuid_v7;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, ToolExecution};
@@ -2179,6 +2180,8 @@ pub enum ThreadCheckpointReason {
 pub struct ThreadCheckpoint {
     pub reason: ThreadCheckpointReason,
     pub thread: Thread,
+    /// Delta since the last checkpoint (new messages and patches only).
+    pub delta: crate::storage::ThreadDelta,
 }
 
 /// A streaming agent run with access to intermediate session checkpoints.
@@ -2280,6 +2283,10 @@ fn run_loop_stream_impl_with_provider(
         let parent_run_id = thread.runtime.value("parent_run_id")
             .and_then(|v| v.as_str().map(String::from));
 
+        // Watermarks for computing deltas at checkpoint boundaries.
+        let mut msg_watermark = thread.messages.len();
+        let mut patch_watermark = thread.patches.len();
+
         macro_rules! terminate_stream_error {
             ($message:expr) => {{
                 let (finalized, error, finish) = prepare_stream_error_termination(
@@ -2323,7 +2330,7 @@ fn run_loop_stream_impl_with_provider(
         yield AgentEvent::RunStart {
             thread_id: thread.id.clone(),
             run_id: run_id.clone(),
-            parent_run_id,
+            parent_run_id: parent_run_id.clone(),
         };
 
         // Resume pending tool execution via plugin mechanism.
@@ -2700,9 +2707,20 @@ fn run_loop_stream_impl_with_provider(
             }
 
             if let Some(tx) = checkpoint_tx.as_ref() {
+                let delta = ThreadDelta {
+                    run_id: run_id.clone(),
+                    parent_run_id: parent_run_id.clone(),
+                    reason: CheckpointReason::AssistantTurnCommitted,
+                    messages: thread.messages[msg_watermark..].to_vec(),
+                    patches: thread.patches[patch_watermark..].to_vec(),
+                    snapshot: None,
+                };
+                msg_watermark = thread.messages.len();
+                patch_watermark = thread.patches.len();
                 let _ = tx.send(ThreadCheckpoint {
                     reason: ThreadCheckpointReason::AssistantTurnCommitted,
                     thread: thread.clone(),
+                    delta,
                 });
             }
 
@@ -2869,9 +2887,20 @@ fn run_loop_stream_impl_with_provider(
             thread = applied.thread;
 
             if let Some(tx) = checkpoint_tx.as_ref() {
+                let delta = ThreadDelta {
+                    run_id: run_id.clone(),
+                    parent_run_id: parent_run_id.clone(),
+                    reason: CheckpointReason::ToolResultsCommitted,
+                    messages: thread.messages[msg_watermark..].to_vec(),
+                    patches: thread.patches[patch_watermark..].to_vec(),
+                    snapshot: None,
+                };
+                msg_watermark = thread.messages.len();
+                patch_watermark = thread.patches.len();
                 let _ = tx.send(ThreadCheckpoint {
                     reason: ThreadCheckpointReason::ToolResultsCommitted,
                     thread: thread.clone(),
+                    delta,
                 });
             }
 

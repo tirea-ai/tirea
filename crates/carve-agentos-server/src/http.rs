@@ -74,21 +74,24 @@ fn default_session_limit() -> usize {
 }
 
 #[derive(Debug, Deserialize)]
-struct SessionListParams {
+struct ThreadListParams {
     #[serde(default)]
     offset: Option<usize>,
     #[serde(default = "default_session_limit")]
     limit: usize,
+    #[serde(default)]
+    parent_thread_id: Option<String>,
 }
 
 async fn list_threads(
     State(st): State<AppState>,
-    Query(params): Query<SessionListParams>,
+    Query(params): Query<ThreadListParams>,
 ) -> Result<Json<ThreadListPage>, ApiError> {
     let query = ThreadListQuery {
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
         resource_id: None,
+        parent_thread_id: params.parent_thread_id,
     };
     st.storage
         .list_paginated(&query)

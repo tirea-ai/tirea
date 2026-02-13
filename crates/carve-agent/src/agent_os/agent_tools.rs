@@ -429,7 +429,11 @@ fn bind_child_lineage(
     mut thread: crate::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
+    parent_thread_id: Option<&str>,
 ) -> crate::Thread {
+    if thread.parent_thread_id.is_none() {
+        thread.parent_thread_id = parent_thread_id.map(str::to_string);
+    }
     let current_run_id = thread
         .runtime
         .value(RUNTIME_RUN_ID_KEY)
@@ -916,7 +920,7 @@ impl Tool for AgentRunTool {
                         }
 
                         record.thread =
-                            bind_child_lineage(record.thread, &run_id, caller_run_id.as_deref());
+                            bind_child_lineage(record.thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
 
                         if let Some(prompt) = optional_string(&args, "prompt") {
                             record.thread = record.thread.with_message(Message::user(prompt));
@@ -1061,7 +1065,7 @@ impl Tool for AgentRunTool {
                         }
                     };
                     child_thread =
-                        bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref());
+                        bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
 
                     if let Some(prompt) = optional_string(&args, "prompt") {
                         child_thread = child_thread.with_message(Message::user(prompt));
@@ -1194,7 +1198,7 @@ impl Tool for AgentRunTool {
             crate::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
-        child_thread = bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref());
+        child_thread = bind_child_lineage(child_thread, &run_id, caller_run_id.as_deref(), Some(&owner_thread_id));
 
         if background {
             let token = CancellationToken::new();
