@@ -29,7 +29,7 @@ use std::collections::HashSet;
 ///
 /// let config = config.with_plugin(Arc::new(plugin));
 /// ```
-pub struct InteractionResponsePlugin {
+pub(crate) struct InteractionResponsePlugin {
     /// Interaction IDs that were approved by the client.
     approved_ids: HashSet<String>,
     /// Interaction IDs that were denied by the client.
@@ -38,7 +38,7 @@ pub struct InteractionResponsePlugin {
 
 impl InteractionResponsePlugin {
     /// Create a new plugin with approved and denied interaction IDs.
-    pub fn new(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
+    pub(crate) fn new(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
         Self {
             approved_ids: approved_ids.into_iter().collect(),
             denied_ids: denied_ids.into_iter().collect(),
@@ -46,7 +46,7 @@ impl InteractionResponsePlugin {
     }
 
     /// Create plugin from a RunAgentRequest.
-    pub fn from_request(request: &RunAgentRequest) -> Self {
+    pub(crate) fn from_request(request: &RunAgentRequest) -> Self {
         Self::new(
             request.approved_interaction_ids(),
             request.denied_interaction_ids(),
@@ -54,17 +54,17 @@ impl InteractionResponsePlugin {
     }
 
     /// Check if an interaction was approved.
-    pub fn is_approved(&self, interaction_id: &str) -> bool {
+    pub(crate) fn is_approved(&self, interaction_id: &str) -> bool {
         self.approved_ids.contains(interaction_id)
     }
 
     /// Check if an interaction was denied.
-    pub fn is_denied(&self, interaction_id: &str) -> bool {
+    pub(crate) fn is_denied(&self, interaction_id: &str) -> bool {
         self.denied_ids.contains(interaction_id)
     }
 
     /// Check if plugin has any responses to process.
-    pub fn has_responses(&self) -> bool {
+    pub(crate) fn has_responses(&self) -> bool {
         !self.approved_ids.is_empty() || !self.denied_ids.is_empty()
     }
 

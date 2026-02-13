@@ -3,10 +3,13 @@
 //! Combines interaction response handling and frontend tool interception
 //! to keep AG-UI request wiring as a single plugin unit.
 
-use super::{FrontendToolPlugin, InteractionResponsePlugin, RunAgentRequest};
+use super::frontend_tool::FrontendToolPlugin;
+use super::interaction_response::InteractionResponsePlugin;
+use super::RunAgentRequest;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
+use std::collections::HashSet;
 
 /// Combined AG-UI interaction plugin.
 ///
@@ -21,12 +24,34 @@ pub struct AgUiInteractionPlugin {
 }
 
 impl AgUiInteractionPlugin {
+    /// Build combined plugin from explicit frontend tools and responses.
+    pub fn new(
+        frontend_tools: HashSet<String>,
+        approved_ids: Vec<String>,
+        denied_ids: Vec<String>,
+    ) -> Self {
+        Self {
+            response: InteractionResponsePlugin::new(approved_ids, denied_ids),
+            frontend: FrontendToolPlugin::new(frontend_tools),
+        }
+    }
+
     /// Build combined plugin from request payload.
     pub fn from_request(request: &RunAgentRequest) -> Self {
         Self {
             response: InteractionResponsePlugin::from_request(request),
             frontend: FrontendToolPlugin::from_request(request),
         }
+    }
+
+    /// Build combined plugin from frontend tools only.
+    pub fn with_frontend_tools(frontend_tools: HashSet<String>) -> Self {
+        Self::new(frontend_tools, Vec::new(), Vec::new())
+    }
+
+    /// Build combined plugin from interaction responses only.
+    pub fn with_responses(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
+        Self::new(HashSet::new(), approved_ids, denied_ids)
     }
 
     /// Whether this plugin should be installed for the current request.
@@ -37,6 +62,26 @@ impl AgUiInteractionPlugin {
     /// Whether request contains frontend tools and therefore needs tool stubs.
     pub fn has_frontend_tools(&self) -> bool {
         self.frontend.has_frontend_tools()
+    }
+
+    /// Whether any interaction responses are present.
+    pub fn has_responses(&self) -> bool {
+        self.response.has_responses()
+    }
+
+    /// Check if a specific tool is configured as a frontend tool.
+    pub fn is_frontend_tool(&self, tool_name: &str) -> bool {
+        self.frontend.is_frontend_tool(tool_name)
+    }
+
+    /// Check if an interaction ID is approved.
+    pub fn is_approved(&self, interaction_id: &str) -> bool {
+        self.response.is_approved(interaction_id)
+    }
+
+    /// Check if an interaction ID is denied.
+    pub fn is_denied(&self, interaction_id: &str) -> bool {
+        self.response.is_denied(interaction_id)
     }
 }
 

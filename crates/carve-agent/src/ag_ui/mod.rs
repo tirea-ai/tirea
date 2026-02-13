@@ -67,11 +67,15 @@ mod frontend_tool;
 mod interaction_plugin;
 mod interaction_response;
 
-pub use frontend_tool::{FrontendToolPlugin, FrontendToolStub};
 pub use interaction_plugin::AgUiInteractionPlugin;
-pub use interaction_response::InteractionResponsePlugin;
 
 use frontend_tool::merge_frontend_tools;
+#[cfg(test)]
+use frontend_tool::FrontendToolPlugin;
+#[cfg(test)]
+use frontend_tool::FrontendToolStub;
+#[cfg(test)]
+use interaction_response::InteractionResponsePlugin;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -4804,6 +4808,38 @@ mod tests {
         let frontend_plugin = AgUiInteractionPlugin::from_request(&frontend_request);
         assert!(frontend_plugin.is_active());
         assert!(frontend_plugin.has_frontend_tools());
+    }
+
+    #[test]
+    fn test_agui_interaction_plugin_frontend_constructor_and_query() {
+        use std::iter::FromIterator;
+
+        let plugin = AgUiInteractionPlugin::with_frontend_tools(HashSet::from_iter([
+            "copyToClipboard".to_string(),
+            "showNotification".to_string(),
+        ]));
+
+        assert!(plugin.is_active());
+        assert!(plugin.has_frontend_tools());
+        assert!(!plugin.has_responses());
+        assert!(plugin.is_frontend_tool("copyToClipboard"));
+        assert!(!plugin.is_frontend_tool("search"));
+    }
+
+    #[test]
+    fn test_agui_interaction_plugin_response_constructor_and_query() {
+        let plugin = AgUiInteractionPlugin::with_responses(
+            vec!["permission_read".to_string(), "call_frontend_1".to_string()],
+            vec!["permission_write".to_string()],
+        );
+
+        assert!(plugin.is_active());
+        assert!(!plugin.has_frontend_tools());
+        assert!(plugin.has_responses());
+        assert!(plugin.is_approved("permission_read"));
+        assert!(plugin.is_approved("call_frontend_1"));
+        assert!(plugin.is_denied("permission_write"));
+        assert!(!plugin.is_denied("permission_read"));
     }
 
     #[tokio::test]

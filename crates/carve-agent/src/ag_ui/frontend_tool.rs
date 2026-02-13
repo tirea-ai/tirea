@@ -30,7 +30,7 @@ use std::sync::Arc;
 /// let plugin = FrontendToolPlugin::new(frontend_tools);
 /// let config = AgentConfig::new("gpt-4").with_plugin(Arc::new(plugin));
 /// ```
-pub struct FrontendToolPlugin {
+pub(crate) struct FrontendToolPlugin {
     /// Names of tools that should be executed on the frontend.
     pub(crate) frontend_tools: HashSet<String>,
 }
@@ -41,12 +41,12 @@ impl FrontendToolPlugin {
     /// # Arguments
     ///
     /// * `frontend_tools` - Set of tool names that should be executed on the frontend
-    pub fn new(frontend_tools: HashSet<String>) -> Self {
+    pub(crate) fn new(frontend_tools: HashSet<String>) -> Self {
         Self { frontend_tools }
     }
 
     /// Create from a RunAgentRequest.
-    pub fn from_request(request: &RunAgentRequest) -> Self {
+    pub(crate) fn from_request(request: &RunAgentRequest) -> Self {
         let frontend_tools = request
             .frontend_tools()
             .iter()
@@ -56,12 +56,12 @@ impl FrontendToolPlugin {
     }
 
     /// Check if a tool should be executed on the frontend.
-    pub fn is_frontend_tool(&self, name: &str) -> bool {
+    pub(crate) fn is_frontend_tool(&self, name: &str) -> bool {
         self.frontend_tools.contains(name)
     }
 
     /// Whether any frontend tools are configured.
-    pub fn has_frontend_tools(&self) -> bool {
+    pub(crate) fn has_frontend_tools(&self) -> bool {
         !self.frontend_tools.is_empty()
     }
 }
@@ -105,14 +105,14 @@ impl AgentPlugin for FrontendToolPlugin {
 ///
 /// This provides a `ToolDescriptor` so the LLM knows the tool exists, but execution
 /// is intercepted by `FrontendToolPlugin` before `execute` is ever called.
-pub struct FrontendToolStub {
+pub(crate) struct FrontendToolStub {
     /// Tool descriptor for the frontend tool stub.
     pub(crate) descriptor: crate::traits::tool::ToolDescriptor,
 }
 
 impl FrontendToolStub {
     /// Create from an AG-UI tool definition.
-    pub fn from_agui_def(def: &AGUIToolDef) -> Self {
+    pub(crate) fn from_agui_def(def: &AGUIToolDef) -> Self {
         let parameters = def
             .parameters
             .clone()
