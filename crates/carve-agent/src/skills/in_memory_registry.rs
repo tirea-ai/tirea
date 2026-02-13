@@ -1,5 +1,7 @@
-use crate::skills::registry::{SkillRegistry, SkillRegistryError, SkillRegistryWarning};
-use crate::skills::state::{LoadedReference, ScriptResult};
+use crate::skills::registry::{
+    SkillRegistry, SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind,
+};
+use crate::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
 use crate::skills::SkillMeta;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -9,6 +11,7 @@ pub struct InMemorySkillRegistry {
     metas: HashMap<String, SkillMeta>,
     skill_md: HashMap<String, String>,
     references: HashMap<(String, String), LoadedReference>,
+    assets: HashMap<(String, String), LoadedAsset>,
     scripts: HashMap<(String, String), ScriptResult>,
     warnings: Vec<SkillRegistryWarning>,
 }
@@ -31,6 +34,11 @@ impl InMemorySkillRegistry {
     pub fn insert_script_result(&mut self, result: ScriptResult) {
         self.scripts
             .insert((result.skill.clone(), result.script.clone()), result);
+    }
+
+    pub fn insert_asset(&mut self, asset: LoadedAsset) {
+        self.assets
+            .insert((asset.skill.clone(), asset.path.clone()), asset);
     }
 
     pub fn push_warning(&mut self, warning: SkillRegistryWarning) {
@@ -61,17 +69,30 @@ impl SkillRegistry for InMemorySkillRegistry {
             .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))
     }
 
-    async fn load_reference(
+    async fn load_resource(
         &self,
         skill_id: &str,
+        kind: SkillResourceKind,
         path: &str,
-    ) -> Result<LoadedReference, SkillRegistryError> {
-        self.references
-            .get(&(skill_id.to_string(), path.to_string()))
-            .cloned()
-            .ok_or_else(|| {
-                SkillRegistryError::Unsupported(format!("reference not available: {path}"))
-            })
+    ) -> Result<SkillResource, SkillRegistryError> {
+        match kind {
+            SkillResourceKind::Reference => self
+                .references
+                .get(&(skill_id.to_string(), path.to_string()))
+                .cloned()
+                .map(SkillResource::Reference)
+                .ok_or_else(|| {
+                    SkillRegistryError::Unsupported(format!("reference not available: {path}"))
+                }),
+            SkillResourceKind::Asset => self
+                .assets
+                .get(&(skill_id.to_string(), path.to_string()))
+                .cloned()
+                .map(SkillResource::Asset)
+                .ok_or_else(|| {
+                    SkillRegistryError::Unsupported(format!("asset not available: {path}"))
+                }),
+        }
     }
 
     async fn run_script(
@@ -118,7 +139,13 @@ mod tests {
             content: "hello".to_string(),
             bytes: 5,
         });
-        let r = reg.load_reference("s1", "references/a.md").await.unwrap();
+        let r = reg
+            .load_resource("s1", SkillResourceKind::Reference, "references/a.md")
+            .await
+            .unwrap();
+        let SkillResource::Reference(r) = r else {
+            panic!("expected reference resource");
+        };
         assert_eq!(r.content, "hello");
 
         reg.insert_script_result(ScriptResult {
@@ -133,6 +160,25 @@ mod tests {
         });
         let s = reg.run_script("s1", "scripts/a.sh", &[]).await.unwrap();
         assert_eq!(s.exit_code, 0);
+
+        reg.insert_asset(LoadedAsset {
+            skill: "s1".to_string(),
+            path: "assets/logo.png".to_string(),
+            sha256: "x".to_string(),
+            truncated: false,
+            bytes: 4,
+            media_type: Some("image/png".to_string()),
+            encoding: "base64".to_string(),
+            content: "iVBORw==".to_string(),
+        });
+        let a = reg
+            .load_resource("s1", SkillResourceKind::Asset, "assets/logo.png")
+            .await
+            .unwrap();
+        let SkillResource::Asset(a) = a else {
+            panic!("expected asset resource");
+        };
+        assert_eq!(a.media_type.as_deref(), Some("image/png"));
 
         let _ = json!({"ok": true});
     }

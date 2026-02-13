@@ -82,7 +82,16 @@ mod tests {
                 "skills": {
                     "active": ["s1"],
                     "instructions": {"s1": "Do X"},
-                    "references": {},
+                    "references": {
+                        "s1:references/a.md": {
+                            "skill":"s1",
+                            "path":"references/a.md",
+                            "sha256":"x",
+                            "truncated":false,
+                            "content":"A",
+                            "bytes":1
+                        }
+                    },
                     "scripts": {}
                 }
             }),
@@ -92,6 +101,6 @@ mod tests {
 
         assert_eq!(step.system_context.len(), 2);
         assert!(step.system_context[0].contains("<available_skills>"));
-        assert!(step.system_context[1].contains("<skill id=\"s1\">"));
+        assert!(step.system_context[1].contains("<skill_reference"));
     }
 }

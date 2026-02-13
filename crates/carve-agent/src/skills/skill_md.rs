@@ -35,6 +35,17 @@ pub struct SkillDoc {
     pub body: String,
 }
 
+/// Parsed allowed-tools token from frontmatter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowedTool {
+    /// Raw token as declared in frontmatter.
+    pub raw: String,
+    /// Base tool id (the part before optional scope `(...)`).
+    pub tool_id: String,
+    /// Optional scope/selector payload inside `(...)`.
+    pub scope: Option<String>,
+}
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SkillParseError {
     #[error("missing YAML frontmatter (expected leading '---' fence)")]
@@ -90,6 +101,131 @@ pub fn parse_skill_md(input: &str) -> Result<SkillDoc, SkillParseError> {
     Ok(SkillDoc { frontmatter, body })
 }
 
+/// Parse the `allowed-tools` frontmatter field into ordered tokens.
+///
+/// Tokens are whitespace-delimited, but whitespace inside balanced parentheses
+/// is preserved as part of the token.
+pub fn parse_allowed_tools(value: &str) -> Result<Vec<AllowedTool>, SkillParseError> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut paren_depth = 0usize;
+    let mut in_quote: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in value.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        if let Some(q) = in_quote {
+            current.push(ch);
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == q {
+                in_quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => {
+                in_quote = Some(ch);
+                current.push(ch);
+            }
+            '(' => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                if paren_depth == 0 {
+                    return Err(SkillParseError::InvalidFrontmatter(
+                        "allowed-tools contains unmatched ')'".to_string(),
+                    ));
+                }
+                paren_depth -= 1;
+                current.push(ch);
+            }
+            c if c.is_whitespace() && paren_depth == 0 => {
+                let t = current.trim();
+                if !t.is_empty() {
+                    tokens.push(t.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if in_quote.is_some() {
+        return Err(SkillParseError::InvalidFrontmatter(
+            "allowed-tools contains unterminated quote".to_string(),
+        ));
+    }
+    if paren_depth != 0 {
+        return Err(SkillParseError::InvalidFrontmatter(
+            "allowed-tools contains unbalanced parentheses".to_string(),
+        ));
+    }
+
+    let t = current.trim();
+    if !t.is_empty() {
+        tokens.push(t.to_string());
+    }
+
+    tokens
+        .into_iter()
+        .map(parse_allowed_tool_token)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Parse one allowed-tools token.
+pub fn parse_allowed_tool_token(token: String) -> Result<AllowedTool, SkillParseError> {
+    let raw = token.trim().to_string();
+    if raw.is_empty() {
+        return Err(SkillParseError::InvalidFrontmatter(
+            "allowed-tools contains an empty token".to_string(),
+        ));
+    }
+
+    let (tool_id, scope) = if let Some(open_idx) = raw.find('(') {
+        if !raw.ends_with(')') {
+            return Err(SkillParseError::InvalidFrontmatter(format!(
+                "invalid allowed-tools token '{raw}'"
+            )));
+        }
+        let base = raw[..open_idx].trim();
+        let inner = raw[open_idx + 1..raw.len() - 1].to_string();
+        (base.to_string(), Some(inner))
+    } else {
+        (raw.clone(), None)
+    };
+
+    if tool_id.is_empty() {
+        return Err(SkillParseError::InvalidFrontmatter(format!(
+            "invalid allowed-tools token '{raw}'"
+        )));
+    }
+
+    if tool_id
+        .chars()
+        .any(|c| c.is_whitespace() || c == '(' || c == ')')
+    {
+        return Err(SkillParseError::InvalidFrontmatter(format!(
+            "invalid tool id in allowed-tools token '{raw}'"
+        )));
+    }
+
+    Ok(AllowedTool {
+        raw,
+        tool_id,
+        scope,
+    })
+}
+
 fn normalize_skill_name(name: &str) -> String {
     name.trim().nfkc().collect::<String>()
 }
@@ -101,8 +237,6 @@ where
     D: serde::Deserializer<'de>,
 {
     // Spec: metadata is a mapping from string keys to string values.
-    // We accept YAML scalars (string/number/bool/null) and stringify them,
-    // but reject complex values (sequence/mapping).
     let raw: Option<HashMap<String, serde_yaml::Value>> =
         Option::<HashMap<String, serde_yaml::Value>>::deserialize(deserializer)?;
     let Some(raw) = raw else { return Ok(None) };
@@ -110,13 +244,14 @@ where
     let mut out = HashMap::with_capacity(raw.len());
     for (k, v) in raw {
         let s = match v {
-            serde_yaml::Value::Null => "null".to_string(),
-            serde_yaml::Value::Bool(b) => b.to_string(),
-            serde_yaml::Value::Number(n) => n.to_string(),
             serde_yaml::Value::String(s) => s,
-            serde_yaml::Value::Sequence(_) | serde_yaml::Value::Mapping(_) => {
+            serde_yaml::Value::Null
+            | serde_yaml::Value::Bool(_)
+            | serde_yaml::Value::Number(_)
+            | serde_yaml::Value::Sequence(_)
+            | serde_yaml::Value::Mapping(_) => {
                 return Err(serde::de::Error::custom(format!(
-                    "metadata value for key '{k}' must be a scalar"
+                    "metadata value for key '{k}' must be a string"
                 )));
             }
             serde_yaml::Value::Tagged(_) => {
@@ -164,6 +299,10 @@ fn validate_frontmatter(fm: &SkillFrontmatter) -> Result<(), SkillParseError> {
                 "compatibility must be <= 500 characters".to_string(),
             ));
         }
+    }
+
+    if let Some(allowed) = fm.allowed_tools.as_deref() {
+        let _ = parse_allowed_tools(allowed)?;
     }
 
     Ok(())
@@ -311,9 +450,8 @@ metadata:
 ---
 Body
 "#;
-        let doc = parse_skill_md(input).unwrap();
-        let meta = doc.frontmatter.metadata.expect("metadata present");
-        assert_eq!(meta.get("k").map(String::as_str), Some("1"));
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("metadata value for key 'k' must be a string"));
     }
 
     #[test]
@@ -372,5 +510,48 @@ Body
         assert_eq!(doc.frontmatter.name, "good-skill");
         assert_eq!(doc.frontmatter.description, "ok");
         assert_eq!(doc.body.trim(), "Body");
+    }
+
+    #[test]
+    fn parse_skill_md_allows_string_metadata_values() {
+        let input = r#"---
+name: good-skill
+description: ok
+metadata:
+  env: production
+---
+Body
+"#;
+        let doc = parse_skill_md(input).unwrap();
+        let meta = doc.frontmatter.metadata.expect("metadata present");
+        assert_eq!(meta.get("env").map(String::as_str), Some("production"));
+    }
+
+    #[test]
+    fn parse_allowed_tools_preserves_scoped_token_with_spaces() {
+        let parsed = parse_allowed_tools(r#"read_file Bash(command: "git status")"#)
+            .expect("allowed-tools should parse");
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].raw, "read_file");
+        assert_eq!(parsed[0].tool_id, "read_file");
+        assert!(parsed[0].scope.is_none());
+
+        assert_eq!(parsed[1].raw, r#"Bash(command: "git status")"#);
+        assert_eq!(parsed[1].tool_id, "Bash");
+        assert_eq!(parsed[1].scope.as_deref(), Some(r#"command: "git status""#));
+    }
+
+    #[test]
+    fn parse_skill_md_rejects_unbalanced_allowed_tools_parentheses() {
+        let input = r#"---
+name: good-skill
+description: ok
+allowed-tools: read_file Bash(git-status
+---
+Body
+"#;
+        let err = parse_skill_md(input).unwrap_err().to_string();
+        assert!(err.contains("allowed-tools"));
     }
 }

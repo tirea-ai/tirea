@@ -1,11 +1,18 @@
-use crate::skills::state::{LoadedReference, ScriptResult};
+use crate::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use tokio::process::Command;
+use tracing::{debug, warn};
 
 const MAX_REFERENCE_BYTES: usize = 256 * 1024;
+const MAX_ASSET_BYTES: usize = 512 * 1024;
 const MAX_STDOUT_BYTES: usize = 32 * 1024;
 const MAX_STDERR_BYTES: usize = 32 * 1024;
+const MAX_SCRIPT_ARGS: usize = 64;
+const MAX_SCRIPT_ARG_BYTES: usize = 8 * 1024;
+const MAX_SCRIPT_ARGS_TOTAL_BYTES: usize = 64 * 1024;
 const SCRIPT_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Debug, thiserror::Error)]
@@ -22,6 +29,8 @@ pub enum SkillMaterializeError {
     UnsupportedRuntime(String),
     #[error("script timed out after {0}s")]
     Timeout(u64),
+    #[error("invalid script arguments: {0}")]
+    InvalidScriptArgs(String),
 }
 
 pub(crate) fn load_reference_material(
@@ -32,6 +41,7 @@ pub(crate) fn load_reference_material(
     let rel = normalize_relative_path(relative_path)?;
     require_prefix(&rel, "references")?;
     let full = resolve_under_root(skill_root, &rel)?;
+    ensure_regular_file(&full)?;
 
     let bytes = std::fs::read(&full).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
     let original_len = bytes.len() as u64;
@@ -46,6 +56,14 @@ pub(crate) fn load_reference_material(
         .map_err(|e| SkillMaterializeError::Io(format!("invalid utf-8: {e}")))?;
     let sha256 = sha256_hex(&stored_bytes);
 
+    debug!(
+        skill_id = %skill_id,
+        path = %rel.to_string_lossy(),
+        bytes = original_len,
+        truncated = truncated,
+        "loaded skill reference material"
+    );
+
     Ok(LoadedReference {
         skill: skill_id.to_string(),
         path: rel.to_string_lossy().to_string(),
@@ -53,6 +71,50 @@ pub(crate) fn load_reference_material(
         truncated,
         content,
         bytes: original_len,
+    })
+}
+
+pub(crate) fn load_asset_material(
+    skill_id: &str,
+    skill_root: &Path,
+    relative_path: &str,
+) -> Result<LoadedAsset, SkillMaterializeError> {
+    let rel = normalize_relative_path(relative_path)?;
+    require_prefix(&rel, "assets")?;
+    let full = resolve_under_root(skill_root, &rel)?;
+    ensure_regular_file(&full)?;
+
+    let bytes = std::fs::read(&full).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
+    let original_len = bytes.len() as u64;
+
+    let (stored_bytes, truncated) = if bytes.len() > MAX_ASSET_BYTES {
+        (bytes[..MAX_ASSET_BYTES].to_vec(), true)
+    } else {
+        (bytes, false)
+    };
+
+    let sha256 = sha256_hex(&stored_bytes);
+    let content = BASE64.encode(&stored_bytes);
+    let media_type = infer_media_type(&rel);
+
+    debug!(
+        skill_id = %skill_id,
+        path = %rel.to_string_lossy(),
+        bytes = original_len,
+        truncated = truncated,
+        media_type = media_type.as_deref().unwrap_or("application/octet-stream"),
+        "loaded skill asset material"
+    );
+
+    Ok(LoadedAsset {
+        skill: skill_id.to_string(),
+        path: rel.to_string_lossy().to_string(),
+        sha256,
+        truncated,
+        bytes: original_len,
+        media_type,
+        encoding: "base64".to_string(),
+        content,
     })
 }
 
@@ -65,6 +127,8 @@ pub(crate) async fn run_script_material(
     let rel = normalize_relative_path(script_path)?;
     require_prefix(&rel, "scripts")?;
     let full = resolve_under_root(skill_root, &rel)?;
+    ensure_regular_file(&full)?;
+    validate_script_args(args)?;
 
     let (program, mut cmd_args) = runtime_for_script(&full)?;
     cmd_args.push(full.to_string_lossy().to_string());
@@ -74,6 +138,9 @@ pub(crate) async fn run_script_material(
     cmd.args(cmd_args);
     cmd.current_dir(skill_root);
     cmd.kill_on_drop(true);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(SCRIPT_TIMEOUT_SECS),
@@ -92,6 +159,25 @@ pub(crate) async fn run_script_material(
     hasher.update(&out.stdout);
     hasher.update(&out.stderr);
     let sha256 = hex_encode(&hasher.finalize());
+
+    if truncated_stdout || truncated_stderr {
+        warn!(
+            skill_id = %skill_id,
+            script = %rel.to_string_lossy(),
+            truncated_stdout = truncated_stdout,
+            truncated_stderr = truncated_stderr,
+            "skill script output truncated"
+        );
+    }
+
+    debug!(
+        skill_id = %skill_id,
+        script = %rel.to_string_lossy(),
+        exit_code = exit_code,
+        stdout_bytes = out.stdout.len(),
+        stderr_bytes = out.stderr.len(),
+        "executed skill script material"
+    );
 
     Ok(ScriptResult {
         skill: skill_id.to_string(),
@@ -115,6 +201,56 @@ fn runtime_for_script(script: &Path) -> Result<(String, Vec<String>), SkillMater
             script.to_string_lossy().to_string(),
         )),
     }
+}
+
+fn infer_media_type(path: &Path) -> Option<String> {
+    let ext = path.extension().and_then(|s| s.to_str())?;
+    let media = match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "application/yaml",
+        _ => return None,
+    };
+    Some(media.to_string())
+}
+
+fn validate_script_args(args: &[String]) -> Result<(), SkillMaterializeError> {
+    if args.len() > MAX_SCRIPT_ARGS {
+        return Err(SkillMaterializeError::InvalidScriptArgs(format!(
+            "too many arguments (max {MAX_SCRIPT_ARGS})"
+        )));
+    }
+
+    let mut total = 0usize;
+    for (idx, arg) in args.iter().enumerate() {
+        if arg.contains('\0') {
+            return Err(SkillMaterializeError::InvalidScriptArgs(format!(
+                "argument {idx} contains NUL byte"
+            )));
+        }
+        let len = arg.len();
+        if len > MAX_SCRIPT_ARG_BYTES {
+            return Err(SkillMaterializeError::InvalidScriptArgs(format!(
+                "argument {idx} exceeds {MAX_SCRIPT_ARG_BYTES} bytes"
+            )));
+        }
+        total += len;
+        if total > MAX_SCRIPT_ARGS_TOTAL_BYTES {
+            return Err(SkillMaterializeError::InvalidScriptArgs(format!(
+                "total argument size exceeds {MAX_SCRIPT_ARGS_TOTAL_BYTES} bytes"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn truncate_bytes(bytes: &[u8], max: usize) -> (String, bool) {
@@ -177,6 +313,17 @@ fn resolve_under_root(root: &Path, rel: &Path) -> Result<PathBuf, SkillMateriali
     Ok(canon)
 }
 
+fn ensure_regular_file(path: &Path) -> Result<(), SkillMaterializeError> {
+    let meta = std::fs::metadata(path).map_err(|e| SkillMaterializeError::Io(e.to_string()))?;
+    if !meta.is_file() {
+        return Err(SkillMaterializeError::Io(format!(
+            "path is not a regular file: {}",
+            path.to_string_lossy()
+        )));
+    }
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -235,6 +382,24 @@ mod tests {
         assert_eq!(mat.content.trim(), "hello");
     }
 
+    #[test]
+    fn load_asset_encodes_binary_payload_as_base64() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("docx").join("assets")).unwrap();
+        fs::write(
+            td.path().join("docx").join("assets").join("logo.png"),
+            vec![0x89, 0x50, 0x4e, 0x47],
+        )
+        .unwrap();
+
+        let mat = load_asset_material("docx", &td.path().join("docx"), "assets/logo.png")
+            .expect("asset load should succeed");
+        assert_eq!(mat.path, "assets/logo.png");
+        assert_eq!(mat.encoding, "base64");
+        assert_eq!(mat.content, "iVBORw==");
+        assert_eq!(mat.media_type.as_deref(), Some("image/png"));
+    }
+
     #[tokio::test]
     async fn run_script_rejects_path_escape() {
         let td = TempDir::new().unwrap();
@@ -244,5 +409,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("invalid relative path"));
+    }
+
+    #[tokio::test]
+    async fn run_script_rejects_too_many_arguments() {
+        let td = TempDir::new().unwrap();
+        fs::create_dir_all(td.path().join("s").join("scripts")).unwrap();
+        fs::write(
+            td.path().join("s").join("scripts").join("hello.sh"),
+            "#!/usr/bin/env bash\necho hi\n",
+        )
+        .unwrap();
+
+        let args = vec!["x".to_string(); MAX_SCRIPT_ARGS + 1];
+        let err = run_script_material("s", &td.path().join("s"), "scripts/hello.sh", &args)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("invalid script arguments"));
     }
 }

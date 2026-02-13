@@ -845,7 +845,7 @@ mod tests {
         let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
 
         assert_eq!(cfg.plugins.len(), 1);
@@ -867,9 +867,8 @@ mod tests {
         cfg.plugins[0]
             .on_phase(Phase::BeforeInference, &mut step)
             .await;
-        assert_eq!(step.system_context.len(), 2);
+        assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));
-        assert!(step.system_context[1].contains("<skill id=\"s1\">"));
     }
 
     #[tokio::test]
@@ -906,8 +905,7 @@ mod tests {
         cfg.plugins[0]
             .on_phase(Phase::BeforeInference, &mut step)
             .await;
-        assert_eq!(step.system_context.len(), 1);
-        assert!(step.system_context[0].contains("<skill id=\"s1\">"));
+        assert!(step.system_context.is_empty());
     }
 
     #[test]
@@ -1010,7 +1008,7 @@ mod tests {
         assert_eq!(cfg.id, "a1");
         assert!(tools.contains_key("base_tool"));
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
         assert_eq!(cfg.plugins.len(), 1);
     }
@@ -1221,7 +1219,7 @@ mod tests {
         let session = Session::with_initial_state("s", json!({}));
         let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
 
         assert_eq!(cfg.plugins[0].id(), "skills");

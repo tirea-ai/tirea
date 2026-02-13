@@ -1,12 +1,13 @@
 use crate::skills::materialize::{
-    load_reference_material, run_script_material, SkillMaterializeError,
+    load_asset_material, load_reference_material, run_script_material, SkillMaterializeError,
 };
-use crate::skills::skill_md::{parse_skill_md, SkillFrontmatter};
-use crate::skills::state::{LoadedReference, ScriptResult};
+use crate::skills::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
+use crate::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
@@ -28,10 +29,33 @@ pub struct SkillRegistryWarning {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillResourceKind {
+    Reference,
+    Asset,
+}
+
+impl SkillResourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkillResourceKind::Reference => "reference",
+            SkillResourceKind::Asset => "asset",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "resource", rename_all = "snake_case")]
+pub enum SkillResource {
+    Reference(LoadedReference),
+    Asset(LoadedAsset),
+}
+
 type DiscoveryResult = (
     Vec<SkillMeta>,
     HashMap<String, PathBuf>,
-    HashMap<String, String>,
+    HashMap<String, PathBuf>,
     Vec<SkillRegistryWarning>,
 );
 
@@ -44,7 +68,7 @@ pub enum SkillRegistryError {
     InvalidSkillMd(String),
 
     #[error("materialize error: {0}")]
-    Materialize(String),
+    Materialize(#[from] SkillMaterializeError),
 
     #[error("io error: {0}")]
     Io(String),
@@ -54,12 +78,6 @@ pub enum SkillRegistryError {
 
     #[error("unsupported operation: {0}")]
     Unsupported(String),
-}
-
-impl From<SkillMaterializeError> for SkillRegistryError {
-    fn from(e: SkillMaterializeError) -> Self {
-        SkillRegistryError::Materialize(e.to_string())
-    }
 }
 
 #[async_trait]
@@ -78,11 +96,12 @@ pub trait SkillRegistry: Send + Sync + std::fmt::Debug {
 
     async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError>;
 
-    async fn load_reference(
+    async fn load_resource(
         &self,
         skill_id: &str,
+        kind: SkillResourceKind,
         path: &str,
-    ) -> Result<LoadedReference, SkillRegistryError>;
+    ) -> Result<SkillResource, SkillRegistryError>;
 
     async fn run_script(
         &self,
@@ -97,7 +116,7 @@ struct FsIndex {
     metas: Vec<SkillMeta>,
     by_id: HashMap<String, SkillMeta>,
     by_id_root: HashMap<String, PathBuf>,
-    by_id_skill_md: HashMap<String, String>,
+    by_id_skill_md: HashMap<String, PathBuf>,
     warnings: Vec<SkillRegistryWarning>,
 }
 
@@ -118,7 +137,7 @@ impl FsSkillRegistry {
         let mut metas: Vec<SkillMeta> = Vec::new();
         let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
         let mut by_id_root: HashMap<String, PathBuf> = HashMap::new();
-        let mut by_id_skill_md: HashMap<String, String> = HashMap::new();
+        let mut by_id_skill_md: HashMap<String, PathBuf> = HashMap::new();
 
         for root in roots {
             let (m, roots_by_id, docs_by_id, w) = discover_under_root(&root)?;
@@ -131,11 +150,11 @@ impl FsSkillRegistry {
                 let root_dir = roots_by_id.get(&meta.id).cloned().ok_or_else(|| {
                     SkillRegistryError::Io(format!("missing root dir for skill {}", meta.id))
                 })?;
-                let raw = docs_by_id.get(&meta.id).cloned().ok_or_else(|| {
+                let skill_md = docs_by_id.get(&meta.id).cloned().ok_or_else(|| {
                     SkillRegistryError::Io(format!("missing SKILL.md for skill {}", meta.id))
                 })?;
                 by_id_root.insert(meta.id.clone(), root_dir);
-                by_id_skill_md.insert(meta.id.clone(), raw);
+                by_id_skill_md.insert(meta.id.clone(), skill_md);
                 metas.push(meta);
             }
         }
@@ -174,18 +193,26 @@ impl SkillRegistry for FsSkillRegistry {
     }
 
     async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError> {
-        self.index
+        let path = self
+            .index
             .by_id_skill_md
             .get(skill_id)
             .cloned()
-            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))
+            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
+
+        fs::read_to_string(&path).map_err(|e| {
+            SkillRegistryError::Io(format!(
+                "failed to read SKILL.md for skill '{skill_id}': {e}"
+            ))
+        })
     }
 
-    async fn load_reference(
+    async fn load_resource(
         &self,
         skill_id: &str,
+        kind: SkillResourceKind,
         path: &str,
-    ) -> Result<LoadedReference, SkillRegistryError> {
+    ) -> Result<SkillResource, SkillRegistryError> {
         let root = self
             .index
             .by_id_root
@@ -195,10 +222,17 @@ impl SkillRegistry for FsSkillRegistry {
         let skill_id = skill_id.to_string();
         let path = path.to_string();
 
-        tokio::task::spawn_blocking(move || load_reference_material(&skill_id, &root, &path))
-            .await
-            .map_err(|e| SkillRegistryError::Io(e.to_string()))?
-            .map_err(SkillRegistryError::from)
+        tokio::task::spawn_blocking(move || match kind {
+            SkillResourceKind::Reference => {
+                load_reference_material(&skill_id, &root, &path).map(SkillResource::Reference)
+            }
+            SkillResourceKind::Asset => {
+                load_asset_material(&skill_id, &root, &path).map(SkillResource::Asset)
+            }
+        })
+        .await
+        .map_err(|e| SkillRegistryError::Io(e.to_string()))?
+        .map_err(SkillRegistryError::from)
     }
 
     async fn run_script(
@@ -222,7 +256,7 @@ impl SkillRegistry for FsSkillRegistry {
 fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryError> {
     let mut metas: Vec<SkillMeta> = Vec::new();
     let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
-    let mut docs_by_id: HashMap<String, String> = HashMap::new();
+    let mut docs_by_id: HashMap<String, PathBuf> = HashMap::new();
     let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
 
     let root = fs::canonicalize(root)
@@ -267,9 +301,9 @@ fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryErro
         }
 
         match meta_from_skill_md_path(&dir_name, &skill_md) {
-            Ok((meta, root_dir, raw)) => {
+            Ok((meta, root_dir, skill_md_path)) => {
                 roots_by_id.insert(meta.id.clone(), root_dir);
-                docs_by_id.insert(meta.id.clone(), raw);
+                docs_by_id.insert(meta.id.clone(), skill_md_path);
                 metas.push(meta);
             }
             Err(reason) => warnings.push(SkillRegistryWarning {
@@ -285,20 +319,18 @@ fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryErro
 fn meta_from_skill_md_path(
     dir_name: &str,
     skill_md: &Path,
-) -> Result<(SkillMeta, PathBuf, String), String> {
+) -> Result<(SkillMeta, PathBuf, PathBuf), String> {
     let root_dir = skill_md
         .parent()
         .ok_or_else(|| "invalid skill path".to_string())?
         .to_path_buf();
 
-    let raw = fs::read_to_string(skill_md).map_err(|e| e.to_string())?;
-    let doc = parse_skill_md(&raw).map_err(|e| e.to_string())?;
     let SkillFrontmatter {
         name,
         description,
         allowed_tools,
         ..
-    } = doc.frontmatter;
+    } = read_frontmatter_from_skill_md_path(skill_md)?;
 
     // Spec: name must match the parent directory name.
     if name != dir_name {
@@ -308,9 +340,13 @@ fn meta_from_skill_md_path(
     }
 
     let allowed_tools = allowed_tools
+        .as_deref()
+        .map(parse_allowed_tools)
+        .transpose()
+        .map_err(|e| e.to_string())?
         .unwrap_or_default()
-        .split_whitespace()
-        .map(|s| s.to_string())
+        .into_iter()
+        .map(|t| t.raw)
         .collect::<Vec<_>>();
 
     Ok((
@@ -321,8 +357,42 @@ fn meta_from_skill_md_path(
             allowed_tools,
         },
         root_dir,
-        raw,
+        skill_md.to_path_buf(),
     ))
+}
+
+fn read_frontmatter_from_skill_md_path(skill_md: &Path) -> Result<SkillFrontmatter, String> {
+    let file = fs::File::open(skill_md).map_err(|e| e.to_string())?;
+    let mut reader = BufReader::new(file);
+
+    let mut first = String::new();
+    let n = reader.read_line(&mut first).map_err(|e| e.to_string())?;
+    if n == 0 || trim_line_ending(&first) != "---" {
+        return Err("missing YAML frontmatter (expected leading '---' fence)".to_string());
+    }
+
+    let mut fm = String::new();
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if read == 0 {
+            return Err("unterminated YAML frontmatter (missing closing '---' fence)".to_string());
+        }
+        if trim_line_ending(&line) == "---" {
+            break;
+        }
+        fm.push_str(&line);
+    }
+
+    // Reuse the same parser/validator to keep behavior consistent.
+    let synthetic = format!("---\n{}---\n", fm);
+    parse_skill_md(&synthetic)
+        .map(|doc| doc.frontmatter)
+        .map_err(|e| e.to_string())
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    line.trim_end_matches(|c| c == '\n' || c == '\r')
 }
 
 fn normalize_name(s: &str) -> String {
@@ -503,7 +573,7 @@ Body
     }
 
     #[tokio::test]
-    async fn registry_read_skill_md_is_in_memory_after_discovery() {
+    async fn registry_read_skill_md_reads_from_disk_lazily() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("s1")).unwrap();
@@ -513,8 +583,24 @@ Body
         let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
         fs::remove_file(&skill_md).unwrap();
 
-        let raw = reg.read_skill_md("s1").await.unwrap();
-        assert!(raw.contains("Body"));
+        let err = reg.read_skill_md("s1").await.unwrap_err();
+        assert!(matches!(err, SkillRegistryError::Io(_)));
+    }
+
+    #[test]
+    fn registry_discovery_does_not_parse_markdown_body() {
+        let td = TempDir::new().unwrap();
+        let skills_root = td.path().join("skills");
+        fs::create_dir_all(skills_root.join("s1")).unwrap();
+        let skill_md = skills_root.join("s1").join("SKILL.md");
+        let mut bytes = b"---\nname: s1\ndescription: ok\n---\n".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe, 0xfd]); // invalid UTF-8 body
+        fs::write(&skill_md, bytes).unwrap();
+
+        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
+        let list = reg.list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "s1");
     }
 
     #[test]

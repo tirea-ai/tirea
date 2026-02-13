@@ -39,7 +39,7 @@
 //! ```
 
 use crate::activity::ActivityHub;
-use crate::agent::uuid_v4;
+use crate::agent::uuid_v7;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
@@ -653,7 +653,17 @@ fn apply_tool_results_to_session(
         })
         .collect();
 
-    let mut session = session.with_patches(patches).with_messages(tool_messages);
+    let session_with_patches = session.with_patches(patches);
+
+    // Skills behavior: after a successful `skill` activation, append the activated
+    // SKILL.md body as a user-role message at the end of the history.
+    let skill_instruction_messages =
+        skill_instruction_user_messages(&session_with_patches, results, metadata.as_ref())?;
+
+    let mut session = session_with_patches.with_messages(tool_messages);
+    if !skill_instruction_messages.is_empty() {
+        session = session.with_messages(skill_instruction_messages);
+    }
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = session
@@ -712,6 +722,102 @@ fn apply_tool_results_to_session(
         pending_interaction: None,
         state_snapshot,
     })
+}
+
+fn skill_instruction_user_messages(
+    session: &Session,
+    results: &[ToolExecutionResult],
+    metadata: Option<&MessageMetadata>,
+) -> Result<Vec<Message>, AgentLoopError> {
+    let activated_skill_ids: Vec<String> = results
+        .iter()
+        .filter(|r| r.execution.call.name == "skill" && r.execution.result.is_success())
+        .filter_map(|r| {
+            r.execution
+                .result
+                .data
+                .get("skill_id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    r.execution
+                        .call
+                        .arguments
+                        .get("skill")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                        .map(str::to_string)
+                })
+        })
+        .collect();
+
+    if activated_skill_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let state = session
+        .rebuild_state()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let Some(instructions) = state
+        .get("skills")
+        .and_then(|v| v.get("instructions"))
+        .and_then(|v| v.as_object())
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for skill_id in activated_skill_ids {
+        let Some(instruction) = instructions.get(&skill_id).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let mut msg = Message::user(instruction.to_string());
+        if let Some(meta) = metadata {
+            msg.metadata = Some(meta.clone());
+        }
+        out.push(msg);
+    }
+
+    Ok(out)
+}
+
+fn tool_result_metadata_from_session(session: &Session) -> Option<MessageMetadata> {
+    let run_id = session
+        .runtime
+        .value("run_id")
+        .and_then(|v| v.as_str().map(String::from))
+        .or_else(|| {
+            session.messages.iter().rev().find_map(|m| {
+                m.metadata
+                    .as_ref()
+                    .and_then(|meta| meta.run_id.as_ref().cloned())
+            })
+        });
+
+    let step_index = session
+        .messages
+        .iter()
+        .rev()
+        .find_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index));
+
+    if run_id.is_none() && step_index.is_none() {
+        None
+    } else {
+        Some(MessageMetadata { run_id, step_index })
+    }
+}
+
+fn next_step_index(session: &Session) -> u32 {
+    session
+        .messages
+        .iter()
+        .filter_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index))
+        .max()
+        .map(|v| v.saturating_add(1))
+        .unwrap_or(0)
 }
 
 /// Run one step of the agent loop (non-streaming).
@@ -840,13 +946,19 @@ pub async fn run_step(
     };
 
     // Add assistant message
+    let step_meta = MessageMetadata {
+        run_id: session
+            .runtime
+            .value("run_id")
+            .and_then(|v| v.as_str().map(String::from)),
+        step_index: Some(next_step_index(&session)),
+    };
     let session = if result.tool_calls.is_empty() {
-        session.with_message(assistant_message(&result.text))
+        session.with_message(assistant_message(&result.text).with_metadata(step_meta))
     } else {
-        session.with_message(assistant_tool_calls(
-            &result.text,
-            result.tool_calls.clone(),
-        ))
+        session.with_message(
+            assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta),
+        )
     };
 
     // Phase: StepEnd (with new context)
@@ -942,7 +1054,8 @@ pub async fn execute_tools_with_plugins(
         .await
     }?;
 
-    let applied = apply_tool_results_to_session(session, &results, None, parallel)?;
+    let metadata = tool_result_metadata_from_session(&session);
+    let applied = apply_tool_results_to_session(session, &results, metadata, parallel)?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
             session: Box::new(applied.session),
@@ -1367,6 +1480,15 @@ pub async fn run_loop(
     let stop_conditions = effective_stop_conditions(config);
     let mut last_text = String::new();
     let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
+    let run_id = session
+        .runtime
+        .value("run_id")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| {
+            let id = uuid_v7();
+            let _ = session.runtime.set("run_id", &id);
+            id
+        });
 
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
@@ -1438,8 +1560,9 @@ pub async fn run_loop(
                 if !pending.is_empty() {
                     session = session.with_patches(pending);
                 }
-                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
-                    .await;
+                let _finalized =
+                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                        .await;
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
         };
@@ -1479,13 +1602,17 @@ pub async fn run_loop(
         }
 
         // Add assistant message
+        let step_meta = MessageMetadata {
+            run_id: Some(run_id.clone()),
+            step_index: Some(loop_state.rounds as u32),
+        };
         session = if result.tool_calls.is_empty() {
-            session.with_message(assistant_message(&result.text))
+            session.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
         } else {
-            session.with_message(assistant_tool_calls(
-                &result.text,
-                result.tool_calls.clone(),
-            ))
+            session.with_message(
+                assistant_tool_calls(&result.text, result.tool_calls.clone())
+                    .with_metadata(step_meta.clone()),
+            )
         };
 
         // Phase: StepEnd
@@ -1544,7 +1671,7 @@ pub async fn run_loop(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                let _ =
+                let _finalized =
                     emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
@@ -1559,7 +1686,7 @@ pub async fn run_loop(
             ) {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = emit_session_end(
+                    let _finalized = emit_session_end(
                         session,
                         &mut scratchpad,
                         &tool_descriptors,
@@ -1574,20 +1701,24 @@ pub async fn run_loop(
         }
 
         let session_before_apply = session.clone();
-        let applied =
-            match apply_tool_results_to_session(session, &results, None, config.parallel_tools) {
-                Ok(a) => a,
-                Err(e) => {
-                    let _ = emit_session_end(
-                        session_before_apply,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                    )
-                    .await;
-                    return Err(e);
-                }
-            };
+        let applied = match apply_tool_results_to_session(
+            session,
+            &results,
+            Some(step_meta),
+            config.parallel_tools,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                let _finalized = emit_session_end(
+                    session_before_apply,
+                    &mut scratchpad,
+                    &tool_descriptors,
+                    &config.plugins,
+                )
+                .await;
+                return Err(e);
+            }
+        };
         session = applied.session;
 
         // Pause if any tool is waiting for client response.
@@ -1774,7 +1905,7 @@ fn run_loop_stream_impl_with_provider(
         let run_id = session.runtime.value("run_id")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| {
-                let id = uuid_v4();
+                let id = uuid_v7();
                 // Best-effort: set into runtime (may already be set).
                 let _ = session.runtime.set("run_id", &id);
                 id
@@ -2084,7 +2215,32 @@ fn run_loop_stream_impl_with_provider(
             let mut collector = StreamCollector::new();
             let mut chat_stream = chat_stream_events;
 
-            while let Some(event_result) = chat_stream.next().await {
+            loop {
+                let next_event = if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                            yield AgentEvent::RunFinish {
+                                thread_id: session.id.clone(),
+                                run_id: run_id.clone(),
+                                result: None,
+                                stop_reason: Some(StopReason::Cancelled),
+                            };
+                            if let Some(tx) = final_session_tx.take() {
+                                let _ = tx.send(session);
+                            }
+                            return;
+                        }
+                        ev = chat_stream.next() => ev,
+                    }
+                } else {
+                    chat_stream.next().await
+                };
+
+                let Some(event_result) = next_event else {
+                    break;
+                };
+
                 match event_result {
                     Ok(event) => {
                         if let Some(output) = collector.process(event) {
@@ -2274,6 +2430,25 @@ fn run_loop_stream_impl_with_provider(
             let mut activity_closed = false;
             let results = loop {
                 tokio::select! {
+                    _ = async {
+                        if let Some(ref token) = cancel_token {
+                            token.cancelled().await;
+                        } else {
+                            futures::future::pending::<()>().await;
+                        }
+                    } => {
+                        session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                        yield AgentEvent::RunFinish {
+                            thread_id: session.id.clone(),
+                            run_id: run_id.clone(),
+                            result: None,
+                            stop_reason: Some(StopReason::Cancelled),
+                        };
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
+                        return;
+                    }
                     activity = activity_rx.recv(), if !activity_closed => {
                         match activity {
                             Some(event) => {
@@ -2632,6 +2807,34 @@ mod tests {
             reminders: Vec::new(),
             pending_interaction: None,
             scratchpad,
+            pending_patches: Vec::new(),
+        }
+    }
+
+    fn skill_activation_result(
+        call_id: &str,
+        skill_id: &str,
+        instruction: Option<&str>,
+    ) -> ToolExecutionResult {
+        let patch = instruction.map(|text| {
+            carve_state::TrackedPatch::new(carve_state::Patch::new().with_op(carve_state::Op::set(
+                carve_state::path!("skills", "instructions", skill_id),
+                json!(text),
+            )))
+        });
+
+        ToolExecutionResult {
+            execution: crate::execute::ToolExecution {
+                call: crate::types::ToolCall::new(call_id, "skill", json!({ "skill": skill_id })),
+                result: ToolResult::success(
+                    "skill",
+                    json!({ "activated": true, "skill_id": skill_id }),
+                ),
+                patch,
+            },
+            reminders: Vec::new(),
+            pending_interaction: None,
+            scratchpad: HashMap::new(),
             pending_patches: Vec::new(),
         }
     }
@@ -3449,7 +3652,10 @@ mod tests {
                         let counter = step.scratchpad_get::<i64>("counter").unwrap_or(-1);
                         let patch = TrackedPatch::new(
                             Patch::new()
-                                .with_op(Op::set(carve_state::path!("debug", "run_count"), json!(run_count)))
+                                .with_op(Op::set(
+                                    carve_state::path!("debug", "run_count"),
+                                    json!(run_count),
+                                ))
                                 .with_op(Op::set(
                                     carve_state::path!("debug", "last_scratchpad_counter"),
                                     json!(counter),
@@ -3490,8 +3696,7 @@ mod tests {
         let second_state = second_session.rebuild_state().unwrap();
         assert_eq!(second_state["debug"]["run_count"], 2);
         assert_eq!(
-            second_state["debug"]["last_scratchpad_counter"],
-            2,
+            second_state["debug"]["last_scratchpad_counter"], 2,
             "scratchpad must reset on each run instead of accumulating"
         );
         assert!(second_state.get("counter").is_none());
@@ -3617,6 +3822,71 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
+        let session = Session::with_initial_state("test", json!({}));
+        let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
+
+        let applied = apply_tool_results_to_session(session, &[result], None, false)
+            .expect("apply_tool_results_to_session should succeed");
+
+        assert_eq!(applied.session.message_count(), 2);
+        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.session.messages[1].role, crate::types::Role::User);
+        assert_eq!(applied.session.messages[1].content, "## DOCX\nUse docx-js.");
+    }
+
+    #[test]
+    fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
+        let session = Session::with_initial_state("test", json!({}));
+        let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
+        let meta = MessageMetadata {
+            run_id: Some("run-1".to_string()),
+            step_index: Some(3),
+        };
+
+        let applied = apply_tool_results_to_session(session, &[result], Some(meta.clone()), false)
+            .expect("apply_tool_results_to_session should succeed");
+
+        assert_eq!(applied.session.message_count(), 2);
+        let user_msg = &applied.session.messages[1];
+        assert_eq!(user_msg.role, crate::types::Role::User);
+        assert_eq!(user_msg.metadata.as_ref(), Some(&meta));
+    }
+
+    #[test]
+    fn test_apply_tool_results_skill_without_instruction_does_not_append_user_message() {
+        let session = Session::with_initial_state("test", json!({}));
+        let result = skill_activation_result("call_1", "docx", None);
+
+        let applied = apply_tool_results_to_session(session, &[result], None, false)
+            .expect("apply_tool_results_to_session should succeed");
+
+        assert_eq!(applied.session.message_count(), 1);
+        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+    }
+
+    #[test]
+    fn test_apply_tool_results_keeps_tool_and_skill_message_order_stable() {
+        let session = Session::with_initial_state("test", json!({}));
+        let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
+        let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
+
+        let applied =
+            apply_tool_results_to_session(session, &[first, second], None, true).expect("apply");
+        let messages = &applied.session.messages;
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].role, crate::types::Role::Tool);
+        assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
+        assert_eq!(messages[1].role, crate::types::Role::Tool);
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(messages[2].role, crate::types::Role::User);
+        assert_eq!(messages[2].content, "Instruction B");
+        assert_eq!(messages[3].role, crate::types::Role::User);
+        assert_eq!(messages[3].content, "Instruction A");
+    }
+
+    #[test]
     fn test_agent_loop_error_state_error() {
         let err = AgentLoopError::StateError("invalid state".to_string());
         assert!(err.to_string().contains("State error"));
@@ -3696,6 +3966,54 @@ mod tests {
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_attaches_runtime_run_metadata() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut session = Session::new("test").with_message(
+                Message::assistant_with_tool_calls(
+                    "calling tool",
+                    vec![crate::types::ToolCall::new(
+                        "call_1",
+                        "echo",
+                        json!({"message": "test"}),
+                    )],
+                )
+                .with_metadata(crate::types::MessageMetadata {
+                    run_id: Some("run-meta-1".to_string()),
+                    step_index: Some(7),
+                }),
+            );
+            session.runtime.set("run_id", "run-meta-1").unwrap();
+
+            let result = StreamResult {
+                text: "Calling tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4");
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            assert_eq!(session.message_count(), 2);
+            let tool_msg = session.messages.last().expect("tool message should exist");
+            assert_eq!(tool_msg.role, crate::types::Role::Tool);
+            let meta = tool_msg
+                .metadata
+                .as_ref()
+                .expect("tool message metadata should be attached");
+            assert_eq!(meta.run_id.as_deref(), Some("run-meta-1"));
+            assert_eq!(meta.step_index, Some(7));
         });
     }
 
@@ -4049,6 +4367,39 @@ mod tests {
             Some(&Phase::SessionEnd),
             "SessionEnd should be last phase, got: {:?}",
             recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
+        let (recorder, _phases) = RecordAndSkipPlugin::new();
+        let config =
+            AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+        let client = Client::default();
+
+        let (final_session, _response) = run_loop(&client, &config, session, &tools)
+            .await
+            .expect("run_loop should succeed");
+        let run_id = final_session
+            .runtime
+            .value("run_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| panic!("run_loop must populate runtime run_id"));
+
+        let parsed = uuid::Uuid::parse_str(run_id)
+            .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
+        assert_eq!(
+            parsed.get_variant(),
+            uuid::Variant::RFC4122,
+            "run_id must be RFC4122 UUID, got: {run_id}"
+        );
+        assert_eq!(
+            parsed.get_version_num(),
+            7,
+            "run_id must be version 7 UUID, got: {run_id}"
         );
     }
 
@@ -5023,6 +5374,57 @@ mod tests {
             None,
         );
         let events = collect_stream_events(stream).await;
+        assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn test_stop_cancellation_token_during_inference_stream() {
+        struct HangingStreamProvider;
+
+        #[async_trait]
+        impl ChatStreamProvider for HangingStreamProvider {
+            async fn exec_chat_stream_events(
+                &self,
+                _model: &str,
+                _chat_req: genai::chat::ChatRequest,
+                _options: Option<&ChatOptions>,
+            ) -> genai::Result<
+                Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+            > {
+                let stream = async_stream::stream! {
+                    yield Ok(ChatStreamEvent::Start);
+                    yield Ok(ChatStreamEvent::Chunk(StreamChunk {
+                        content: "partial".to_string(),
+                    }));
+                    // Simulate a provider stream that hangs after emitting a partial response.
+                    let _: () = futures::future::pending().await;
+                };
+                Ok(Box::pin(stream))
+            }
+        }
+
+        let token = CancellationToken::new();
+        let stream = run_loop_stream_impl_with_provider(
+            Arc::new(HangingStreamProvider),
+            AgentConfig::new("mock"),
+            Session::new("test").with_message(Message::user("go")),
+            HashMap::new(),
+            RunContext {
+                cancellation_token: Some(token.clone()),
+            },
+            None,
+            None,
+        );
+
+        let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        token.cancel();
+
+        let events = tokio::time::timeout(std::time::Duration::from_millis(250), collect_task)
+            .await
+            .expect("stream should stop shortly after cancellation")
+            .expect("collector task should not panic");
+
         assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
     }
 

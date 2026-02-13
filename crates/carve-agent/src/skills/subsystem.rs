@@ -1,6 +1,6 @@
 use crate::plugin::AgentPlugin;
 use crate::skills::{
-    LoadSkillReferenceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
+    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
 };
 use crate::traits::tool::Tool;
@@ -70,7 +70,7 @@ impl SkillSubsystem {
     ///
     /// Tool ids:
     /// - `skill`
-    /// - `load_skill_reference`
+    /// - `load_skill_resource`
     /// - `skill_script`
     pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
         let mut out: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -104,7 +104,7 @@ impl SkillSubsystem {
         let reg = self.registry.clone();
         let tool_defs: Vec<Arc<dyn Tool>> = vec![
             Arc::new(SkillActivateTool::new(reg.clone())),
-            Arc::new(LoadSkillReferenceTool::new(reg.clone())),
+            Arc::new(LoadSkillResourceTool::new(reg.clone())),
             Arc::new(SkillScriptTool::new(reg)),
         ];
 
@@ -186,7 +186,7 @@ mod tests {
         let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let tools = sys.tools();
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
         assert_eq!(tools.len(), 3);
     }
@@ -208,7 +208,7 @@ mod tests {
         sys.extend_tools(&mut tools).unwrap();
         assert!(tools.contains_key("other"));
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
         assert_eq!(tools.len(), 4);
     }
@@ -236,6 +236,11 @@ mod tests {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("docx").join("references")).unwrap();
+        fs::write(
+            root.join("docx").join("references").join("DOCX-JS.md"),
+            "Use docx-js for new documents.",
+        )
+        .unwrap();
 
         let mut f = fs::File::create(root.join("docx").join("SKILL.md")).unwrap();
         f.write_all(
@@ -256,6 +261,17 @@ mod tests {
         assert!(exec.result.is_success());
         let session = session.with_patch(exec.patch.unwrap());
 
+        let state = session.rebuild_state().unwrap();
+        let call = ToolCall::new(
+            "call_2",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
+        );
+        let load_resource_tool = tools.get("load_skill_resource").unwrap().as_ref();
+        let exec = execute_single_tool(Some(load_resource_tool), &call, &state).await;
+        assert!(exec.result.is_success());
+        let session = session.with_patch(exec.patch.unwrap());
+
         // Run the subsystem plugin and verify both discovery and runtime injections exist.
         let plugin = sys.plugin();
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -263,7 +279,7 @@ mod tests {
 
         assert_eq!(step.system_context.len(), 2);
         assert!(step.system_context[0].contains("<available_skills>"));
-        assert!(step.system_context[1].contains("<skill id=\"docx\">"));
-        assert!(step.system_context[1].contains("Use docx-js for new documents."));
+        assert!(step.system_context[1].contains("<skill_reference"));
+        assert!(step.system_context[1].contains("path=\"references/DOCX-JS.md\""));
     }
 }

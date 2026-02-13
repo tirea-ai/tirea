@@ -23,13 +23,8 @@ impl SkillRuntimePlugin {
         }
 
         let mut out = String::new();
+        let mut emitted_any = false;
         for skill_id in &state.active {
-            if let Some(instr) = state.instructions.get(skill_id) {
-                out.push_str(&format!("<skill id=\"{skill_id}\">\n"));
-                out.push_str(instr.trim_end());
-                out.push_str("\n</skill>\n");
-            }
-
             // references
             let prefix = format!("{skill_id}:");
             let mut refs: Vec<_> = state
@@ -46,6 +41,7 @@ impl SkillRuntimePlugin {
                 ));
                 out.push_str(r.content.trim_end());
                 out.push_str("\n</skill_reference>\n");
+                emitted_any = true;
             }
 
             // script results (summary only)
@@ -72,7 +68,32 @@ impl SkillRuntimePlugin {
                     out.push_str("\n</stderr>\n");
                 }
                 out.push_str("</skill_script_result>\n");
+                emitted_any = true;
             }
+
+            // assets (metadata only; payload is stored in state and can be fetched by tools)
+            let mut assets: Vec<_> = state
+                .assets
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix))
+                .map(|(_, a)| a)
+                .collect();
+            assets.sort_by(|a, b| a.path.cmp(&b.path));
+            for a in assets {
+                let media_type = a
+                    .media_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream");
+                out.push_str(&format!(
+                    "<skill_asset skill=\"{}\" path=\"{}\" bytes=\"{}\" truncated=\"{}\" media_type=\"{}\" encoding=\"{}\"/>\n",
+                    a.skill, a.path, a.bytes, a.truncated, media_type, a.encoding
+                ));
+                emitted_any = true;
+            }
+        }
+
+        if !emitted_any {
+            return String::new();
         }
 
         out.trim_end().to_string()
@@ -128,7 +149,7 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn plugin_injects_active_skill_instructions() {
+    async fn plugin_does_not_inject_skill_instructions_from_state() {
         let session = Session::with_initial_state(
             "s",
             json!({
@@ -143,8 +164,7 @@ mod tests {
         let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step).await;
-        assert_eq!(step.system_context.len(), 1);
-        assert!(step.system_context[0].contains("Do X"));
+        assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
@@ -162,6 +182,10 @@ mod tests {
                     "scripts": {
                         "a:scripts/z.sh": {"skill":"a","script":"scripts/z.sh","sha256":"1","truncated_stdout":false,"truncated_stderr":false,"exit_code":0,"stdout":"Z","stderr":""},
                         "a:scripts/a.sh": {"skill":"a","script":"scripts/a.sh","sha256":"2","truncated_stdout":false,"truncated_stderr":false,"exit_code":0,"stdout":"A","stderr":""}
+                    },
+                    "assets": {
+                        "a:assets/z.png": {"skill":"a","path":"assets/z.png","sha256":"1","truncated":false,"bytes":10,"media_type":"image/png","encoding":"base64","content":"AA=="},
+                        "a:assets/a.png": {"skill":"a","path":"assets/a.png","sha256":"2","truncated":false,"bytes":10,"media_type":"image/png","encoding":"base64","content":"AA=="}
                     }
                 }
             }),
@@ -170,6 +194,7 @@ mod tests {
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
+        assert!(!s.contains("<skill id=\"a\">"));
 
         let idx_ref_a = s.find("path=\"references/a.md\"").unwrap();
         let idx_ref_b = s.find("path=\"references/b.md\"").unwrap();
@@ -178,5 +203,9 @@ mod tests {
         let idx_script_a = s.find("script=\"scripts/a.sh\"").unwrap();
         let idx_script_z = s.find("script=\"scripts/z.sh\"").unwrap();
         assert!(idx_script_a < idx_script_z);
+
+        let idx_asset_a = s.find("path=\"assets/a.png\"").unwrap();
+        let idx_asset_z = s.find("path=\"assets/z.png\"").unwrap();
+        assert!(idx_asset_a < idx_asset_z);
     }
 }

@@ -24,6 +24,9 @@ pub struct SkillState {
     /// Script results, keyed by `<skill_id>:<relative_path>`.
     #[serde(default)]
     pub scripts: HashMap<String, ScriptResult>,
+    /// Loaded assets, keyed by `<skill_id>:<relative_path>`.
+    #[serde(default)]
+    pub assets: HashMap<String, LoadedAsset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +49,21 @@ pub struct ScriptResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadedAsset {
+    pub skill: String,
+    pub path: String,
+    pub sha256: String,
+    pub truncated: bool,
+    pub bytes: u64,
+    /// Optional media type derived from file extension.
+    pub media_type: Option<String>,
+    /// Encoding of `content`.
+    pub encoding: String,
+    /// Encoded payload (`base64`).
+    pub content: String,
 }
 
 pub fn material_key(skill_id: &str, relative_path: &str) -> String {

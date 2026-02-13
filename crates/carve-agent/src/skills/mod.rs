@@ -25,7 +25,8 @@ pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillRegistry};
 pub use in_memory_registry::InMemorySkillRegistry;
 pub use registry::{
     FsSkillRegistry, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
+    SkillResource, SkillResourceKind,
 };
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
-pub use tools::{LoadSkillReferenceTool, SkillActivateTool, SkillScriptTool};
+pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};

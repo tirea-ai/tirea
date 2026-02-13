@@ -26,11 +26,14 @@
 //! let subsystem = SkillSubsystem::new(std::sync::Arc::new(registry));
 //! ```
 
-use crate::skills::registry::{SkillRegistry, SkillRegistryError, SkillRegistryWarning};
-use crate::skills::skill_md::parse_skill_md;
-use crate::skills::state::{LoadedReference, ScriptResult};
+use crate::skills::registry::{
+    SkillRegistry, SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind,
+};
+use crate::skills::skill_md::{parse_allowed_tools, parse_skill_md};
+use crate::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
 use crate::skills::SkillMeta;
 use async_trait::async_trait;
+use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -45,6 +48,8 @@ pub struct EmbeddedSkill {
     /// Paths should match the convention used by filesystem skills,
     /// e.g. `"references/guide.md"`.
     pub references: &'static [(&'static str, &'static str)],
+    /// Asset files as `(relative_path, content_base64, media_type)` tuples.
+    pub assets: &'static [(&'static str, &'static str, Option<&'static str>)],
 }
 
 /// A skill registry built from in-memory content.
@@ -58,6 +63,7 @@ pub struct EmbeddedSkillRegistry {
     by_id: HashMap<String, SkillMeta>,
     skill_md: HashMap<String, String>,
     references: HashMap<(String, String), LoadedReference>,
+    assets: HashMap<(String, String), LoadedAsset>,
 }
 
 impl EmbeddedSkillRegistry {
@@ -71,6 +77,7 @@ impl EmbeddedSkillRegistry {
         let mut by_id = HashMap::new();
         let mut skill_md_map = HashMap::new();
         let mut references = HashMap::new();
+        let mut assets = HashMap::new();
 
         for embedded in skills {
             let doc = parse_skill_md(embedded.skill_md)
@@ -86,9 +93,12 @@ impl EmbeddedSkillRegistry {
             let allowed_tools = fm
                 .allowed_tools
                 .as_deref()
+                .map(parse_allowed_tools)
+                .transpose()
+                .map_err(|e| SkillRegistryError::InvalidSkillMd(e.to_string()))?
                 .unwrap_or_default()
-                .split_whitespace()
-                .map(|s| s.to_string())
+                .into_iter()
+                .map(|t| t.raw)
                 .collect::<Vec<_>>();
 
             let meta = SkillMeta {
@@ -113,6 +123,30 @@ impl EmbeddedSkillRegistry {
                 );
             }
 
+            for &(path, content_base64, media_type) in embedded.assets {
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(content_base64.as_bytes())
+                    .map_err(|e| {
+                        SkillRegistryError::InvalidSkillMd(format!(
+                            "invalid base64 asset '{path}' for skill '{id}': {e}"
+                        ))
+                    })?;
+                let sha = format!("{:x}", Sha256::digest(&decoded));
+                assets.insert(
+                    (id.clone(), path.to_string()),
+                    LoadedAsset {
+                        skill: id.clone(),
+                        path: path.to_string(),
+                        sha256: sha,
+                        truncated: false,
+                        bytes: decoded.len() as u64,
+                        media_type: media_type.map(|m| m.to_string()),
+                        encoding: "base64".to_string(),
+                        content: content_base64.to_string(),
+                    },
+                );
+            }
+
             skill_md_map.insert(id.clone(), embedded.skill_md.to_string());
             by_id.insert(id, meta.clone());
             metas.push(meta);
@@ -125,6 +159,7 @@ impl EmbeddedSkillRegistry {
             by_id,
             skill_md: skill_md_map,
             references,
+            assets,
         })
     }
 }
@@ -150,17 +185,30 @@ impl SkillRegistry for EmbeddedSkillRegistry {
             .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))
     }
 
-    async fn load_reference(
+    async fn load_resource(
         &self,
         skill_id: &str,
+        kind: SkillResourceKind,
         path: &str,
-    ) -> Result<LoadedReference, SkillRegistryError> {
-        self.references
-            .get(&(skill_id.to_string(), path.to_string()))
-            .cloned()
-            .ok_or_else(|| {
-                SkillRegistryError::Unsupported(format!("reference not available: {path}"))
-            })
+    ) -> Result<SkillResource, SkillRegistryError> {
+        match kind {
+            SkillResourceKind::Reference => self
+                .references
+                .get(&(skill_id.to_string(), path.to_string()))
+                .cloned()
+                .map(SkillResource::Reference)
+                .ok_or_else(|| {
+                    SkillRegistryError::Unsupported(format!("reference not available: {path}"))
+                }),
+            SkillResourceKind::Asset => self
+                .assets
+                .get(&(skill_id.to_string(), path.to_string()))
+                .cloned()
+                .map(SkillResource::Asset)
+                .ok_or_else(|| {
+                    SkillRegistryError::Unsupported(format!("asset not available: {path}"))
+                }),
+        }
     }
 
     async fn run_script(
@@ -207,6 +255,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[("references/guide.md", REFERENCE_CONTENT)],
+            assets: &[],
         }];
 
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
@@ -226,6 +275,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: "not valid frontmatter",
             references: &[],
+            assets: &[],
         }];
 
         let err = EmbeddedSkillRegistry::new(skills).unwrap_err();
@@ -238,10 +288,12 @@ More instructions.
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD,
                 references: &[],
+                assets: &[],
             },
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD,
                 references: &[],
+                assets: &[],
             },
         ];
 
@@ -255,10 +307,12 @@ More instructions.
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD,
                 references: &[],
+                assets: &[],
             },
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD_2,
                 references: &[],
+                assets: &[],
             },
         ];
 
@@ -273,6 +327,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
@@ -285,6 +340,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
@@ -305,13 +361,21 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[("references/guide.md", REFERENCE_CONTENT)],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
         let r = reg
-            .load_reference("test-skill", "references/guide.md")
+            .load_resource(
+                "test-skill",
+                SkillResourceKind::Reference,
+                "references/guide.md",
+            )
             .await
             .unwrap();
+        let SkillResource::Reference(r) = r else {
+            panic!("expected reference resource");
+        };
         assert_eq!(r.skill, "test-skill");
         assert_eq!(r.path, "references/guide.md");
         assert_eq!(r.content, REFERENCE_CONTENT);
@@ -325,11 +389,16 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
         let err = reg
-            .load_reference("test-skill", "references/missing.md")
+            .load_resource(
+                "test-skill",
+                SkillResourceKind::Reference,
+                "references/missing.md",
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, SkillRegistryError::Unsupported(_)));
@@ -340,6 +409,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
@@ -369,6 +439,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD_2, // no allowed-tools field
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
         let meta = reg.get("another-skill").unwrap();
@@ -380,6 +451,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
@@ -393,16 +465,37 @@ More instructions.
             ("references/a.md", "Content A"),
             ("references/b.md", "Content B"),
         ],
+        assets: &[],
     }];
 
     #[tokio::test]
     async fn multiple_references_per_skill() {
         let reg = EmbeddedSkillRegistry::new(MULTI_REF_SKILLS).unwrap();
 
-        let a = reg.load_reference("test-skill", "references/a.md").await.unwrap();
+        let a = reg
+            .load_resource(
+                "test-skill",
+                SkillResourceKind::Reference,
+                "references/a.md",
+            )
+            .await
+            .unwrap();
+        let SkillResource::Reference(a) = a else {
+            panic!("expected reference resource");
+        };
         assert_eq!(a.content, "Content A");
 
-        let b = reg.load_reference("test-skill", "references/b.md").await.unwrap();
+        let b = reg
+            .load_resource(
+                "test-skill",
+                SkillResourceKind::Reference,
+                "references/b.md",
+            )
+            .await
+            .unwrap();
+        let SkillResource::Reference(b) = b else {
+            panic!("expected reference resource");
+        };
         assert_eq!(b.content, "Content B");
     }
 
@@ -411,12 +504,21 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[("references/guide.md", REFERENCE_CONTENT)],
+            assets: &[],
         }];
         let reg1 = EmbeddedSkillRegistry::new(skills).unwrap();
         let reg2 = EmbeddedSkillRegistry::new(skills).unwrap();
 
-        let hash1 = &reg1.references.get(&("test-skill".into(), "references/guide.md".into())).unwrap().sha256;
-        let hash2 = &reg2.references.get(&("test-skill".into(), "references/guide.md".into())).unwrap().sha256;
+        let hash1 = &reg1
+            .references
+            .get(&("test-skill".into(), "references/guide.md".into()))
+            .unwrap()
+            .sha256;
+        let hash2 = &reg2
+            .references
+            .get(&("test-skill".into(), "references/guide.md".into()))
+            .unwrap()
+            .sha256;
         assert_eq!(hash1, hash2);
         // SHA-256 hex is 64 chars
         assert_eq!(hash1.len(), 64);
@@ -427,6 +529,7 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[("references/guide.md", REFERENCE_CONTENT)],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
         let cloned = reg.clone();
@@ -444,10 +547,12 @@ More instructions.
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD,
                 references: &[("references/guide.md", REFERENCE_CONTENT)],
+                assets: &[],
             },
             EmbeddedSkill {
                 skill_md: VALID_SKILL_MD_2,
                 references: &[],
+                assets: &[],
             },
         ];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
@@ -456,7 +561,7 @@ More instructions.
         // Subsystem should expose tools
         let tools = subsystem.tools();
         assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_reference"));
+        assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
 
         // Registry should be accessible through subsystem
@@ -472,13 +577,21 @@ More instructions.
         let skills = &[EmbeddedSkill {
             skill_md: VALID_SKILL_MD,
             references: &[("references/guide.md", REFERENCE_CONTENT)],
+            assets: &[],
         }];
         let reg = EmbeddedSkillRegistry::new(skills).unwrap();
 
         let err = reg
-            .load_reference("nonexistent-skill", "references/guide.md")
+            .load_resource(
+                "nonexistent-skill",
+                SkillResourceKind::Reference,
+                "references/guide.md",
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, SkillRegistryError::Unsupported(_)));
+        assert!(matches!(
+            err,
+            SkillRegistryError::Unsupported(_) | SkillRegistryError::UnknownSkill(_)
+        ));
     }
 }

@@ -22,6 +22,7 @@ tracing = "0.1"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 tokio-util = "0.7"
+base64 = "0.22"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"], optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
 

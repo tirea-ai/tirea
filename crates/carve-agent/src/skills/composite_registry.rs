@@ -1,5 +1,7 @@
-use crate::skills::registry::{SkillRegistry, SkillRegistryError, SkillRegistryWarning};
-use crate::skills::state::{LoadedReference, ScriptResult};
+use crate::skills::registry::{
+    SkillRegistry, SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind,
+};
+use crate::skills::state::ScriptResult;
 use crate::skills::SkillMeta;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -75,13 +77,14 @@ impl SkillRegistry for CompositeSkillRegistry {
         self.source_for(skill_id)?.read_skill_md(skill_id).await
     }
 
-    async fn load_reference(
+    async fn load_resource(
         &self,
         skill_id: &str,
+        kind: SkillResourceKind,
         path: &str,
-    ) -> Result<LoadedReference, SkillRegistryError> {
+    ) -> Result<SkillResource, SkillRegistryError> {
         self.source_for(skill_id)?
-            .load_reference(skill_id, path)
+            .load_resource(skill_id, kind, path)
             .await
     }
 

@@ -1,5 +1,5 @@
 use carve_agent::{
-    execute_single_tool, AgentPlugin, FsSkillRegistry, LoadSkillReferenceTool, Message, Phase,
+    execute_single_tool, AgentPlugin, FsSkillRegistry, LoadSkillResourceTool, Message, Phase,
     Session, SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool, StepContext,
     ToolCall, ToolDescriptor, ToolResult,
 };
@@ -14,6 +14,7 @@ fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
     let skills_root = td.path().join("skills");
     let docx_root = skills_root.join("docx");
     fs::create_dir_all(docx_root.join("references")).unwrap();
+    fs::create_dir_all(docx_root.join("assets")).unwrap();
     fs::create_dir_all(docx_root.join("scripts")).unwrap();
 
     fs::write(
@@ -21,6 +22,8 @@ fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
         "Use docx-js for new documents.",
     )
     .unwrap();
+
+    fs::write(docx_root.join("assets").join("logo.txt"), "asset-payload").unwrap();
 
     let mut f = fs::File::create(docx_root.join("SKILL.md")).unwrap();
     f.write_all(
@@ -56,8 +59,13 @@ async fn apply_tool(
     (session, exec.result)
 }
 
+fn assert_error_code(result: &ToolResult, expected_code: &str) {
+    assert!(result.is_error(), "expected an error result");
+    assert_eq!(result.data["error"]["code"], expected_code);
+}
+
 #[tokio::test]
-async fn test_skill_activation_injects_instructions() {
+async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
@@ -74,20 +82,17 @@ async fn test_skill_activation_injects_instructions() {
 
     let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
     plugin.on_phase(Phase::BeforeInference, &mut step).await;
-
-    assert_eq!(step.system_context.len(), 1);
-    let injected = &step.system_context[0];
-    assert!(injected.contains("<skill id=\"docx\">"));
-    assert!(injected.contains("DOCX Processing"));
-    assert!(!injected.contains("<skill_reference"));
-    assert!(!injected.contains("<skill_script_result"));
+    assert!(
+        step.system_context.is_empty(),
+        "skill instructions should not be reinjected by runtime plugin"
+    );
 }
 
 #[tokio::test]
 async fn test_load_reference_injects_reference_content() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg.clone());
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
     let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
@@ -104,7 +109,7 @@ async fn test_load_reference_injects_reference_content() {
         &load_ref,
         ToolCall::new(
             "call_2",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
         ),
     )
@@ -154,9 +159,45 @@ async fn test_script_result_is_persisted_and_injected() {
 }
 
 #[tokio::test]
+async fn test_load_asset_persists_and_injects_asset_metadata() {
+    let (_td, reg) = make_skill_tree();
+    let activate = SkillActivateTool::new(reg.clone());
+    let load_asset = LoadSkillResourceTool::new(reg);
+    let plugin = SkillRuntimePlugin::new();
+
+    let session = Session::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+
+    let (session, _) = apply_tool(
+        session,
+        &activate,
+        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
+    )
+    .await;
+
+    let (session, result) = apply_tool(
+        session,
+        &load_asset,
+        ToolCall::new(
+            "call_2",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "assets/logo.txt"}),
+        ),
+    )
+    .await;
+    assert!(result.is_success());
+    assert_eq!(result.data["encoding"], "base64");
+
+    let mut step = StepContext::new(&session, vec![ToolDescriptor::new("x", "x", "x")]);
+    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let injected = &step.system_context[0];
+    assert!(injected.contains("<skill_asset"));
+    assert!(injected.contains("path=\"assets/logo.txt\""));
+}
+
+#[tokio::test]
 async fn test_load_reference_rejects_escape() {
     let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let session = Session::with_initial_state("s", json!({}));
     let (_session, result) = apply_tool(
@@ -164,18 +205,74 @@ async fn test_load_reference_rejects_escape() {
         &load_ref,
         ToolCall::new(
             "call_1",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "../secrets.txt"}),
         ),
     )
     .await;
 
-    assert!(result.is_error());
-    let msg = result.message.clone().unwrap_or_default();
-    assert!(
-        msg.contains("Invalid arguments") || msg.to_lowercase().contains("invalid"),
-        "expected invalid path error"
-    );
+    assert_error_code(&result, "invalid_path");
+}
+
+#[tokio::test]
+async fn test_load_resource_requires_supported_prefix() {
+    let (_td, reg) = make_skill_tree();
+    let load_asset = LoadSkillResourceTool::new(reg);
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (_session, result) = apply_tool(
+        session,
+        &load_asset,
+        ToolCall::new(
+            "call_1",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "resource/DOCX-JS.md"}),
+        ),
+    )
+    .await;
+
+    assert_error_code(&result, "unsupported_path");
+}
+
+#[tokio::test]
+async fn test_load_resource_kind_mismatch_is_error() {
+    let (_td, reg) = make_skill_tree();
+    let load_resource = LoadSkillResourceTool::new(reg);
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (_session, result) = apply_tool(
+        session,
+        &load_resource,
+        ToolCall::new(
+            "call_1",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "assets/logo.txt", "kind": "reference"}),
+        ),
+    )
+    .await;
+
+    assert_error_code(&result, "invalid_arguments");
+}
+
+#[tokio::test]
+async fn test_load_resource_explicit_kind_asset_works() {
+    let (_td, reg) = make_skill_tree();
+    let load_resource = LoadSkillResourceTool::new(reg);
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (_session, result) = apply_tool(
+        session,
+        &load_resource,
+        ToolCall::new(
+            "call_1",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "assets/logo.txt", "kind": "asset"}),
+        ),
+    )
+    .await;
+
+    assert!(result.is_success());
+    assert_eq!(result.data["kind"], "asset");
 }
 
 #[tokio::test]
@@ -191,7 +288,7 @@ async fn test_skill_activation_requires_exact_skill_name() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "unknown_skill");
 }
 
 #[tokio::test]
@@ -207,7 +304,7 @@ async fn test_skill_activation_unknown_skill_errors() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "unknown_skill");
 }
 
 #[tokio::test]
@@ -223,7 +320,7 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "invalid_arguments");
 }
 
 #[tokio::test]
@@ -245,7 +342,7 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_skill_md_removed_after_discovery_still_works() {
+async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
     let (td, reg) = make_skill_tree();
     // Ensure discovery has produced the meta and cached SKILL.md content.
     assert_eq!(reg.list().len(), 1);
@@ -260,13 +357,13 @@ async fn test_skill_activation_skill_md_removed_after_discovery_still_works() {
     )
     .await;
 
-    assert!(result.is_success());
+    assert_error_code(&result, "io_error");
 }
 
 #[tokio::test]
 async fn test_load_reference_requires_references_prefix() {
     let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let session = Session::with_initial_state("s", json!({}));
     let (_session, result) = apply_tool(
@@ -274,47 +371,47 @@ async fn test_load_reference_requires_references_prefix() {
         &load_ref,
         ToolCall::new(
             "call_1",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "SKILL.md"}),
         ),
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "unsupported_path");
 }
 
 #[tokio::test]
 async fn test_load_reference_missing_arguments_are_errors() {
     let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let session = Session::with_initial_state("s", json!({}));
 
     let (_session, r1) = apply_tool(
         session.clone(),
         &load_ref,
-        ToolCall::new("call_1", "load_skill_reference", json!({"skill": "docx"})),
+        ToolCall::new("call_1", "load_skill_resource", json!({"skill": "docx"})),
     )
     .await;
-    assert!(r1.is_error());
+    assert_error_code(&r1, "invalid_arguments");
 
     let (_session, r2) = apply_tool(
         session,
         &load_ref,
         ToolCall::new(
             "call_2",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"path": "references/DOCX-JS.md"}),
         ),
     )
     .await;
-    assert!(r2.is_error());
+    assert_error_code(&r2, "invalid_arguments");
 }
 
 #[tokio::test]
 async fn test_load_reference_invalid_utf8_is_error() {
     let (td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BAD.bin"), vec![0xff, 0xfe, 0xfd]).unwrap();
@@ -325,19 +422,19 @@ async fn test_load_reference_invalid_utf8_is_error() {
         &load_ref,
         ToolCall::new(
             "call_1",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "references/BAD.bin"}),
         ),
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "io_error");
 }
 
 #[tokio::test]
 async fn test_load_reference_missing_file_is_error() {
     let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let session = Session::with_initial_state("s", json!({}));
     let (_session, result) = apply_tool(
@@ -345,13 +442,13 @@ async fn test_load_reference_missing_file_is_error() {
         &load_ref,
         ToolCall::new(
             "call_1",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "references/DOES_NOT_EXIST.md"}),
         ),
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "io_error");
 }
 
 #[cfg(unix)]
@@ -360,7 +457,7 @@ async fn test_load_reference_symlink_escape_is_error() {
     use std::os::unix::fs as unix_fs;
 
     let (td, reg) = make_skill_tree();
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
 
     let outside = td.path().join("outside.md");
     fs::write(&outside, "outside").unwrap();
@@ -374,20 +471,13 @@ async fn test_load_reference_symlink_escape_is_error() {
         &load_ref,
         ToolCall::new(
             "call_1",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "references/ESCAPE.md"}),
         ),
     )
     .await;
 
-    assert!(result.is_error());
-    let msg = result.message.clone().unwrap_or_default().to_lowercase();
-    assert!(
-        msg.contains("escapes")
-            || msg.contains("invalid")
-            || msg.contains("outside skill root")
-            || msg.contains("outside")
-    );
+    assert_error_code(&result, "path_escapes_root");
 }
 
 #[tokio::test]
@@ -407,7 +497,7 @@ async fn test_script_requires_scripts_prefix() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "unsupported_path");
 }
 
 #[tokio::test]
@@ -423,7 +513,7 @@ async fn test_script_missing_arguments_are_errors() {
         ToolCall::new("call_1", "skill_script", json!({"skill": "docx"})),
     )
     .await;
-    assert!(r1.is_error());
+    assert_error_code(&r1, "invalid_arguments");
 
     let (_session, r2) = apply_tool(
         session,
@@ -435,7 +525,7 @@ async fn test_script_missing_arguments_are_errors() {
         ),
     )
     .await;
-    assert!(r2.is_error());
+    assert_error_code(&r2, "invalid_arguments");
 }
 
 #[tokio::test]
@@ -533,14 +623,83 @@ async fn test_script_unsupported_runtime_is_error() {
     )
     .await;
 
-    assert!(result.is_error());
+    assert_error_code(&result, "unsupported_runtime");
+}
+
+#[tokio::test]
+async fn test_script_rejects_excessive_argument_count() {
+    let (_td, reg) = make_skill_tree();
+    let run_script = SkillScriptTool::new(reg);
+
+    let mut args = Vec::new();
+    for i in 0..70 {
+        args.push(format!("arg-{i}"));
+    }
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (_session, result) = apply_tool(
+        session,
+        &run_script,
+        ToolCall::new(
+            "call_1",
+            "skill_script",
+            json!({"skill": "docx", "script": "scripts/hello.sh", "args": args}),
+        ),
+    )
+    .await;
+
+    assert_error_code(&result, "invalid_arguments");
+}
+
+#[tokio::test]
+async fn test_skill_activation_does_not_widen_scoped_allowed_tools() {
+    let td = TempDir::new().unwrap();
+    let skills_root = td.path().join("skills");
+    let root = skills_root.join("scoped");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("SKILL.md"),
+        r#"---
+name: scoped
+description: scoped allowed tools
+allowed-tools: 'read_file Bash(command: "git status")'
+---
+Body
+"#,
+    )
+    .unwrap();
+    let reg: Arc<dyn SkillRegistry> =
+        Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
+    let activate = SkillActivateTool::new(reg);
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (session, result) = apply_tool(
+        session,
+        &activate,
+        ToolCall::new("call_1", "skill", json!({"skill": "scoped"})),
+    )
+    .await;
+
+    assert!(result.is_success());
+    assert_eq!(result.data["allowed_tools_applied"], json!(["read_file"]));
+    assert_eq!(
+        result.data["allowed_tools_skipped"],
+        json!(["Bash(command: \"git status\")"])
+    );
+
+    let state = session.rebuild_state().unwrap();
+    assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
+    assert!(
+        state["permissions"]["tools"].get("Bash").is_none(),
+        "scoped Bash permission must not be widened to plain Bash"
+    );
 }
 
 #[tokio::test]
 async fn test_reference_truncation_flag_is_injected() {
     let (td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg.clone());
-    let load_ref = LoadSkillReferenceTool::new(reg);
+    let load_ref = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
     // Create a big reference file (>256KiB).
@@ -561,7 +720,7 @@ async fn test_reference_truncation_flag_is_injected() {
         &load_ref,
         ToolCall::new(
             "call_2",
-            "load_skill_reference",
+            "load_skill_resource",
             json!({"skill": "docx", "path": "references/BIG.md"}),
         ),
     )
