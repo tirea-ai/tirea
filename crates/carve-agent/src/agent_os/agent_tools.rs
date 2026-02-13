@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use carve_state::Context;
 use futures::StreamExt;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +46,7 @@ struct AgentRunRecord {
     epoch: u64,
     owner_session_id: String,
     target_agent_id: String,
+    parent_run_id: Option<String>,
     status: AgentRunStatus,
     session: crate::Session,
     assistant: Option<String>,
@@ -172,11 +173,68 @@ impl AgentRunManager {
         })
     }
 
+    pub async fn stop_owned_tree(
+        &self,
+        owner_session_id: &str,
+        run_id: &str,
+    ) -> Result<Vec<AgentRunSummary>, String> {
+        let mut runs = self.runs.lock().await;
+        let Some(root_status) = runs.get(run_id).map(|r| r.status) else {
+            return Err(format!("Unknown run_id: {run_id}"));
+        };
+        if runs
+            .get(run_id)
+            .is_some_and(|r| r.owner_session_id != owner_session_id)
+        {
+            return Err(format!("Unknown run_id: {run_id}"));
+        }
+
+        let run_ids = collect_descendant_run_ids_by_parent(&runs, owner_session_id, run_id, true);
+        if run_ids.is_empty() {
+            return Err(format!(
+                "Run '{run_id}' is not running (current status: {})",
+                root_status.as_str()
+            ));
+        }
+
+        let mut stopped = false;
+        let mut out = Vec::with_capacity(run_ids.len());
+        for id in run_ids {
+            if let Some(rec) = runs.get_mut(&id) {
+                if rec.status == AgentRunStatus::Running {
+                    rec.stop_requested = true;
+                    rec.status = AgentRunStatus::Stopped;
+                    stopped = true;
+                    if let Some(token) = rec.cancellation_token.take() {
+                        token.cancel();
+                    }
+                }
+                out.push(AgentRunSummary {
+                    run_id: id,
+                    target_agent_id: rec.target_agent_id.clone(),
+                    status: rec.status,
+                    assistant: rec.assistant.clone(),
+                    error: rec.error.clone(),
+                });
+            }
+        }
+
+        if stopped {
+            return Ok(out);
+        }
+
+        Err(format!(
+            "Run '{run_id}' is not running (current status: {})",
+            root_status.as_str()
+        ))
+    }
+
     async fn put_running(
         &self,
         run_id: &str,
         owner_session_id: String,
         target_agent_id: String,
+        parent_run_id: Option<String>,
         session: crate::Session,
         cancellation_token: Option<CancellationToken>,
     ) -> u64 {
@@ -188,6 +246,7 @@ impl AgentRunManager {
                 epoch,
                 owner_session_id,
                 target_agent_id,
+                parent_run_id,
                 status: AgentRunStatus::Running,
                 session,
                 assistant: None,
@@ -459,6 +518,87 @@ fn make_orphaned_running_state(run: &AgentRunState) -> AgentRunState {
     next.status = AgentRunStatus::Stopped;
     next.error = Some("No live executor found in current process; marked stopped".to_string());
     next
+}
+
+fn collect_descendant_run_ids_by_parent(
+    runs: &HashMap<String, AgentRunRecord>,
+    owner_session_id: &str,
+    root_run_id: &str,
+    include_root: bool,
+) -> Vec<String> {
+    let owned = runs
+        .iter()
+        .filter(|(_, rec)| rec.owner_session_id == owner_session_id)
+        .collect::<Vec<_>>();
+    if !owned.iter().any(|(id, _)| id.as_str() == root_run_id) {
+        return Vec::new();
+    }
+
+    let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
+    for (run_id, rec) in owned.iter() {
+        if let Some(parent_run_id) = &rec.parent_run_id {
+            children_by_parent
+                .entry(parent_run_id.clone())
+                .or_default()
+                .push((*run_id).clone());
+        }
+    }
+
+    let mut queue = VecDeque::from([root_run_id.to_string()]);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if include_root || id != root_run_id {
+            out.push(id.clone());
+        }
+        if let Some(children) = children_by_parent.get(&id) {
+            for child_id in children {
+                queue.push_back(child_id.clone());
+            }
+        }
+    }
+    out
+}
+
+fn collect_descendant_run_ids_from_state(
+    runs: &HashMap<String, AgentRunState>,
+    root_run_id: &str,
+    include_root: bool,
+) -> Vec<String> {
+    if !runs.contains_key(root_run_id) {
+        return Vec::new();
+    }
+
+    let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
+    for (run_id, run) in runs.iter() {
+        if let Some(parent_run_id) = &run.parent_run_id {
+            children_by_parent
+                .entry(parent_run_id.clone())
+                .or_default()
+                .push(run_id.clone());
+        }
+    }
+
+    let mut queue = VecDeque::from([root_run_id.to_string()]);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if include_root || id != root_run_id {
+            out.push(id.clone());
+        }
+        if let Some(children) = children_by_parent.get(&id) {
+            for child_id in children {
+                queue.push_back(child_id.clone());
+            }
+        }
+    }
+    out
 }
 
 fn recovery_interaction_id(run_id: &str) -> String {
@@ -790,6 +930,7 @@ impl Tool for AgentRunTool {
                                     &run_id,
                                     owner_session_id.clone(),
                                     record.target_agent_id.clone(),
+                                    caller_run_id.clone(),
                                     record.session.clone(),
                                     Some(token.clone()),
                                 )
@@ -835,6 +976,7 @@ impl Tool for AgentRunTool {
                                 &run_id,
                                 owner_session_id.clone(),
                                 record.target_agent_id.clone(),
+                                caller_run_id.clone(),
                                 record.session.clone(),
                                 None,
                             )
@@ -933,6 +1075,7 @@ impl Tool for AgentRunTool {
                                 &run_id,
                                 owner_session_id.clone(),
                                 persisted.target_agent_id.clone(),
+                                caller_run_id.clone(),
                                 child_session.clone(),
                                 Some(token.clone()),
                             )
@@ -980,6 +1123,7 @@ impl Tool for AgentRunTool {
                             &run_id,
                             owner_session_id.clone(),
                             persisted.target_agent_id.clone(),
+                            caller_run_id.clone(),
                             child_session.clone(),
                             None,
                         )
@@ -1060,6 +1204,7 @@ impl Tool for AgentRunTool {
                     &run_id,
                     owner_session_id.clone(),
                     target_agent_id.clone(),
+                    caller_run_id.clone(),
                     child_session.clone(),
                     Some(token.clone()),
                 )
@@ -1105,6 +1250,7 @@ impl Tool for AgentRunTool {
                 &run_id,
                 owner_session_id.clone(),
                 target_agent_id.clone(),
+                caller_run_id.clone(),
                 child_session.clone(),
                 None,
             )
@@ -1186,39 +1332,87 @@ impl Tool for AgentStopTool {
             ));
         };
 
-        match self.manager.stop_owned(&owner_session_id, &run_id).await {
-            Ok(summary) => {
-                let mut entry =
-                    parse_persisted_runs(ctx)
-                        .remove(&run_id)
-                        .unwrap_or(AgentRunState {
-                            run_id: run_id.clone(),
-                            parent_run_id: runtime_run_id(ctx.runtime_ref()),
-                            target_agent_id: summary.target_agent_id.clone(),
-                            status: AgentRunStatus::Stopped,
-                            assistant: summary.assistant.clone(),
-                            error: summary.error.clone(),
-                            session: None,
-                        });
-                entry.status = AgentRunStatus::Stopped;
-                entry.assistant = summary.assistant.clone();
-                entry.error = summary.error.clone();
-                set_persisted_run(ctx, &run_id, entry);
-                Ok(to_tool_result(tool_name, summary))
+        let mut persisted_runs = parse_persisted_runs(ctx);
+        let mut tree_ids = collect_descendant_run_ids_from_state(&persisted_runs, &run_id, true);
+        if tree_ids.is_empty() {
+            tree_ids.push(run_id.clone());
+        }
+
+        let mut summaries: HashMap<String, AgentRunSummary> = HashMap::new();
+        let mut manager_error = None;
+
+        match self
+            .manager
+            .stop_owned_tree(&owner_session_id, &run_id)
+            .await
+        {
+            Ok(stopped) => {
+                for summary in stopped {
+                    summaries.insert(summary.run_id.clone(), summary);
+                }
             }
             Err(e) => {
-                let Some(mut persisted) = parse_persisted_runs(ctx).remove(&run_id) else {
-                    return Ok(tool_error(tool_name, "invalid_state", e));
-                };
-                if persisted.status == AgentRunStatus::Running {
-                    persisted = make_orphaned_running_state(&persisted);
-                    let summary = as_agent_run_summary(&run_id, &persisted);
-                    set_persisted_run(ctx, &run_id, persisted);
-                    return Ok(to_tool_result(tool_name, summary));
-                }
-                Ok(tool_error(tool_name, "invalid_state", e))
+                manager_error = Some(e);
             }
         }
+
+        let mut stopped_any = !summaries.is_empty();
+        for id in &tree_ids {
+            let Some(run) = persisted_runs.get_mut(id) else {
+                continue;
+            };
+            if run.status != AgentRunStatus::Running {
+                continue;
+            }
+
+            if let Some(summary) = summaries.remove(id) {
+                run.status = summary.status;
+                run.assistant = summary.assistant;
+                run.error = summary.error;
+            } else {
+                let stopped = make_orphaned_running_state(run);
+                *run = stopped;
+            }
+            stopped_any = true;
+            set_persisted_run(ctx, id, run.clone());
+        }
+
+        if !stopped_any {
+            if let Some(err) = manager_error {
+                return Ok(tool_error(tool_name, "invalid_state", err));
+            }
+            return Ok(tool_error(
+                tool_name,
+                "invalid_state",
+                format!("Run '{run_id}' cannot be stopped"),
+            ));
+        }
+
+        if let Some(summary) = {
+            if let Some(summary) = summaries.remove(&run_id) {
+                Some(summary)
+            } else {
+                persisted_runs
+                    .get(&run_id)
+                    .map(|run| as_agent_run_summary(&run_id, run))
+            }
+        } {
+            return Ok(to_tool_result(tool_name, summary));
+        }
+
+        let fallback_target = persisted_runs.remove(&run_id);
+        if let Some(run) = fallback_target {
+            return Ok(to_tool_result(
+                tool_name,
+                as_agent_run_summary(&run_id, &run),
+            ));
+        }
+
+        Ok(tool_error(
+            tool_name,
+            "invalid_state",
+            "No matching run state for stopped run",
+        ))
     }
 }
 
@@ -1529,6 +1723,7 @@ mod tests {
                 "run-1",
                 "owner-1".to_string(),
                 "worker".to_string(),
+                None,
                 Session::new("child-1"),
                 None,
             )
@@ -1544,7 +1739,7 @@ mod tests {
             .expect("running reminder should be present");
         assert!(reminder.contains("status=\"running\""));
 
-        manager.stop_owned("owner-1", "run-1").await.unwrap();
+        manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
         let mut step2 = StepContext::new(&owner, vec![]);
         plugin.on_phase(Phase::AfterToolExecute, &mut step2).await;
         let reminder2 = step2
@@ -1562,6 +1757,7 @@ mod tests {
                 "run-1",
                 "owner".to_string(),
                 "agent-a".to_string(),
+                None,
                 Session::new("s-1"),
                 None,
             )
@@ -1573,6 +1769,7 @@ mod tests {
                 "run-1",
                 "owner".to_string(),
                 "agent-a".to_string(),
+                None,
                 Session::new("s-2"),
                 None,
             )
@@ -1769,6 +1966,81 @@ mod tests {
             .unwrap();
         assert_eq!(resumed.status, ToolStatus::Success);
         assert_eq!(resumed.data["status"], json!("completed"));
+    }
+
+    #[tokio::test]
+    async fn manager_stop_tree_stops_descendants() {
+        let manager = AgentRunManager::new();
+        manager
+            .put_running(
+                "parent-run",
+                "owner-session".to_string(),
+                "agent-a".to_string(),
+                None,
+                Session::new("parent-run-session"),
+                None,
+            )
+            .await;
+        manager
+            .put_running(
+                "child-run",
+                "owner-session".to_string(),
+                "agent-a".to_string(),
+                Some("parent-run".to_string()),
+                Session::new("child-run-session"),
+                None,
+            )
+            .await;
+        manager
+            .put_running(
+                "grandchild-run",
+                "owner-session".to_string(),
+                "agent-a".to_string(),
+                Some("child-run".to_string()),
+                Session::new("grandchild-run-session"),
+                None,
+            )
+            .await;
+        manager
+            .put_running(
+                "other-owner-run",
+                "other-owner".to_string(),
+                "agent-b".to_string(),
+                Some("parent-run".to_string()),
+                Session::new("other-owner-session"),
+                None,
+            )
+            .await;
+
+        let stopped = manager
+            .stop_owned_tree("owner-session", "parent-run")
+            .await
+            .unwrap();
+
+        assert_eq!(stopped.len(), 3);
+
+        let parent = manager
+            .get_owned_summary("owner-session", "parent-run")
+            .await
+            .expect("parent run should exist");
+        assert_eq!(parent.status, AgentRunStatus::Stopped);
+
+        let child = manager
+            .get_owned_summary("owner-session", "child-run")
+            .await
+            .expect("child run should exist");
+        assert_eq!(child.status, AgentRunStatus::Stopped);
+
+        let grandchild = manager
+            .get_owned_summary("owner-session", "grandchild-run")
+            .await
+            .expect("grandchild run should exist");
+        assert_eq!(grandchild.status, AgentRunStatus::Stopped);
+
+        let denied = manager
+            .stop_owned_tree("owner-session", "other-owner-run")
+            .await;
+        assert!(denied.is_err());
     }
 
     #[tokio::test]
@@ -2028,6 +2300,121 @@ mod tests {
             .unwrap();
         assert_eq!(summary.status, ToolStatus::Success);
         assert_eq!(summary.data["status"], json!("stopped"));
+    }
+
+    #[tokio::test]
+    async fn agent_stop_tool_stops_descendant_runs() {
+        let manager = Arc::new(AgentRunManager::new());
+        let stop_tool = AgentStopTool::new(manager.clone());
+        let os_session = Session::new("owner-session");
+
+        let parent_session = Session::new("parent-s");
+        let child_session = Session::new("child-s");
+        let grandchild_session = Session::new("grandchild-s");
+        let parent_run_id = "run-parent";
+        let child_run_id = "run-child";
+        let grandchild_run_id = "run-grandchild";
+
+        manager
+            .put_running(
+                parent_run_id,
+                os_session.id.clone(),
+                "worker".to_string(),
+                None,
+                parent_session.clone(),
+                None,
+            )
+            .await;
+        manager
+            .put_running(
+                child_run_id,
+                os_session.id.clone(),
+                "worker".to_string(),
+                Some(parent_run_id.to_string()),
+                child_session.clone(),
+                None,
+            )
+            .await;
+        manager
+            .put_running(
+                grandchild_run_id,
+                os_session.id.clone(),
+                "worker".to_string(),
+                Some(child_run_id.to_string()),
+                grandchild_session.clone(),
+                None,
+            )
+            .await;
+
+        let doc = json!({
+            "agent": {
+                "agent_runs": {
+                    parent_run_id: {
+                        "run_id": parent_run_id,
+                        "target_agent_id": "worker",
+                        "status": "running",
+                        "session": serde_json::to_value(parent_session).unwrap()
+                    },
+                    child_run_id: {
+                        "run_id": child_run_id,
+                        "parent_run_id": parent_run_id,
+                        "target_agent_id": "worker",
+                        "status": "running",
+                        "session": serde_json::to_value(child_session).unwrap()
+                    },
+                    grandchild_run_id: {
+                        "run_id": grandchild_run_id,
+                        "parent_run_id": child_run_id,
+                        "target_agent_id": "worker",
+                        "status": "running",
+                        "session": serde_json::to_value(grandchild_session).unwrap()
+                    }
+                }
+            }
+        });
+
+        let mut rt = carve_state::Runtime::new();
+        rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, os_session.id.clone())
+            .unwrap();
+        let ctx =
+            carve_state::Context::new(&doc, "call-stop", "tool:agent_stop").with_runtime(Some(&rt));
+        let result = stop_tool
+            .execute(json!({ "run_id": parent_run_id }), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result.status, ToolStatus::Success);
+        assert_eq!(result.data["status"], json!("stopped"));
+
+        let parent = manager
+            .get_owned_summary(&os_session.id, parent_run_id)
+            .await
+            .expect("parent run should exist");
+        assert_eq!(parent.status, AgentRunStatus::Stopped);
+        let child = manager
+            .get_owned_summary(&os_session.id, child_run_id)
+            .await
+            .expect("child run should exist");
+        assert_eq!(child.status, AgentRunStatus::Stopped);
+        let grandchild = manager
+            .get_owned_summary(&os_session.id, grandchild_run_id)
+            .await
+            .expect("grandchild run should exist");
+        assert_eq!(grandchild.status, AgentRunStatus::Stopped);
+
+        let patch = ctx.take_patch();
+        let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+        assert_eq!(
+            updated["agent"]["agent_runs"][parent_run_id]["status"],
+            json!("stopped")
+        );
+        assert_eq!(
+            updated["agent"]["agent_runs"][child_run_id]["status"],
+            json!("stopped")
+        );
+        assert_eq!(
+            updated["agent"]["agent_runs"][grandchild_run_id]["status"],
+            json!("stopped")
+        );
     }
 
     #[tokio::test]

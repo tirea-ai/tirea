@@ -630,6 +630,7 @@ impl Storage for PostgresStorage {
             .messages
             .iter()
             .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
+            .map(|m| m.as_ref())
             .collect();
 
         let insert_sql = format!(
