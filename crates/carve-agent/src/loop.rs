@@ -377,28 +377,132 @@ impl AgentDefinition {
     }
 }
 
-/// Emit a phase to all plugins.
-async fn emit_phase(phase: Phase, step: &mut StepContext<'_>, plugins: &[Arc<dyn AgentPlugin>]) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PhaseMutationSnapshot {
+    skip_inference: bool,
+    tool_ids: Vec<String>,
+    tool_call_id: Option<String>,
+    tool_name: Option<String>,
+    tool_blocked: bool,
+    tool_pending: bool,
+    tool_pending_interaction_id: Option<String>,
+    tool_has_result: bool,
+}
+
+fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
+    PhaseMutationSnapshot {
+        skip_inference: step.skip_inference,
+        tool_ids: step.tools.iter().map(|t| t.id.clone()).collect(),
+        tool_call_id: step.tool.as_ref().map(|t| t.id.clone()),
+        tool_name: step.tool.as_ref().map(|t| t.name.clone()),
+        tool_blocked: step.tool_blocked(),
+        tool_pending: step.tool_pending(),
+        tool_pending_interaction_id: step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.as_ref().map(|i| i.id.clone())),
+        tool_has_result: step.tool.as_ref().and_then(|t| t.result.as_ref()).is_some(),
+    }
+}
+
+fn validate_phase_mutation(
+    phase: Phase,
+    plugin_id: &str,
+    before: &PhaseMutationSnapshot,
+    after: &PhaseMutationSnapshot,
+) -> Result<(), AgentLoopError> {
+    // Tool list (filtering) is only valid in BeforeInference.
+    if before.tool_ids != after.tool_ids && phase != Phase::BeforeInference {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated tool filtering outside BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    // Skip inference signal must be set only in BeforeInference.
+    if before.skip_inference != after.skip_inference && phase != Phase::BeforeInference {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
+            plugin_id
+        )));
+    }
+
+    // Plugins must not rewrite tool identity.
+    if before.tool_call_id != after.tool_call_id || before.tool_name != after.tool_name {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated tool identity in phase {phase}",
+            plugin_id
+        )));
+    }
+
+    // Tool gate (block/pending/interaction) is only valid in BeforeToolExecute.
+    let tool_gate_changed = before.tool_blocked != after.tool_blocked
+        || before.tool_pending != after.tool_pending
+        || before.tool_pending_interaction_id != after.tool_pending_interaction_id;
+    if tool_gate_changed && phase != Phase::BeforeToolExecute {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated tool gate outside BeforeToolExecute ({phase})",
+            plugin_id
+        )));
+    }
+
+    // Tool result is produced by loop/tool execution, not by plugins.
+    if before.tool_has_result != after.tool_has_result {
+        return Err(AgentLoopError::StateError(format!(
+            "plugin '{}' mutated tool result in phase {phase}",
+            plugin_id
+        )));
+    }
+
+    Ok(())
+}
+
+async fn emit_phase_checked(
+    phase: Phase,
+    step: &mut StepContext<'_>,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Result<(), AgentLoopError> {
     for plugin in plugins {
+        let before = phase_mutation_snapshot(step);
         plugin.on_phase(phase, step).await;
+        let after = phase_mutation_snapshot(step);
+        validate_phase_mutation(phase, plugin.id(), &before, &after)?;
+    }
+    Ok(())
+}
+
+fn take_step_side_effects(
+    scratchpad: &mut ScratchpadRuntimeData,
+    step: &mut StepContext<'_>,
+) -> Vec<TrackedPatch> {
+    let pending = std::mem::take(&mut step.pending_patches);
+    scratchpad.sync_from_step(step);
+    pending
+}
+
+fn apply_pending_patches(session: Session, pending: Vec<TrackedPatch>) -> Session {
+    if pending.is_empty() {
+        session
+    } else {
+        session.with_patches(pending)
     }
 }
 
 /// Emit SessionEnd phase and apply any resulting patches to the session.
 async fn emit_session_end(
-    mut session: Session,
+    session: Session,
     scratchpad: &mut ScratchpadRuntimeData,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Session {
-    let mut step = scratchpad.new_step_context(&session, tool_descriptors.to_vec());
-    emit_phase(Phase::SessionEnd, &mut step, plugins).await;
-    let pending = std::mem::take(&mut step.pending_patches);
-    scratchpad.sync_from_step(&step);
-    if !pending.is_empty() {
-        session = session.with_patches(pending);
-    }
-    session
+    let pending = {
+        let mut step = scratchpad.new_step_context(&session, tool_descriptors.to_vec());
+        if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, plugins).await {
+            tracing::warn!(error = %e, "SessionEnd plugin phase validation failed");
+        }
+        take_step_side_effects(scratchpad, &mut step)
+    };
+    apply_pending_patches(session, pending)
 }
 
 /// Build terminal error events after running SessionEnd cleanup.
@@ -804,10 +908,10 @@ pub async fn run_step(
         let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
 
         // Phase: StepStart
-        emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
+        emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await?;
 
         // Phase: BeforeInference
-        emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
+        emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await?;
 
         // Build messages
         let msgs = build_messages(&step, &config.system_prompt);
@@ -816,16 +920,11 @@ pub async fn run_step(
         let skip = step.skip_inference;
         let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
         let tracing_span = step.tracing_span.take();
-        let pending = std::mem::take(&mut step.pending_patches);
-        scratchpad.sync_from_step(&step);
+        let pending = take_step_side_effects(&mut scratchpad, &mut step);
 
         (msgs, tools_filter, skip, tracing_span, pending)
     };
-    let session = if pending.is_empty() {
-        session
-    } else {
-        session.with_patches(pending)
-    };
+    let session = apply_pending_patches(session, pending);
 
     // Skip inference if requested
     if skip_inference {
@@ -866,9 +965,9 @@ pub async fn run_step(
                 "llmmetry.inference_error",
                 serde_json::json!({ "type": "llm_exec_error", "message": err }),
             );
-            emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-            emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-            scratchpad.sync_from_step(&step);
+            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await?;
+            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await?;
+            let _ = take_step_side_effects(&mut scratchpad, &mut step);
             return Err(AgentLoopError::LlmError(e.to_string()));
         }
     };
@@ -896,14 +995,9 @@ pub async fn run_step(
     let session = {
         let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
         step.response = Some(result.clone());
-        emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-        let pending = std::mem::take(&mut step.pending_patches);
-        scratchpad.sync_from_step(&step);
-        if pending.is_empty() {
-            session
-        } else {
-            session.with_patches(pending)
-        }
+        emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await?;
+        let pending = take_step_side_effects(&mut scratchpad, &mut step);
+        apply_pending_patches(session, pending)
     };
 
     // Add assistant message
@@ -925,14 +1019,9 @@ pub async fn run_step(
     // Phase: StepEnd (with new context)
     let session = {
         let mut step = scratchpad.new_step_context(&session, tool_descriptors);
-        emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-        let pending = std::mem::take(&mut step.pending_patches);
-        scratchpad.sync_from_step(&step);
-        if pending.is_empty() {
-            session
-        } else {
-            session.with_patches(pending)
-        }
+        emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await?;
+        let pending = take_step_side_effects(&mut scratchpad, &mut step);
+        apply_pending_patches(session, pending)
     };
 
     Ok((session, result))
@@ -1071,7 +1160,8 @@ async fn execute_tools_parallel_with_phases(
         }
     });
 
-    Ok(join_all(futures).await)
+    let results = join_all(futures).await;
+    results.into_iter().collect()
 }
 
 /// Execute tools sequentially with phase hooks.
@@ -1104,7 +1194,7 @@ async fn execute_tools_sequential_with_phases(
             runtime,
             session_id,
         )
-        .await;
+        .await?;
 
         // Apply patch to state for next tool
         if let Some(ref patch) = result.execution.patch {
@@ -1240,7 +1330,7 @@ async fn execute_single_tool_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     session_id: &str,
-) -> ToolExecutionResult {
+) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create a session stub so plugins see the real session id and runtime.
     let mut temp_session = Session::with_initial_state(session_id, state.clone());
     if let Some(rt) = runtime {
@@ -1253,7 +1343,7 @@ async fn execute_single_tool_with_phases(
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
-    emit_phase(Phase::BeforeToolExecute, &mut step, plugins).await;
+    emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
 
     // Check if blocked or pending
     let (execution, pending_interaction) = if step.tool_blocked() {
@@ -1332,17 +1422,17 @@ async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_phase(Phase::AfterToolExecute, &mut step, plugins).await;
+    emit_phase_checked(Phase::AfterToolExecute, &mut step, plugins).await?;
 
     let pending_patches = std::mem::take(&mut step.pending_patches);
 
-    ToolExecutionResult {
+    Ok(ToolExecutionResult {
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
         scratchpad: step.scratchpad_snapshot(),
         pending_patches,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,35 +1544,44 @@ pub async fn run_loop(
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
     // Phase: SessionStart
-    {
+    let session_start_pending = {
         let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-        emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
-        let pending = std::mem::take(&mut session_step.pending_patches);
-        scratchpad.sync_from_step(&session_step);
-        if !pending.is_empty() {
-            session = session.with_patches(pending);
-        }
-    }
+        emit_phase_checked(Phase::SessionStart, &mut session_step, &config.plugins).await?;
+        take_step_side_effects(&mut scratchpad, &mut session_step)
+    };
+    session = apply_pending_patches(session, session_start_pending);
 
     loop {
         // Phase: StepStart and BeforeInference
-        let (messages, filtered_tools, skip_inference, tracing_span) = {
+        let step_prepare = {
             let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
-            emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
+            if let Err(err) = emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await
+            {
+                Err(err)
+            } else if let Err(err) =
+                emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await
+            {
+                Err(err)
+            } else {
+                let msgs = build_messages(&step, &config.system_prompt);
+                let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+                let skip = step.skip_inference;
+                let tracing_span = step.tracing_span.take();
+                let pending = take_step_side_effects(&mut scratchpad, &mut step);
 
-            let msgs = build_messages(&step, &config.system_prompt);
-            let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
-            let skip = step.skip_inference;
-            let tracing_span = step.tracing_span.take();
-            let pending = std::mem::take(&mut step.pending_patches);
-            scratchpad.sync_from_step(&step);
-            if !pending.is_empty() {
-                session = session.with_patches(pending);
+                Ok::<_, AgentLoopError>((msgs, tools_filter, skip, tracing_span, pending))
             }
-
-            (msgs, tools_filter, skip, tracing_span)
         };
+        let (messages, filtered_tools, skip_inference, tracing_span, pending) = match step_prepare {
+            Ok(v) => v,
+            Err(e) => {
+                let _finalized =
+                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                        .await;
+                return Err(e);
+            }
+        };
+        session = apply_pending_patches(session, pending);
 
         if skip_inference {
             break;
@@ -1514,13 +1613,32 @@ pub async fn run_loop(
                     "llmmetry.inference_error",
                     serde_json::json!({ "type": "llm_exec_error", "message": e.to_string() }),
                 );
-                emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-                emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-                let pending = std::mem::take(&mut step.pending_patches);
-                scratchpad.sync_from_step(&step);
-                if !pending.is_empty() {
-                    session = session.with_patches(pending);
+                if let Err(phase_error) =
+                    emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
+                {
+                    let _finalized = emit_session_end(
+                        session,
+                        &mut scratchpad,
+                        &tool_descriptors,
+                        &config.plugins,
+                    )
+                    .await;
+                    return Err(phase_error);
                 }
+                if let Err(phase_error) =
+                    emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
+                {
+                    let _finalized = emit_session_end(
+                        session,
+                        &mut scratchpad,
+                        &tool_descriptors,
+                        &config.plugins,
+                    )
+                    .await;
+                    return Err(phase_error);
+                }
+                let pending = take_step_side_effects(&mut scratchpad, &mut step);
+                session = apply_pending_patches(session, pending);
                 let _finalized =
                     emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
                         .await;
@@ -1551,14 +1669,22 @@ pub async fn run_loop(
         last_text = result.text.clone();
 
         // Phase: AfterInference
-        {
+        let after_inference_pending = {
             let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
             step.response = Some(result.clone());
-            emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-            let pending = std::mem::take(&mut step.pending_patches);
-            scratchpad.sync_from_step(&step);
-            if !pending.is_empty() {
-                session = session.with_patches(pending);
+            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins)
+                .await
+                .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
+        };
+        match after_inference_pending {
+            Ok(pending) => {
+                session = apply_pending_patches(session, pending);
+            }
+            Err(e) => {
+                let _finalized =
+                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                        .await;
+                return Err(e);
             }
         }
 
@@ -1577,13 +1703,21 @@ pub async fn run_loop(
         };
 
         // Phase: StepEnd
-        {
+        let step_end_pending = {
             let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-            let pending = std::mem::take(&mut step.pending_patches);
-            scratchpad.sync_from_step(&step);
-            if !pending.is_empty() {
-                session = session.with_patches(pending);
+            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins)
+                .await
+                .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
+        };
+        match step_end_pending {
+            Ok(pending) => {
+                session = apply_pending_patches(session, pending);
+            }
+            Err(e) => {
+                let _finalized =
+                    emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                        .await;
+                return Err(e);
             }
         }
 
@@ -1847,17 +1981,6 @@ fn run_loop_stream_impl_with_provider(
     let tool_descriptors = tool_descriptors_for_config(&tools, &config);
     let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
-        // Phase: SessionStart (use scoped block to manage borrow)
-        {
-            let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-            emit_phase(Phase::SessionStart, &mut session_step, &config.plugins).await;
-            let pending = std::mem::take(&mut session_step.pending_patches);
-            scratchpad.sync_from_step(&session_step);
-            if !pending.is_empty() {
-                session = session.with_patches(pending);
-            }
-        }
-
         // Resolve run_id: from runtime if pre-set, otherwise generate.
         // NOTE: runtime is mutated in-place here. This is intentional —
         // runtime is transient (not persisted) and the owned-builder pattern
@@ -1873,6 +1996,38 @@ fn run_loop_stream_impl_with_provider(
             });
         let parent_run_id = session.runtime.value("parent_run_id")
             .and_then(|v| v.as_str().map(String::from));
+
+        // Phase: SessionStart (use scoped block to manage borrow)
+        let session_start_pending = {
+            let mut session_step = scratchpad.new_step_context(&session, tool_descriptors.clone());
+            emit_phase_checked(Phase::SessionStart, &mut session_step, &config.plugins)
+                .await
+                .map(|_| take_step_side_effects(&mut scratchpad, &mut session_step))
+        };
+        match session_start_pending {
+            Ok(pending) => {
+                session = apply_pending_patches(session, pending);
+            }
+            Err(e) => {
+                let (finalized, error, finish) = prepare_stream_error_termination(
+                    session,
+                    &mut scratchpad,
+                    &tool_descriptors,
+                    &config.plugins,
+                    &run_id,
+                    e.to_string(),
+                )
+                .await;
+                session = finalized;
+                yield error;
+                yield finish;
+                if let Some(tx) = final_session_tx.take() {
+                    let _ = tx.send(session);
+                }
+                return;
+            }
+        }
+
         yield AgentEvent::RunStart {
             thread_id: session.id.clone(),
             run_id: run_id.clone(),
@@ -1937,7 +2092,7 @@ fn run_loop_stream_impl_with_provider(
                 };
 
                 let tool = tools.get(&tool_call.name).cloned();
-                let replay_result = execute_single_tool_with_phases(
+                let replay_result = match execute_single_tool_with_phases(
                     tool.as_deref(),
                     tool_call,
                     &state,
@@ -1948,7 +2103,28 @@ fn run_loop_stream_impl_with_provider(
                     Some(&session.runtime),
                     &session.id,
                 )
-                .await;
+                .await
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let (finalized, error, finish) = prepare_stream_error_termination(
+                            session,
+                            &mut scratchpad,
+                            &tool_descriptors,
+                            &config.plugins,
+                            &run_id,
+                            e.to_string(),
+                        )
+                        .await;
+                        session = finalized;
+                        yield error;
+                        yield finish;
+                        if let Some(tx) = final_session_tx.take() {
+                            let _ = tx.send(session);
+                        }
+                        return;
+                    }
+                };
                 scratchpad.data = replay_result.scratchpad.clone();
 
                 if replay_result.pending_interaction.is_some() {
@@ -2080,25 +2256,50 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
-            let (messages, filtered_tools, skip_inference, tracing_span) = {
+            let step_prepare = {
                 let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
 
-                emit_phase(Phase::StepStart, &mut step, &config.plugins).await;
-                emit_phase(Phase::BeforeInference, &mut step, &config.plugins).await;
+                if let Err(err) =
+                    emit_phase_checked(Phase::StepStart, &mut step, &config.plugins).await
+                {
+                    Err(err)
+                } else if let Err(err) =
+                    emit_phase_checked(Phase::BeforeInference, &mut step, &config.plugins).await
+                {
+                    Err(err)
+                } else {
+                    let msgs = build_messages(&step, &config.system_prompt);
 
-                let msgs = build_messages(&step, &config.system_prompt);
+                    let skip = step.skip_inference;
+                    let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
+                    let tracing_span = step.tracing_span.take();
+                    let pending = take_step_side_effects(&mut scratchpad, &mut step);
 
-                let skip = step.skip_inference;
-                let tools_filter: Vec<String> = step.tools.iter().map(|td| td.id.clone()).collect();
-                let tracing_span = step.tracing_span.take();
-                let pending = std::mem::take(&mut step.pending_patches);
-                scratchpad.sync_from_step(&step);
-                if !pending.is_empty() {
-                    session = session.with_patches(pending);
+                    Ok::<_, AgentLoopError>((msgs, tools_filter, skip, tracing_span, pending))
                 }
-
-                (msgs, tools_filter, skip, tracing_span)
             };
+            let (messages, filtered_tools, skip_inference, tracing_span, pending) = match step_prepare {
+                Ok(v) => v,
+                Err(e) => {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut scratchpad,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
+                }
+            };
+            session = apply_pending_patches(session, pending);
 
             // Skip inference if requested
             if skip_inference {
@@ -2140,17 +2341,46 @@ fn run_loop_stream_impl_with_provider(
                 Ok(s) => s,
                 Err(e) => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                    let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                    step.scratchpad_set(
-                        "llmmetry.inference_error",
-                        serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
-                    );
-                    emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-                    emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-                    let pending = std::mem::take(&mut step.pending_patches);
-                    scratchpad.sync_from_step(&step);
-                    if !pending.is_empty() {
-                        session = session.with_patches(pending);
+                    let cleanup_pending = {
+                        let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
+                        step.scratchpad_set(
+                            "llmmetry.inference_error",
+                            serde_json::json!({ "type": "llm_stream_start_error", "message": e.to_string() }),
+                        );
+                        if let Err(err) =
+                            emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
+                        {
+                            Err(err)
+                        } else if let Err(err) =
+                            emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
+                        {
+                            Err(err)
+                        } else {
+                            Ok(take_step_side_effects(&mut scratchpad, &mut step))
+                        }
+                    };
+                    match cleanup_pending {
+                        Ok(pending) => {
+                            session = apply_pending_patches(session, pending);
+                        }
+                        Err(phase_error) => {
+                            let (finalized, error, finish) = prepare_stream_error_termination(
+                                session,
+                                &mut scratchpad,
+                                &tool_descriptors,
+                                &config.plugins,
+                                &run_id,
+                                phase_error.to_string(),
+                            )
+                            .await;
+                            session = finalized;
+                            yield error;
+                            yield finish;
+                            if let Some(tx) = final_session_tx.take() {
+                                let _ = tx.send(session);
+                            }
+                            return;
+                        }
                     }
                     let (finalized, error, finish) = prepare_stream_error_termination(
                         session,
@@ -2220,18 +2450,47 @@ fn run_loop_stream_impl_with_provider(
                     }
                     Err(e) => {
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                        let mut step =
-                            scratchpad.new_step_context(&session, tool_descriptors.clone());
-                        step.scratchpad_set(
-                            "llmmetry.inference_error",
-                            serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
-                        );
-                        emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-                        emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-                        let pending = std::mem::take(&mut step.pending_patches);
-                        scratchpad.sync_from_step(&step);
-                        if !pending.is_empty() {
-                            session = session.with_patches(pending);
+                        let cleanup_pending = {
+                            let mut step =
+                                scratchpad.new_step_context(&session, tool_descriptors.clone());
+                            step.scratchpad_set(
+                                "llmmetry.inference_error",
+                                serde_json::json!({ "type": "llm_stream_event_error", "message": e.to_string() }),
+                            );
+                            if let Err(err) =
+                                emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins).await
+                            {
+                                Err(err)
+                            } else if let Err(err) =
+                                emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins).await
+                            {
+                                Err(err)
+                            } else {
+                                Ok(take_step_side_effects(&mut scratchpad, &mut step))
+                            }
+                        };
+                        match cleanup_pending {
+                            Ok(pending) => {
+                                session = apply_pending_patches(session, pending);
+                            }
+                            Err(phase_error) => {
+                                let (finalized, error, finish) = prepare_stream_error_termination(
+                                    session,
+                                    &mut scratchpad,
+                                    &tool_descriptors,
+                                    &config.plugins,
+                                    &run_id,
+                                    phase_error.to_string(),
+                                )
+                                .await;
+                                session = finalized;
+                                yield error;
+                                yield finish;
+                                if let Some(tx) = final_session_tx.take() {
+                                    let _ = tx.send(session);
+                                }
+                                return;
+                            }
                         }
                         let (finalized, error, finish) = prepare_stream_error_termination(
                             session,
@@ -2264,14 +2523,34 @@ fn run_loop_stream_impl_with_provider(
             };
 
             // Phase: AfterInference (with new context)
-            {
+            let after_inference_pending = {
                 let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
                 step.response = Some(result.clone());
-                emit_phase(Phase::AfterInference, &mut step, &config.plugins).await;
-                let pending = std::mem::take(&mut step.pending_patches);
-                scratchpad.sync_from_step(&step);
-                if !pending.is_empty() {
-                    session = session.with_patches(pending);
+                emit_phase_checked(Phase::AfterInference, &mut step, &config.plugins)
+                    .await
+                    .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
+            };
+            match after_inference_pending {
+                Ok(pending) => {
+                    session = apply_pending_patches(session, pending);
+                }
+                Err(e) => {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut scratchpad,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
                 }
             }
 
@@ -2287,13 +2566,33 @@ fn run_loop_stream_impl_with_provider(
             };
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
-            {
+            let step_end_pending = {
                 let mut step = scratchpad.new_step_context(&session, tool_descriptors.clone());
-                emit_phase(Phase::StepEnd, &mut step, &config.plugins).await;
-                let pending = std::mem::take(&mut step.pending_patches);
-                scratchpad.sync_from_step(&step);
-                if !pending.is_empty() {
-                    session = session.with_patches(pending);
+                emit_phase_checked(Phase::StepEnd, &mut step, &config.plugins)
+                    .await
+                    .map(|_| take_step_side_effects(&mut scratchpad, &mut step))
+            };
+            match step_end_pending {
+                Ok(pending) => {
+                    session = apply_pending_patches(session, pending);
+                }
+                Err(e) => {
+                    let (finalized, error, finish) = prepare_stream_error_termination(
+                        session,
+                        &mut scratchpad,
+                        &tool_descriptors,
+                        &config.plugins,
+                        &run_id,
+                        e.to_string(),
+                    )
+                    .await;
+                    session = finalized;
+                    yield error;
+                    yield finish;
+                    if let Some(tx) = final_session_tx.take() {
+                        let _ = tx.send(session);
+                    }
+                    return;
                 }
             }
 
@@ -2953,7 +3252,7 @@ mod tests {
             }
         }
 
-        let result = tool_future.await;
+        let result = tool_future.await.expect("tool execution should succeed");
         assert!(result.execution.result.is_success());
     }
 
@@ -3260,6 +3559,53 @@ mod tests {
         });
     }
 
+    struct InvalidAfterToolMutationPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for InvalidAfterToolMutationPlugin {
+        fn id(&self) -> &str {
+            "invalid_after_tool_mutation"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            if phase == Phase::AfterToolExecute {
+                step.block("too late");
+            }
+        }
+    }
+
+    #[test]
+    fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "invalid".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(InvalidAfterToolMutationPlugin)];
+
+            let err = execute_tools_with_plugins(session, &result, &tools, true, &plugins)
+                .await
+                .expect_err("phase mutation outside BeforeToolExecute should fail");
+
+            assert!(
+                matches!(
+                    err,
+                    AgentLoopError::StateError(ref message)
+                    if message.contains("mutated tool gate outside BeforeToolExecute")
+                ),
+                "unexpected error: {err:?}"
+            );
+        });
+    }
+
     struct ReminderPhasePlugin;
 
     #[async_trait]
@@ -3363,7 +3709,9 @@ mod tests {
             let mut step = StepContext::new(&session, tool_descriptors);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
 
-            emit_phase(Phase::BeforeInference, &mut step, &plugins).await;
+            emit_phase_checked(Phase::BeforeInference, &mut step, &plugins)
+                .await
+                .expect("BeforeInference should not fail");
 
             assert_eq!(step.tools.len(), 1);
             assert_eq!(step.tools[0].id, "safe_tool");
@@ -3438,7 +3786,8 @@ mod tests {
             None,
             "test",
         )
-        .await;
+        .await
+        .expect("tool execution should succeed");
 
         assert!(result.execution.result.is_success());
     }
@@ -3483,7 +3832,8 @@ mod tests {
             None,
             "test",
         )
-        .await;
+        .await
+        .expect("tool execution should succeed");
 
         assert!(result.execution.result.is_success());
     }
@@ -3533,7 +3883,8 @@ mod tests {
             Some(&rt),
             "real-session-42",
         )
-        .await;
+        .await
+        .expect("tool execution should succeed");
 
         assert!(result.execution.result.is_success());
         assert!(VERIFIED.load(Ordering::SeqCst), "plugin did not run");
@@ -3576,11 +3927,15 @@ mod tests {
         let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
         let mut session_step = scratchpad.new_step_context(&session, tools.clone());
-        emit_phase(Phase::SessionStart, &mut session_step, &plugins).await;
+        emit_phase_checked(Phase::SessionStart, &mut session_step, &plugins)
+            .await
+            .expect("SessionStart should not fail");
         scratchpad.sync_from_step(&session_step);
 
         let mut step = scratchpad.new_step_context(&session, tools);
-        emit_phase(Phase::StepStart, &mut step, &plugins).await;
+        emit_phase_checked(Phase::StepStart, &mut step, &plugins)
+            .await
+            .expect("StepStart should not fail");
 
         assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
     }
@@ -4448,6 +4803,78 @@ mod tests {
             ],
             "Unexpected phase sequence: {:?}",
             recorded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference() {
+        struct InvalidStepStartSkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for InvalidStepStartSkipPlugin {
+            fn id(&self) -> &str {
+                "invalid_step_start_skip"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::StepStart {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let config = AgentConfig::new("gpt-4o-mini")
+            .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+        let client = Client::default();
+
+        let result = run_loop(&client, &config, session, &tools).await;
+        assert!(
+            matches!(
+                result,
+                Err(AgentLoopError::StateError(ref message))
+                if message.contains("mutated skip_inference outside BeforeInference")
+            ),
+            "expected phase mutation state error, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() {
+        struct InvalidStepStartSkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for InvalidStepStartSkipPlugin {
+            fn id(&self) -> &str {
+                "invalid_step_start_skip"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::StepStart {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(Message::user("hi"));
+        let tools = HashMap::new();
+
+        let events = run_mock_stream(MockStreamProvider::new(vec![]), config, session, tools).await;
+
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                AgentEvent::Error { message }
+                if message.contains("mutated skip_inference outside BeforeInference")
+            )),
+            "expected mutation error event, got: {events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(AgentEvent::RunFinish { .. })),
+            "expected stream termination after mutation error, got: {events:?}"
         );
     }
 
