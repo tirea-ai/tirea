@@ -131,6 +131,14 @@ pub struct AgentDefinition {
     pub allowed_tools: Option<Vec<String>>,
     /// Tool blacklist.
     pub excluded_tools: Option<Vec<String>>,
+    /// Skill whitelist (None = all skills available).
+    pub allowed_skills: Option<Vec<String>>,
+    /// Skill blacklist.
+    pub excluded_skills: Option<Vec<String>>,
+    /// Agent whitelist for `agent_run` delegation (None = all visible agents available).
+    pub allowed_agents: Option<Vec<String>>,
+    /// Agent blacklist for `agent_run` delegation.
+    pub excluded_agents: Option<Vec<String>>,
     /// Composable stop conditions checked after each tool-call round.
     ///
     /// When empty (and `stop_condition_specs` is also empty), a default
@@ -204,6 +212,10 @@ impl Default for AgentDefinition {
             policy_ids: Vec::new(),
             allowed_tools: None,
             excluded_tools: None,
+            allowed_skills: None,
+            excluded_skills: None,
+            allowed_agents: None,
+            excluded_agents: None,
             stop_conditions: Vec::new(),
             stop_condition_specs: Vec::new(),
         }
@@ -228,6 +240,10 @@ impl std::fmt::Debug for AgentDefinition {
             .field("policy_ids", &self.policy_ids)
             .field("allowed_tools", &self.allowed_tools)
             .field("excluded_tools", &self.excluded_tools)
+            .field("allowed_skills", &self.allowed_skills)
+            .field("excluded_skills", &self.excluded_skills)
+            .field("allowed_agents", &self.allowed_agents)
+            .field("excluded_agents", &self.excluded_agents)
             .field(
                 "stop_conditions",
                 &format!("[{} conditions]", self.stop_conditions.len()),
@@ -343,6 +359,34 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_excluded_tools(mut self, tools: Vec<String>) -> Self {
         self.excluded_tools = Some(tools);
+        self
+    }
+
+    /// Set allowed skills whitelist.
+    #[must_use]
+    pub fn with_allowed_skills(mut self, skills: Vec<String>) -> Self {
+        self.allowed_skills = Some(skills);
+        self
+    }
+
+    /// Set excluded skills blacklist.
+    #[must_use]
+    pub fn with_excluded_skills(mut self, skills: Vec<String>) -> Self {
+        self.excluded_skills = Some(skills);
+        self
+    }
+
+    /// Set allowed delegate agents whitelist for `agent_run`.
+    #[must_use]
+    pub fn with_allowed_agents(mut self, agents: Vec<String>) -> Self {
+        self.allowed_agents = Some(agents);
+        self
+    }
+
+    /// Set excluded delegate agents blacklist for `agent_run`.
+    #[must_use]
+    pub fn with_excluded_agents(mut self, agents: Vec<String>) -> Self {
+        self.excluded_agents = Some(agents);
         self
     }
 
@@ -1141,11 +1185,48 @@ pub async fn execute_tools(
 
 /// Execute tool calls with phase-based plugin hooks.
 pub async fn execute_tools_with_config(
-    session: Session,
+    mut session: Session,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<Session, AgentLoopError> {
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
+        config.allowed_tools.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
+        config.excluded_tools.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY,
+        config.allowed_skills.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_EXCLUDED_SKILLS_KEY,
+        config.excluded_skills.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY,
+        config.allowed_agents.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filter_if_absent(
+        &mut session.runtime,
+        crate::tool_filter::RUNTIME_EXCLUDED_AGENTS_KEY,
+        config.excluded_agents.as_deref(),
+    )
+    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+
     execute_tools_with_plugins(
         session,
         result,
@@ -1159,6 +1240,7 @@ pub async fn execute_tools_with_config(
 fn runtime_with_tool_caller_context(
     session: &Session,
     state: &Value,
+    config: Option<&AgentConfig>,
 ) -> Result<carve_state::Runtime, AgentLoopError> {
     let mut rt = session.runtime.clone();
     if rt.value(TOOL_RUNTIME_CALLER_SESSION_ID_KEY).is_none() {
@@ -1172,6 +1254,44 @@ fn runtime_with_tool_caller_context(
     if rt.value(TOOL_RUNTIME_CALLER_MESSAGES_KEY).is_none() {
         rt.set(TOOL_RUNTIME_CALLER_MESSAGES_KEY, session.messages.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    }
+    if let Some(cfg) = config {
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
+            cfg.allowed_tools.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
+            cfg.excluded_tools.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY,
+            cfg.allowed_skills.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_EXCLUDED_SKILLS_KEY,
+            cfg.excluded_skills.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY,
+            cfg.allowed_agents.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filter_if_absent(
+            &mut rt,
+            crate::tool_filter::RUNTIME_EXCLUDED_AGENTS_KEY,
+            cfg.excluded_agents.as_deref(),
+        )
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)
 }
@@ -1195,7 +1315,7 @@ pub async fn execute_tools_with_plugins(
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let scratchpad = initial_scratchpad(plugins);
-    let rt_for_tools = runtime_with_tool_caller_context(&session, &state)?;
+    let rt_for_tools = runtime_with_tool_caller_context(&session, &state, None)?;
 
     let results = if parallel {
         execute_tools_parallel_with_phases(
@@ -1467,7 +1587,24 @@ async fn execute_single_tool_with_phases(
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
 
     // Check if blocked or pending
-    let (execution, pending_interaction) = if step.tool_blocked() {
+    let (execution, pending_interaction) = if !crate::tool_filter::is_runtime_allowed(
+        runtime,
+        &call.name,
+        crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
+        crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
+    ) {
+        (
+            ToolExecution {
+                call: call.clone(),
+                result: ToolResult::error(
+                    &call.name,
+                    format!("Tool '{}' is not allowed by current policy", call.name),
+                ),
+                patch: None,
+            },
+            None,
+        )
+    } else if step.tool_blocked() {
         let reason = step
             .tool
             .as_ref()
@@ -1859,7 +1996,7 @@ pub async fn run_loop(
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
-        let rt_for_tools = match runtime_with_tool_caller_context(&session, &state) {
+        let rt_for_tools = match runtime_with_tool_caller_context(&session, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
                 emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
@@ -2204,7 +2341,8 @@ fn run_loop_stream_impl_with_provider(
                 };
 
                 let tool = tools.get(&tool_call.name).cloned();
-                let rt_for_replay = match runtime_with_tool_caller_context(&session, &state) {
+                let rt_for_replay =
+                    match runtime_with_tool_caller_context(&session, &state, Some(&config)) {
                     Ok(rt) => rt,
                     Err(e) => {
                         terminate_stream_error!(e.to_string());
@@ -2580,7 +2718,8 @@ fn run_loop_stream_impl_with_provider(
                 }
             };
 
-            let rt_for_tools = match runtime_with_tool_caller_context(&session, &state) {
+            let rt_for_tools =
+                match runtime_with_tool_caller_context(&session, &state, Some(&config)) {
                 Ok(rt) => rt,
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
@@ -4437,6 +4576,38 @@ mod tests {
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::new("test");
+            let result = StreamResult {
+                text: "Calling tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let config = AgentConfig::new("gpt-4").with_allowed_tools(vec!["other".to_string()]);
+
+            let session = execute_tools_with_config(session, &result, &tools, &config)
+                .await
+                .unwrap();
+
+            assert_eq!(session.message_count(), 1);
+            let msg = &session.messages[0];
+            let result: ToolResult = serde_json::from_str(&msg.content).expect("tool result");
+            assert!(result.is_error());
+            assert!(result
+                .message
+                .unwrap_or_default()
+                .contains("not allowed by current policy"));
         });
     }
 

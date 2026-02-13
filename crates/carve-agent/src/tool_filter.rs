@@ -1,4 +1,13 @@
 use crate::AgentDefinition;
+use carve_state::Runtime;
+use serde_json::Value;
+
+pub(crate) const RUNTIME_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
+pub(crate) const RUNTIME_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
+pub(crate) const RUNTIME_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
+pub(crate) const RUNTIME_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
+pub(crate) const RUNTIME_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+pub(crate) const RUNTIME_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 pub(crate) fn is_tool_allowed(
     tool_id: &str,
@@ -16,6 +25,43 @@ pub(crate) fn is_tool_allowed(
         }
     }
     true
+}
+
+pub(crate) fn set_runtime_filter_if_absent(
+    runtime: &mut Runtime,
+    key: &str,
+    values: Option<&[String]>,
+) -> Result<(), carve_state::RuntimeError> {
+    if runtime.value(key).is_some() {
+        return Ok(());
+    }
+    if let Some(values) = values {
+        runtime.set(key, values.to_vec())?;
+    }
+    Ok(())
+}
+
+fn parse_runtime_filter(values: Option<&Value>) -> Option<Vec<String>> {
+    let arr = values?.as_array()?;
+    let parsed: Vec<String> = arr
+        .iter()
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some(parsed)
+}
+
+pub(crate) fn is_runtime_allowed(
+    runtime: Option<&Runtime>,
+    id: &str,
+    allowed_key: &str,
+    excluded_key: &str,
+) -> bool {
+    let allowed = parse_runtime_filter(runtime.and_then(|rt| rt.value(allowed_key)));
+    let excluded = parse_runtime_filter(runtime.and_then(|rt| rt.value(excluded_key)));
+    is_tool_allowed(id, allowed.as_deref(), excluded.as_deref())
 }
 
 pub(crate) fn is_tool_allowed_by_definition(tool_id: &str, def: &AgentDefinition) -> bool {
@@ -56,5 +102,30 @@ mod tests {
         let excluded: Vec<String> = Vec::new();
         assert!(is_tool_allowed("a", Some(&allowed), Some(&excluded)));
         assert!(!is_tool_allowed("b", Some(&allowed), Some(&excluded)));
+    }
+
+    #[test]
+    fn test_is_runtime_allowed() {
+        let mut rt = Runtime::new();
+        rt.set(RUNTIME_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
+        rt.set(RUNTIME_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
+        assert!(is_runtime_allowed(
+            Some(&rt),
+            "a",
+            RUNTIME_ALLOWED_TOOLS_KEY,
+            RUNTIME_EXCLUDED_TOOLS_KEY
+        ));
+        assert!(!is_runtime_allowed(
+            Some(&rt),
+            "b",
+            RUNTIME_ALLOWED_TOOLS_KEY,
+            RUNTIME_EXCLUDED_TOOLS_KEY
+        ));
+        assert!(!is_runtime_allowed(
+            Some(&rt),
+            "c",
+            RUNTIME_ALLOWED_TOOLS_KEY,
+            RUNTIME_EXCLUDED_TOOLS_KEY
+        ));
     }
 }

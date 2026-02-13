@@ -510,6 +510,10 @@ mod tests {
         assert!(def.system_prompt.is_empty());
         assert!(def.allowed_tools.is_none());
         assert!(def.excluded_tools.is_none());
+        assert!(def.allowed_skills.is_none());
+        assert!(def.excluded_skills.is_none());
+        assert!(def.allowed_agents.is_none());
+        assert!(def.excluded_agents.is_none());
         assert!(def.chat_options.is_some());
         assert!(def.plugins.is_empty());
     }
@@ -528,7 +532,11 @@ mod tests {
             .with_max_rounds(3)
             .with_parallel_tools(false)
             .with_allowed_tools(vec!["search".into(), "read".into()])
-            .with_excluded_tools(vec!["dangerous".into()]);
+            .with_excluded_tools(vec!["dangerous".into()])
+            .with_allowed_skills(vec!["skill-a".into()])
+            .with_excluded_skills(vec!["skill-b".into()])
+            .with_allowed_agents(vec!["writer".into()])
+            .with_excluded_agents(vec!["reviewer".into()]);
 
         assert_eq!(def.id, "planner");
         assert_eq!(def.model, "gpt-4");
@@ -540,6 +548,10 @@ mod tests {
             Some(vec!["search".into(), "read".into()])
         );
         assert_eq!(def.excluded_tools, Some(vec!["dangerous".into()]));
+        assert_eq!(def.allowed_skills, Some(vec!["skill-a".into()]));
+        assert_eq!(def.excluded_skills, Some(vec!["skill-b".into()]));
+        assert_eq!(def.allowed_agents, Some(vec!["writer".into()]));
+        assert_eq!(def.excluded_agents, Some(vec!["reviewer".into()]));
     }
 
     #[test]

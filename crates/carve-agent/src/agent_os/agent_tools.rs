@@ -7,6 +7,9 @@ use crate::r#loop::{
     TOOL_RUNTIME_CALLER_STATE_KEY,
 };
 use crate::stop::StopReason;
+use crate::tool_filter::{
+    is_runtime_allowed, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_EXCLUDED_AGENTS_KEY,
+};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
 use crate::types::{Message, Role};
 use async_trait::async_trait;
@@ -380,8 +383,17 @@ fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
     caller: Option<&str>,
+    runtime: Option<&carve_state::Runtime>,
 ) -> bool {
     if caller.is_some_and(|c| c == target) {
+        return false;
+    }
+    if !is_runtime_allowed(
+        runtime,
+        target,
+        RUNTIME_ALLOWED_AGENTS_KEY,
+        RUNTIME_EXCLUDED_AGENTS_KEY,
+    ) {
         return false;
     }
     registry.get(target).is_some()
@@ -553,6 +565,7 @@ impl Tool for AgentRunTool {
             self.os.agents_registry().as_ref(),
             &target_agent_id,
             caller_agent_id.as_deref(),
+            runtime,
         ) {
             return Ok(tool_error(
                 tool_name,
@@ -713,12 +726,24 @@ impl AgentToolsPlugin {
         self
     }
 
-    fn render_available_agents(&self, caller_agent: Option<&str>) -> String {
+    fn render_available_agents(
+        &self,
+        caller_agent: Option<&str>,
+        runtime: Option<&carve_state::Runtime>,
+    ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();
         if let Some(caller) = caller_agent {
             ids.retain(|id| id != caller);
         }
+        ids.retain(|id| {
+            is_runtime_allowed(
+                runtime,
+                id,
+                RUNTIME_ALLOWED_AGENTS_KEY,
+                RUNTIME_EXCLUDED_AGENTS_KEY,
+            )
+        });
         if ids.is_empty() {
             return String::new();
         }
@@ -817,7 +842,8 @@ impl AgentPlugin for AgentToolsPlugin {
                     .runtime
                     .value(RUNTIME_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
-                let rendered = self.render_available_agents(caller_agent);
+                let rendered =
+                    self.render_available_agents(caller_agent, Some(&step.session.runtime));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }
@@ -856,9 +882,22 @@ mod tests {
         reg.upsert("a", crate::AgentDefinition::new("mock"));
         reg.upsert("b", crate::AgentDefinition::new("mock"));
         let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
-        let rendered = plugin.render_available_agents(Some("a"));
+        let rendered = plugin.render_available_agents(Some("a"), None);
         assert!(rendered.contains("<id>b</id>"));
         assert!(!rendered.contains("<id>a</id>"));
+    }
+
+    #[test]
+    fn plugin_filters_agents_by_runtime_policy() {
+        let mut reg = InMemoryAgentRegistry::new();
+        reg.upsert("writer", crate::AgentDefinition::new("mock"));
+        reg.upsert("reviewer", crate::AgentDefinition::new("mock"));
+        let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
+        let mut rt = carve_state::Runtime::new();
+        rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
+        let rendered = plugin.render_available_agents(None, Some(&rt));
+        assert!(rendered.contains("<id>writer</id>"));
+        assert!(!rendered.contains("<id>reviewer</id>"));
     }
 
     #[tokio::test]
@@ -981,6 +1020,33 @@ mod tests {
             .message
             .unwrap_or_default()
             .contains("missing caller session context"));
+    }
+
+    #[tokio::test]
+    async fn agent_run_tool_rejects_disallowed_target_agent() {
+        let os = AgentOs::builder()
+            .with_agent("worker", crate::AgentDefinition::new("gpt-4o-mini"))
+            .with_agent("reviewer", crate::AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+        let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
+        let doc = json!({});
+        let mut rt = caller_runtime();
+        rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
+        let ctx =
+            carve_state::Context::new(&doc, "call-1", "tool:agent_run").with_runtime(Some(&rt));
+        let result = tool
+            .execute(
+                json!({"agent_id":"reviewer","prompt":"hi","background":false}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, ToolStatus::Error);
+        assert!(result
+            .message
+            .unwrap_or_default()
+            .contains("Unknown or unavailable agent_id"));
     }
 
     #[derive(Debug)]

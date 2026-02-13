@@ -5,6 +5,9 @@ use crate::skills::registry::{
 };
 use crate::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
+use crate::tool_filter::{
+    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+};
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use carve_state::Context;
 use serde_json::{json, Value};
@@ -63,6 +66,18 @@ impl Tool for SkillActivateTool {
             Ok(m) => m,
             Err(r) => return Ok(r),
         };
+        if !is_runtime_allowed(
+            ctx.runtime_ref(),
+            &meta.id,
+            RUNTIME_ALLOWED_SKILLS_KEY,
+            RUNTIME_EXCLUDED_SKILLS_KEY,
+        ) {
+            return Ok(tool_error(
+                "skill",
+                "forbidden_skill",
+                format!("Skill '{}' is not allowed by current policy", meta.id),
+            ));
+        }
 
         let raw = self
             .registry
@@ -213,6 +228,18 @@ impl Tool for LoadSkillResourceTool {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
+        if !is_runtime_allowed(
+            ctx.runtime_ref(),
+            &meta.id,
+            RUNTIME_ALLOWED_SKILLS_KEY,
+            RUNTIME_EXCLUDED_SKILLS_KEY,
+        ) {
+            return Ok(tool_error(
+                tool_name,
+                "forbidden_skill",
+                format!("Skill '{}' is not allowed by current policy", meta.id),
+            ));
+        }
 
         let resource = self
             .registry
@@ -346,6 +373,18 @@ impl Tool for SkillScriptTool {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
+        if !is_runtime_allowed(
+            ctx.runtime_ref(),
+            &meta.id,
+            RUNTIME_ALLOWED_SKILLS_KEY,
+            RUNTIME_EXCLUDED_SKILLS_KEY,
+        ) {
+            return Ok(tool_error(
+                "skill_script",
+                "forbidden_skill",
+                format!("Skill '{}' is not allowed by current policy", meta.id),
+            ));
+        }
 
         let res = self
             .registry

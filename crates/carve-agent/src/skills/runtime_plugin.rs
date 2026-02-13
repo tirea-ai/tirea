@@ -2,6 +2,9 @@ use crate::phase::Phase;
 use crate::phase::StepContext;
 use crate::plugin::AgentPlugin;
 use crate::skills::state::{SkillState, SKILLS_STATE_PATH};
+use crate::tool_filter::{
+    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -17,7 +20,7 @@ impl SkillRuntimePlugin {
         Self
     }
 
-    fn render_context(state: &SkillState) -> String {
+    fn render_context(state: &SkillState, runtime: Option<&carve_state::Runtime>) -> String {
         if state.active.is_empty() {
             return String::new();
         }
@@ -25,6 +28,14 @@ impl SkillRuntimePlugin {
         let mut out = String::new();
         let mut emitted_any = false;
         for skill_id in &state.active {
+            if !is_runtime_allowed(
+                runtime,
+                skill_id,
+                RUNTIME_ALLOWED_SKILLS_KEY,
+                RUNTIME_EXCLUDED_SKILLS_KEY,
+            ) {
+                continue;
+            }
             // references
             let prefix = format!("{skill_id}:");
             let mut refs: Vec<_> = state
@@ -125,7 +136,7 @@ impl AgentPlugin for SkillRuntimePlugin {
             Err(_) => return,
         };
 
-        let rendered = Self::render_context(&parsed);
+        let rendered = Self::render_context(&parsed, Some(&step.session.runtime));
         if rendered.is_empty() {
             return;
         }
@@ -207,5 +218,36 @@ mod tests {
         let idx_asset_a = s.find("path=\"assets/a.png\"").unwrap();
         let idx_asset_z = s.find("path=\"assets/z.png\"").unwrap();
         assert!(idx_asset_a < idx_asset_z);
+    }
+
+    #[tokio::test]
+    async fn plugin_filters_injected_skill_materials_by_runtime_policy() {
+        let mut session = Session::with_initial_state(
+            "s",
+            json!({
+                "skills": {
+                    "active": ["a", "b"],
+                    "instructions": {"a": "Do A", "b": "Do B"},
+                    "references": {
+                        "a:references/a.md": {"skill":"a","path":"references/a.md","sha256":"x","truncated":false,"content":"A","bytes":1},
+                        "b:references/b.md": {"skill":"b","path":"references/b.md","sha256":"y","truncated":false,"content":"B","bytes":1}
+                    },
+                    "scripts": {},
+                    "assets": {}
+                }
+            }),
+        );
+        session
+            .runtime
+            .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a"])
+            .unwrap();
+
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        let p = SkillRuntimePlugin::new();
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        assert_eq!(step.system_context.len(), 1);
+        let s = &step.system_context[0];
+        assert!(s.contains("skill=\"a\""));
+        assert!(!s.contains("skill=\"b\""));
     }
 }

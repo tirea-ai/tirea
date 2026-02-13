@@ -1,7 +1,8 @@
 use carve_agent::{
-    execute_single_tool, AgentPlugin, FsSkillRegistry, LoadSkillResourceTool, Message, Phase,
-    Session, SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool, StepContext,
-    ToolCall, ToolDescriptor, ToolResult, APPEND_USER_MESSAGES_METADATA_KEY,
+    execute_single_tool, execute_single_tool_with_runtime, AgentPlugin, FsSkillRegistry,
+    LoadSkillResourceTool, Message, Phase, Session, SkillActivateTool, SkillRegistry,
+    SkillRuntimePlugin, SkillScriptTool, StepContext, ToolCall, ToolDescriptor, ToolResult,
+    APPEND_USER_MESSAGES_METADATA_KEY,
 };
 use serde_json::json;
 use std::fs;
@@ -59,6 +60,22 @@ async fn apply_tool(
     (session, exec.result)
 }
 
+async fn apply_tool_with_runtime(
+    session: Session,
+    tool: &dyn carve_agent::Tool,
+    call: ToolCall,
+    runtime: &carve_state::Runtime,
+) -> (Session, ToolResult) {
+    let state = session.rebuild_state().unwrap();
+    let exec = execute_single_tool_with_runtime(Some(tool), &call, &state, Some(runtime)).await;
+    let session = if let Some(patch) = exec.patch.clone() {
+        session.with_patch(patch)
+    } else {
+        session
+    };
+    (session, exec.result)
+}
+
 fn assert_error_code(result: &ToolResult, expected_code: &str) {
     assert!(result.is_error(), "expected an error result");
     assert_eq!(result.data["error"]["code"], expected_code);
@@ -86,6 +103,50 @@ async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
         step.system_context.is_empty(),
         "skill instructions should not be reinjected by runtime plugin"
     );
+}
+
+#[tokio::test]
+async fn test_skill_activation_respects_runtime_skill_policy() {
+    let (_td, reg) = make_skill_tree();
+    let activate = SkillActivateTool::new(reg);
+    let session = Session::with_initial_state("s", json!({}));
+    let mut runtime = carve_state::Runtime::new();
+    runtime
+        .set("__agent_policy_allowed_skills", vec!["other-skill"])
+        .unwrap();
+
+    let (_session, result) = apply_tool_with_runtime(
+        session,
+        &activate,
+        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
+        &runtime,
+    )
+    .await;
+    assert_error_code(&result, "forbidden_skill");
+}
+
+#[tokio::test]
+async fn test_load_skill_resource_respects_runtime_skill_policy() {
+    let (_td, reg) = make_skill_tree();
+    let load = LoadSkillResourceTool::new(reg);
+    let session = Session::with_initial_state("s", json!({}));
+    let mut runtime = carve_state::Runtime::new();
+    runtime
+        .set("__agent_policy_allowed_skills", vec!["other-skill"])
+        .unwrap();
+
+    let (_session, result) = apply_tool_with_runtime(
+        session,
+        &load,
+        ToolCall::new(
+            "call_1",
+            "load_skill_resource",
+            json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
+        ),
+        &runtime,
+    )
+    .await;
+    assert_error_code(&result, "forbidden_skill");
 }
 
 #[tokio::test]

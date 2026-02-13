@@ -2,6 +2,9 @@ use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::skills::registry::SkillRegistry;
 use crate::skills::state::{SkillState, SKILLS_STATE_PATH};
+use crate::tool_filter::{
+    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -40,8 +43,20 @@ impl SkillDiscoveryPlugin {
             .replace('>', "&gt;")
     }
 
-    fn render_catalog(&self, _active: &HashSet<String>) -> String {
+    fn render_catalog(
+        &self,
+        _active: &HashSet<String>,
+        runtime: Option<&carve_state::Runtime>,
+    ) -> String {
         let mut metas = self.registry.list();
+        metas.retain(|m| {
+            is_runtime_allowed(
+                runtime,
+                &m.id,
+                RUNTIME_ALLOWED_SKILLS_KEY,
+                RUNTIME_EXCLUDED_SKILLS_KEY,
+            )
+        });
         if metas.is_empty() {
             return String::new();
         }
@@ -124,7 +139,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             }
         }
 
-        let rendered = self.render_catalog(&active);
+        let rendered = self.render_catalog(&active, Some(&step.session.runtime));
         if rendered.is_empty() {
             return;
         }
@@ -313,6 +328,23 @@ mod tests {
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
+    }
+
+    #[tokio::test]
+    async fn filters_catalog_by_runtime_skill_policy() {
+        let (_td, reg) = make_registry();
+        let p = SkillDiscoveryPlugin::new(reg);
+        let mut session = Session::with_initial_state("s", json!({}));
+        session
+            .runtime
+            .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a-skill"])
+            .unwrap();
+        let mut step = StepContext::new(&session, vec![ToolDescriptor::new("t", "t", "t")]);
+        p.on_phase(Phase::BeforeInference, &mut step).await;
+        assert_eq!(step.system_context.len(), 1);
+        let s = &step.system_context[0];
+        assert!(s.contains("<name>a-skill</name>"));
+        assert!(!s.contains("<name>b-skill</name>"));
     }
 
     // Registry warnings are logged during discovery; they are intentionally not injected into prompts.

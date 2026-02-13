@@ -9,6 +9,11 @@ use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
 };
+use crate::tool_filter::{
+    set_runtime_filter_if_absent, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_ALLOWED_SKILLS_KEY,
+    RUNTIME_ALLOWED_TOOLS_KEY, RUNTIME_EXCLUDED_AGENTS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+    RUNTIME_EXCLUDED_TOOLS_KEY,
+};
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use agent_tools::{
@@ -806,6 +811,36 @@ impl AgentOs {
                 .runtime
                 .set(RUNTIME_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_ALLOWED_TOOLS_KEY,
+            def.allowed_tools.as_deref(),
+        );
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_EXCLUDED_TOOLS_KEY,
+            def.excluded_tools.as_deref(),
+        );
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_ALLOWED_SKILLS_KEY,
+            def.allowed_skills.as_deref(),
+        );
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_EXCLUDED_SKILLS_KEY,
+            def.excluded_skills.as_deref(),
+        );
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_ALLOWED_AGENTS_KEY,
+            def.allowed_agents.as_deref(),
+        );
+        let _ = set_runtime_filter_if_absent(
+            &mut session.runtime,
+            RUNTIME_EXCLUDED_AGENTS_KEY,
+            def.excluded_agents.as_deref(),
+        );
 
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;
@@ -1212,7 +1247,13 @@ mod tests {
     #[test]
     fn resolve_sets_runtime_caller_agent_id() {
         let os = AgentOs::builder()
-            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_allowed_skills(vec!["s1".to_string()])
+                    .with_allowed_agents(vec!["worker".to_string()])
+                    .with_allowed_tools(vec!["echo".to_string()]),
+            )
             .build()
             .unwrap();
         let session = Session::with_initial_state("s", json!({}));
@@ -1223,6 +1264,24 @@ mod tests {
                 .value(RUNTIME_CALLER_AGENT_ID_KEY)
                 .and_then(|v| v.as_str()),
             Some("a1")
+        );
+        assert_eq!(
+            session
+                .runtime
+                .value(crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY),
+            Some(&json!(["s1"]))
+        );
+        assert_eq!(
+            session
+                .runtime
+                .value(crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY),
+            Some(&json!(["worker"]))
+        );
+        assert_eq!(
+            session
+                .runtime
+                .value(crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY),
+            Some(&json!(["echo"]))
         );
     }
 
