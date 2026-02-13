@@ -501,12 +501,12 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
 }
 
 // ============================================================================
-// AI SDK: error event via max rounds exceeded
+// AI SDK: graceful finish via max rounds exceeded
 // ============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn e2e_ai_sdk_error_max_rounds_with_deepseek() {
+async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
         return;
@@ -550,22 +550,26 @@ async fn e2e_ai_sdk_error_max_rounds_with_deepseek() {
     )
     .await;
 
-    println!("=== AI SDK Error Response ===\n{text}");
+    println!("=== AI SDK Max-Rounds Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
     assert!(text.contains(r#""type":"start""#), "missing start event");
 
-    // AI SDK error event should be present.
+    // Max rounds should end the stream gracefully (finish), not as an error.
     assert!(
-        text.contains(r#""type":"error""#),
-        "missing error event — max rounds should trigger an error. Response:\n{text}"
+        text.contains(r#""type":"finish""#),
+        "missing finish event — max rounds should end gracefully. Response:\n{text}"
     );
     assert!(
-        text.contains("Max rounds") || text.contains("max rounds"),
-        "error event should mention max rounds exceeded"
+        text.contains(r#""finishReason":"length""#),
+        "finish event should map max rounds to finishReason=length"
+    );
+    assert!(
+        !text.contains(r#""type":"error""#),
+        "max rounds should not emit error event. Response:\n{text}"
     );
 
-    // Tool call events should still appear before the error.
+    // Tool call events should still appear before finish.
     assert!(
         text.contains(r#""type":"tool-input-start""#),
         "missing tool-input-start — LLM should have called the tool before hitting max rounds"
@@ -878,12 +882,12 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
 }
 
 // ============================================================================
-// AG-UI: RUN_ERROR via max rounds exceeded
+// AG-UI: RUN_FINISHED via max rounds exceeded
 // ============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
+async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
         return;
@@ -929,7 +933,7 @@ async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
 
     let (status, text) = post_sse(app, "/v1/agents/limited/runs/ag-ui/sse", payload).await;
 
-    println!("=== AG-UI RUN_ERROR Response ===\n{text}");
+    println!("=== AG-UI Max-Rounds Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -937,18 +941,21 @@ async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
         "missing RUN_STARTED"
     );
 
-    // Should contain RUN_ERROR with max rounds message.
+    // Max rounds should end with RUN_FINISHED (graceful stop), not RUN_ERROR.
     assert!(
-        text.contains(r#""type":"RUN_ERROR""#),
-        "missing RUN_ERROR — max rounds should trigger an error. Response:\n{text}"
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED — max rounds should end gracefully. Response:\n{text}"
     );
     assert!(
-        text.contains("Max rounds") || text.contains("max rounds"),
-        "RUN_ERROR should mention max rounds exceeded"
+        !text.contains(r#""type":"RUN_ERROR""#),
+        "max rounds should not emit RUN_ERROR. Response:\n{text}"
     );
 
-    // After RUN_ERROR, the AgUiEncoder stops — no RUN_FINISHED is emitted.
-    // This is correct AG-UI behavior: RUN_ERROR is terminal.
+    // Tool call should still happen before finishing.
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START — LLM should have called the tool before hitting max rounds"
+    );
 }
 
 // ============================================================================

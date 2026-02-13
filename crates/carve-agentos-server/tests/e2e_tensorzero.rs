@@ -27,6 +27,7 @@ use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tower::ServiceExt;
 
 /// Trailing slash is required: genai's OpenAI adapter uses Url::join("chat/completions"),
@@ -41,6 +42,28 @@ fn has_deepseek_key() -> bool {
 
 fn tensorzero_reachable() -> bool {
     std::net::TcpStream::connect("127.0.0.1:3000").is_ok()
+}
+
+async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+    let status = client
+        .get(TENSORZERO_CHAT_URL)
+        .send()
+        .await
+        .map_err(|e| format!("GET {TENSORZERO_CHAT_URL} failed: {e}"))?
+        .status();
+
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "{TENSORZERO_CHAT_URL} returned 404; OpenAI-compatible chat route is not available"
+        ));
+    }
+
+    Ok(())
 }
 
 fn make_os() -> carve_agent::AgentOs {
@@ -76,13 +99,17 @@ fn make_os() -> carve_agent::AgentOs {
         .expect("failed to build AgentOs with TensorZero")
 }
 
-fn skip_unless_ready() -> bool {
+async fn skip_unless_ready() -> bool {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
         return true;
     }
     if !tensorzero_reachable() {
         eprintln!("TensorZero not reachable at :3000, skipping. Run: docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait");
+        return true;
+    }
+    if let Err(err) = tensorzero_chat_endpoint_ready().await {
+        eprintln!("TensorZero route not ready, skipping: {err}");
         return true;
     }
     false
@@ -95,7 +122,7 @@ fn skip_unless_ready() -> bool {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ai_sdk_sse() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -177,7 +204,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ag_ui_sse() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -263,7 +290,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_feedback() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -476,7 +503,7 @@ fn extract_agui_text(sse: &str) -> String {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ai_sdk_tool_call() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -525,7 +552,7 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ag_ui_tool_call() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -593,7 +620,7 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ai_sdk_multiturn() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -655,13 +682,13 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 }
 
 // ============================================================================
-// AI SDK: error event via max rounds exceeded (TensorZero)
+// AI SDK: graceful finish via max rounds exceeded (TensorZero)
 // ============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn e2e_tensorzero_ai_sdk_error_max_rounds() {
-    if skip_unless_ready() {
+async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -708,18 +735,22 @@ async fn e2e_tensorzero_ai_sdk_error_max_rounds() {
     )
     .await;
 
-    println!("=== TZ AI SDK Error Response ===\n{text}");
+    println!("=== TZ AI SDK Max-Rounds Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
     assert!(text.contains(r#""type":"start""#), "missing start event");
 
     assert!(
-        text.contains(r#""type":"error""#),
-        "missing error event — max rounds should trigger an error. Response:\n{text}"
+        text.contains(r#""type":"finish""#),
+        "missing finish event — max rounds should end gracefully. Response:\n{text}"
     );
     assert!(
-        text.contains("Max rounds") || text.contains("max rounds"),
-        "error event should mention max rounds exceeded"
+        text.contains(r#""finishReason":"length""#),
+        "finish event should map max rounds to finishReason=length"
+    );
+    assert!(
+        !text.contains(r#""type":"error""#),
+        "max rounds should not emit error event. Response:\n{text}"
     );
 
     assert!(
@@ -735,7 +766,7 @@ async fn e2e_tensorzero_ai_sdk_error_max_rounds() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ai_sdk_multistep_tool() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -818,7 +849,7 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ag_ui_multiturn() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -882,13 +913,13 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
 }
 
 // ============================================================================
-// AG-UI: RUN_ERROR via max rounds exceeded (TensorZero)
+// AG-UI: RUN_FINISHED via max rounds exceeded (TensorZero)
 // ============================================================================
 
 #[tokio::test]
 #[ignore]
-async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
-    if skip_unless_ready() {
+async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
+    if skip_unless_ready().await {
         return;
     }
 
@@ -939,7 +970,7 @@ async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
     )
     .await;
 
-    println!("=== TZ AG-UI RUN_ERROR Response ===\n{text}");
+    println!("=== TZ AG-UI Max-Rounds Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -948,12 +979,16 @@ async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
     );
 
     assert!(
-        text.contains(r#""type":"RUN_ERROR""#),
-        "missing RUN_ERROR — max rounds should trigger an error. Response:\n{text}"
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED — max rounds should end gracefully. Response:\n{text}"
     );
     assert!(
-        text.contains("Max rounds") || text.contains("max rounds"),
-        "RUN_ERROR should mention max rounds exceeded"
+        !text.contains(r#""type":"RUN_ERROR""#),
+        "max rounds should not emit RUN_ERROR. Response:\n{text}"
+    );
+    assert!(
+        text.contains(r#""type":"TOOL_CALL_START""#),
+        "missing TOOL_CALL_START — LLM should have called the tool before hitting max rounds"
     );
 }
 
@@ -964,7 +999,7 @@ async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
 #[tokio::test]
 #[ignore]
 async fn e2e_tensorzero_ag_ui_multistep_tool() {
-    if skip_unless_ready() {
+    if skip_unless_ready().await {
         return;
     }
 
