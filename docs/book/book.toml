@@ -1,0 +1,12 @@
+[book]
+title = "Uncarve Documentation"
+description = "Immutable state-driven agent framework"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/book"
+
+[output.html]
+default-theme = "rust"
+git-repository-url = "https://github.com/user/uncarve"
