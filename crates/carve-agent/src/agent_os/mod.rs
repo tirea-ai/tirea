@@ -921,8 +921,8 @@ impl AgentOs {
 mod tests {
     use super::*;
     use crate::phase::{Phase, StepContext};
-    use crate::thread::Thread;
     use crate::skills::FsSkillRegistry;
+    use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
     use crate::traits::tool::{ToolError, ToolResult};
     use async_trait::async_trait;

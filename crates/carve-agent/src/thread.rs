@@ -54,7 +54,6 @@ pub struct ThreadMetadata {
     pub extra: serde_json::Map<String, Value>,
 }
 
-
 impl Thread {
     /// Create a new thread with the given ID.
     pub fn new(id: impl Into<String>) -> Self {

@@ -1,7 +1,7 @@
 use carve_agent::{
     execute_single_tool, execute_single_tool_with_runtime, AgentPlugin, FsSkillRegistry,
-    LoadSkillResourceTool, Message, Phase, Thread, SkillActivateTool, SkillRegistry,
-    SkillRuntimePlugin, SkillScriptTool, StepContext, ToolCall, ToolDescriptor, ToolResult,
+    LoadSkillResourceTool, Message, Phase, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
+    SkillScriptTool, StepContext, Thread, ToolCall, ToolDescriptor, ToolResult,
     APPEND_USER_MESSAGES_METADATA_KEY,
 };
 use serde_json::json;

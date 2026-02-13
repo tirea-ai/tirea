@@ -54,8 +54,8 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thread::Thread;
     use crate::skills::{FsSkillRegistry, SkillRegistry};
+    use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
     use serde_json::json;
     use std::fs;

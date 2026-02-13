@@ -601,8 +601,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
 mod tests {
     use super::*;
     use crate::phase::ToolContext as PhaseToolContext;
-    use crate::thread::Thread;
     use crate::stream::StreamResult;
+    use crate::thread::Thread;
     use crate::traits::tool::ToolResult;
     use crate::types::ToolCall;
     use futures::future::join_all;

@@ -27,8 +27,8 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 
 use crate::r#loop::{
-    run_loop_stream_with_checkpoints, AgentConfig, RunContext, ThreadCheckpoint,
-    StreamWithCheckpoints,
+    run_loop_stream_with_checkpoints, AgentConfig, RunContext, StreamWithCheckpoints,
+    ThreadCheckpoint,
 };
 use crate::thread::Thread;
 use crate::traits::tool::Tool;

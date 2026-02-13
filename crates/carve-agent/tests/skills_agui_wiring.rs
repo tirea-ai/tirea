@@ -1,6 +1,6 @@
 use carve_agent::{
     agent_event_to_agui, execute_single_tool, AGUIContext, AGUIEvent, AgentEvent, FsSkillRegistry,
-    Thread, SkillSubsystem, ToolCall, ToolDescriptor,
+    SkillSubsystem, Thread, ToolCall, ToolDescriptor,
 };
 use serde_json::json;
 use std::fs;
@@ -128,8 +128,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
 
     // Even without activation, discovery should inject available_skills.
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut step =
-        carve_agent::StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+    let mut step = carve_agent::StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
     plugin
         .on_phase(carve_agent::Phase::BeforeInference, &mut step)
         .await;

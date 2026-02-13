@@ -306,16 +306,12 @@ fn bench_full_thread_clone(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements((msg_count + patch_count) as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new(scenario, msg_count),
-            &thread,
-            |b, sess| {
-                b.iter(|| {
-                    let cloned = black_box(sess).clone();
-                    black_box(cloned)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new(scenario, msg_count), &thread, |b, sess| {
+            b.iter(|| {
+                let cloned = black_box(sess).clone();
+                black_box(cloned)
+            });
+        });
     }
 
     group.finish();

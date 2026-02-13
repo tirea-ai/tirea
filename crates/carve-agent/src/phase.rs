@@ -5,9 +5,9 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Context for the currently executing tool
 
-use crate::thread::Thread;
 use crate::state_types::Interaction;
 use crate::stream::StreamResult;
+use crate::thread::Thread;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
 use crate::types::ToolCall;
 use carve_state::TrackedPatch;

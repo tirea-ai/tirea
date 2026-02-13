@@ -4,8 +4,8 @@ use axum::http::{Request, StatusCode};
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStorage, Thread, ThreadHead,
-    ThreadListPage, ThreadListQuery, StepContext, StorageError, ThreadQuery, ThreadStore, Version,
+    AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStorage, StepContext, StorageError,
+    Thread, ThreadHead, ThreadListPage, ThreadListQuery, ThreadQuery, ThreadStore, Version,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -107,10 +107,7 @@ impl ThreadStore for RecordingStorage {
 
 #[async_trait]
 impl ThreadQuery for RecordingStorage {
-    async fn list_threads(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         let threads = self.threads.read().await;
         let mut ids: Vec<String> = threads.keys().cloned().collect();
         ids.sort();
@@ -450,7 +447,11 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
     assert_eq!(resp.status(), StatusCode::OK);
 
     let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let saved = storage.load_thread("th-idless-once").await.unwrap().unwrap();
+    let saved = storage
+        .load_thread("th-idless-once")
+        .await
+        .unwrap()
+        .unwrap();
     let user_hello_count = saved
         .messages
         .iter()
@@ -777,10 +778,7 @@ impl ThreadStore for FailingStorage {
 
 #[async_trait]
 impl ThreadQuery for FailingStorage {
-    async fn list_threads(
-        &self,
-        _query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(&self, _query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk list denied",
@@ -892,10 +890,7 @@ impl ThreadStore for SaveFailStorage {
 
 #[async_trait]
 impl ThreadQuery for SaveFailStorage {
-    async fn list_threads(
-        &self,
-        _query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(&self, _query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         Ok(ThreadListPage {
             items: vec![],
             total: 0,
@@ -1009,8 +1004,7 @@ async fn test_messages_pagination_desc_order() {
     storage.save(&thread).await.unwrap();
     let app = make_app(os, storage);
 
-    let (status, body) =
-        get_json(app, "/v1/threads/s1/messages?order=desc&before=8&limit=3").await;
+    let (status, body) = get_json(app, "/v1/threads/s1/messages?order=desc&before=8&limit=3").await;
     assert_eq!(status, StatusCode::OK);
     let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);

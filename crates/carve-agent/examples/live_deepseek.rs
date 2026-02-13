@@ -430,13 +430,7 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
 
-    let mut stream = run_loop_stream(
-        client.clone(),
-        config,
-        thread,
-        tools,
-        RunContext::default(),
-    );
+    let mut stream = run_loop_stream(client.clone(), config, thread, tools, RunContext::default());
 
     while let Some(event) = stream.next().await {
         match event {

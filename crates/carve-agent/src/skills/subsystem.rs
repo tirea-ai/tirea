@@ -125,8 +125,8 @@ mod tests {
     use super::*;
     use crate::execute::execute_single_tool;
     use crate::phase::{Phase, StepContext};
-    use crate::thread::Thread;
     use crate::skills::FsSkillRegistry;
+    use crate::thread::Thread;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::types::{Message, ToolCall};
     use async_trait::async_trait;

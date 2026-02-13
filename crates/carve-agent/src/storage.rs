@@ -114,7 +114,10 @@ pub struct ThreadListPage {
 ///
 /// Cursor values correspond to the 0-based index in the original slice
 /// (not the filtered slice), so cursors remain stable across visibility filters.
-pub fn paginate_in_memory(messages: &[std::sync::Arc<Message>], query: &MessageQuery) -> MessagePage {
+pub fn paginate_in_memory(
+    messages: &[std::sync::Arc<Message>],
+    query: &MessageQuery,
+) -> MessagePage {
     let total = messages.len();
     if total == 0 {
         return MessagePage {
@@ -199,10 +202,7 @@ pub enum StorageError {
 
     /// Optimistic concurrency conflict.
     #[error("Version conflict: expected {expected}, actual {actual}")]
-    VersionConflict {
-        expected: Version,
-        actual: Version,
-    },
+    VersionConflict { expected: Version, actual: Version },
 
     /// Thread already exists (for create operations).
     #[error("Thread already exists")]
@@ -316,10 +316,7 @@ pub trait ThreadQuery: ThreadStore {
     }
 
     /// List threads with pagination.
-    async fn list_threads(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError>;
+    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError>;
 
     /// List all thread IDs. Convenience wrapper.
     async fn list(&self) -> Result<Vec<String>, StorageError> {
@@ -363,7 +360,6 @@ pub trait ThreadSync: ThreadStore {
     ) -> Result<Vec<ThreadDelta>, StorageError>;
 }
 
-
 /// File-based storage implementation.
 pub struct FileStorage {
     base_path: PathBuf,
@@ -403,7 +399,6 @@ impl FileStorage {
         Ok(())
     }
 }
-
 
 #[async_trait]
 impl ThreadStore for FileStorage {
@@ -467,10 +462,7 @@ impl ThreadStore for FileStorage {
 
 #[async_trait]
 impl ThreadQuery for FileStorage {
-    async fn list_threads(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         // Read directory for all thread IDs
         let mut all = if !self.base_path.exists() {
             Vec::new()
@@ -568,8 +560,8 @@ impl FileStorage {
         if let Some(obj) = v.as_object_mut() {
             obj.insert("_version".to_string(), serde_json::json!(head.version));
         }
-        let content =
-            serde_json::to_string_pretty(&v).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let content = serde_json::to_string_pretty(&v)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         let tmp_path = self.base_path.join(format!(
             ".{}.{}.tmp",
@@ -639,7 +631,6 @@ fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
         thread.patches.clear();
     }
 }
-
 
 #[async_trait]
 impl ThreadStore for MemoryStorage {
@@ -716,10 +707,7 @@ impl ThreadStore for MemoryStorage {
 
 #[async_trait]
 impl ThreadQuery for MemoryStorage {
-    async fn list_threads(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         let entries = self.entries.read().await;
         let mut ids: Vec<String> = entries
             .iter()
@@ -882,8 +870,8 @@ impl PostgresStorage {
 #[async_trait]
 impl ThreadStore for PostgresStorage {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
-        let mut v = serde_json::to_value(thread)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let mut v =
+            serde_json::to_value(thread).map_err(|e| StorageError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
             obj.insert("_version".to_string(), serde_json::Value::Number(0.into()));
@@ -945,10 +933,7 @@ impl ThreadStore for PostgresStorage {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Optimistic concurrency: check version.
-        let sql = format!(
-            "SELECT data FROM {} WHERE id = $1 FOR UPDATE",
-            self.table
-        );
+        let sql = format!("SELECT data FROM {} WHERE id = $1 FOR UPDATE", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(id)
             .fetch_optional(&mut *tx)
@@ -959,10 +944,7 @@ impl ThreadStore for PostgresStorage {
             return Err(StorageError::NotFound(id.to_string()));
         };
 
-        let current_version = v
-            .get("_version")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
         if current_version != base_version {
             return Err(StorageError::VersionConflict {
                 expected: base_version,
@@ -983,11 +965,12 @@ impl ThreadStore for PostgresStorage {
                 .get("patches")
                 .cloned()
                 .unwrap_or(serde_json::Value::Array(Vec::new()));
-            let mut patches: Vec<serde_json::Value> = if let serde_json::Value::Array(arr) = patches_arr {
-                arr
-            } else {
-                Vec::new()
-            };
+            let mut patches: Vec<serde_json::Value> =
+                if let serde_json::Value::Array(arr) = patches_arr {
+                    arr
+                } else {
+                    Vec::new()
+                };
             for p in &delta.patches {
                 if let Ok(pv) = serde_json::to_value(p) {
                     patches.push(pv);
@@ -999,7 +982,10 @@ impl ThreadStore for PostgresStorage {
         }
 
         if let Some(obj) = v.as_object_mut() {
-            obj.insert("_version".to_string(), serde_json::Value::Number(new_version.into()));
+            obj.insert(
+                "_version".to_string(),
+                serde_json::Value::Number(new_version.into()),
+            );
         }
 
         let update_sql = format!(
@@ -1041,7 +1027,9 @@ impl ThreadStore for PostgresStorage {
         }
 
         tx.commit().await.map_err(Self::sql_err)?;
-        Ok(Committed { version: new_version })
+        Ok(Committed {
+            version: new_version,
+        })
     }
 
     async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
@@ -1056,10 +1044,7 @@ impl ThreadStore for PostgresStorage {
             return Ok(None);
         };
 
-        let version = v
-            .get("_version")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
 
         // Load messages from separate table.
         let msg_sql = format!(
@@ -1096,8 +1081,8 @@ impl ThreadStore for PostgresStorage {
 
     async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
         // Serialize session skeleton (without messages).
-        let mut v = serde_json::to_value(thread)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let mut v =
+            serde_json::to_value(thread).map_err(|e| StorageError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
         }
@@ -1341,10 +1326,7 @@ impl ThreadQuery for PostgresStorage {
             format!(" WHERE {}", where_clauses.join(" AND "))
         };
 
-        let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {}{}",
-            self.table, where_sql
-        );
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM {}{}", self.table, where_sql);
         let sql = format!(
             "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
             self.table, where_sql
@@ -1373,10 +1355,7 @@ impl ThreadQuery for PostgresStorage {
             format!(" WHERE {}", filter_clauses_count.join(" AND "))
         };
 
-        let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {}{}",
-            self.table, where_count
-        );
+        let count_sql = format!("SELECT COUNT(*)::bigint FROM {}{}", self.table, where_count);
         let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
         if let Some(ref rid) = query.resource_id {
             count_q = count_q.bind(rid);
@@ -1384,10 +1363,7 @@ impl ThreadQuery for PostgresStorage {
         if let Some(ref pid) = query.parent_thread_id {
             count_q = count_q.bind(pid);
         }
-        let (total,): (i64,) = count_q
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
+        let (total,): (i64,) = count_q.fetch_one(&self.pool).await.map_err(Self::sql_err)?;
 
         // Data query: $1=limit, $2=offset, $3+=filters
         let mut data_clauses = Vec::new();
@@ -1418,10 +1394,7 @@ impl ThreadQuery for PostgresStorage {
         if let Some(ref pid) = query.parent_thread_id {
             data_q = data_q.bind(pid);
         }
-        let rows: Vec<(String,)> = data_q
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
+        let rows: Vec<(String,)> = data_q.fetch_all(&self.pool).await.map_err(Self::sql_err)?;
 
         let has_more = rows.len() > limit;
         let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
@@ -1674,7 +1647,11 @@ mod tests {
 
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load_thread("complex-thread").await.unwrap().unwrap();
+        let loaded = storage
+            .load_thread("complex-thread")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.message_count(), 2);
         assert_eq!(loaded.patch_count(), 1);
 
@@ -1901,7 +1878,9 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = ThreadQuery::load_messages(&storage, "test-1", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-1", &query)
+            .await
+            .unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert!(page.has_more);
@@ -1945,7 +1924,9 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = ThreadQuery::load_messages(&storage, "test-1", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-1", &query)
+            .await
+            .unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert_eq!(page.messages[0].cursor, 5);
@@ -2119,7 +2100,9 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = ThreadQuery::load_messages(&storage, "test-vis", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-vis", &query)
+            .await
+            .unwrap();
         assert_eq!(page.messages.len(), 6);
     }
 
@@ -2232,7 +2215,9 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = ThreadQuery::load_messages(&storage, "test-run", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-run", &query)
+            .await
+            .unwrap();
         assert_eq!(page.messages.len(), 3);
     }
 
@@ -2492,7 +2477,10 @@ mod tests {
         store.create(&Thread::new("t1")).await.unwrap();
         store.create(&Thread::new("t2")).await.unwrap();
 
-        let page = store.list_threads(&ThreadListQuery::default()).await.unwrap();
+        let page = store
+            .list_threads(&ThreadListQuery::default())
+            .await
+            .unwrap();
         assert_eq!(page.items.len(), 2);
         assert_eq!(page.total, 2);
     }
@@ -2509,10 +2497,7 @@ mod tests {
             .create(&Thread::new("child-2").with_parent_thread_id("parent"))
             .await
             .unwrap();
-        store
-            .create(&Thread::new("unrelated"))
-            .await
-            .unwrap();
+        store.create(&Thread::new("unrelated")).await.unwrap();
 
         let query = ThreadListQuery {
             parent_thread_id: Some("parent".to_string()),

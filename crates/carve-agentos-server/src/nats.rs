@@ -1,8 +1,8 @@
 use carve_agent::ag_ui::AGUIEvent;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
-    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread, ThreadQuery,
-    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
+    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread,
+    ThreadQuery, AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
 use serde::Deserialize;

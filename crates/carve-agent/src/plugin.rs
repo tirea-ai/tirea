@@ -114,8 +114,8 @@ pub trait AgentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use crate::phase::StepContext;
-    use crate::thread::Thread;
     use crate::state_types::Interaction;
+    use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
     use crate::types::ToolCall;
     use serde_json::json;

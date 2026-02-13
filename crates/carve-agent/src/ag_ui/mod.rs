@@ -1612,8 +1612,8 @@ fn prepare_request_runtime(
 
 use crate::r#loop::run_loop_stream_with_checkpoints;
 use crate::r#loop::{run_loop_stream, run_loop_stream_with_thread, AgentConfig, RunContext};
-use crate::thread::Thread;
 use crate::stream::AgentEvent;
+use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use async_stream::stream;
 use futures::{Stream, StreamExt};
@@ -6556,8 +6556,7 @@ mod tests {
 
     #[test]
     fn test_session_has_tool_call_id_ignores_none() {
-        let thread =
-            Thread::new("s1").with_message(crate::types::Message::user("no tool_call_id"));
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("no tool_call_id"));
         assert!(!super::session_has_tool_call_id(&thread, "tc-1"));
     }
 

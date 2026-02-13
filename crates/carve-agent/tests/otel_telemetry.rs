@@ -1,6 +1,6 @@
 use carve_agent::{
     execute_tools_with_plugins, run_step, AgentConfig, AgentPlugin, InMemorySink, LLMMetryPlugin,
-    Message, Thread, StreamResult, ToolCall, ToolResult,
+    Message, StreamResult, Thread, ToolCall, ToolResult,
 };
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;

@@ -2161,9 +2161,6 @@ pub struct StreamWithThread {
     pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
-/// Reason a thread checkpoint was emitted during a streaming run.
-pub type ThreadCheckpointReason = CheckpointReason;
-
 #[derive(Debug, Clone)]
 pub struct ThreadCheckpoint {
     pub reason: CheckpointReason,

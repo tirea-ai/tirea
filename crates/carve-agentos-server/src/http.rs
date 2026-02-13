@@ -8,7 +8,7 @@ use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
     apply_agui_request_to_thread, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
-    RunContext, Thread, ThreadListPage, ThreadListQuery, SortOrder, ThreadQuery, Visibility,
+    RunContext, SortOrder, Thread, ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
     AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;

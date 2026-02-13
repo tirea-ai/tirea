@@ -6,9 +6,9 @@
 use crate::r#loop::{
     run_loop_stream, run_loop_stream_with_thread, AgentDefinition, AgentLoopError, RunContext,
 };
-use crate::thread::Thread;
 use crate::storage::{StorageError, ThreadStore};
 use crate::stream::AgentEvent;
+use crate::thread::Thread;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -992,10 +992,7 @@ mod tests {
             .rsplit_once('-')
             .map(|(_, right)| right)
             .unwrap_or_else(|| {
-                panic!(
-                    "thread id must contain uuid suffix: {}",
-                    handle.thread_id()
-                )
+                panic!("thread id must contain uuid suffix: {}", handle.thread_id())
             });
         let parsed = uuid::Uuid::parse_str(suffix)
             .unwrap_or_else(|_| panic!("thread suffix must be parseable UUID, got: {suffix}"));
@@ -1209,13 +1206,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(
-            Client::default(),
-            def,
-            thread,
-            tools,
-            RunContext::default(),
-        );
+        let stream = run_loop_stream(Client::default(), def, thread, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1235,13 +1226,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c"]);
         let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(
-            Client::default(),
-            def,
-            thread,
-            tools,
-            RunContext::default(),
-        );
+        let stream = run_loop_stream(Client::default(), def, thread, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1261,13 +1246,7 @@ mod tests {
         let tools = make_tools(&["a", "b", "c", "d"]);
         let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(
-            Client::default(),
-            def,
-            thread,
-            tools,
-            RunContext::default(),
-        );
+        let stream = run_loop_stream(Client::default(), def, thread, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1285,13 +1264,7 @@ mod tests {
         let tools = make_tools(&["x", "y", "z"]);
         let thread = Thread::new("test").with_message(crate::types::Message::user("hello"));
 
-        let stream = run_loop_stream(
-            Client::default(),
-            def,
-            thread,
-            tools,
-            RunContext::default(),
-        );
+        let stream = run_loop_stream(Client::default(), def, thread, tools, RunContext::default());
         let _events = collect_events(stream).await;
 
         let snapshots = recorded.lock().unwrap();
@@ -1391,7 +1364,8 @@ mod tests {
 
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let agent = Agent::new(def, Client::default()).with_storage(storage as Arc<dyn ThreadStore>);
+        let agent =
+            Agent::new(def, Client::default()).with_storage(storage as Arc<dyn ThreadStore>);
         let tool = SubAgentTool::new(agent, "helper", "Helps");
 
         let state = json!({});
@@ -1417,8 +1391,8 @@ mod tests {
         let storage = Arc::new(crate::storage::MemoryStorage::new());
         let def = AgentDefinition::with_id("saver", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
-        let agent =
-            Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn ThreadStore>);
+        let agent = Agent::new(def, Client::default())
+            .with_storage(storage.clone() as Arc<dyn ThreadStore>);
 
         let handle = agent.spawn("save this");
         let thread_id = handle.thread_id().to_string();
@@ -1444,8 +1418,8 @@ mod tests {
         let def = AgentDefinition::with_id("spawn-final-state", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
             .with_plugin(Arc::new(ThreadEndStatePatchPlugin) as Arc<dyn AgentPlugin>);
-        let agent =
-            Agent::new(def, Client::default()).with_storage(storage.clone() as Arc<dyn ThreadStore>);
+        let agent = Agent::new(def, Client::default())
+            .with_storage(storage.clone() as Arc<dyn ThreadStore>);
 
         let handle = agent.spawn("persist final thread");
         let thread_id = handle.thread_id().to_string();

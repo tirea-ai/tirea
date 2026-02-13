@@ -588,8 +588,8 @@ async fn test_tool_provider_reminder_integration() {
 // ============================================================================
 
 use carve_agent::{
-    loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role, Thread,
-    ThreadStore, ThreadQuery, StreamResult,
+    loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role,
+    StreamResult, Thread, ThreadQuery, ThreadStore,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
 use std::sync::Arc;
@@ -1028,7 +1028,11 @@ async fn test_large_session_storage_roundtrip() {
     storage.save(&thread).await.unwrap();
 
     // Load
-    let loaded = storage.load_thread("large-storage-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_thread("large-storage-test")
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(loaded.message_count(), 500);
     assert_eq!(loaded.patch_count(), 500);
@@ -1138,7 +1142,11 @@ async fn test_session_incremental_checkpoints() {
     }
 
     // Verify final state
-    let loaded = storage.load_thread("checkpoint-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_thread("checkpoint-test")
+        .await
+        .unwrap()
+        .unwrap();
     let state = loaded.rebuild_state().unwrap();
     assert_eq!(state["progress"], 50);
     assert_eq!(loaded.message_count(), 50);
@@ -1166,7 +1174,11 @@ async fn test_session_recovery_with_snapshot() {
     storage.save(&thread).await.unwrap();
 
     // Continue work
-    let mut thread = storage.load_thread("snapshot-recovery").await.unwrap().unwrap();
+    let mut thread = storage
+        .load_thread("snapshot-recovery")
+        .await
+        .unwrap()
+        .unwrap();
     for _ in 0..25 {
         thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
@@ -1177,7 +1189,11 @@ async fn test_session_recovery_with_snapshot() {
     storage.save(&thread).await.unwrap();
 
     // Load and verify
-    let loaded = storage.load_thread("snapshot-recovery").await.unwrap().unwrap();
+    let loaded = storage
+        .load_thread("snapshot-recovery")
+        .await
+        .unwrap()
+        .unwrap();
     let state = loaded.rebuild_state().unwrap();
     assert_eq!(state["counter"], 75);
 }
@@ -1722,7 +1738,11 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     futures::future::join_all(handles).await;
 
     // Storage should still be consistent
-    let final_thread = storage.load_thread("concurrent-test").await.unwrap().unwrap();
+    let final_thread = storage
+        .load_thread("concurrent-test")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(final_thread.message_count(), 1); // Should have one message
 }
 
@@ -2924,8 +2944,7 @@ async fn test_e2e_multi_step_with_state() {
 /// Simulate tool failure and error message
 #[tokio::test]
 async fn test_e2e_tool_failure_handling() {
-    let thread =
-        Thread::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
+    let thread = Thread::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
 
     // LLM calls a tool that doesn't exist
     let llm_response = StreamResult {
@@ -3643,8 +3662,7 @@ async fn test_concurrent_session_modifications() {
 
             // Add messages
             for j in 0..5 {
-                thread =
-                    thread.with_message(Message::user(format!("Msg {} from thread {}", j, i)));
+                thread = thread.with_message(Message::user(format!("Msg {} from thread {}", j, i)));
             }
 
             // Save
@@ -3796,7 +3814,11 @@ async fn test_storage_overwrite_session() {
     storage.save(&session2).await.unwrap();
 
     // Load and verify overwritten
-    let loaded = storage.load_thread("overwrite-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_thread("overwrite-test")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.message_count(), 2);
     assert!(loaded.messages[0].content.contains("Second"));
 }
@@ -3807,8 +3829,7 @@ async fn test_file_storage_special_characters_in_id() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Thread ID with special characters (but filesystem-safe)
-    let thread =
-        Thread::new("session_with-special.chars_123").with_message(Message::user("Test"));
+    let thread = Thread::new("session_with-special.chars_123").with_message(Message::user("Test"));
 
     storage.save(&thread).await.unwrap();
     let loaded = storage
@@ -3846,7 +3867,10 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
 
     // Verify all 20 sessions were persisted.
     for i in 0..20 {
-        let loaded = storage.load_thread(&format!("session_{}", i)).await.unwrap();
+        let loaded = storage
+            .load_thread(&format!("session_{}", i))
+            .await
+            .unwrap();
         assert!(loaded.is_some(), "session_{} should exist", i);
         let s = loaded.unwrap();
         assert_eq!(s.message_count(), 1);
@@ -4069,7 +4093,11 @@ async fn test_e2e_system_prompt_in_session() {
     let storage = MemoryStorage::new();
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load_thread("system-prompt-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_thread("system-prompt-test")
+        .await
+        .unwrap()
+        .unwrap();
 
     // System prompt should be first message
     assert_eq!(loaded.messages[0].role, Role::System);
@@ -12037,7 +12065,7 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::{
-        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, Thread, StepContext, StreamResult,
+        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, StepContext, StreamResult, Thread,
         ToolCall, ToolContext, ToolResult,
     };
     use serde_json::json;
