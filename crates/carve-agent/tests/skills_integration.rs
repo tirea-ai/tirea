@@ -1,7 +1,7 @@
 use carve_agent::{
     execute_single_tool, AgentPlugin, FsSkillRegistry, LoadSkillResourceTool, Message, Phase,
     Session, SkillActivateTool, SkillRegistry, SkillRuntimePlugin, SkillScriptTool, StepContext,
-    ToolCall, ToolDescriptor, ToolResult,
+    ToolCall, ToolDescriptor, ToolResult, APPEND_USER_MESSAGES_METADATA_KEY,
 };
 use serde_json::json;
 use std::fs;
@@ -339,6 +339,31 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 
     let state = session.rebuild_state().unwrap();
     assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
+}
+
+#[tokio::test]
+async fn test_skill_activation_emits_append_user_messages_metadata() {
+    let (_td, reg) = make_skill_tree();
+    let activate = SkillActivateTool::new(reg);
+
+    let session = Session::with_initial_state("s", json!({}));
+    let (_session, result) = apply_tool(
+        session,
+        &activate,
+        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
+    )
+    .await;
+    assert!(result.is_success());
+
+    let appended = result
+        .metadata
+        .get(APPEND_USER_MESSAGES_METADATA_KEY)
+        .cloned()
+        .unwrap_or_default();
+    let items = appended.as_array().cloned().unwrap_or_default();
+    assert_eq!(items.len(), 1);
+    let text = items[0].as_str().unwrap_or("");
+    assert!(text.contains("# DOCX Processing"));
 }
 
 #[tokio::test]

@@ -643,6 +643,9 @@ fn apply_tool_results_to_session(
                     reminder
                 )));
             }
+            for text in appended_user_messages_from_tool_result(&r.execution.result) {
+                msgs.push(Message::user(text));
+            }
             // Attach run/step metadata to each message.
             if let Some(ref meta) = metadata {
                 for msg in &mut msgs {
@@ -653,17 +656,7 @@ fn apply_tool_results_to_session(
         })
         .collect();
 
-    let session_with_patches = session.with_patches(patches);
-
-    // Skills behavior: after a successful `skill` activation, append the activated
-    // SKILL.md body as a user-role message at the end of the history.
-    let skill_instruction_messages =
-        skill_instruction_user_messages(&session_with_patches, results, metadata.as_ref())?;
-
-    let mut session = session_with_patches.with_messages(tool_messages);
-    if !skill_instruction_messages.is_empty() {
-        session = session.with_messages(skill_instruction_messages);
-    }
+    let mut session = session.with_patches(patches).with_messages(tool_messages);
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = session
@@ -724,64 +717,32 @@ fn apply_tool_results_to_session(
     })
 }
 
-fn skill_instruction_user_messages(
-    session: &Session,
-    results: &[ToolExecutionResult],
-    metadata: Option<&MessageMetadata>,
-) -> Result<Vec<Message>, AgentLoopError> {
-    let activated_skill_ids: Vec<String> = results
-        .iter()
-        .filter(|r| r.execution.call.name == "skill" && r.execution.result.is_success())
-        .filter_map(|r| {
-            r.execution
-                .result
-                .data
-                .get("skill_id")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-                .or_else(|| {
-                    r.execution
-                        .call
-                        .arguments
-                        .get("skill")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_string)
-                })
-        })
-        .collect();
-
-    if activated_skill_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let state = session
-        .rebuild_state()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let Some(instructions) = state
-        .get("skills")
-        .and_then(|v| v.get("instructions"))
-        .and_then(|v| v.as_object())
+fn appended_user_messages_from_tool_result(result: &ToolResult) -> Vec<String> {
+    let Some(raw) = result
+        .metadata
+        .get(crate::skills::APPEND_USER_MESSAGES_METADATA_KEY)
     else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
 
-    let mut out = Vec::new();
-    for skill_id in activated_skill_ids {
-        let Some(instruction) = instructions.get(&skill_id).and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let mut msg = Message::user(instruction.to_string());
-        if let Some(meta) = metadata {
-            msg.metadata = Some(meta.clone());
+    match raw {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Value::String(s) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Vec::new()
+            } else {
+                vec![s.to_string()]
+            }
         }
-        out.push(msg);
+        _ => Vec::new(),
     }
-
-    Ok(out)
 }
 
 fn tool_result_metadata_from_session(session: &Session) -> Option<MessageMetadata> {
@@ -2822,14 +2783,19 @@ mod tests {
                 json!(text),
             )))
         });
+        let mut result =
+            ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
+        if let Some(text) = instruction {
+            result = result.with_metadata(
+                crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
+                json!([text]),
+            );
+        }
 
         ToolExecutionResult {
             execution: crate::execute::ToolExecution {
                 call: crate::types::ToolCall::new(call_id, "skill", json!({ "skill": skill_id })),
-                result: ToolResult::success(
-                    "skill",
-                    json!({ "activated": true, "skill_id": skill_id }),
-                ),
+                result,
                 patch,
             },
             reminders: Vec::new(),
@@ -3866,7 +3832,61 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_tool_results_keeps_tool_and_skill_message_order_stable() {
+    fn test_apply_tool_results_appends_user_messages_from_tool_result_metadata() {
+        let session = Session::with_initial_state("test", json!({}));
+        let result = ToolExecutionResult {
+            execution: crate::execute::ToolExecution {
+                call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
+                result: ToolResult::success("any_tool", json!({"ok": true})).with_metadata(
+                    crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
+                    json!(["first", "second"]),
+                ),
+                patch: None,
+            },
+            reminders: Vec::new(),
+            pending_interaction: None,
+            scratchpad: HashMap::new(),
+            pending_patches: Vec::new(),
+        };
+
+        let applied = apply_tool_results_to_session(session, &[result], None, false)
+            .expect("apply should succeed");
+
+        assert_eq!(applied.session.message_count(), 3);
+        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+        assert_eq!(applied.session.messages[1].role, crate::types::Role::User);
+        assert_eq!(applied.session.messages[1].content, "first");
+        assert_eq!(applied.session.messages[2].role, crate::types::Role::User);
+        assert_eq!(applied.session.messages[2].content, "second");
+    }
+
+    #[test]
+    fn test_apply_tool_results_ignores_invalid_append_user_messages_metadata() {
+        let session = Session::with_initial_state("test", json!({}));
+        let result = ToolExecutionResult {
+            execution: crate::execute::ToolExecution {
+                call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
+                result: ToolResult::success("any_tool", json!({"ok": true})).with_metadata(
+                    crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
+                    json!({"unexpected": true}),
+                ),
+                patch: None,
+            },
+            reminders: Vec::new(),
+            pending_interaction: None,
+            scratchpad: HashMap::new(),
+            pending_patches: Vec::new(),
+        };
+
+        let applied = apply_tool_results_to_session(session, &[result], None, false)
+            .expect("apply should succeed");
+
+        assert_eq!(applied.session.message_count(), 1);
+        assert_eq!(applied.session.messages[0].role, crate::types::Role::Tool);
+    }
+
+    #[test]
+    fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
         let session = Session::with_initial_state("test", json!({}));
         let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
         let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
@@ -3878,10 +3898,10 @@ mod tests {
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, crate::types::Role::Tool);
         assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
-        assert_eq!(messages[1].role, crate::types::Role::Tool);
-        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
-        assert_eq!(messages[2].role, crate::types::Role::User);
-        assert_eq!(messages[2].content, "Instruction B");
+        assert_eq!(messages[1].role, crate::types::Role::User);
+        assert_eq!(messages[1].content, "Instruction B");
+        assert_eq!(messages[2].role, crate::types::Role::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_1"));
         assert_eq!(messages[3].role, crate::types::Role::User);
         assert_eq!(messages[3].content, "Instruction A");
     }

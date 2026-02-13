@@ -142,7 +142,7 @@ pub use skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, FsSkillRegistry, InMemorySkillRegistry,
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillRuntimePlugin,
-    SkillScriptTool, SkillSubsystem, SkillSubsystemError,
+    SkillScriptTool, SkillSubsystem, SkillSubsystemError, APPEND_USER_MESSAGES_METADATA_KEY,
 };
 
 // UI Stream exports (AI SDK v6 compatible)

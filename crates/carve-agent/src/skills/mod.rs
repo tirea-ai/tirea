@@ -29,4 +29,6 @@ pub use registry::{
 };
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
-pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
+pub use tools::{
+    LoadSkillResourceTool, SkillActivateTool, SkillScriptTool, APPEND_USER_MESSAGES_METADATA_KEY,
+};

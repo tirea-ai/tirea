@@ -13,6 +13,13 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+/// ToolResult metadata key: list of user messages to append to session history.
+///
+/// Value shape:
+/// - JSON array of strings (preferred)
+/// - non-string entries are ignored by the loop
+pub const APPEND_USER_MESSAGES_METADATA_KEY: &str = "append_user_messages";
+
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {
     registry: Arc<dyn SkillRegistry>,
@@ -79,6 +86,7 @@ impl Tool for SkillActivateTool {
             Err(r) => return Ok(r),
         };
         let instructions = doc.body;
+        let instruction_for_message = instructions.clone();
 
         let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
         let active = state.active().ok().unwrap_or_default();
@@ -129,7 +137,7 @@ impl Tool for SkillActivateTool {
             );
         }
 
-        Ok(ToolResult::success(
+        let mut result = ToolResult::success(
             "skill",
             json!({
                 "activated": true,
@@ -139,7 +147,16 @@ impl Tool for SkillActivateTool {
                 "allowed_tools_applied": applied_tool_ids,
                 "allowed_tools_skipped": skipped_tokens,
             }),
-        ))
+        );
+
+        if !instruction_for_message.trim().is_empty() {
+            result = result.with_metadata(
+                APPEND_USER_MESSAGES_METADATA_KEY,
+                json!([instruction_for_message]),
+            );
+        }
+
+        Ok(result)
     }
 }
 
