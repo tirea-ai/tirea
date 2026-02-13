@@ -838,7 +838,10 @@ async fn test_parallel_tool_execution_order() {
         AgentLoopError::StateError(msg) => {
             assert!(msg.contains("conflicting parallel state patches"));
         }
-        other => panic!("expected StateError for conflicting patches, got: {:?}", other),
+        other => panic!(
+            "expected StateError for conflicting patches, got: {:?}",
+            other
+        ),
     }
 }
 
@@ -2424,7 +2427,10 @@ async fn test_parallel_execution_patch_conflict() {
         AgentLoopError::StateError(msg) => {
             assert!(msg.contains("conflicting parallel state patches"));
         }
-        other => panic!("expected StateError for conflicting patches, got: {:?}", other),
+        other => panic!(
+            "expected StateError for conflicting patches, got: {:?}",
+            other
+        ),
     }
 }
 
@@ -2713,7 +2719,11 @@ fn test_agent_loop_error_all_variants() {
         reason: carve_agent::StopReason::MaxRoundsReached,
     };
     let display = stopped_err.to_string();
-    assert!(display.contains("stopped") || display.contains("Stopped") || display.contains("MaxRoundsReached"));
+    assert!(
+        display.contains("stopped")
+            || display.contains("Stopped")
+            || display.contains("MaxRoundsReached")
+    );
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
@@ -3856,8 +3866,8 @@ async fn test_file_storage_concurrent_writes_same_session() {
     for i in 0..10 {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
-            let session = Session::new("shared_session")
-                .with_message(Message::user(&format!("Write {}", i)));
+            let session =
+                Session::new("shared_session").with_message(Message::user(&format!("Write {}", i)));
             s.save(&session).await.unwrap();
         }));
     }
@@ -6005,7 +6015,9 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         "Pending tool should have placeholder result"
     );
     assert!(
-        suspended_session.messages[0].content.contains("awaiting approval"),
+        suspended_session.messages[0]
+            .content
+            .contains("awaiting approval"),
         "Placeholder should mention awaiting approval"
     );
 
@@ -6062,14 +6074,13 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     // Phase 2: Client denies
-    let deny_request = RunAgentRequest::new("t1", "r1")
-        .with_message(AGUIMessage::tool("false", &interaction.id));
+    let deny_request =
+        RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("false", &interaction.id));
     assert!(deny_request.is_interaction_denied(&interaction.id));
 
     // Resume with only InteractionResponsePlugin — denial should block the tool
     let response_plugin = InteractionResponsePlugin::from_request(&deny_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> =
-        vec![Arc::new(response_plugin)];
+    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
@@ -6100,7 +6111,9 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     let msg = &resumed_session.messages[1];
     assert_eq!(msg.role, carve_agent::types::Role::Tool);
     assert!(
-        msg.content.contains("denied") || msg.content.contains("blocked") || msg.content.contains("Error"),
+        msg.content.contains("denied")
+            || msg.content.contains("blocked")
+            || msg.content.contains("Error"),
         "Blocked message should mention denial/block, got: {}",
         msg.content
     );
@@ -6152,14 +6165,13 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     // Phase 2: Client approves
-    let approve_request = RunAgentRequest::new("t1", "r1")
-        .with_message(AGUIMessage::tool("true", &interaction.id));
+    let approve_request =
+        RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("true", &interaction.id));
     assert!(approve_request.is_interaction_approved(&interaction.id));
 
     // Resume with only InteractionResponsePlugin (no PermissionPlugin)
     let response_plugin = InteractionResponsePlugin::from_request(&approve_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> =
-        vec![Arc::new(response_plugin)];
+    let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
@@ -12242,7 +12254,11 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
     )
     .with_message(carve_agent::types::Message::assistant_with_tool_calls(
         "",
-        vec![ToolCall::new(pending_id, "add_trips", json!({"destination": "Beijing"}))],
+        vec![ToolCall::new(
+            pending_id,
+            "add_trips",
+            json!({"destination": "Beijing"}),
+        )],
     ))
     .with_message(carve_agent::types::Message::tool(
         pending_id,
@@ -12308,10 +12324,7 @@ async fn test_interaction_response_session_start_no_pending() {
 
     let session = Session::with_initial_state("test", json!({ "agent": {} }));
 
-    let plugin = InteractionResponsePlugin::new(
-        vec!["some_id".to_string()],
-        vec![],
-    );
+    let plugin = InteractionResponsePlugin::new(vec!["some_id".to_string()], vec![]);
 
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
@@ -12338,10 +12351,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
     ));
 
     // Approved a different ID
-    let plugin = InteractionResponsePlugin::new(
-        vec!["permission_y".to_string()],
-        vec![],
-    );
+    let plugin = InteractionResponsePlugin::new(vec!["permission_y".to_string()], vec![]);
 
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
@@ -12365,12 +12375,11 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
-    .with_message(carve_agent::types::Message::assistant("I need to call a tool"));
+    .with_message(carve_agent::types::Message::assistant(
+        "I need to call a tool",
+    ));
 
-    let plugin = InteractionResponsePlugin::new(
-        vec![pending_id.to_string()],
-        vec![],
-    );
+    let plugin = InteractionResponsePlugin::new(vec![pending_id.to_string()], vec![]);
 
     let mut step = StepContext::new(&session, vec![]);
     plugin.on_phase(Phase::SessionStart, &mut step).await;
@@ -12407,7 +12416,10 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     permission_plugin
         .on_phase(Phase::BeforeToolExecute, &mut step1)
         .await;
-    assert!(step1.tool_pending(), "PermissionPlugin should create pending");
+    assert!(
+        step1.tool_pending(),
+        "PermissionPlugin should create pending"
+    );
 
     let interaction = step1
         .tool
@@ -12431,7 +12443,11 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     )
     .with_message(carve_agent::types::Message::assistant_with_tool_calls(
         "",
-        vec![ToolCall::new(&interaction.id, "add_trips", json!({"destination": "Beijing"}))],
+        vec![ToolCall::new(
+            &interaction.id,
+            "add_trips",
+            json!({"destination": "Beijing"}),
+        )],
     ))
     .with_message(carve_agent::types::Message::tool(
         &interaction.id,
@@ -12575,7 +12591,9 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     response_plugin
         .on_phase(Phase::SessionStart, &mut step1)
         .await;
-    assert!(step1.scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls").is_some());
+    assert!(step1
+        .scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls")
+        .is_some());
 
     // BeforeToolExecute on different step context (independent)
     let mut step2 = StepContext::new(&session, vec![]);
@@ -12585,5 +12603,8 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
         .on_phase(Phase::BeforeToolExecute, &mut step2)
         .await;
     // Tool should be allowed (approved)
-    assert!(!step2.tool_blocked(), "Approved tool should not be blocked in BeforeToolExecute");
+    assert!(
+        !step2.tool_blocked(),
+        "Approved tool should not be blocked in BeforeToolExecute"
+    );
 }

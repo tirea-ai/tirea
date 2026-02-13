@@ -37,7 +37,7 @@ struct PartialToolCall {
 pub struct StreamCollector {
     text: String,
     tool_calls: HashMap<String, PartialToolCall>,
-    current_tool_id: Option<String>,
+    tool_call_order: Vec<String>,
     usage: Option<Usage>,
 }
 
@@ -64,22 +64,24 @@ impl StreamCollector {
             ChatStreamEvent::ToolCallChunk(tool_chunk) => {
                 let call_id = tool_chunk.tool_call.call_id.clone();
 
-                // Get or create partial tool call
-                let partial =
-                    self.tool_calls
-                        .entry(call_id.clone())
-                        .or_insert_with(|| PartialToolCall {
+                // Get or create partial tool call while preserving first-seen order.
+                let partial = match self.tool_calls.entry(call_id.clone()) {
+                    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        self.tool_call_order.push(call_id.clone());
+                        e.insert(PartialToolCall {
                             id: call_id.clone(),
                             name: String::new(),
                             arguments: String::new(),
-                        });
+                        })
+                    }
+                };
 
                 let mut output = None;
 
                 // Update name if provided (non-empty)
                 if !tool_chunk.tool_call.fn_name.is_empty() && partial.name.is_empty() {
                     partial.name = tool_chunk.tool_call.fn_name.clone();
-                    self.current_tool_id = Some(call_id.clone());
                     output = Some(StreamOutput::ToolCallStart {
                         id: call_id.clone(),
                         name: partial.name.clone(),
@@ -107,7 +109,8 @@ impl StreamCollector {
                         args_str.clone()
                     };
                     partial.arguments = args_str;
-                    if !delta.is_empty() {
+                    // Keep ToolCallStart when name+args arrive in one chunk.
+                    if !delta.is_empty() && output.is_none() {
                         output = Some(StreamOutput::ToolCallDelta {
                             id: call_id,
                             args_delta: delta,
@@ -142,6 +145,7 @@ impl StreamCollector {
                                 }
                             }
                             std::collections::hash_map::Entry::Vacant(e) => {
+                                self.tool_call_order.push(tc.call_id.clone());
                                 e.insert(PartialToolCall {
                                     id: tc.call_id.clone(),
                                     name: tc.fn_name.clone(),
@@ -161,15 +165,19 @@ impl StreamCollector {
 
     /// Finish collecting and return the final result.
     pub fn finish(self) -> StreamResult {
-        let tool_calls: Vec<ToolCall> = self
-            .tool_calls
-            .into_values()
-            .filter(|p| !p.name.is_empty())
-            .map(|p| {
-                let arguments = serde_json::from_str(&p.arguments).unwrap_or(Value::Null);
-                ToolCall::new(p.id, p.name, arguments)
-            })
-            .collect();
+        let mut remaining = self.tool_calls;
+        let mut tool_calls: Vec<ToolCall> = Vec::with_capacity(self.tool_call_order.len());
+
+        for call_id in self.tool_call_order {
+            let Some(p) = remaining.remove(&call_id) else {
+                continue;
+            };
+            if p.name.is_empty() {
+                continue;
+            }
+            let arguments = serde_json::from_str(&p.arguments).unwrap_or(Value::Null);
+            tool_calls.push(ToolCall::new(p.id, p.name, arguments));
+        }
 
         StreamResult {
             text: self.text,
@@ -348,7 +356,6 @@ impl AgentEvent {
             .unwrap_or_default()
             .to_string()
     }
-
 }
 
 /// Convert an AgentEvent to AI SDK v6 compatible UI stream events.
@@ -1015,6 +1022,57 @@ mod tests {
         assert!(result.needs_tools());
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].name, "calculator");
+    }
+
+    #[test]
+    fn test_stream_collector_single_chunk_with_name_and_args_keeps_tool_start() {
+        let mut collector = StreamCollector::new();
+
+        let tool_call = genai::chat::ToolCall {
+            call_id: "call_single".to_string(),
+            fn_name: "search".to_string(),
+            fn_arguments: Value::String(r#"{"q":"rust"}"#.to_string()),
+            thought_signatures: None,
+        };
+        let output = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call }));
+
+        assert!(
+            matches!(output, Some(StreamOutput::ToolCallStart { .. })),
+            "tool start should not be lost when name+args arrive in one chunk; got: {output:?}"
+        );
+
+        let result = collector.finish();
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "call_single");
+        assert_eq!(result.tool_calls[0].name, "search");
+        assert_eq!(result.tool_calls[0].arguments, json!({"q":"rust"}));
+    }
+
+    #[test]
+    fn test_stream_collector_preserves_tool_call_arrival_order() {
+        let mut collector = StreamCollector::new();
+        let call_ids = vec![
+            "call_7", "call_3", "call_1", "call_9", "call_2", "call_8", "call_4", "call_6",
+        ];
+
+        for (idx, call_id) in call_ids.iter().enumerate() {
+            let tool_call = genai::chat::ToolCall {
+                call_id: (*call_id).to_string(),
+                fn_name: format!("tool_{idx}"),
+                fn_arguments: Value::Null,
+                thought_signatures: None,
+            };
+            let _ = collector.process(ChatStreamEvent::ToolCallChunk(ToolChunk { tool_call }));
+        }
+
+        let result = collector.finish();
+        let got: Vec<String> = result.tool_calls.into_iter().map(|c| c.id).collect();
+        let expected: Vec<String> = call_ids.into_iter().map(str::to_string).collect();
+
+        assert_eq!(
+            got, expected,
+            "tool_calls should preserve model-emitted order"
+        );
     }
 
     #[test]
@@ -2848,7 +2906,11 @@ mod tests {
         collector.process(ChatStreamEvent::End(end));
 
         let result = collector.finish();
-        assert_eq!(result.tool_calls.len(), 1, "Streamed tool calls should be preserved");
+        assert_eq!(
+            result.tool_calls.len(),
+            1,
+            "Streamed tool calls should be preserved"
+        );
         assert_eq!(result.tool_calls[0].name, "search");
         assert_eq!(result.tool_calls[0].arguments, json!({"q": "test"}));
     }
@@ -2940,14 +3002,26 @@ mod tests {
         let result = collector.finish();
         assert_eq!(result.tool_calls.len(), 2);
 
-        let names: Vec<&str> = result.tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+        let names: Vec<&str> = result
+            .tool_calls
+            .iter()
+            .map(|tc| tc.name.as_str())
+            .collect();
         assert!(names.contains(&"search"));
         assert!(names.contains(&"fetch"));
 
-        let search = result.tool_calls.iter().find(|tc| tc.name == "search").unwrap();
+        let search = result
+            .tool_calls
+            .iter()
+            .find(|tc| tc.name == "search")
+            .unwrap();
         assert_eq!(search.arguments, json!({"q": "foo"}));
 
-        let fetch = result.tool_calls.iter().find(|tc| tc.name == "fetch").unwrap();
+        let fetch = result
+            .tool_calls
+            .iter()
+            .find(|tc| tc.name == "fetch")
+            .unwrap();
         assert_eq!(fetch.arguments, json!({"url": "https://x.com"}));
     }
 
@@ -2977,10 +3051,18 @@ mod tests {
         let result = collector.finish();
         assert_eq!(result.tool_calls.len(), 2);
 
-        let search = result.tool_calls.iter().find(|tc| tc.name == "search").unwrap();
+        let search = result
+            .tool_calls
+            .iter()
+            .find(|tc| tc.name == "search")
+            .unwrap();
         assert_eq!(search.arguments, json!({"q": "a"}));
 
-        let fetch = result.tool_calls.iter().find(|tc| tc.name == "fetch").unwrap();
+        let fetch = result
+            .tool_calls
+            .iter()
+            .find(|tc| tc.name == "fetch")
+            .unwrap();
         assert_eq!(fetch.arguments, json!({"url": "b"}));
     }
 

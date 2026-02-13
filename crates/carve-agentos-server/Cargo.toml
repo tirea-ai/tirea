@@ -15,7 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "syn
 futures = "0.3"
 async-stream = "0.3"
 bytes = "1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 
 axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio"] }
 tower = "0.5"

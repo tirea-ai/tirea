@@ -978,9 +978,7 @@ impl AiSdkEncoder {
             | Some(StopReason::TokenBudgetExceeded) => "length",
             Some(StopReason::ToolCalled(_)) => "tool-calls",
             Some(StopReason::Cancelled) => "other",
-            Some(StopReason::ConsecutiveErrorsExceeded) | Some(StopReason::LoopDetected) => {
-                "error"
-            }
+            Some(StopReason::ConsecutiveErrorsExceeded) | Some(StopReason::LoopDetected) => "error",
             Some(StopReason::Custom(_)) => "other",
             None => "stop",
         }
@@ -1935,7 +1933,14 @@ mod tests {
             .collect();
         assert_eq!(
             types,
-            vec!["start", "text-start", "text-delta", "text-delta", "text-end", "finish"]
+            vec![
+                "start",
+                "text-start",
+                "text-delta",
+                "text-delta",
+                "text-end",
+                "finish"
+            ]
         );
     }
 
@@ -2132,8 +2137,13 @@ mod tests {
         // Step 1: text + tool + step end
         for ev in &[
             AgentEvent::StepStart,
-            AgentEvent::TextDelta { delta: "Plan: ".to_string() },
-            AgentEvent::ToolCallStart { id: "tc1".to_string(), name: "search".to_string() },
+            AgentEvent::TextDelta {
+                delta: "Plan: ".to_string(),
+            },
+            AgentEvent::ToolCallStart {
+                id: "tc1".to_string(),
+                name: "search".to_string(),
+            },
             AgentEvent::ToolCallDone {
                 id: "tc1".to_string(),
                 result: crate::ToolResult::success("search", serde_json::json!([])),
@@ -2147,7 +2157,9 @@ mod tests {
         // Step 2: text + finish
         for ev in &[
             AgentEvent::StepStart,
-            AgentEvent::TextDelta { delta: "Done".to_string() },
+            AgentEvent::TextDelta {
+                delta: "Done".to_string(),
+            },
             AgentEvent::StepEnd,
             AgentEvent::RunFinish {
                 thread_id: "t".to_string(),
@@ -2174,16 +2186,18 @@ mod tests {
             vec![
                 "start",
                 "start-step",
-                "text-start", "text-delta",   // txt_0
-                "text-end",                    // txt_0 closed before tool
+                "text-start",
+                "text-delta", // txt_0
+                "text-end",   // txt_0 closed before tool
                 "tool-input-start",
                 "tool-output-available",
-                "finish-step",                 // safe: no open text
+                "finish-step", // safe: no open text
                 "start-step",
-                "text-start", "text-delta",    // txt_1
-                "text-end",                    // txt_1 closed before finish-step
+                "text-start",
+                "text-delta", // txt_1
+                "text-end",   // txt_1 closed before finish-step
                 "finish-step",
-                "finish",                      // no extra text-end needed
+                "finish", // no extra text-end needed
             ]
         );
     }

@@ -19,7 +19,8 @@ async fn main() {
             "3. Extract useful resources with extract_resources\n",
             "4. Write a report with write_report\n\n",
             "Always keep the user informed of your progress."
-        ).into(),
+        )
+        .into(),
         max_rounds: 15,
         parallel_tools: true,
         ..Default::default()
@@ -33,9 +34,8 @@ async fn main() {
         Arc::new(ExtractResourcesTool),
     ];
 
-    let plugins: Vec<(String, Arc<dyn AgentPlugin>)> = vec![
-        ("permission".into(), Arc::new(PermissionPlugin)),
-    ];
+    let plugins: Vec<(String, Arc<dyn AgentPlugin>)> =
+        vec![("permission".into(), Arc::new(PermissionPlugin))];
 
     uncarve_examples::serve(args, agent_def, tools, plugins).await;
 }

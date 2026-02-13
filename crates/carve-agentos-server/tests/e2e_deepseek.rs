@@ -211,7 +211,10 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     assert_eq!(status, StatusCode::OK);
     assert!(text.contains(r#""type":"start""#), "missing start event");
-    assert!(text.contains(r#""type":"text-start""#), "missing text-start");
+    assert!(
+        text.contains(r#""type":"text-start""#),
+        "missing text-start"
+    );
     assert!(
         text.contains(r#""type":"text-delta""#),
         "missing text-delta — LLM produced no text?"
@@ -268,8 +271,14 @@ async fn e2e_ag_ui_sse_with_deepseek() {
     println!("=== AG-UI SSE Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
     assert!(
         text.contains(r#""type":"TEXT_MESSAGE_CONTENT""#),
         "missing TEXT_MESSAGE_CONTENT — LLM produced no text?"
@@ -314,8 +323,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
         "runId": "r-tool-1"
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/calc/runs/ai-sdk/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/calc/runs/ai-sdk/sse", payload).await;
 
     println!("=== AI SDK Tool Call Response ===\n{text}");
 
@@ -373,16 +381,21 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
 
     println!("=== AG-UI Tool Call Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
 
     // AG-UI protocol: lifecycle + tool call events.
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
     assert!(
         text.contains(r#""type":"STEP_STARTED""#),
         "missing STEP_STARTED — agent loop should emit step boundaries"
@@ -443,7 +456,10 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
 
     println!("=== Turn 1 ===\n{text1}");
     assert_eq!(status, StatusCode::OK);
-    assert!(text1.contains(r#""type":"finish""#), "turn 1 did not finish");
+    assert!(
+        text1.contains(r#""type":"finish""#),
+        "turn 1 did not finish"
+    );
 
     // Wait for checkpoint.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -499,8 +515,9 @@ async fn e2e_ai_sdk_error_max_rounds_with_deepseek() {
     let def = AgentDefinition {
         id: "limited".to_string(),
         model: "deepseek-chat".to_string(),
-        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
-            .to_string(),
+        system_prompt:
+            "You MUST use the calculator tool for every question. Never answer directly."
+                .to_string(),
         max_rounds: 1,
         ..Default::default()
     };
@@ -684,7 +701,10 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
 
     println!("=== AG-UI Turn 1 ===\n{text1}");
     assert_eq!(status, StatusCode::OK);
-    assert!(text1.contains(r#""type":"RUN_FINISHED""#), "turn 1 missing RUN_FINISHED");
+    assert!(
+        text1.contains(r#""type":"RUN_FINISHED""#),
+        "turn 1 missing RUN_FINISHED"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -763,13 +783,15 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
         ]
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
 
     println!("=== AG-UI Frontend Tools Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
 
     // The LLM should attempt to call the frontend tool.
     // Check for TOOL_CALL_START with the addTask tool name.
@@ -831,13 +853,15 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
         ]
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/deepseek/runs/ag-ui/sse", payload).await;
 
     println!("=== AG-UI Context Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
 
     let answer = extract_agui_text(&text);
     println!("Extracted text: {answer}");
@@ -870,8 +894,9 @@ async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
     let def = AgentDefinition {
         id: "limited".to_string(),
         model: "deepseek-chat".to_string(),
-        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
-            .to_string(),
+        system_prompt:
+            "You MUST use the calculator tool for every question. Never answer directly."
+                .to_string(),
         max_rounds: 1,
         ..Default::default()
     };
@@ -902,13 +927,15 @@ async fn e2e_ag_ui_run_error_max_rounds_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/limited/runs/ag-ui/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/limited/runs/ag-ui/sse", payload).await;
 
     println!("=== AG-UI RUN_ERROR Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
 
     // Should contain RUN_ERROR with max rounds message.
     assert!(
@@ -953,21 +980,28 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
         "tools": []
     });
 
-    let (status, text) =
-        post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
+    let (status, text) = post_sse(app, "/v1/agents/calc/runs/ag-ui/sse", payload).await;
 
     println!("=== AG-UI Multi-Step Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
 
     // Count STEP_STARTED and STEP_FINISHED events — should be >= 2 of each
     // (step 1: LLM→tool call, step 2: LLM→text response).
     let step_started_count = text.matches(r#""type":"STEP_STARTED""#).count();
     let step_finished_count = text.matches(r#""type":"STEP_FINISHED""#).count();
 
-    println!("STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}");
+    println!(
+        "STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}"
+    );
 
     assert!(
         step_started_count >= 2,

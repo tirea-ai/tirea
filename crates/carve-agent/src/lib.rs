@@ -160,7 +160,7 @@ pub use ag_ui::{
     run_agent_events_with_request_checkpoints, run_agent_stream, run_agent_stream_sse,
     run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIContextEntry,
     AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
-    ToolExecutionLocation,
+    ToolExecutionLocation, AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 
 // Execute exports

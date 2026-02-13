@@ -230,8 +230,7 @@ mod tests {
     #[test]
     fn test_value_at_path() {
         let mut rt = Runtime::new();
-        rt.set("config", json!({"nested": {"value": 42}}))
-            .unwrap();
+        rt.set("config", json!({"nested": {"value": 42}})).unwrap();
         assert_eq!(rt.value_at("config.nested.value"), Some(&json!(42)));
         assert_eq!(rt.value_at("config.missing"), None);
     }

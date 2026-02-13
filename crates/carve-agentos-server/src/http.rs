@@ -9,14 +9,15 @@ use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
     apply_agui_request_to_session, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
     RunContext, Session, SessionListPage, SessionListQuery, SortOrder, Storage, Visibility,
+    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tracing;
-use uuid::Uuid;
 
+use crate::ids::generate_run_id;
 use crate::protocol::{AgUiEncoder, AiSdkEncoder};
 
 #[derive(Clone)]
@@ -228,7 +229,7 @@ async fn run_ai_sdk_sse(
         run_id
     } else {
         // Generate a run_id for the encoder, but don't set it on runtime - let the loop auto-generate
-        Uuid::new_v4().simple().to_string()
+        generate_run_id()
     };
 
     let run_ctx = RunContext {
@@ -252,11 +253,12 @@ async fn run_ai_sdk_sse(
 
         // Wait for the first event to extract the actual run_id from RunStart
         let first_event = events.next().await;
-        let actual_run_id = if let Some(carve_agent::AgentEvent::RunStart { run_id: id, .. }) = &first_event {
-            id.clone()
-        } else {
-            run_id.clone() // Fallback to the provided/generated run_id
-        };
+        let actual_run_id =
+            if let Some(carve_agent::AgentEvent::RunStart { run_id: id, .. }) = &first_event {
+                id.clone()
+            } else {
+                run_id.clone() // Fallback to the provided/generated run_id
+            };
 
         let mut enc = AiSdkEncoder::new(actual_run_id.clone());
 
@@ -401,7 +403,7 @@ async fn run_ag_ui_sse(
     let before_messages = base.messages.len();
     let before_patches = base.patches.len();
     let before_state = base.state.clone();
-    let session = apply_agui_request_to_session(base, &req);
+    let mut session = apply_agui_request_to_session(base, &req);
     if session.messages.len() != before_messages
         || session.patches.len() != before_patches
         || session.state != before_state
@@ -411,6 +413,9 @@ async fn run_ag_ui_sse(
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
+    let _ = session
+        .runtime
+        .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, req.run_id.clone());
 
     let (client, cfg, tools, session) = st.os.resolve(&agent_id, session).map_err(|e| match e {
         carve_agent::AgentOsResolveError::AgentNotFound(id) => ApiError::AgentNotFound(id),

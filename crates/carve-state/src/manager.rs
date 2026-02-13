@@ -23,9 +23,7 @@ pub enum StateError {
     InvalidReplayIndex { index: usize, len: usize },
 
     /// Batch commit contains conflicting patches.
-    #[error(
-        "conflicting patch in batch between index {left} and {right} at {path} ({kind:?})"
-    )]
+    #[error("conflicting patch in batch between index {left} and {right} at {path} ({kind:?})")]
     BatchConflict {
         /// Left patch index in the batch.
         left: usize,

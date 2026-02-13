@@ -153,7 +153,7 @@ impl Agent {
         let session = match resume_session {
             Some(s) => s.with_message(crate::types::Message::user(&prompt)),
             None => {
-                let id = format!("sub-{}-{}", self.definition.id, uuid_v4());
+                let id = format!("sub-{}-{}", self.definition.id, uuid_v7());
                 Session::new(id).with_message(crate::types::Message::user(prompt))
             }
         };
@@ -163,7 +163,7 @@ impl Agent {
     /// Spawn a subagent in the background.
     pub fn spawn(&self, prompt: impl Into<String>) -> SubAgentHandle {
         let prompt = prompt.into();
-        let session_id = format!("sub-{}-{}", self.definition.id, uuid_v4());
+        let session_id = format!("sub-{}-{}", self.definition.id, uuid_v7());
         let session =
             Session::new(session_id.clone()).with_message(crate::types::Message::user(&prompt));
 
@@ -346,14 +346,9 @@ impl Tool for SubAgentTool {
     }
 }
 
-/// Generate a simple UUID v4-like string.
-pub(crate) fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:032x}", nanos)
+/// Generate a RFC4122 UUID v7 string without hyphens.
+pub(crate) fn uuid_v7() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
 }
 
 #[cfg(test)]
@@ -975,6 +970,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_spawn_session_id_suffix_is_rfc4122_uuid_v7() {
+        let def = AgentDefinition::with_id("spawner", "gpt-4o-mini");
+        let agent = Agent::new(def, Client::default());
+        let handle = agent.spawn("do something");
+
+        let suffix = handle
+            .session_id()
+            .rsplit_once('-')
+            .map(|(_, right)| right)
+            .unwrap_or_else(|| {
+                panic!(
+                    "session id must contain uuid suffix: {}",
+                    handle.session_id()
+                )
+            });
+        let parsed = uuid::Uuid::parse_str(suffix)
+            .unwrap_or_else(|_| panic!("session suffix must be parseable UUID, got: {suffix}"));
+        assert_eq!(
+            parsed.get_variant(),
+            uuid::Variant::RFC4122,
+            "session suffix must be RFC4122 UUID, got: {suffix}"
+        );
+        assert_eq!(
+            parsed.get_version_num(),
+            7,
+            "session suffix must be version 7 UUID, got: {suffix}"
+        );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn test_spawn_unique_session_ids() {
         let agent = Agent::new(AgentDefinition::default(), Client::default());
         let h1 = agent.spawn("task 1");
@@ -1023,22 +1050,41 @@ mod tests {
     }
 
     // ========================================================================
-    // uuid_v4 uniqueness
+    // uuid helper uniqueness
     // ========================================================================
 
     #[test]
-    fn test_uuid_v4_not_empty() {
-        let id = uuid_v4();
+    fn test_uuid_v7_not_empty() {
+        let id = uuid_v7();
         assert!(!id.is_empty());
         assert_eq!(id.len(), 32);
     }
 
     #[test]
-    fn test_uuid_v4_generates_different_values() {
-        let id1 = uuid_v4();
+    fn test_uuid_v7_generates_different_values() {
+        let id1 = uuid_v7();
         std::thread::sleep(std::time::Duration::from_millis(1));
-        let id2 = uuid_v4();
+        let id2 = uuid_v7();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn test_uuid_v7_is_rfc4122_version7_uuid() {
+        for _ in 0..16 {
+            let id = uuid_v7();
+            let parsed = uuid::Uuid::parse_str(&id)
+                .unwrap_or_else(|_| panic!("uuid_v7() must return parseable UUID, got: {id}"));
+            assert_eq!(
+                parsed.get_variant(),
+                uuid::Variant::RFC4122,
+                "uuid_v7() must be RFC4122 variant, got: {id}"
+            );
+            assert_eq!(
+                parsed.get_version_num(),
+                7,
+                "uuid_v7() must be version 7, got: {id}"
+            );
+        }
     }
 
     // ========================================================================
@@ -1077,12 +1123,9 @@ mod tests {
             if phase != Phase::SessionEnd {
                 return;
             }
-            let patch = carve_state::TrackedPatch::new(
-                carve_state::Patch::new().with_op(carve_state::Op::set(
-                    carve_state::path!("spawn", "finished"),
-                    json!(true),
-                )),
-            )
+            let patch = carve_state::TrackedPatch::new(carve_state::Patch::new().with_op(
+                carve_state::Op::set(carve_state::path!("spawn", "finished"), json!(true)),
+            ))
             .with_source("test:session_end_state_patch");
             step.pending_patches.push(patch);
         }
@@ -1399,7 +1442,11 @@ mod tests {
         let result_state = result.session.rebuild_state().unwrap();
         assert_eq!(result_state["spawn"]["finished"], true);
 
-        let saved = storage.load(&session_id).await.unwrap().expect("session exists");
+        let saved = storage
+            .load(&session_id)
+            .await
+            .unwrap()
+            .expect("session exists");
         let saved_state = saved.rebuild_state().unwrap();
         assert_eq!(saved_state["spawn"]["finished"], true);
     }
@@ -1617,7 +1664,9 @@ mod tests {
 
         // Set run_id and parent_run_id on the session runtime
         let _ = session.runtime.set("run_id", "external-run-id".to_string());
-        let _ = session.runtime.set("parent_run_id", "parent-run-id".to_string());
+        let _ = session
+            .runtime
+            .set("parent_run_id", "parent-run-id".to_string());
 
         let ctx = RunContext {
             cancellation_token: None,
@@ -1679,6 +1728,18 @@ mod tests {
             assert!(
                 !run_id.is_empty(),
                 "auto-generated run_id should be non-empty"
+            );
+            let parsed = uuid::Uuid::parse_str(run_id)
+                .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
+            assert_eq!(
+                parsed.get_variant(),
+                uuid::Variant::RFC4122,
+                "run_id must be RFC4122 UUID, got: {run_id}"
+            );
+            assert_eq!(
+                parsed.get_version_num(),
+                7,
+                "run_id must be version 7 UUID, got: {run_id}"
             );
             assert!(parent_run_id.is_none());
         } else {

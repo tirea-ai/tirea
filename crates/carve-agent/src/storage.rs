@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 // ============================================================================
 // Pagination types
@@ -119,10 +120,7 @@ pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> Message
     }
 
     // Build (cursor, &Message) pairs filtered by after/before and visibility.
-    let start = query
-        .after
-        .map(|c| (c + 1).max(0) as usize)
-        .unwrap_or(0);
+    let start = query.after.map(|c| (c + 1).max(0) as usize).unwrap_or(0);
     let end = query
         .before
         .map(|c| (c.max(0) as usize).min(total))
@@ -145,11 +143,9 @@ pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> Message
             None => true,
         })
         .filter(|(_, m)| match &query.run_id {
-            Some(rid) => m
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.run_id.as_deref())
-                == Some(rid.as_str()),
+            Some(rid) => {
+                m.metadata.as_ref().and_then(|meta| meta.run_id.as_deref()) == Some(rid.as_str())
+            }
             None => true,
         })
         .map(|(i, m)| ((start + i) as i64, m))
@@ -344,8 +340,34 @@ impl Storage for FileStorage {
         let path = self.session_path(&session.id)?;
         let content = serde_json::to_string_pretty(session)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let tmp_path = self.base_path.join(format!(
+            ".{}.{}.tmp",
+            session.id,
+            uuid::Uuid::new_v4().simple()
+        ));
 
-        tokio::fs::write(&path, content).await?;
+        let write_result = async {
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            file.write_all(content.as_bytes()).await?;
+            file.flush().await?;
+            file.sync_all().await?;
+            drop(file);
+            match tokio::fs::rename(&tmp_path, &path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    tokio::fs::remove_file(&path).await?;
+                    tokio::fs::rename(&tmp_path, &path).await?;
+                }
+                Err(e) => return Err(e),
+            }
+            Ok::<(), std::io::Error>(())
+        }
+        .await;
+
+        if let Err(e) = write_result {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(StorageError::Io(e));
+        }
 
         Ok(())
     }
@@ -559,8 +581,8 @@ impl Storage for PostgresStorage {
             obj.insert("messages".to_string(), serde_json::Value::Array(messages));
         }
 
-        let session: Session = serde_json::from_value(v)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let session: Session =
+            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
         Ok(Some(session))
     }
 
@@ -569,10 +591,7 @@ impl Storage for PostgresStorage {
         let mut v = serde_json::to_value(session)
             .map_err(|e| StorageError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
-            obj.insert(
-                "messages".to_string(),
-                serde_json::Value::Array(Vec::new()),
-            );
+            obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
         }
 
         // Use a transaction to keep sessions and messages consistent.
@@ -605,16 +624,12 @@ impl Storage for PostgresStorage {
             .fetch_all(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
-        let existing_ids: HashSet<String> =
-            existing_rows.into_iter().map(|(id,)| id).collect();
+        let existing_ids: HashSet<String> = existing_rows.into_iter().map(|(id,)| id).collect();
 
         let new_messages: Vec<&Message> = session
             .messages
             .iter()
-            .filter(|m| {
-                m.id.as_ref()
-                    .map_or(true, |id| !existing_ids.contains(id))
-            })
+            .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
             .collect();
 
         let insert_sql = format!(
@@ -1593,21 +1608,17 @@ mod tests {
                 }),
             )
             // Run A, step 1: assistant final
-            .with_message(
-                Message::assistant("done").with_metadata(MessageMetadata {
-                    run_id: Some("run-a".to_string()),
-                    step_index: Some(1),
-                }),
-            )
+            .with_message(Message::assistant("done").with_metadata(MessageMetadata {
+                run_id: Some("run-a".to_string()),
+                step_index: Some(1),
+            }))
             // User follow-up (no run metadata)
             .with_message(Message::user("more"))
             // Run B, step 0
-            .with_message(
-                Message::assistant("ok").with_metadata(MessageMetadata {
-                    run_id: Some("run-b".to_string()),
-                    step_index: Some(0),
-                }),
-            )
+            .with_message(Message::assistant("ok").with_metadata(MessageMetadata {
+                run_id: Some("run-b".to_string()),
+                step_index: Some(0),
+            }))
     }
 
     #[test]

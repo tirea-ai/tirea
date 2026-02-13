@@ -293,7 +293,7 @@ async fn test_nats_agui_agent_not_found() {
 #[tokio::test]
 async fn test_nats_aisdk_agent_not_found() {
     let (_container, nats_url) = start_nats().await;
-    let (_storage, client) = setup_gateway(&nats_url).await;
+    let (storage, client) = setup_gateway(&nats_url).await;
 
     let reply_subject = "test.reply.aisdk.err.1";
     let mut sub = client.subscribe(reply_subject).await.unwrap();
@@ -327,6 +327,14 @@ async fn test_nats_aisdk_agent_not_found() {
             panic!("timed out waiting for error reply");
         }
     }
+
+    // Unknown agent should fail fast without persisting user input.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let saved = storage.load("s1").await.unwrap();
+    assert!(
+        saved.is_none(),
+        "session should not be persisted when agent is missing"
+    );
 }
 
 #[tokio::test]

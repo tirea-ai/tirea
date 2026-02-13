@@ -187,6 +187,62 @@ async fn test_ai_sdk_sse_and_persists_session() {
 }
 
 #[tokio::test]
+async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let payload = json!({
+        "sessionId": "t-v7",
+        "input": "hi"
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    let events: Vec<Value> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|json| serde_json::from_str::<Value>(json).ok())
+        .collect();
+
+    let run_id = events
+        .iter()
+        .find(|e| e["type"] == "data-run-info")
+        .and_then(|e| e["data"]["runId"].as_str())
+        .unwrap_or_else(|| panic!("missing run-info event with run_id: {text}"));
+    let parsed = uuid::Uuid::parse_str(run_id)
+        .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
+    assert_eq!(
+        parsed.get_variant(),
+        uuid::Variant::RFC4122,
+        "run_id must be RFC4122 UUID, got: {run_id}"
+    );
+    assert_eq!(
+        parsed.get_version_num(),
+        7,
+        "run_id must be version 7 UUID, got: {run_id}"
+    );
+}
+
+#[tokio::test]
 async fn test_agui_sse_and_persists_session() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
@@ -319,6 +375,51 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
     let saved = storage.load("th2").await.unwrap().unwrap();
     assert_eq!(saved.messages.len(), 1);
     assert_eq!(saved.messages[0].content, "hello");
+}
+
+#[tokio::test]
+async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStorage::new());
+    let app = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "th-idless-once",
+        "runId": "r-idless-once",
+        "messages": [
+            {"role": "user", "content": "hello without id"}
+        ],
+        "tools": []
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let _ = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let saved = storage.load("th-idless-once").await.unwrap().unwrap();
+    let user_hello_count = saved
+        .messages
+        .iter()
+        .filter(|m| m.role == carve_agent::Role::User && m.content == "hello without id")
+        .count();
+    assert_eq!(
+        user_hello_count, 1,
+        "id-less user message should be applied exactly once per request"
+    );
 }
 
 // ============================================================================

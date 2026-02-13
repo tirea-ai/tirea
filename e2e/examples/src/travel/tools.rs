@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use carve_agent::{Context, Tool, ToolDescriptor, ToolError, ToolResult};
 use serde_json::{json, Value};
 
-use super::state::{Place, SearchProgress, Trip, TravelState};
+use super::state::{Place, SearchProgress, TravelState, Trip};
 
 /// Add one or more trips to the travel plan.
 ///

@@ -429,7 +429,10 @@ mod tests {
 
     #[test]
     fn test_finish_reason_plugin_requested() {
-        assert_eq!(ai_sdk_finish_reason(Some(StopReason::PluginRequested)), "stop");
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::PluginRequested)),
+            "stop"
+        );
     }
 
     #[test]
@@ -442,17 +445,26 @@ mod tests {
 
     #[test]
     fn test_finish_reason_max_rounds() {
-        assert_eq!(ai_sdk_finish_reason(Some(StopReason::MaxRoundsReached)), "length");
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::MaxRoundsReached)),
+            "length"
+        );
     }
 
     #[test]
     fn test_finish_reason_timeout() {
-        assert_eq!(ai_sdk_finish_reason(Some(StopReason::TimeoutReached)), "length");
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::TimeoutReached)),
+            "length"
+        );
     }
 
     #[test]
     fn test_finish_reason_token_budget() {
-        assert_eq!(ai_sdk_finish_reason(Some(StopReason::TokenBudgetExceeded)), "length");
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::TokenBudgetExceeded)),
+            "length"
+        );
     }
 
     #[test]
@@ -486,7 +498,10 @@ mod tests {
 
     #[test]
     fn test_finish_reason_loop_detected() {
-        assert_eq!(ai_sdk_finish_reason(Some(StopReason::LoopDetected)), "error");
+        assert_eq!(
+            ai_sdk_finish_reason(Some(StopReason::LoopDetected)),
+            "error"
+        );
     }
 
     #[test]

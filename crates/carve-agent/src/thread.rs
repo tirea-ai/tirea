@@ -358,7 +358,10 @@ mod tests {
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
 
         let rebuilt = restored.rebuild_state().unwrap();
-        assert_eq!(rebuilt["counter"], 5, "persisted state should survive serialization");
+        assert_eq!(
+            rebuilt["counter"], 5,
+            "persisted state should survive serialization"
+        );
         assert!(
             !restored.runtime.contains_key("run_id"),
             "runtime data must not be persisted"
@@ -399,10 +402,9 @@ mod tests {
         assert_eq!(state_at_2["counter"], 30);
 
         let err = thread.replay_to(100).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("replay index 100 out of bounds (history len: 3)")
-        );
+        assert!(err
+            .to_string()
+            .contains("replay index 100 out of bounds (history len: 3)"));
     }
 
     #[test]
@@ -411,9 +413,8 @@ mod tests {
         let thread = Thread::with_initial_state("test-1", state.clone());
 
         let err = thread.replay_to(0).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("replay index 0 out of bounds (history len: 0)")
-        );
+        assert!(err
+            .to_string()
+            .contains("replay index 0 out of bounds (history len: 0)"));
     }
 }

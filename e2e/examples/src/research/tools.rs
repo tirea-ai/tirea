@@ -12,17 +12,21 @@ pub struct SearchTool;
 #[async_trait]
 impl Tool for SearchTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("search", "Search", "Search the web for research information")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    }
-                },
-                "required": ["query"]
-            }))
+        ToolDescriptor::new(
+            "search",
+            "Search",
+            "Search the web for research information",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
+                }
+            },
+            "required": ["query"]
+        }))
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {

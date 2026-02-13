@@ -139,10 +139,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
     println!("{text}");
 
     // Protocol correctness.
-    assert!(
-        text.contains(r#""type":"start""#),
-        "missing start event"
-    );
+    assert!(text.contains(r#""type":"start""#), "missing start event");
     assert!(
         text.contains(r#""type":"text-start""#),
         "missing text-start"
@@ -556,8 +553,14 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
     println!("=== AG-UI Tool Call via TensorZero ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
     assert!(
         text.contains(r#""type":"STEP_STARTED""#),
         "missing STEP_STARTED — agent loop should emit step boundaries"
@@ -616,7 +619,10 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 
     println!("=== TZ Turn 1 ===\n{text1}");
     assert_eq!(status, StatusCode::OK);
-    assert!(text1.contains(r#""type":"finish""#), "turn 1 did not finish");
+    assert!(
+        text1.contains(r#""type":"finish""#),
+        "turn 1 did not finish"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -662,8 +668,9 @@ async fn e2e_tensorzero_ai_sdk_error_max_rounds() {
     let def = AgentDefinition {
         id: "limited".to_string(),
         model: "deepseek".to_string(),
-        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
-            .to_string(),
+        system_prompt:
+            "You MUST use the calculator tool for every question. Never answer directly."
+                .to_string(),
         max_rounds: 1,
         ..Default::default()
     };
@@ -889,8 +896,9 @@ async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
     let def = AgentDefinition {
         id: "limited".to_string(),
         model: "deepseek".to_string(),
-        system_prompt: "You MUST use the calculator tool for every question. Never answer directly."
-            .to_string(),
+        system_prompt:
+            "You MUST use the calculator tool for every question. Never answer directly."
+                .to_string(),
         max_rounds: 1,
         ..Default::default()
     };
@@ -934,7 +942,10 @@ async fn e2e_tensorzero_ag_ui_run_error_max_rounds() {
     println!("=== TZ AG-UI RUN_ERROR Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
 
     assert!(
         text.contains(r#""type":"RUN_ERROR""#),
@@ -981,14 +992,22 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
     println!("=== TZ AG-UI Multi-Step Response ===\n{text}");
 
     assert_eq!(status, StatusCode::OK);
-    assert!(text.contains(r#""type":"RUN_STARTED""#), "missing RUN_STARTED");
-    assert!(text.contains(r#""type":"RUN_FINISHED""#), "missing RUN_FINISHED");
+    assert!(
+        text.contains(r#""type":"RUN_STARTED""#),
+        "missing RUN_STARTED"
+    );
+    assert!(
+        text.contains(r#""type":"RUN_FINISHED""#),
+        "missing RUN_FINISHED"
+    );
 
     // Should have >= 2 STEP cycles (tool call round + text round).
     let step_started_count = text.matches(r#""type":"STEP_STARTED""#).count();
     let step_finished_count = text.matches(r#""type":"STEP_FINISHED""#).count();
 
-    println!("STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}");
+    println!(
+        "STEP_STARTED count: {step_started_count}, STEP_FINISHED count: {step_finished_count}"
+    );
 
     assert!(
         step_started_count >= 2,

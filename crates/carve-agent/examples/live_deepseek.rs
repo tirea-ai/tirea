@@ -868,10 +868,7 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
             }
         }
         Err(AgentLoopError::Stopped { reason, .. }) => {
-            println!(
-                "✅ Agent stopped with reason: {:?} (expected!)",
-                reason
-            );
+            println!("✅ Agent stopped with reason: {:?} (expected!)", reason);
         }
         Err(e) => {
             println!("Unexpected error: {}", e);

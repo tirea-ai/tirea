@@ -2,13 +2,14 @@ use carve_agent::ag_ui::AGUIEvent;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
     apply_agui_request_to_session, AgentOs, Message, RunAgentRequest, RunContext, Session, Storage,
+    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing;
-use uuid::Uuid;
 
+use crate::ids::generate_run_id;
 use crate::protocol::{AgUiEncoder, AiSdkEncoder};
 use async_nats::ConnectErrorKind;
 
@@ -128,7 +129,7 @@ impl NatsGateway {
         let before_messages = session.messages.len();
         let before_patches = session.patches.len();
         let before_state = session.state.clone();
-        let session = apply_agui_request_to_session(session, &req.request);
+        let mut session = apply_agui_request_to_session(session, &req.request);
         if session.messages.len() != before_messages
             || session.patches.len() != before_patches
             || session.state != before_state
@@ -138,6 +139,9 @@ impl NatsGateway {
                 .await
                 .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
         }
+        let _ = session
+            .runtime
+            .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, req.request.run_id.clone());
 
         let (client, cfg, tools, session) = match self.os.resolve(&req.agent_id, session) {
             Ok(w) => w,
@@ -237,6 +241,19 @@ impl NatsGateway {
             ));
         };
 
+        // Validate agent exists before mutating session state.
+        if let Err(e) = self.os.validate_agent(&req.agent_id) {
+            let err = UIStreamEvent::error(e.to_string());
+            let _ = self
+                .client
+                .publish(
+                    reply.clone(),
+                    serde_json::to_vec(&err).unwrap_or_default().into(),
+                )
+                .await;
+            return Ok(());
+        }
+
         let mut session = self
             .storage
             .load(&req.session_id)
@@ -257,7 +274,7 @@ impl NatsGateway {
             run_id
         } else {
             // Generate a run_id for the encoder, but don't set it on runtime - let the loop auto-generate
-            Uuid::new_v4().simple().to_string()
+            generate_run_id()
         };
 
         let run_ctx = RunContext {
@@ -283,11 +300,12 @@ impl NatsGateway {
         // Wait for the first event to extract the actual run_id from RunStart
         let mut events = stream_with_checkpoints.events;
         let first_event = events.next().await;
-        let actual_run_id = if let Some(carve_agent::AgentEvent::RunStart { run_id: id, .. }) = &first_event {
-            id.clone()
-        } else {
-            run_id.clone() // Fallback to the provided/generated run_id
-        };
+        let actual_run_id =
+            if let Some(carve_agent::AgentEvent::RunStart { run_id: id, .. }) = &first_event {
+                id.clone()
+            } else {
+                run_id.clone() // Fallback to the provided/generated run_id
+            };
 
         let mut enc = AiSdkEncoder::new(actual_run_id.clone());
         for e in enc.prologue() {

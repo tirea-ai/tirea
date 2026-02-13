@@ -116,9 +116,9 @@ impl<'a> Context<'a> {
     ///
     /// Returns an error if no runtime is set on the context.
     pub fn runtime<T: State>(&self) -> CarveResult<T::Ref<'_>> {
-        let runtime = self
-            .runtime
-            .ok_or_else(|| CarveError::invalid_operation("Context::runtime() called but no Runtime set"))?;
+        let runtime = self.runtime.ok_or_else(|| {
+            CarveError::invalid_operation("Context::runtime() called but no Runtime set")
+        })?;
         Ok(runtime.get::<T>())
     }
 
@@ -205,7 +205,6 @@ impl<'a> Context<'a> {
     pub fn ops_count(&self) -> usize {
         self.ops.lock().unwrap().len()
     }
-
 }
 
 /// Activity context that mirrors state operations with immediate event emission.

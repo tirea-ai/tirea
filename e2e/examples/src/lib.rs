@@ -8,7 +8,7 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agent::{AgentOsBuilder, FileStorage, ModelDefinition, Tool, tool_map_from_arc};
+use carve_agent::{tool_map_from_arc, AgentOsBuilder, FileStorage, ModelDefinition, Tool};
 use carve_agentos_server::http::{self, AppState};
 use clap::Parser;
 use std::collections::HashMap;
@@ -55,12 +55,10 @@ pub async fn serve(
             })
             .build();
 
-        builder = builder
-            .with_provider("tz", tz_client)
-            .with_model(
-                &model_id,
-                ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
-            );
+        builder = builder.with_provider("tz", tz_client).with_model(
+            &model_id,
+            ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
+        );
         eprintln!("routing model '{model_id}' through TensorZero at {tz_url}");
     }
 
@@ -81,7 +79,9 @@ pub async fn serve(
         .expect("failed to bind");
     eprintln!("listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, app)
-        .with_graceful_shutdown(async { let _ = tokio::signal::ctrl_c().await; })
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
         .await
         .expect("server crashed");
 }

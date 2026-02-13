@@ -28,7 +28,10 @@ impl MetricsSink for LoggingSink {
     }
 
     fn on_session_end(&self, metrics: &AgentMetrics) {
-        eprintln!("\n=== Session Metrics ({:.1}s) ===", metrics.session_duration_ms as f64 / 1000.0);
+        eprintln!(
+            "\n=== Session Metrics ({:.1}s) ===",
+            metrics.session_duration_ms as f64 / 1000.0
+        );
         for stat in metrics.stats_by_model() {
             eprintln!(
                 "  [{}@{}] {} inferences | input: {} output: {} cache_read: {} cache_create: {} | {:.1}s",
@@ -41,12 +44,17 @@ impl MetricsSink for LoggingSink {
         for stat in metrics.stats_by_tool() {
             eprintln!(
                 "  [tool:{}] {} calls ({} failures) | {:.1}s",
-                stat.name, stat.call_count, stat.failure_count,
+                stat.name,
+                stat.call_count,
+                stat.failure_count,
                 stat.total_duration_ms as f64 / 1000.0,
             );
         }
-        eprintln!("  totals: {} input + {} output = {} tokens | inference {:.1}s tool {:.1}s",
-            metrics.total_input_tokens(), metrics.total_output_tokens(), metrics.total_tokens(),
+        eprintln!(
+            "  totals: {} input + {} output = {} tokens | inference {:.1}s tool {:.1}s",
+            metrics.total_input_tokens(),
+            metrics.total_output_tokens(),
+            metrics.total_tokens(),
             metrics.total_inference_duration_ms() as f64 / 1000.0,
             metrics.total_tool_duration_ms() as f64 / 1000.0,
         );
@@ -68,7 +76,8 @@ async fn main() {
             "When the user asks to plan a trip, create it with add_trips, then ",
             "search_for_places to find interesting locations. Always select the ",
             "active trip with select_trip after creating it."
-        ).into(),
+        )
+        .into(),
         max_rounds: 10,
         parallel_tools: true,
         plugin_ids: vec!["permission".into(), "llmmetry".into()],

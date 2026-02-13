@@ -1329,12 +1329,13 @@ fn session_has_tool_call_id(session: &Session, tool_call_id: &str) -> bool {
     })
 }
 
-/// Apply request messages/state into an existing session, in an idempotent way.
+/// Apply request messages/state into an existing session.
 ///
 /// - If the session is empty and the request carries messages/state, we seed the session.
-/// - Otherwise we only import messages that can be safely deduplicated:
+/// - Otherwise we import messages with the following rules:
 ///   - tool role messages with `toolCallId`
 ///   - any message with a stable `id`
+///   - id-less non-tool messages are appended as-is (same-run duplicates are valid user input)
 pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest) -> Session {
     if should_seed_session_from_request(&session, request) {
         return seed_session_from_request(session, request);
@@ -1372,6 +1373,11 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
             }
             continue;
         }
+
+        // Some clients don't provide stable IDs for user/system turns.
+        // Do not deduplicate these by content: repeated messages in the same run
+        // are valid user input and must be preserved.
+        new_msgs.push(core_message_from_ag_ui(msg));
     }
 
     if new_msgs.is_empty() {
@@ -1379,6 +1385,25 @@ pub fn apply_agui_request_to_session(session: Session, request: &RunAgentRequest
     } else {
         session.with_messages(new_msgs)
     }
+}
+
+/// Runtime key used to mark that a specific AG-UI request has already been
+/// applied to a session, preventing duplicate ingress on re-entry.
+pub const AGUI_REQUEST_APPLIED_RUNTIME_KEY: &str = "__agui_request_applied";
+
+fn ensure_agui_request_applied(mut session: Session, request: &RunAgentRequest) -> Session {
+    let already_applied = session
+        .runtime
+        .value(AGUI_REQUEST_APPLIED_RUNTIME_KEY)
+        .and_then(|v| v.as_str())
+        .is_some_and(|run_id| run_id == request.run_id);
+    if !already_applied {
+        session = apply_agui_request_to_session(session, request);
+    }
+    let _ = session
+        .runtime
+        .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, request.run_id.clone());
+    session
 }
 
 impl InteractionResponse {
@@ -1718,7 +1743,7 @@ pub fn run_agent_stream_with_request(
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
     let mut config = config;
-    let session = apply_agui_request_to_session(session, &request);
+    let session = ensure_agui_request_applied(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1776,7 +1801,7 @@ pub fn run_agent_events_with_request(
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithSession {
     let mut config = config;
-    let mut session = apply_agui_request_to_session(session, &request);
+    let mut session = ensure_agui_request_applied(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -1827,7 +1852,7 @@ pub fn run_agent_events_with_request_checkpoints(
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithCheckpoints {
     let mut config = config;
-    let mut session = apply_agui_request_to_session(session, &request);
+    let mut session = ensure_agui_request_applied(session, &request);
 
     // Apply per-request overrides when present.
     if let Some(model) = request.model.clone() {
@@ -6212,14 +6237,13 @@ mod tests {
         let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
         let request = RunAgentRequest::new("t1", "r1")
             .with_tool(
-                AGUIToolDef::frontend("addTask", "Add a task")
-                    .with_parameters(serde_json::json!({
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"}
-                        },
-                        "required": ["title"]
-                    })),
+                AGUIToolDef::frontend("addTask", "Add a task").with_parameters(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    },
+                    "required": ["title"]
+                })),
             )
             .with_tool(AGUIToolDef::backend("search", "Search the web"));
 
@@ -6250,14 +6274,16 @@ mod tests {
             }),
         );
 
-        let request = RunAgentRequest::new("t1", "r1").with_tool(
-            AGUIToolDef::frontend("addTask", "New description"),
-        );
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("addTask", "New description"));
 
         super::merge_frontend_tools(&mut tools, &request);
 
         // Should keep original
-        assert_eq!(tools["addTask"].descriptor().description, "Original description");
+        assert_eq!(
+            tools["addTask"].descriptor().description,
+            "Original description"
+        );
     }
 
     #[test]
@@ -6298,8 +6324,8 @@ mod tests {
 
     #[test]
     fn test_session_has_message_id_ignores_none_ids() {
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("no id on this one"));
+        let session =
+            Session::new("s1").with_message(crate::types::Message::user("no id on this one"));
         // Message without id should not match any id
         assert!(!super::session_has_message_id(&session, ""));
         assert!(!super::session_has_message_id(&session, "anything"));
@@ -6322,8 +6348,8 @@ mod tests {
 
     #[test]
     fn test_session_has_tool_call_id_ignores_none() {
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("no tool_call_id"));
+        let session =
+            Session::new("s1").with_message(crate::types::Message::user("no tool_call_id"));
         assert!(!super::session_has_tool_call_id(&session, "tc-1"));
     }
 
@@ -6382,7 +6408,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_agui_request_idempotent_double_apply() {
+    fn test_apply_agui_request_double_apply_keeps_idless_user_duplicates() {
         let session = Session::new("s1");
         let request = RunAgentRequest::new("t1", "r1")
             .with_state(json!({"counter": 1}))
@@ -6395,31 +6421,85 @@ mod tests {
         let s1 = super::apply_agui_request_to_session(session, &request);
         assert_eq!(s1.messages.len(), 2);
 
-        // Second apply: should not duplicate (messages have no IDs, so user/assistant without
-        // id or tool_call_id are skipped by the dedup logic)
+        // Second apply: id-less user input is appended again (assistant is still skipped).
         let s2 = super::apply_agui_request_to_session(s1, &request);
-        assert_eq!(s2.messages.len(), 2);
+        assert_eq!(s2.messages.len(), 3);
+        assert_eq!(s2.messages[2].role, crate::types::Role::User);
+        assert_eq!(s2.messages[2].content, "hello");
     }
 
     #[test]
-    fn test_apply_agui_request_skips_user_messages_without_id() {
+    fn test_apply_agui_request_imports_user_messages_without_id() {
         // Non-empty session (not seeding path)
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("existing"));
+        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
 
-        // Request with user message that has no id or tool_call_id — can't be deduplicated
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::user("no-id message"));
+        // Request with user message that has no id or tool_call_id.
+        let request =
+            RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("no-id message"));
 
         let result = super::apply_agui_request_to_session(session, &request);
-        // User messages without id should be skipped (no safe dedup key)
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[1].role, crate::types::Role::User);
+        assert_eq!(result.messages[1].content, "no-id message");
+    }
+
+    #[test]
+    fn test_apply_agui_request_user_message_without_id_duplicates_on_retry() {
+        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        let request =
+            RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("no-id message"));
+
+        let s1 = super::apply_agui_request_to_session(session, &request);
+        let s2 = super::apply_agui_request_to_session(s1, &request);
+        assert_eq!(
+            s2.messages.len(),
+            3,
+            "id-less user messages should not be deduplicated"
+        );
+    }
+
+    #[test]
+    fn test_apply_agui_request_preserves_duplicate_idless_messages_in_same_request() {
+        let session = Session::new("s1");
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![AGUIMessage::user("继续"), AGUIMessage::user("继续")]);
+
+        let result = super::apply_agui_request_to_session(session, &request);
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[0].content, "继续");
+        assert_eq!(result.messages[1].content, "继续");
+    }
+
+    #[test]
+    fn test_ensure_agui_request_applied_skips_second_application_when_marked() {
+        let mut session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        session
+            .runtime
+            .set(super::AGUI_REQUEST_APPLIED_RUNTIME_KEY, "r1")
+            .unwrap();
+        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("new input"));
+
+        let result = super::ensure_agui_request_applied(session, &request);
         assert_eq!(result.messages.len(), 1);
     }
 
     #[test]
+    fn test_ensure_agui_request_applied_reapplies_for_different_run_id() {
+        let mut session = Session::new("s1").with_message(crate::types::Message::user("existing"));
+        session
+            .runtime
+            .set(super::AGUI_REQUEST_APPLIED_RUNTIME_KEY, "r0")
+            .unwrap();
+        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("new input"));
+
+        let result = super::ensure_agui_request_applied(session, &request);
+        assert_eq!(result.messages.len(), 2);
+        assert_eq!(result.messages[1].content, "new input");
+    }
+
+    #[test]
     fn test_apply_agui_request_no_new_messages_returns_original() {
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("existing"));
+        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
 
         // All messages in request already exist
         let mut msg = AGUIMessage::user("existing");
@@ -6443,8 +6523,7 @@ mod tests {
 
     #[test]
     fn test_apply_agui_request_mixed_message_types() {
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("existing"));
+        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
 
         let mut user_msg = AGUIMessage::user("question");
         user_msg.id = Some("u1".to_string());
@@ -6452,8 +6531,8 @@ mod tests {
         assistant_msg.id = Some("a1".to_string());
         let tool_msg = AGUIMessage::tool(r#"{"ok": true}"#, "tc-99");
 
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_messages(vec![user_msg, assistant_msg, tool_msg]);
+        let request =
+            RunAgentRequest::new("t1", "r1").with_messages(vec![user_msg, assistant_msg, tool_msg]);
 
         let result = super::apply_agui_request_to_session(session, &request);
         // Original 1 + user(u1) + tool(tc-99); assistant(a1) is skipped
@@ -6471,8 +6550,7 @@ mod tests {
     #[test]
     fn test_should_seed_empty_session_with_request_messages() {
         let session = Session::new("s1");
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::user("hi"));
+        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hi"));
         assert!(super::should_seed_session_from_request(&session, &request));
     }
 
@@ -6489,8 +6567,7 @@ mod tests {
         use carve_state::{Patch, TrackedPatch};
         let mut session = Session::new("s1");
         session.patches.push(TrackedPatch::new(Patch::new()));
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_state(json!({"x": 1}));
+        let request = RunAgentRequest::new("t1", "r1").with_state(json!({"x": 1}));
         assert!(!super::should_seed_session_from_request(&session, &request));
     }
 
@@ -6508,8 +6585,7 @@ mod tests {
         let mut user2 = AGUIMessage::user("follow-up");
         user2.id = Some("ck_user_2".to_string());
 
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_messages(vec![assistant, user2]);
+        let request = RunAgentRequest::new("t1", "r1").with_messages(vec![assistant, user2]);
 
         let result = super::apply_agui_request_to_session(session, &request);
         // Should only add user2, not the duplicate assistant
@@ -6522,12 +6598,11 @@ mod tests {
         // Empty session — seeding path accepts all messages including assistant
         let session = Session::new("s1");
 
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_messages(vec![
-                AGUIMessage::user("hello"),
-                AGUIMessage::assistant("Hi there!"),
-                AGUIMessage::user("follow-up"),
-            ]);
+        let request = RunAgentRequest::new("t1", "r1").with_messages(vec![
+            AGUIMessage::user("hello"),
+            AGUIMessage::assistant("Hi there!"),
+            AGUIMessage::user("follow-up"),
+        ]);
 
         let result = super::apply_agui_request_to_session(session, &request);
         // Seeding: all messages accepted
@@ -6541,7 +6616,11 @@ mod tests {
             .with_message(crate::types::Message::user("add a task"))
             .with_message(crate::types::Message::assistant_with_tool_calls(
                 "",
-                vec![crate::types::ToolCall::new("tc-1", "addTask", json!({"title": "test"}))],
+                vec![crate::types::ToolCall::new(
+                    "tc-1",
+                    "addTask",
+                    json!({"title": "test"}),
+                )],
             ));
 
         // CopilotKit sends back the assistant (with its own ID, no tool_calls)
@@ -6552,8 +6631,8 @@ mod tests {
         let mut user2 = AGUIMessage::user("what next?");
         user2.id = Some("ck_u2".to_string());
 
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_messages(vec![ck_assistant, tool_result, user2]);
+        let request =
+            RunAgentRequest::new("t1", "r1").with_messages(vec![ck_assistant, tool_result, user2]);
 
         let result = super::apply_agui_request_to_session(session, &request);
         // Should have: user, assistant+tool_calls, tool_result, user2
@@ -6742,8 +6821,14 @@ mod tests {
         };
         let lines = adapter.to_sse(&event);
         for line in &lines {
-            assert!(line.starts_with("data: "), "SSE line must start with 'data: '");
-            assert!(line.ends_with("\n\n"), "SSE line must end with double newline");
+            assert!(
+                line.starts_with("data: "),
+                "SSE line must start with 'data: '"
+            );
+            assert!(
+                line.ends_with("\n\n"),
+                "SSE line must end with double newline"
+            );
         }
     }
 
@@ -6756,7 +6841,10 @@ mod tests {
         let lines = adapter.to_ndjson(&event);
         for line in &lines {
             assert!(line.ends_with('\n'), "NDJSON line must end with newline");
-            assert!(!line.ends_with("\n\n"), "NDJSON must not have double newline");
+            assert!(
+                !line.ends_with("\n\n"),
+                "NDJSON must not have double newline"
+            );
         }
     }
 
@@ -6845,16 +6933,22 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let text_events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta {
-            delta: "thinking...".into(),
-        }, &mut ctx);
+        let text_events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta {
+                delta: "thinking...".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(text_events.len(), 2); // TEXT_MESSAGE_START + TEXT_MESSAGE_CONTENT
 
         // Tool call should end text first
-        let tool_events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart {
-            id: "tc-1".into(),
-            name: "search".into(),
-        }, &mut ctx);
+        let tool_events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallStart {
+                id: "tc-1".into(),
+                name: "search".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(tool_events.len(), 2); // TEXT_MESSAGE_END + TOOL_CALL_START
         assert!(matches!(tool_events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(tool_events[1], AGUIEvent::ToolCallStart { .. }));
@@ -6864,10 +6958,13 @@ mod tests {
     fn test_agui_tool_without_prior_text_no_text_end() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart {
-            id: "tc-1".into(),
-            name: "search".into(),
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallStart {
+                id: "tc-1".into(),
+                name: "search".into(),
+            },
+            &mut ctx,
+        );
         // No text was started, so just TOOL_CALL_START
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -6877,13 +6974,22 @@ mod tests {
     fn test_agui_multiple_text_deltas_only_one_start() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let e1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "a".into() }, &mut ctx);
+        let e1 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta { delta: "a".into() },
+            &mut ctx,
+        );
         assert_eq!(e1.len(), 2); // START + CONTENT
 
-        let e2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "b".into() }, &mut ctx);
+        let e2 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta { delta: "b".into() },
+            &mut ctx,
+        );
         assert_eq!(e2.len(), 1); // Just CONTENT, no duplicate START
 
-        let e3 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "c".into() }, &mut ctx);
+        let e3 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta { delta: "c".into() },
+            &mut ctx,
+        );
         assert_eq!(e3.len(), 1);
     }
 
@@ -6892,15 +6998,21 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text stream
-        let _ = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() }, &mut ctx);
+        let _ = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
+            &mut ctx,
+        );
 
         // RunFinish should end text then emit RUN_FINISHED
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::RunFinish {
-            thread_id: "th".into(),
-            run_id: "run".into(),
-            result: None,
-            stop_reason: None,
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::RunFinish {
+                thread_id: "th".into(),
+                run_id: "run".into(),
+                result: None,
+                stop_reason: None,
+            },
+            &mut ctx,
+        );
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(events[1], AGUIEvent::RunFinished { .. }));
@@ -6924,10 +7036,13 @@ mod tests {
     #[test]
     fn test_agui_tool_call_delta_produces_tool_call_args() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDelta {
-            id: "tc-1".into(),
-            args_delta: r#"{"q":"#.into(),
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallDelta {
+                id: "tc-1".into(),
+                args_delta: r#"{"q":"#.into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallArgs {
             tool_call_id,
@@ -6958,11 +7073,14 @@ mod tests {
     #[test]
     fn test_agui_tool_call_done_produces_tool_call_result() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDone {
-            id: "tc-1".into(),
-            result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
-            patch: None,
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallDone {
+                id: "tc-1".into(),
+                result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
+                patch: None,
+            },
+            &mut ctx,
+        );
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallResult {
             tool_call_id,
@@ -6982,9 +7100,12 @@ mod tests {
     #[test]
     fn test_agui_error_produces_run_error() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Error {
-            message: "LLM timeout".into(),
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::Error {
+                message: "LLM timeout".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "LLM timeout");
@@ -6997,9 +7118,12 @@ mod tests {
     #[test]
     fn test_agui_aborted_produces_run_error_with_code() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Aborted {
-            reason: "cancelled by user".into(),
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::Aborted {
+                reason: "cancelled by user".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "cancelled by user");
@@ -7012,21 +7136,27 @@ mod tests {
     #[test]
     fn test_agui_inference_complete_ignored() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::InferenceComplete {
-            model: "gpt-4".into(),
-            usage: None,
-            duration_ms: 1234,
-        }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::InferenceComplete {
+                model: "gpt-4".into(),
+                usage: None,
+                duration_ms: 1234,
+            },
+            &mut ctx,
+        );
         assert!(events.is_empty());
     }
 
     #[test]
     fn test_agui_pending_interaction_produces_tool_call_sequence() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let interaction = Interaction::new("int-1", "tool:addTask")
-            .with_parameters(json!({"title": "New task"}));
+        let interaction =
+            Interaction::new("int-1", "tool:addTask").with_parameters(json!({"title": "New task"}));
 
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Pending { interaction }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::Pending { interaction },
+            &mut ctx,
+        );
         // Should produce TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
         assert_eq!(events.len(), 3);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -7039,11 +7169,17 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let _ = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() }, &mut ctx);
+        let _ = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
+            &mut ctx,
+        );
 
         // Pending should close text first
         let interaction = Interaction::new("int-1", "tool:x");
-        let events = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::Pending { interaction }, &mut ctx);
+        let events = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::Pending { interaction },
+            &mut ctx,
+        );
 
         // TEXT_MESSAGE_END + 3 tool call events
         assert_eq!(events.len(), 4);
@@ -7054,8 +7190,10 @@ mod tests {
     fn test_agui_step_events_produce_correct_names() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let start1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
-        let end1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepEnd, &mut ctx);
+        let start1 =
+            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
+        let end1 =
+            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepEnd, &mut ctx);
 
         if let AGUIEvent::StepStarted { step_name, .. } = &start1[0] {
             assert_eq!(step_name, "step_1");
@@ -7065,7 +7203,8 @@ mod tests {
         }
 
         // Second step
-        let start2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
+        let start2 =
+            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
         if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -7076,28 +7215,49 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Text phase 1
-        let e1 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "Let me search".into() }, &mut ctx);
+        let e1 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta {
+                delta: "Let me search".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(e1.len(), 2); // START + CONTENT
 
         // Tool call
-        let e2 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallStart { id: "tc".into(), name: "search".into() }, &mut ctx);
+        let e2 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallStart {
+                id: "tc".into(),
+                name: "search".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(e2.len(), 2); // END text + TOOL_CALL_START
 
         let ev3 = crate::stream::AgentEvent::ToolCallReady {
-            id: "tc".into(), name: "search".into(), arguments: json!({}),
+            id: "tc".into(),
+            name: "search".into(),
+            arguments: json!({}),
         };
         let e3 = crate::stream::agent_event_to_agui(&ev3, &mut ctx);
         assert_eq!(e3.len(), 1); // TOOL_CALL_END
 
-        let e4 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::ToolCallDone {
-            id: "tc".into(),
-            result: crate::traits::tool::ToolResult::success("test", "results"),
-            patch: None,
-        }, &mut ctx);
+        let e4 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::ToolCallDone {
+                id: "tc".into(),
+                result: crate::traits::tool::ToolResult::success("test", "results"),
+                patch: None,
+            },
+            &mut ctx,
+        );
         assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
 
         // Text phase 2 — should get a new TEXT_MESSAGE_START with a different message_id
-        let e5 = crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::TextDelta { delta: "Found it!".into() }, &mut ctx);
+        let e5 = crate::stream::agent_event_to_agui(
+            &crate::stream::AgentEvent::TextDelta {
+                delta: "Found it!".into(),
+            },
+            &mut ctx,
+        );
         assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
         assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
 
@@ -7112,7 +7272,10 @@ mod tests {
         } else {
             panic!("expected TextMessageStart");
         };
-        assert_ne!(msg_id_1, msg_id_2, "each text cycle must use a unique message_id");
+        assert_ne!(
+            msg_id_1, msg_id_2,
+            "each text cycle must use a unique message_id"
+        );
     }
 
     // ========================================================================
@@ -7157,8 +7320,7 @@ mod tests {
 
     #[test]
     fn test_interaction_to_agui_events_with_unicode_message() {
-        let interaction = Interaction::new("i3", "notify")
-            .with_message("确认执行此操作？");
+        let interaction = Interaction::new("i3", "notify").with_message("确认执行此操作？");
         let events = interaction.to_ag_ui_events();
 
         if let AGUIEvent::ToolCallArgs { delta, .. } = &events[1] {
@@ -7239,18 +7401,19 @@ mod tests {
                 AGUIMessage::user("hello"),
                 AGUIMessage::tool(r#"true"#, "perm_1"),
             ])
-            .with_tool(AGUIToolDef::frontend("addTask", "Add a task")
-                .with_parameters(json!({"type": "object", "properties": {"title": {"type": "string"}}})))
+            .with_tool(
+                AGUIToolDef::frontend("addTask", "Add a task").with_parameters(
+                    json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+                ),
+            )
             .with_tool(AGUIToolDef::backend("search", "Search the web"));
 
         // Add context
         let mut request = request;
-        request.context = vec![
-            AGUIContextEntry {
-                description: "Tasks".into(),
-                value: json!([{"title": "Review PR"}]),
-            },
-        ];
+        request.context = vec![AGUIContextEntry {
+            description: "Tasks".into(),
+            value: json!([{"title": "Review PR"}]),
+        }];
 
         // Replicate the config/session preparation from run_agent_stream_with_request
         let mut config = config;
@@ -7314,7 +7477,7 @@ mod tests {
     #[test]
     fn test_context_start_text_idempotent() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        assert!(ctx.start_text());  // first time → true
+        assert!(ctx.start_text()); // first time → true
         assert!(!ctx.start_text()); // already started → false
         assert!(!ctx.start_text()); // still started → false
     }
@@ -7391,20 +7554,19 @@ mod tests {
 
     #[test]
     fn test_request_last_user_message() {
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_messages(vec![
-                AGUIMessage::system("system prompt"),
-                AGUIMessage::user("first question"),
-                AGUIMessage::assistant("answer"),
-                AGUIMessage::user("follow-up"),
-            ]);
+        let request = RunAgentRequest::new("t1", "r1").with_messages(vec![
+            AGUIMessage::system("system prompt"),
+            AGUIMessage::user("first question"),
+            AGUIMessage::assistant("answer"),
+            AGUIMessage::user("follow-up"),
+        ]);
         assert_eq!(request.last_user_message(), Some("follow-up"));
     }
 
     #[test]
     fn test_request_last_user_message_none() {
-        let request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::system("only system"));
+        let request =
+            RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::system("only system"));
         assert_eq!(request.last_user_message(), None);
     }
 
@@ -7531,13 +7693,36 @@ mod tests {
         let mut adapter = AgUiAdapter::new("th_rt".to_string(), "run_rt".to_string());
 
         let events = vec![
-            AgentEvent::TextDelta { delta: "Hello ".to_string() },
-            AgentEvent::TextDelta { delta: "world".to_string() },
-            AgentEvent::ToolCallStart { id: "tc_1".to_string(), name: "search".to_string() },
-            AgentEvent::ToolCallDelta { id: "tc_1".to_string(), args_delta: r#"{"q":"test"}"#.to_string() },
-            AgentEvent::ToolCallReady { id: "tc_1".to_string(), name: "search".to_string(), arguments: json!({"q":"test"}) },
-            AgentEvent::ToolCallDone { id: "tc_1".to_string(), result: crate::ToolResult::success("search", json!({"results": []})), patch: None },
-            AgentEvent::RunFinish { thread_id: "th_rt".to_string(), run_id: "run_rt".to_string(), result: None, stop_reason: None },
+            AgentEvent::TextDelta {
+                delta: "Hello ".to_string(),
+            },
+            AgentEvent::TextDelta {
+                delta: "world".to_string(),
+            },
+            AgentEvent::ToolCallStart {
+                id: "tc_1".to_string(),
+                name: "search".to_string(),
+            },
+            AgentEvent::ToolCallDelta {
+                id: "tc_1".to_string(),
+                args_delta: r#"{"q":"test"}"#.to_string(),
+            },
+            AgentEvent::ToolCallReady {
+                id: "tc_1".to_string(),
+                name: "search".to_string(),
+                arguments: json!({"q":"test"}),
+            },
+            AgentEvent::ToolCallDone {
+                id: "tc_1".to_string(),
+                result: crate::ToolResult::success("search", json!({"results": []})),
+                patch: None,
+            },
+            AgentEvent::RunFinish {
+                thread_id: "th_rt".to_string(),
+                run_id: "run_rt".to_string(),
+                result: None,
+                stop_reason: None,
+            },
         ];
 
         let mut all_sse: Vec<String> = Vec::new();
@@ -7546,7 +7731,10 @@ mod tests {
         }
 
         // Every SSE line must parse back to a valid AGUIEvent.
-        assert!(!all_sse.is_empty(), "Should produce at least some SSE lines");
+        assert!(
+            !all_sse.is_empty(),
+            "Should produce at least some SSE lines"
+        );
         let mut parsed: Vec<AGUIEvent> = Vec::new();
         for line in &all_sse {
             parsed.push(parse_sse_line(line));
@@ -7554,23 +7742,32 @@ mod tests {
 
         // Verify expected event types are present.
         // Note: RUN_STARTED is emitted by the server wrapper, not the adapter.
-        let types: Vec<&str> = parsed.iter().map(|e| match e {
-            AGUIEvent::RunStarted { .. } => "RUN_STARTED",
-            AGUIEvent::RunFinished { .. } => "RUN_FINISHED",
-            AGUIEvent::StepStarted { .. } => "STEP_STARTED",
-            AGUIEvent::StepFinished { .. } => "STEP_FINISHED",
-            AGUIEvent::TextMessageStart { .. } => "TEXT_MESSAGE_START",
-            AGUIEvent::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
-            AGUIEvent::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
-            AGUIEvent::ToolCallStart { .. } => "TOOL_CALL_START",
-            AGUIEvent::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
-            AGUIEvent::ToolCallEnd { .. } => "TOOL_CALL_END",
-            AGUIEvent::StateSnapshot { .. } => "STATE_SNAPSHOT",
-            _ => "OTHER",
-        }).collect();
+        let types: Vec<&str> = parsed
+            .iter()
+            .map(|e| match e {
+                AGUIEvent::RunStarted { .. } => "RUN_STARTED",
+                AGUIEvent::RunFinished { .. } => "RUN_FINISHED",
+                AGUIEvent::StepStarted { .. } => "STEP_STARTED",
+                AGUIEvent::StepFinished { .. } => "STEP_FINISHED",
+                AGUIEvent::TextMessageStart { .. } => "TEXT_MESSAGE_START",
+                AGUIEvent::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
+                AGUIEvent::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
+                AGUIEvent::ToolCallStart { .. } => "TOOL_CALL_START",
+                AGUIEvent::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
+                AGUIEvent::ToolCallEnd { .. } => "TOOL_CALL_END",
+                AGUIEvent::StateSnapshot { .. } => "STATE_SNAPSHOT",
+                _ => "OTHER",
+            })
+            .collect();
 
-        assert!(types.contains(&"TEXT_MESSAGE_CONTENT"), "Must have TEXT_MESSAGE_CONTENT");
-        assert!(types.contains(&"TOOL_CALL_START"), "Must have TOOL_CALL_START");
+        assert!(
+            types.contains(&"TEXT_MESSAGE_CONTENT"),
+            "Must have TEXT_MESSAGE_CONTENT"
+        );
+        assert!(
+            types.contains(&"TOOL_CALL_START"),
+            "Must have TOOL_CALL_START"
+        );
         assert!(types.contains(&"RUN_FINISHED"), "Must have RUN_FINISHED");
     }
 
@@ -7580,7 +7777,9 @@ mod tests {
 
         let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
         let state = json!({"trips": [{"name": "Paris"}], "count": 1});
-        let event = AgentEvent::StateSnapshot { snapshot: state.clone() };
+        let event = AgentEvent::StateSnapshot {
+            snapshot: state.clone(),
+        };
         let sse_lines = adapter.to_sse(&event);
 
         for line in &sse_lines {
@@ -7596,7 +7795,9 @@ mod tests {
         use crate::stream::AgentEvent;
 
         let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = AgentEvent::Error { message: "something went wrong".to_string() };
+        let event = AgentEvent::Error {
+            message: "something went wrong".to_string(),
+        };
         let sse_lines = adapter.to_sse(&event);
 
         assert!(!sse_lines.is_empty());
@@ -7614,13 +7815,18 @@ mod tests {
 
         let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
         let text = "line1\nline2\t\"quotes\" 中文 emoji🎉 \\backslash";
-        let event = AgentEvent::TextDelta { delta: text.to_string() };
+        let event = AgentEvent::TextDelta {
+            delta: text.to_string(),
+        };
         let sse_lines = adapter.to_sse(&event);
 
         for line in &sse_lines {
             let parsed = parse_sse_line(line);
             if let AGUIEvent::TextMessageContent { delta, .. } = &parsed {
-                assert_eq!(delta, text, "Special characters must survive SSE round-trip");
+                assert_eq!(
+                    delta, text,
+                    "Special characters must survive SSE round-trip"
+                );
             }
         }
     }
@@ -7655,7 +7861,11 @@ mod tests {
         assert_eq!(req.last_user_message(), Some("hello"));
 
         // Tool message should have tool_call_id.
-        let tool_msg = req.messages.iter().find(|m| m.role == MessageRole::Tool).unwrap();
+        let tool_msg = req
+            .messages
+            .iter()
+            .find(|m| m.role == MessageRole::Tool)
+            .unwrap();
         assert_eq!(tool_msg.tool_call_id.as_deref(), Some("tc_1"));
     }
 
@@ -7670,8 +7880,7 @@ mod tests {
 
     #[test]
     fn test_request_last_user_message_none_when_no_user() {
-        let req = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::assistant("Hi"));
+        let req = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::assistant("Hi"));
         assert_eq!(req.last_user_message(), None);
     }
 
@@ -7726,8 +7935,7 @@ mod tests {
     fn test_apply_agui_request_tool_msg_without_tool_call_id_skipped() {
         // Tool message with no tool_call_id should be skipped entirely
         // (the `continue` at line 1358 exits the loop iteration).
-        let session = Session::new("s1")
-            .with_message(crate::types::Message::user("existing"));
+        let session = Session::new("s1").with_message(crate::types::Message::user("existing"));
 
         let mut tool_msg = AGUIMessage::tool("orphan result", "");
         tool_msg.id = Some("orphan-id".to_string());
@@ -7756,7 +7964,10 @@ mod tests {
         // Even though request has messages, state is Null → request_has_state is false.
         // But request_has_messages is true, so it should STILL seed.
         let should = super::should_seed_session_from_request(&session, &request);
-        assert!(should, "should seed when request has messages even if state is null");
+        assert!(
+            should,
+            "should seed when request has messages even if state is null"
+        );
     }
 
     #[test]
@@ -7764,8 +7975,7 @@ mod tests {
         // When request.state is Some(Null), seed_session_from_request should
         // fall back to session's original state (line 1296-1299).
         let session = Session::with_initial_state("s1", json!({"existing": true}));
-        let mut request = RunAgentRequest::new("t1", "r1")
-            .with_message(AGUIMessage::user("hello"));
+        let mut request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         request.state = Some(Value::Null);
 
         let seeded = super::seed_session_from_request(session, &request);
@@ -7842,7 +8052,10 @@ mod tests {
     #[test]
     fn test_message_role_invalid_string_rejected() {
         let result = serde_json::from_str::<MessageRole>("\"invalid\"");
-        assert!(result.is_err(), "Invalid role string should fail deserialization");
+        assert!(
+            result.is_err(),
+            "Invalid role string should fail deserialization"
+        );
     }
 
     #[test]
@@ -7934,9 +8147,7 @@ mod tests {
 
     #[test]
     fn test_state_delta_remove_operation() {
-        let delta = AGUIEvent::state_delta(vec![
-            json!({"op": "remove", "path": "/obsolete"}),
-        ]);
+        let delta = AGUIEvent::state_delta(vec![json!({"op": "remove", "path": "/obsolete"})]);
         let json = serde_json::to_string(&delta).unwrap();
         let back: AGUIEvent = serde_json::from_str(&json).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
@@ -7951,7 +8162,8 @@ mod tests {
         let delta = AGUIEvent::state_delta(vec![
             json!({"op": "replace", "path": "/count", "value": 42}),
         ]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert_eq!(delta[0]["op"], "replace");
             assert_eq!(delta[0]["value"], 42);
@@ -7962,9 +8174,8 @@ mod tests {
 
     #[test]
     fn test_state_delta_move_operation() {
-        let delta = AGUIEvent::state_delta(vec![
-            json!({"op": "move", "from": "/old", "path": "/new"}),
-        ]);
+        let delta =
+            AGUIEvent::state_delta(vec![json!({"op": "move", "from": "/old", "path": "/new"})]);
         let json = serde_json::to_string(&delta).unwrap();
         let back: AGUIEvent = serde_json::from_str(&json).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
@@ -8021,7 +8232,10 @@ mod tests {
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert_eq!(delta.len(), 6);
             let ops: Vec<&str> = delta.iter().map(|d| d["op"].as_str().unwrap()).collect();
-            assert_eq!(ops, vec!["add", "remove", "replace", "move", "copy", "test"]);
+            assert_eq!(
+                ops,
+                vec!["add", "remove", "replace", "move", "copy", "test"]
+            );
         } else {
             panic!("Expected StateDelta");
         }
@@ -8049,7 +8263,8 @@ mod tests {
             json!({"op": "add", "path": "/items/2", "value": "inserted"}),
             json!({"op": "remove", "path": "/items/0"}),
         ]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert_eq!(delta[0]["path"], "/items/2");
             assert_eq!(delta[1]["path"], "/items/0");
@@ -8065,7 +8280,8 @@ mod tests {
             json!({"op": "add", "path": "/a~1b", "value": "slash"}),
             json!({"op": "add", "path": "/c~0d", "value": "tilde"}),
         ]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert_eq!(delta[0]["path"], "/a~1b");
             assert_eq!(delta[1]["path"], "/c~0d");
@@ -8079,7 +8295,8 @@ mod tests {
         let delta = AGUIEvent::state_delta(vec![
             json!({"op": "add", "path": "/user", "value": {"name": "Bob", "tags": ["admin", "user"], "active": true}}),
         ]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert_eq!(delta[0]["value"]["name"], "Bob");
             assert_eq!(delta[0]["value"]["tags"][0], "admin");
@@ -8091,7 +8308,8 @@ mod tests {
     #[test]
     fn test_state_delta_empty_delta_array() {
         let delta = AGUIEvent::state_delta(vec![]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&delta).unwrap()).unwrap();
         if let AGUIEvent::StateDelta { delta, .. } = back {
             assert!(delta.is_empty());
         } else {
@@ -8107,7 +8325,8 @@ mod tests {
     #[test]
     fn test_state_snapshot_null_value() {
         let event = AGUIEvent::state_snapshot(json!({"value": null}));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert!(snapshot["value"].is_null());
         } else {
@@ -8118,7 +8337,8 @@ mod tests {
     #[test]
     fn test_state_snapshot_empty_string() {
         let event = AGUIEvent::state_snapshot(json!({"name": ""}));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["name"], "");
         } else {
@@ -8129,7 +8349,8 @@ mod tests {
     #[test]
     fn test_state_snapshot_zero_and_negative() {
         let event = AGUIEvent::state_snapshot(json!({"zero": 0, "neg": -42, "neg_float": -3.14}));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["zero"], 0);
             assert_eq!(snapshot["neg"], -42);
@@ -8142,7 +8363,8 @@ mod tests {
     #[test]
     fn test_state_snapshot_boolean_values() {
         let event = AGUIEvent::state_snapshot(json!({"t": true, "f": false}));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["t"], true);
             assert_eq!(snapshot["f"], false);
@@ -8154,7 +8376,8 @@ mod tests {
     #[test]
     fn test_state_snapshot_empty_object_and_array() {
         let event = AGUIEvent::state_snapshot(json!({"obj": {}, "arr": []}));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["obj"], json!({}));
             assert_eq!(snapshot["arr"], json!([]));
@@ -8168,7 +8391,8 @@ mod tests {
         let event = AGUIEvent::state_snapshot(json!({
             "a": {"b": {"c": {"d": {"e": {"f": 42}}}}}
         }));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["a"]["b"]["c"]["d"]["e"]["f"], 42);
         } else {
@@ -8181,7 +8405,8 @@ mod tests {
         let event = AGUIEvent::state_snapshot(json!({
             "created_at": "2026-02-12T12:00:00Z"
         }));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["created_at"], "2026-02-12T12:00:00Z");
         } else {
@@ -8200,7 +8425,8 @@ mod tests {
             "arr": [1, "two", null, true],
             "obj": {"nested": "value"}
         }));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["str"], "hello");
             assert_eq!(snapshot["num"], 42);
@@ -8220,7 +8446,8 @@ mod tests {
             "emoji": "🎉🚀",
             "chinese": "你好世界"
         }));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["名前"], "太郎");
             assert_eq!(snapshot["emoji"], "🎉🚀");
@@ -8236,7 +8463,8 @@ mod tests {
             "big": 9007199254740991_i64,
             "small": -9007199254740991_i64
         }));
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::StateSnapshot { snapshot, .. } = back {
             assert_eq!(snapshot["big"], 9007199254740991_i64);
             assert_eq!(snapshot["small"], -9007199254740991_i64);
@@ -8366,7 +8594,8 @@ mod tests {
         content.insert("tags".to_string(), json!(["research", "coding"]));
 
         let event = AGUIEvent::activity_snapshot("msg_1", "task", content, None);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::ActivitySnapshot { content, .. } = back {
             assert_eq!(content["nested"]["a"]["b"][2], 3);
             assert_eq!(content["tags"][0], "research");
@@ -8407,7 +8636,8 @@ mod tests {
     #[test]
     fn test_messages_snapshot_empty() {
         let event = AGUIEvent::messages_snapshot(vec![]);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
             assert!(messages.is_empty());
         } else {
@@ -8417,11 +8647,9 @@ mod tests {
 
     #[test]
     fn test_messages_snapshot_with_nested_tool_call_args() {
-        let messages = vec![
-            json!({"role": "assistant", "content": "", "toolCalls": [
-                {"id": "c1", "name": "create_plan", "arguments": "{\"plan\":{\"title\":\"Trip\",\"items\":[{\"name\":\"Hotel\",\"cost\":100}]}}"}
-            ]}),
-        ];
+        let messages = vec![json!({"role": "assistant", "content": "", "toolCalls": [
+            {"id": "c1", "name": "create_plan", "arguments": "{\"plan\":{\"title\":\"Trip\",\"items\":[{\"name\":\"Hotel\",\"cost\":100}]}}"}
+        ]})];
         let event = AGUIEvent::messages_snapshot(messages);
         let json = serde_json::to_string(&event).unwrap();
         let back: AGUIEvent = serde_json::from_str(&json).unwrap();
@@ -8442,7 +8670,8 @@ mod tests {
             json!({"role": "assistant", "content": "こんにちは！ 🎉"}),
         ];
         let event = AGUIEvent::messages_snapshot(messages);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
             assert_eq!(messages[0]["content"], "你好世界 🌍");
             assert_eq!(messages[1]["content"], "こんにちは！ 🎉");
@@ -8459,7 +8688,8 @@ mod tests {
             json!({"role": "assistant", "content": "empty tools", "toolCalls": []}),
         ];
         let event = AGUIEvent::messages_snapshot(messages);
-        let back: AGUIEvent = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+        let back: AGUIEvent =
+            serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
         if let AGUIEvent::MessagesSnapshot { messages, .. } = back {
             assert!(messages[0].get("toolCalls").is_none());
             assert_eq!(messages[1]["toolCalls"].as_array().unwrap().len(), 0);
@@ -8478,7 +8708,10 @@ mod tests {
         // Future protocol versions may add new fields; we must not reject them
         let json = r#"{"type":"RUN_STARTED","threadId":"t1","runId":"r1","futureField":"should_be_ignored","newNested":{"a":1}}"#;
         let event: AGUIEvent = serde_json::from_str(json).unwrap();
-        if let AGUIEvent::RunStarted { thread_id, run_id, .. } = event {
+        if let AGUIEvent::RunStarted {
+            thread_id, run_id, ..
+        } = event
+        {
             assert_eq!(thread_id, "t1");
             assert_eq!(run_id, "r1");
         } else {
@@ -8490,7 +8723,10 @@ mod tests {
     fn test_text_message_start_tolerates_extra_fields() {
         let json = r#"{"type":"TEXT_MESSAGE_START","messageId":"m1","role":"assistant","extraField":true}"#;
         let event: AGUIEvent = serde_json::from_str(json).unwrap();
-        if let AGUIEvent::TextMessageStart { message_id, role, .. } = event {
+        if let AGUIEvent::TextMessageStart {
+            message_id, role, ..
+        } = event
+        {
             assert_eq!(message_id, "m1");
             assert_eq!(role, MessageRole::Assistant);
         } else {
@@ -8502,7 +8738,12 @@ mod tests {
     fn test_tool_call_result_tolerates_extra_fields() {
         let json = r#"{"type":"TOOL_CALL_RESULT","messageId":"m1","toolCallId":"tc1","content":"result","futureRole":"executor"}"#;
         let event: AGUIEvent = serde_json::from_str(json).unwrap();
-        if let AGUIEvent::ToolCallResult { tool_call_id, content, .. } = event {
+        if let AGUIEvent::ToolCallResult {
+            tool_call_id,
+            content,
+            ..
+        } = event
+        {
             assert_eq!(tool_call_id, "tc1");
             assert_eq!(content, "result");
         } else {
@@ -8542,7 +8783,8 @@ mod tests {
     #[test]
     fn test_aguimessage_with_json_array_content() {
         // AG-UI protocol spec allows multimodal content as JSON array string
-        let multimodal = r#"[{"type":"text","text":"Hello"},{"type":"binary","source":{"data":"base64data"}}]"#;
+        let multimodal =
+            r#"[{"type":"text","text":"Hello"},{"type":"binary","source":{"data":"base64data"}}]"#;
         let msg = AGUIMessage::user(multimodal);
         let json = serde_json::to_string(&msg).unwrap();
         let back: AGUIMessage = serde_json::from_str(&json).unwrap();
@@ -8590,7 +8832,10 @@ mod tests {
         // First event must be RunStarted
         assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
         // Last event must be RunFinished
-        assert!(matches!(&events[events.len() - 1], AGUIEvent::RunFinished { .. }));
+        assert!(matches!(
+            &events[events.len() - 1],
+            AGUIEvent::RunFinished { .. }
+        ));
     }
 
     #[test]
@@ -8662,10 +8907,17 @@ mod tests {
             AGUIEvent::step_finished("step_2"),
         ];
         // Verify pairing
-        assert!(matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1"));
-        assert!(matches!(&events[1], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1"));
-        assert!(matches!(&events[2], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_2"));
-        assert!(matches!(&events[3], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_2"));
+        assert!(
+            matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1")
+        );
+        assert!(
+            matches!(&events[1], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1")
+        );
+        assert!(
+            matches!(&events[2], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_2")
+        );
+        assert!(
+            matches!(&events[3], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_2")
+        );
     }
-
 }
