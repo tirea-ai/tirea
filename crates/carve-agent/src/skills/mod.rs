@@ -14,7 +14,7 @@ mod materialize;
 mod registry;
 mod runtime_plugin;
 mod skill_md;
-mod state;
+pub mod state;
 mod subsystem;
 mod tools;
 
