@@ -12,3 +12,4 @@ sessions/
 e2e/**/sessions/
 e2e/**/.next/
 e2e/**/node_modules/
+travel_stderr.log
