@@ -179,11 +179,11 @@ pub use convert::{
 pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentTool};
 pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
-    AgentOsWiringError, AgentRegistry, AgentRegistryError, CompositeAgentRegistry,
-    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
-    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
-    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry,
-    ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig,
+    CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
+    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
+    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
     ProviderRegistryError, SkillsConfig, SkillsMode, ToolRegistry, ToolRegistryError,
 };
 

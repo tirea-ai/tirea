@@ -176,6 +176,15 @@ pub struct RunContext {
     pub cancellation_token: Option<CancellationToken>,
 }
 
+/// Runtime key: caller session id visible to tools.
+pub(crate) const TOOL_RUNTIME_CALLER_SESSION_ID_KEY: &str = "__agent_tool_caller_session_id";
+/// Runtime key: caller agent id visible to tools.
+pub(crate) const TOOL_RUNTIME_CALLER_AGENT_ID_KEY: &str = "__agent_tool_caller_agent_id";
+/// Runtime key: caller state snapshot visible to tools.
+pub(crate) const TOOL_RUNTIME_CALLER_STATE_KEY: &str = "__agent_tool_caller_state";
+/// Runtime key: caller message snapshot visible to tools.
+pub(crate) const TOOL_RUNTIME_CALLER_MESSAGES_KEY: &str = "__agent_tool_caller_messages";
+
 impl Default for AgentDefinition {
     fn default() -> Self {
         Self {
@@ -1147,6 +1156,26 @@ pub async fn execute_tools_with_config(
     .await
 }
 
+fn runtime_with_tool_caller_context(
+    session: &Session,
+    state: &Value,
+) -> Result<carve_state::Runtime, AgentLoopError> {
+    let mut rt = session.runtime.clone();
+    if rt.value(TOOL_RUNTIME_CALLER_SESSION_ID_KEY).is_none() {
+        rt.set(TOOL_RUNTIME_CALLER_SESSION_ID_KEY, session.id.clone())
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    }
+    if rt.value(TOOL_RUNTIME_CALLER_STATE_KEY).is_none() {
+        rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, state.clone())
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    }
+    if rt.value(TOOL_RUNTIME_CALLER_MESSAGES_KEY).is_none() {
+        rt.set(TOOL_RUNTIME_CALLER_MESSAGES_KEY, session.messages.clone())
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    }
+    Ok(rt)
+}
+
 /// Execute tool calls with plugin hooks (backward compatible).
 pub async fn execute_tools_with_plugins(
     session: Session,
@@ -1166,6 +1195,7 @@ pub async fn execute_tools_with_plugins(
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let scratchpad = initial_scratchpad(plugins);
+    let rt_for_tools = runtime_with_tool_caller_context(&session, &state)?;
 
     let results = if parallel {
         execute_tools_parallel_with_phases(
@@ -1176,7 +1206,7 @@ pub async fn execute_tools_with_plugins(
             plugins,
             scratchpad,
             None,
-            Some(&session.runtime),
+            Some(&rt_for_tools),
             &session.id,
         )
         .await
@@ -1189,7 +1219,7 @@ pub async fn execute_tools_with_plugins(
             plugins,
             scratchpad,
             None,
-            Some(&session.runtime),
+            Some(&rt_for_tools),
             &session.id,
         )
         .await
@@ -1829,6 +1859,14 @@ pub async fn run_loop(
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
+        let rt_for_tools = match runtime_with_tool_caller_context(&session, &state) {
+            Ok(rt) => rt,
+            Err(e) => {
+                emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins)
+                    .await;
+                return Err(e);
+            }
+        };
 
         let results = if config.parallel_tools {
             execute_tools_parallel_with_phases(
@@ -1839,7 +1877,7 @@ pub async fn run_loop(
                 &config.plugins,
                 scratchpad.data.clone(),
                 None,
-                Some(&session.runtime),
+                Some(&rt_for_tools),
                 &session.id,
             )
             .await
@@ -1852,7 +1890,7 @@ pub async fn run_loop(
                 &config.plugins,
                 scratchpad.data.clone(),
                 None,
-                Some(&session.runtime),
+                Some(&rt_for_tools),
                 &session.id,
             )
             .await
@@ -2166,6 +2204,12 @@ fn run_loop_stream_impl_with_provider(
                 };
 
                 let tool = tools.get(&tool_call.name).cloned();
+                let rt_for_replay = match runtime_with_tool_caller_context(&session, &state) {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        terminate_stream_error!(e.to_string());
+                    }
+                };
                 let replay_result = match execute_single_tool_with_phases(
                     tool.as_deref(),
                     tool_call,
@@ -2174,7 +2218,7 @@ fn run_loop_stream_impl_with_provider(
                     &config.plugins,
                     scratchpad.data.clone(),
                     None,
-                    Some(&session.runtime),
+                    Some(&rt_for_replay),
                     &session.id,
                 )
                 .await
@@ -2536,7 +2580,12 @@ fn run_loop_stream_impl_with_provider(
                 }
             };
 
-            let rt_for_tools = session.runtime.clone();
+            let rt_for_tools = match runtime_with_tool_caller_context(&session, &state) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    terminate_stream_error!(e.to_string());
+                }
+            };
             let sid_for_tools = session.id.clone();
             let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
                 if config.parallel_tools {
@@ -2859,6 +2908,46 @@ mod tests {
         }
     }
 
+    struct RuntimeSnapshotTool;
+
+    #[async_trait]
+    impl Tool for RuntimeSnapshotTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(
+                "runtime_snapshot",
+                "Runtime Snapshot",
+                "Return tool runtime caller context",
+            )
+        }
+
+        async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+            let rt = ctx.runtime_ref().expect("runtime should exist");
+            let session_id = rt
+                .value(TOOL_RUNTIME_CALLER_SESSION_ID_KEY)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let state = rt
+                .value(TOOL_RUNTIME_CALLER_STATE_KEY)
+                .cloned()
+                .unwrap_or(Value::Null);
+            let messages_len = rt
+                .value(TOOL_RUNTIME_CALLER_MESSAGES_KEY)
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+
+            Ok(ToolResult::success(
+                "runtime_snapshot",
+                json!({
+                    "session_id": session_id,
+                    "state": state,
+                    "messages_len": messages_len
+                }),
+            ))
+        }
+    }
+
     struct ActivityGateTool {
         id: String,
         stream_id: String,
@@ -3032,6 +3121,38 @@ mod tests {
 
             assert_eq!(session.message_count(), 1);
             assert_eq!(session.messages[0].role, crate::types::Role::Tool);
+        });
+    }
+
+    #[test]
+    fn test_execute_tools_injects_caller_runtime_context_for_tools() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let session = Session::with_initial_state("caller-s", json!({"k":"v"}))
+                .with_message(crate::Message::user("hello"));
+            let result = StreamResult {
+                text: "Calling tool".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "runtime_snapshot",
+                    json!({}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([RuntimeSnapshotTool]);
+
+            let session = execute_tools(session, &result, &tools, true).await.unwrap();
+            assert_eq!(session.message_count(), 2);
+            let tool_msg = session
+                .messages
+                .last()
+                .expect("tool result message should exist");
+            let tool_result: ToolResult =
+                serde_json::from_str(&tool_msg.content).expect("tool result json");
+            assert_eq!(tool_result.status, crate::ToolStatus::Success);
+            assert_eq!(tool_result.data["session_id"], json!("caller-s"));
+            assert_eq!(tool_result.data["state"]["k"], json!("v"));
+            assert_eq!(tool_result.data["messages_len"], json!(1));
         });
     }
 

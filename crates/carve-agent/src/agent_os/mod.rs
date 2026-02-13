@@ -3,6 +3,7 @@ use crate::r#loop::{
     run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_session,
     RunContext, StreamWithCheckpoints, StreamWithSession,
 };
+pub(crate) mod agent_tools;
 mod registry;
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -10,6 +11,9 @@ use crate::skills::{
 };
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
+use agent_tools::{
+    AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin, RUNTIME_CALLER_AGENT_ID_KEY,
+};
 use genai::Client;
 pub use registry::{
     AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
@@ -49,6 +53,21 @@ impl Default for SkillsConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct AgentToolsConfig {
+    pub discovery_max_entries: usize,
+    pub discovery_max_chars: usize,
+}
+
+impl Default for AgentToolsConfig {
+    fn default() -> Self {
+        Self {
+            discovery_max_entries: 64,
+            discovery_max_chars: 16 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsWiringError {
     #[error("reserved plugin id cannot be used: {0}")]
@@ -68,6 +87,12 @@ pub enum AgentOsWiringError {
 
     #[error("skills enabled but no SkillRegistry configured")]
     SkillsNotConfigured,
+
+    #[error("agent tool id already registered: {0}")]
+    AgentToolIdConflict(String),
+
+    #[error("agent tools plugin already installed: {0}")]
+    AgentToolsPluginAlreadyInstalled(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -149,6 +174,8 @@ pub struct AgentOs {
     models: Arc<dyn ModelRegistry>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
+    agent_runs: Arc<AgentRunManager>,
+    agent_tools: AgentToolsConfig,
 }
 
 #[derive(Clone)]
@@ -166,6 +193,7 @@ pub struct AgentOsBuilder {
     model_registries: Vec<Arc<dyn ModelRegistry>>,
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
+    agent_tools: AgentToolsConfig,
 }
 
 impl std::fmt::Debug for AgentOs {
@@ -179,6 +207,7 @@ impl std::fmt::Debug for AgentOs {
             .field("models", &self.models.len())
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
+            .field("agent_tools", &self.agent_tools)
             .finish()
     }
 }
@@ -194,6 +223,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("models", &self.models.len())
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
+            .field("agent_tools", &self.agent_tools)
             .finish()
     }
 }
@@ -214,6 +244,7 @@ impl AgentOsBuilder {
             model_registries: Vec::new(),
             skills_registry: None,
             skills: SkillsConfig::default(),
+            agent_tools: AgentToolsConfig::default(),
         }
     }
 
@@ -295,6 +326,11 @@ impl AgentOsBuilder {
         self
     }
 
+    pub fn with_agent_tools_config(mut self, cfg: AgentToolsConfig) -> Self {
+        self.agent_tools = cfg;
+        self
+    }
+
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
         let AgentOsBuilder {
             client,
@@ -310,6 +346,7 @@ impl AgentOsBuilder {
             model_registries,
             skills_registry,
             skills,
+            agent_tools,
         } = self;
 
         if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
@@ -469,6 +506,8 @@ impl AgentOsBuilder {
             models,
             skills_registry,
             skills,
+            agent_runs: Arc::new(AgentRunManager::new()),
+            agent_tools,
         })
     }
 }
@@ -492,6 +531,10 @@ impl AgentOs {
         self.skills_registry.clone()
     }
 
+    pub(crate) fn agents_registry(&self) -> Arc<dyn AgentRegistry> {
+        self.agents.clone()
+    }
+
     pub fn agent(&self, agent_id: &str) -> Option<AgentDefinition> {
         self.agents.get(agent_id)
     }
@@ -501,6 +544,15 @@ impl AgentOs {
     }
 
     fn reserved_plugin_ids() -> &'static [&'static str] {
+        &[
+            "skills",
+            "skills_discovery",
+            "skills_runtime",
+            "agent_tools",
+        ]
+    }
+
+    fn reserved_skills_plugin_ids() -> &'static [&'static str] {
         &["skills", "skills_discovery", "skills_runtime"]
     }
 
@@ -556,13 +608,28 @@ impl AgentOs {
     fn ensure_skills_plugin_not_installed(
         plugins: &[Arc<dyn AgentPlugin>],
     ) -> Result<(), AgentOsWiringError> {
-        let reserved = Self::reserved_plugin_ids();
+        let reserved = Self::reserved_skills_plugin_ids();
         if let Some(existing) = plugins
             .iter()
             .map(|p| p.id())
             .find(|id| reserved.contains(id))
         {
             return Err(AgentOsWiringError::SkillsPluginAlreadyInstalled(
+                existing.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_agent_tools_plugin_not_installed(
+        plugins: &[Arc<dyn AgentPlugin>],
+    ) -> Result<(), AgentOsWiringError> {
+        if let Some(existing) = plugins
+            .iter()
+            .map(|p| p.id())
+            .find(|id| *id == "agent_tools")
+        {
+            return Err(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(
                 existing.to_string(),
             ));
         }
@@ -613,6 +680,36 @@ impl AgentOs {
         Ok(self.build_skills_plugins(reg))
     }
 
+    fn wire_agent_tools_plugins_and_tools(
+        &self,
+        explicit_plugins: &[Arc<dyn AgentPlugin>],
+        tools: &mut HashMap<String, Arc<dyn Tool>>,
+    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        Self::ensure_agent_tools_plugin_not_installed(explicit_plugins)?;
+
+        let run_tool: Arc<dyn Tool> =
+            Arc::new(AgentRunTool::new(self.clone(), self.agent_runs.clone()));
+        let run_tool_id = run_tool.descriptor().id.clone();
+        if tools.contains_key(&run_tool_id) {
+            return Err(AgentOsWiringError::AgentToolIdConflict(run_tool_id));
+        }
+        tools.insert(run_tool.descriptor().id.clone(), run_tool);
+
+        let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.agent_runs.clone()));
+        let stop_tool_id = stop_tool.descriptor().id.clone();
+        if tools.contains_key(&stop_tool_id) {
+            return Err(AgentOsWiringError::AgentToolIdConflict(stop_tool_id));
+        }
+        tools.insert(stop_tool.descriptor().id.clone(), stop_tool);
+
+        let plugin = AgentToolsPlugin::new(self.agents.clone(), self.agent_runs.clone())
+            .with_limits(
+                self.agent_tools.discovery_max_entries,
+                self.agent_tools.discovery_max_chars,
+            );
+        Ok(vec![Arc::new(plugin)])
+    }
+
     pub fn wire_plugins_into(
         &self,
         mut config: AgentConfig,
@@ -634,12 +731,13 @@ impl AgentOs {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
         // Explicit wiring order:
-        // system(skills) -> policies -> plugins -> explicit.
+        // system(skills, agent_tools) -> policies -> plugins -> explicit.
         let explicit_plugins = std::mem::take(&mut config.plugins);
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
 
-        let system_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
+        let mut system_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
+        system_plugins.extend(self.wire_agent_tools_plugins_and_tools(&explicit_plugins, tools)?);
         config.plugins = Self::assemble_plugin_chain(
             system_plugins,
             policy_plugins,
@@ -696,12 +794,18 @@ impl AgentOs {
     pub fn resolve(
         &self,
         agent_id: &str,
-        session: Session,
+        mut session: Session,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let def = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
+
+        if session.runtime.value(RUNTIME_CALLER_AGENT_ID_KEY).is_none() {
+            let _ = session
+                .runtime
+                .set(RUNTIME_CALLER_AGENT_ID_KEY, agent_id.to_string());
+        }
 
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;
@@ -983,6 +1087,37 @@ mod tests {
         assert!(err.to_string().contains("skills plugin already installed"));
     }
 
+    #[derive(Debug)]
+    struct FakeAgentToolsPlugin;
+
+    #[async_trait::async_trait]
+    impl AgentPlugin for FakeAgentToolsPlugin {
+        fn id(&self) -> &str {
+            "agent_tools"
+        }
+
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    }
+
+    #[test]
+    fn resolve_errors_if_agent_tools_plugin_already_installed() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeAgentToolsPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(ref id))
+            if id == "agent_tools"
+        ));
+    }
+
     #[test]
     fn resolve_errors_if_agent_missing() {
         let os = AgentOs::builder().build().unwrap();
@@ -1034,7 +1169,11 @@ mod tests {
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
-        assert_eq!(cfg.plugins.len(), 1);
+        assert!(tools.contains_key("agent_run"));
+        assert!(tools.contains_key("agent_stop"));
+        assert_eq!(cfg.plugins.len(), 2);
+        assert_eq!(cfg.plugins[0].id(), "skills");
+        assert_eq!(cfg.plugins[1].id(), "agent_tools");
     }
 
     #[tokio::test]
@@ -1068,6 +1207,23 @@ mod tests {
         assert!(matches!(ev, AgentEvent::RunStart { .. }));
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
         assert!(matches!(ev, AgentEvent::RunFinish { .. }));
+    }
+
+    #[test]
+    fn resolve_sets_runtime_caller_agent_id() {
+        let os = AgentOs::builder()
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+        let session = Session::with_initial_state("s", json!({}));
+        let (_client, _cfg, _tools, session) = os.resolve("a1", session).unwrap();
+        assert_eq!(
+            session
+                .runtime
+                .value(RUNTIME_CALLER_AGENT_ID_KEY)
+                .and_then(|v| v.as_str()),
+            Some("a1")
+        );
     }
 
     #[tokio::test]
@@ -1111,6 +1267,58 @@ mod tests {
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::SkillsToolIdConflict(ref id))
             if id == "skill"
+        ));
+    }
+
+    #[tokio::test]
+    async fn resolve_wires_agent_tools_by_default() {
+        let os = AgentOs::builder()
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let (_client, cfg, tools, _session) = os.resolve("a1", session).unwrap();
+        assert!(tools.contains_key("agent_run"));
+        assert!(tools.contains_key("agent_stop"));
+        assert_eq!(cfg.plugins[0].id(), "agent_tools");
+    }
+
+    #[tokio::test]
+    async fn resolve_errors_on_agent_tools_tool_id_conflict() {
+        #[derive(Debug)]
+        struct ConflictingRunTool;
+
+        #[async_trait::async_trait]
+        impl Tool for ConflictingRunTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("agent_run", "Conflicting", "Conflicting")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &carve_state::Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("agent_run", json!({"ok": true})))
+            }
+        }
+
+        let os = AgentOs::builder()
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .with_tools(HashMap::from([(
+                "agent_run".to_string(),
+                Arc::new(ConflictingRunTool) as Arc<dyn Tool>,
+            )]))
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(AgentOsWiringError::AgentToolIdConflict(ref id))
+            if id == "agent_run"
         ));
     }
 
@@ -1215,8 +1423,9 @@ mod tests {
 
         let session = Session::with_initial_state("s", json!({}));
         let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
-        assert_eq!(cfg.plugins[0].id(), "policy1");
-        assert_eq!(cfg.plugins[1].id(), "p1");
+        assert_eq!(cfg.plugins[0].id(), "agent_tools");
+        assert_eq!(cfg.plugins[1].id(), "policy1");
+        assert_eq!(cfg.plugins[2].id(), "p1");
     }
 
     #[tokio::test]
@@ -1245,11 +1454,14 @@ mod tests {
         assert!(tools.contains_key("skill"));
         assert!(tools.contains_key("load_skill_resource"));
         assert!(tools.contains_key("skill_script"));
+        assert!(tools.contains_key("agent_run"));
+        assert!(tools.contains_key("agent_stop"));
 
         assert_eq!(cfg.plugins[0].id(), "skills");
-        assert_eq!(cfg.plugins[1].id(), "policy1");
-        assert_eq!(cfg.plugins[2].id(), "p1");
-        assert_eq!(cfg.plugins[3].id(), "explicit");
+        assert_eq!(cfg.plugins[1].id(), "agent_tools");
+        assert_eq!(cfg.plugins[2].id(), "policy1");
+        assert_eq!(cfg.plugins[3].id(), "p1");
+        assert_eq!(cfg.plugins[4].id(), "explicit");
     }
 
     #[test]
@@ -1406,6 +1618,22 @@ mod tests {
         assert!(matches!(
             err,
             AgentOsResolveError::Wiring(AgentOsWiringError::ReservedPluginId(ref id)) if id == "skills"
+        ));
+    }
+
+    #[test]
+    fn build_errors_on_reserved_plugin_id_agent_tools_in_builder_agent() {
+        let err = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_tools"),
+            )
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "agent_tools"
         ));
     }
 }
