@@ -108,7 +108,7 @@ pub struct SessionListPage {
 ///
 /// Cursor values correspond to the 0-based index in the original slice
 /// (not the filtered slice), so cursors remain stable across visibility filters.
-pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> MessagePage {
+pub fn paginate_in_memory(messages: &[std::sync::Arc<Message>], query: &MessageQuery) -> MessagePage {
     let total = messages.len();
     if total == 0 {
         return MessagePage {
@@ -135,7 +135,7 @@ pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> Message
         };
     }
 
-    let mut items: Vec<(i64, &Message)> = messages[start..end]
+    let mut items: Vec<(i64, &std::sync::Arc<Message>)> = messages[start..end]
         .iter()
         .enumerate()
         .filter(|(_, m)| match query.visibility {
@@ -165,7 +165,7 @@ pub fn paginate_in_memory(messages: &[Message], query: &MessageQuery) -> Message
             .into_iter()
             .map(|(c, m)| MessageWithCursor {
                 cursor: c,
-                message: m.clone(),
+                message: (**m).clone(),
             })
             .collect(),
         has_more,
@@ -1211,16 +1211,17 @@ mod tests {
     // Pagination tests
     // ========================================================================
 
-    fn make_messages(n: usize) -> Vec<Message> {
+    fn make_messages(n: usize) -> Vec<std::sync::Arc<Message>> {
         (0..n)
-            .map(|i| Message::user(format!("msg-{}", i)))
+            .map(|i| std::sync::Arc::new(Message::user(format!("msg-{}", i))))
             .collect()
     }
 
     fn make_session_with_messages(id: &str, n: usize) -> Session {
         let mut session = Session::new(id);
         for msg in make_messages(n) {
-            session = session.with_message(msg);
+            // Deref Arc to get Message for with_message
+            session = session.with_message((*msg).clone());
         }
         session
     }
@@ -1281,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_paginate_in_memory_empty() {
-        let msgs: Vec<Message> = Vec::new();
+        let msgs: Vec<std::sync::Arc<Message>> = Vec::new();
         let query = MessageQuery::default();
         let page = paginate_in_memory(&msgs, &query);
 

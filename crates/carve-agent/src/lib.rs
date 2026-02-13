@@ -211,7 +211,9 @@ pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types exports
 pub use state_types::{
-    AgentState, Interaction, InteractionResponse, ToolPermissionBehavior, AGENT_STATE_PATH,
+    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
+    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
 };
 
 // Plugins and extension traits

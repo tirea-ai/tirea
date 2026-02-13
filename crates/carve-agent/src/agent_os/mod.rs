@@ -17,7 +17,8 @@ use crate::tool_filter::{
 use crate::traits::tool::Tool;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Session};
 use agent_tools::{
-    AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin, RUNTIME_CALLER_AGENT_ID_KEY,
+    AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
+    RUNTIME_CALLER_AGENT_ID_KEY,
 };
 use genai::Client;
 pub use registry::{
@@ -98,6 +99,9 @@ pub enum AgentOsWiringError {
 
     #[error("agent tools plugin already installed: {0}")]
     AgentToolsPluginAlreadyInstalled(String),
+
+    #[error("agent recovery plugin already installed: {0}")]
+    AgentRecoveryPluginAlreadyInstalled(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -554,6 +558,7 @@ impl AgentOs {
             "skills_discovery",
             "skills_runtime",
             "agent_tools",
+            "agent_recovery",
         ]
     }
 
@@ -629,14 +634,17 @@ impl AgentOs {
     fn ensure_agent_tools_plugin_not_installed(
         plugins: &[Arc<dyn AgentPlugin>],
     ) -> Result<(), AgentOsWiringError> {
-        if let Some(existing) = plugins
-            .iter()
-            .map(|p| p.id())
-            .find(|id| *id == "agent_tools")
-        {
-            return Err(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(
-                existing.to_string(),
-            ));
+        for existing in plugins.iter().map(|p| p.id()) {
+            if existing == "agent_tools" {
+                return Err(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(
+                    existing.to_string(),
+                ));
+            }
+            if existing == "agent_recovery" {
+                return Err(AgentOsWiringError::AgentRecoveryPluginAlreadyInstalled(
+                    existing.to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -707,12 +715,13 @@ impl AgentOs {
         }
         tools.insert(stop_tool.descriptor().id.clone(), stop_tool);
 
-        let plugin = AgentToolsPlugin::new(self.agents.clone(), self.agent_runs.clone())
+        let tools_plugin = AgentToolsPlugin::new(self.agents.clone(), self.agent_runs.clone())
             .with_limits(
                 self.agent_tools.discovery_max_entries,
                 self.agent_tools.discovery_max_chars,
             );
-        Ok(vec![Arc::new(plugin)])
+        let recovery_plugin = AgentRecoveryPlugin::new(self.agent_runs.clone());
+        Ok(vec![Arc::new(tools_plugin), Arc::new(recovery_plugin)])
     }
 
     pub fn wire_plugins_into(
@@ -736,7 +745,7 @@ impl AgentOs {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
         // Explicit wiring order:
-        // system(skills, agent_tools) -> policies -> plugins -> explicit.
+        // system(skills, agent_tools, agent_recovery) -> policies -> plugins -> explicit.
         let explicit_plugins = std::mem::take(&mut config.plugins);
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
@@ -1153,6 +1162,38 @@ mod tests {
         ));
     }
 
+    #[derive(Debug)]
+    struct FakeAgentRecoveryPlugin;
+
+    #[async_trait::async_trait]
+    impl AgentPlugin for FakeAgentRecoveryPlugin {
+        fn id(&self) -> &str {
+            "agent_recovery"
+        }
+
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+    }
+
+    #[test]
+    fn resolve_errors_if_agent_recovery_plugin_already_installed() {
+        let os = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeAgentRecoveryPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let session = Session::with_initial_state("s", json!({}));
+        let err = os.resolve("a1", session).err().unwrap();
+        assert!(matches!(
+            err,
+            AgentOsResolveError::Wiring(
+                AgentOsWiringError::AgentRecoveryPluginAlreadyInstalled(ref id)
+            ) if id == "agent_recovery"
+        ));
+    }
+
     #[test]
     fn resolve_errors_if_agent_missing() {
         let os = AgentOs::builder().build().unwrap();
@@ -1206,9 +1247,10 @@ mod tests {
         assert!(tools.contains_key("skill_script"));
         assert!(tools.contains_key("agent_run"));
         assert!(tools.contains_key("agent_stop"));
-        assert_eq!(cfg.plugins.len(), 2);
+        assert_eq!(cfg.plugins.len(), 3);
         assert_eq!(cfg.plugins[0].id(), "skills");
         assert_eq!(cfg.plugins[1].id(), "agent_tools");
+        assert_eq!(cfg.plugins[2].id(), "agent_recovery");
     }
 
     #[tokio::test]
@@ -1341,6 +1383,7 @@ mod tests {
         assert!(tools.contains_key("agent_run"));
         assert!(tools.contains_key("agent_stop"));
         assert_eq!(cfg.plugins[0].id(), "agent_tools");
+        assert_eq!(cfg.plugins[1].id(), "agent_recovery");
     }
 
     #[tokio::test]
@@ -1483,8 +1526,9 @@ mod tests {
         let session = Session::with_initial_state("s", json!({}));
         let (_client, cfg, _tools, _session) = os.resolve("a1", session).unwrap();
         assert_eq!(cfg.plugins[0].id(), "agent_tools");
-        assert_eq!(cfg.plugins[1].id(), "policy1");
-        assert_eq!(cfg.plugins[2].id(), "p1");
+        assert_eq!(cfg.plugins[1].id(), "agent_recovery");
+        assert_eq!(cfg.plugins[2].id(), "policy1");
+        assert_eq!(cfg.plugins[3].id(), "p1");
     }
 
     #[tokio::test]
@@ -1518,9 +1562,10 @@ mod tests {
 
         assert_eq!(cfg.plugins[0].id(), "skills");
         assert_eq!(cfg.plugins[1].id(), "agent_tools");
-        assert_eq!(cfg.plugins[2].id(), "policy1");
-        assert_eq!(cfg.plugins[3].id(), "p1");
-        assert_eq!(cfg.plugins[4].id(), "explicit");
+        assert_eq!(cfg.plugins[2].id(), "agent_recovery");
+        assert_eq!(cfg.plugins[3].id(), "policy1");
+        assert_eq!(cfg.plugins[4].id(), "p1");
+        assert_eq!(cfg.plugins[5].id(), "explicit");
     }
 
     #[test]
@@ -1693,6 +1738,22 @@ mod tests {
             err,
             AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
             if agent_id == "a1" && plugin_id == "agent_tools"
+        ));
+    }
+
+    #[test]
+    fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
+        let err = AgentOs::builder()
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin_id("agent_recovery"),
+            )
+            .build()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
+            if agent_id == "a1" && plugin_id == "agent_recovery"
         ));
     }
 }

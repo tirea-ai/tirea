@@ -50,7 +50,9 @@ pub use crate::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
 pub use crate::state_types::{
-    AgentState, Interaction, InteractionResponse, ToolPermissionBehavior, AGENT_STATE_PATH,
+    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
+    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
 };
 
 // Extension traits - these add methods to Context

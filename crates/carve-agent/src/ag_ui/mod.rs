@@ -82,7 +82,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::state_types::{Interaction, InteractionResponse};
+use crate::state_types::{Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION};
 
 // ============================================================================
 // Base Event Fields
@@ -1590,6 +1590,10 @@ fn set_run_identity(session: &mut Session, run_id: &str, parent_run_id: Option<&
     }
 }
 
+fn should_skip_pending_event(interaction: &Interaction) -> bool {
+    interaction.action != AGENT_RECOVERY_INTERACTION_ACTION
+}
+
 fn prepare_request_runtime(
     config: AgentConfig,
     session: Session,
@@ -1697,11 +1701,15 @@ pub fn run_agent_stream_with_parent(
                 AgentEvent::RunFinish { .. } => {
                     emitted_run_finished = true;
                 }
-                // Skip Pending events: their interaction-to-tool-call conversion
-                // is redundant in AG-UI — the LLM's own TOOL_CALL events already
-                // inform the client about frontend tool calls.
-                AgentEvent::Pending { .. } => {
-                    continue;
+                // Skip regular Pending events: their interaction-to-tool-call conversion
+                // is redundant in AG-UI because LLM TOOL_CALL events already cover
+                // frontend/permission interactions.
+                // Agent recovery pending is synthetic (no prior LLM tool call), so we
+                // must forward it.
+                AgentEvent::Pending { interaction } => {
+                    if should_skip_pending_event(interaction) {
+                        continue;
+                    }
                 }
                 _ => {}
             }
@@ -6206,6 +6214,57 @@ mod tests {
         assert!(
             tool_calls.is_empty(),
             "Pending interaction tool calls should be skipped in AG-UI stream"
+        );
+    }
+
+    #[test]
+    fn test_ag_ui_adapter_forwards_agent_recovery_pending() {
+        use crate::stream::AgentEvent;
+
+        let mut ctx = AGUIContext::new("t".into(), "r".into());
+        let mut all_events = Vec::new();
+
+        let agent_events = vec![
+            AgentEvent::RunStart {
+                thread_id: "t".into(),
+                run_id: "r".into(),
+                parent_run_id: None,
+            },
+            AgentEvent::Pending {
+                interaction: crate::state_types::Interaction::new(
+                    "agent_recovery_run-1",
+                    "recover_agent_run",
+                )
+                .with_message("Resume run-1?"),
+            },
+            AgentEvent::RunFinish {
+                thread_id: "t".into(),
+                run_id: "r".into(),
+                result: None,
+                stop_reason: None,
+            },
+        ];
+
+        for event in &agent_events {
+            match event {
+                AgentEvent::Pending { interaction }
+                    if interaction.action != "recover_agent_run" =>
+                {
+                    continue;
+                }
+                _ => {}
+            }
+            all_events.extend(crate::stream::agent_event_to_agui(event, &mut ctx));
+        }
+
+        assert!(
+            all_events.iter().any(|e| matches!(
+                e,
+                AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. }
+                if tool_call_id == "agent_recovery_run-1"
+                    && tool_call_name == "recover_agent_run"
+            )),
+            "recovery pending must be forwarded as AG-UI tool call events"
         );
     }
 

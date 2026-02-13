@@ -5,6 +5,9 @@
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+
+use crate::Session;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -124,11 +127,64 @@ impl InteractionResponse {
 /// via patches (not ephemeral in-memory variables).
 pub const AGENT_STATE_PATH: &str = "agent";
 
+/// Interaction action used for agent run recovery confirmation.
+pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
+
+/// Interaction ID prefix used for agent run recovery confirmation.
+pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
+
+/// Status of an `agent_run` entry persisted in [`AgentState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentRunStatus {
+    Running,
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl AgentRunStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// Persisted snapshot for an `agent_run` execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRunState {
+    /// Stable run id returned to the caller.
+    pub run_id: String,
+    /// Parent caller run id (from caller runtime `run_id`), if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<String>,
+    /// Target agent id delegated by `agent_run`.
+    pub target_agent_id: String,
+    /// Current run status.
+    pub status: AgentRunStatus,
+    /// Last assistant message from the child agent (if available).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<String>,
+    /// Error message (if the run failed or was force-stopped).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Last known child session snapshot for resume/recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 pub struct AgentState {
     /// Pending interaction that must be resolved by the client before the run can continue.
     #[carve(default = "None")]
     pub pending_interaction: Option<Interaction>,
+    /// Persisted sub-agent runs keyed by `run_id`.
+    #[carve(default = "HashMap::new()")]
+    pub agent_runs: HashMap<String, AgentRunState>,
 }
 
 #[cfg(test)]
@@ -272,5 +328,40 @@ mod tests {
         // Object result
         let r3 = InteractionResponse::new("id3", json!({ "status": "ok", "data": [1,2,3] }));
         assert_eq!(r3.result["status"], "ok");
+    }
+
+    #[test]
+    fn test_agent_run_status_serialization() {
+        let status = AgentRunStatus::Stopped;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"stopped\"");
+        assert_eq!(status.as_str(), "stopped");
+    }
+
+    #[test]
+    fn test_agent_state_defaults_agent_runs_to_empty_map() {
+        let state = AgentState::default();
+        assert!(state.pending_interaction.is_none());
+        assert!(state.agent_runs.is_empty());
+    }
+
+    #[test]
+    fn test_agent_run_state_serialization_with_session() {
+        let child = Session::new("child-1").with_message(crate::Message::user("seed"));
+        let run = AgentRunState {
+            run_id: "run-1".to_string(),
+            parent_run_id: Some("parent-run-1".to_string()),
+            target_agent_id: "worker".to_string(),
+            status: AgentRunStatus::Running,
+            assistant: None,
+            error: None,
+            session: Some(child),
+        };
+        let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["parent_run_id"], "parent-run-1");
+        assert_eq!(json["target_agent_id"], "worker");
+        assert_eq!(json["status"], "running");
+        assert_eq!(json["session"]["id"], "child-1");
     }
 }

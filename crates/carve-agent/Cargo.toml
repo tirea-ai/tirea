@@ -39,6 +39,7 @@ opentelemetry = "0.28"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
 tracing-opentelemetry = "0.29"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+criterion.workspace = true
 
 [[example]]
 name = "live_deepseek"
@@ -47,3 +48,15 @@ path = "examples/live_deepseek.rs"
 [[example]]
 name = "live_deepseek_skills"
 path = "examples/live_deepseek_skills.rs"
+
+[[bench]]
+name = "message_cloning"
+harness = false
+
+[[bench]]
+name = "session_operations"
+harness = false
+
+[[bench]]
+name = "quick_clone_test"
+harness = false

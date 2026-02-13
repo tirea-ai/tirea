@@ -269,6 +269,25 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_permission_behavior_missing_state_falls_back_to_ask() {
+        let behavior = resolve_permission_behavior_for_tool(None, "recover_agent_run");
+        assert_eq!(behavior, ToolPermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn test_resolve_permission_behavior_invalid_tool_value_uses_default() {
+        let state = json!({
+            "default_behavior": "allow",
+            "tools": {
+                "recover_agent_run": 42
+            }
+        });
+
+        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
+        assert_eq!(behavior, ToolPermissionBehavior::Allow);
+    }
+
+    #[test]
     fn test_allow_tool() {
         let doc = json!({
             "permissions": {

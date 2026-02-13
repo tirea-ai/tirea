@@ -2227,4 +2227,143 @@ mod tests {
                 || updated["agent"]["pending_interaction"].is_null()
         );
     }
+
+    #[tokio::test]
+    async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "permissions": {
+                    "default_behavior": "allow",
+                    "tools": {}
+                },
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert!(
+            updated["agent"].get("pending_interaction").is_none()
+                || updated["agent"]["pending_interaction"].is_null()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "permissions": {
+                    "default_behavior": "deny",
+                    "tools": {}
+                },
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert!(
+            replay_calls.is_empty(),
+            "deny should not schedule recovery replay"
+        );
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert!(
+            updated["agent"].get("pending_interaction").is_none()
+                || updated["agent"]["pending_interaction"].is_null()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_plugin_tool_rule_overrides_default_behavior() {
+        let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
+        let child_session =
+            crate::Session::new("child-run").with_message(crate::Message::user("seed"));
+        let session = Session::with_initial_state(
+            "owner-1",
+            json!({
+                "permissions": {
+                    "default_behavior": "allow",
+                    "tools": {
+                        "recover_agent_run": "ask"
+                    }
+                },
+                "agent": {
+                    "agent_runs": {
+                        "run-1": {
+                            "run_id": "run-1",
+                            "target_agent_id": "worker",
+                            "status": "running",
+                            "session": serde_json::to_value(&child_session).unwrap()
+                        }
+                    }
+                }
+            }),
+        );
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert!(
+            replay_calls.is_empty(),
+            "tool-level ask should override default allow"
+        );
+
+        let updated = session
+            .clone()
+            .with_patches(step.pending_patches)
+            .rebuild_state()
+            .unwrap();
+        assert_eq!(
+            updated["agent"]["pending_interaction"]["action"],
+            json!(AGENT_RECOVERY_INTERACTION_ACTION)
+        );
+    }
 }

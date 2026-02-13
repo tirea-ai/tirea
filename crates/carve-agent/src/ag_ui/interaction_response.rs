@@ -5,7 +5,12 @@
 use super::RunAgentRequest;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
+use crate::state_types::{
+    Interaction, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
+};
 use async_trait::async_trait;
+use serde_json::json;
 use std::collections::HashSet;
 
 /// Plugin that handles interaction responses from client.
@@ -70,26 +75,58 @@ impl InteractionResponsePlugin {
 
     /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
     fn on_session_start(&self, step: &mut StepContext<'_>) {
-        use crate::state_types::AGENT_STATE_PATH;
-
         let Ok(state) = step.session.rebuild_state() else {
             return;
         };
 
         // Check if there's a persisted pending_interaction.
-        let pending_id = state
+        let pending = state
             .get(AGENT_STATE_PATH)
             .and_then(|a| a.get("pending_interaction"))
-            .and_then(|p| p.get("id"))
-            .and_then(|id| id.as_str());
-
-        let Some(pending_id) = pending_id else {
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Interaction>(v).ok());
+        let Some(pending) = pending else {
             return;
         };
+        let pending_id_owned = pending.id.clone();
+        let pending_id = pending_id_owned.as_str();
+
+        if self.denied_ids.iter().any(|id| id == pending_id) {
+            clear_agent_pending_interaction(step);
+            return;
+        }
 
         // Check if the client approved this interaction.
         let is_approved = self.approved_ids.iter().any(|id| id == pending_id);
         if !is_approved {
+            return;
+        }
+
+        if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
+            let run_id = pending
+                .parameters
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    pending_id
+                        .strip_prefix(AGENT_RECOVERY_INTERACTION_PREFIX)
+                        .map(str::to_string)
+                });
+            let Some(run_id) = run_id else {
+                clear_agent_pending_interaction(step);
+                return;
+            };
+
+            let replay_call = crate::types::ToolCall::new(
+                format!("recovery_resume_{run_id}"),
+                "agent_run",
+                json!({
+                    "run_id": run_id,
+                    "background": false
+                }),
+            );
+            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
             return;
         }
 
@@ -103,12 +140,15 @@ impl InteractionResponsePlugin {
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.
-                if let Some(call) = calls.iter().find(|c| c.id == pending_id) {
+                if let Some(call) = calls
+                    .iter()
+                    .find(|c| c.id.as_str() == pending_id_owned.as_str())
+                {
                     return Some(call.clone());
                 }
 
                 // Permission interactions use `permission_<tool_name>`.
-                if let Some(tool_name) = pending_id.strip_prefix("permission_") {
+                if let Some(tool_name) = pending_id_owned.strip_prefix("permission_") {
                     if let Some(call) = calls.iter().find(|c| c.name == tool_name) {
                         return Some(call.clone());
                     }
@@ -230,6 +270,7 @@ mod tests {
     use super::*;
     use crate::session::Session;
     use crate::types::{Message, ToolCall};
+    use carve_state::apply_patches;
     use serde_json::json;
 
     #[tokio::test]
@@ -265,5 +306,75 @@ mod tests {
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");
+    }
+
+    #[tokio::test]
+    async fn session_start_recovery_approval_schedules_agent_run_replay() {
+        let plugin =
+            InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
+
+        let session = Session::with_initial_state(
+            "s1",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "agent_recovery_run-1",
+                        "action": "recover_agent_run",
+                        "parameters": {
+                            "run_id": "run-1"
+                        }
+                    }
+                }
+            }),
+        );
+
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+
+        let replay_calls: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
+        assert_eq!(replay_calls[0].arguments["background"], false);
+    }
+
+    #[tokio::test]
+    async fn session_start_recovery_denial_clears_pending_interaction() {
+        let plugin =
+            InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
+
+        let session = Session::with_initial_state(
+            "s1",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "agent_recovery_run-1",
+                        "action": "recover_agent_run",
+                        "parameters": {
+                            "run_id": "run-1"
+                        }
+                    }
+                }
+            }),
+        );
+
+        let mut step = StepContext::new(&session, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        assert!(
+            !step.pending_patches.is_empty(),
+            "denied recovery must clear pending interaction state"
+        );
+
+        let updated = apply_patches(
+            &session.rebuild_state().unwrap(),
+            step.pending_patches.iter().map(|p| p.patch()),
+        )
+        .expect("pending patch should apply");
+        let pending = updated
+            .get("agent")
+            .and_then(|a| a.get("pending_interaction"));
+        assert!(pending.is_none() || pending == Some(&serde_json::Value::Null));
     }
 }

@@ -736,8 +736,10 @@ fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
         messages.push(Message::system(ctx.clone()));
     }
 
-    // [3+] History from session
-    messages.extend(step.session.messages.clone());
+    // [3+] History from session (Arc messages, cheap to clone)
+    for msg in &step.session.messages {
+        messages.push((**msg).clone());
+    }
 
     messages
 }
@@ -760,14 +762,25 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
 ///
 /// Finds the tool message matching `tool_call_id` that contains "awaiting approval"
 /// and replaces its content with the real tool result message.
+/// If no placeholder exists, append the real tool message.
 fn replace_placeholder_tool_message(session: &mut Session, tool_call_id: &str, real_msg: Message) {
-    if let Some(msg) = session.messages.iter_mut().rev().find(|m| {
-        m.role == crate::types::Role::Tool
-            && m.tool_call_id.as_deref() == Some(tool_call_id)
-            && m.content.contains("awaiting approval")
-    }) {
-        msg.content = real_msg.content;
+    // Find the placeholder message index (searching from end)
+    if let Some(index) = session
+        .messages
+        .iter()
+        .rposition(|m| {
+            m.role == crate::types::Role::Tool
+                && m.tool_call_id.as_deref() == Some(tool_call_id)
+                && m.content.contains("awaiting approval")
+        })
+    {
+        // Replace the Arc with a new one containing the updated message
+        session.messages[index] = std::sync::Arc::new(real_msg);
+        return;
     }
+
+    // No placeholder found, append as new message
+    session.messages.push(std::sync::Arc::new(real_msg));
 }
 
 struct AppliedToolResults {
@@ -2479,12 +2492,28 @@ fn run_loop_stream_impl_with_provider(
 
             // Skip inference if requested
             if skip_inference {
+                let pending_interaction = session
+                    .rebuild_state()
+                    .ok()
+                    .and_then(|s| {
+                        s.get(AGENT_STATE_PATH)?
+                            .get("pending_interaction")
+                            .cloned()
+                    })
+                    .and_then(|v| serde_json::from_value::<Interaction>(v).ok());
+                if let Some(interaction) = pending_interaction.clone() {
+                    yield AgentEvent::Pending { interaction };
+                }
                 session = emit_session_end(session, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: session.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
-                    stop_reason: Some(StopReason::PluginRequested),
+                    stop_reason: if pending_interaction.is_some() {
+                        None
+                    } else {
+                        Some(StopReason::PluginRequested)
+                    },
                 };
                 if let Some(tx) = final_session_tx.take() {
                     let _ = tx.send(session);
@@ -4974,12 +5003,68 @@ mod tests {
             .iter()
             .map(|e| match e {
                 AgentEvent::RunStart { .. } => "RunStart",
+                AgentEvent::Pending { .. } => "Pending",
                 AgentEvent::RunFinish { .. } => "RunFinish",
                 AgentEvent::Error { .. } => "Error",
                 _ => "Other",
             })
             .collect();
         assert_eq!(event_names, vec!["RunStart", "RunFinish"]);
+    }
+
+    #[tokio::test]
+    async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses() {
+        struct PendingSkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for PendingSkipPlugin {
+            fn id(&self) -> &str {
+                "pending_skip"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase != Phase::BeforeInference {
+                    return;
+                }
+                let state = step.session.rebuild_state().expect("state should rebuild");
+                let patch = set_agent_pending_interaction(
+                    &state,
+                    Interaction::new("agent_recovery_run-1", "recover_agent_run")
+                        .with_message("resume?"),
+                );
+                step.pending_patches.push(patch);
+                step.skip_inference = true;
+            }
+        }
+
+        let config = AgentConfig::new("gpt-4o-mini")
+            .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(crate::types::Message::user("hello"));
+        let tools = HashMap::new();
+
+        let events = collect_stream_events(run_loop_stream(
+            Client::default(),
+            config,
+            session,
+            tools,
+            RunContext::default(),
+        ))
+        .await;
+
+        assert!(matches!(events.get(0), Some(AgentEvent::RunStart { .. })));
+        assert!(matches!(
+            events.get(1),
+            Some(AgentEvent::Pending { interaction })
+                if interaction.action == "recover_agent_run"
+        ));
+        assert!(matches!(
+            events.get(2),
+            Some(AgentEvent::RunFinish {
+                stop_reason: None,
+                ..
+            })
+        ));
+        assert_eq!(events.len(), 3, "unexpected extra events: {events:?}");
     }
 
     #[tokio::test]
@@ -5563,6 +5648,61 @@ mod tests {
         assert!(
             replay_result.is_error(),
             "blocked replay should produce an error tool result"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
+        struct ReplayPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for ReplayPlugin {
+            fn id(&self) -> &str {
+                "replay_without_placeholder"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+                if phase == Phase::SessionStart {
+                    step.scratchpad_set(
+                        "__replay_tool_calls",
+                        vec![crate::types::ToolCall::new(
+                            "replay_call_1",
+                            "echo",
+                            json!({"message": "resume"}),
+                        )],
+                    );
+                }
+            }
+        }
+
+        let config =
+            AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
+        let session = Session::new("test").with_message(Message::user("resume"));
+        let tools = tool_map([EchoTool]);
+
+        let (_events, final_session) = run_mock_stream_with_final_session(
+            MockStreamProvider::new(vec![MockResponse::text("unused")]),
+            config,
+            session,
+            tools,
+        )
+        .await;
+
+        let msg = final_session
+            .messages
+            .iter()
+            .find(|m| {
+                m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("replay_call_1")
+            })
+            .expect("replay should append a real tool message when no placeholder exists");
+        assert!(
+            !msg.content.contains("awaiting approval"),
+            "replayed message must not remain placeholder"
+        );
+        assert!(
+            msg.content.contains("\"echoed\":\"resume\""),
+            "unexpected replay tool message: {}",
+            msg.content
         );
     }
 

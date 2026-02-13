@@ -7,6 +7,7 @@ use crate::types::Message;
 use carve_state::{apply_patches, CarveError, CarveResult, Runtime, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// A conversation thread with messages and state history.
 ///
@@ -23,8 +24,8 @@ pub struct Thread {
     /// Owner/resource identifier (e.g., user_id, org_id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
-    /// Conversation messages.
-    pub messages: Vec<Message>,
+    /// Conversation messages (Arc-wrapped for efficient cloning).
+    pub messages: Vec<Arc<Message>>,
     /// Initial/snapshot state.
     pub state: Value,
     /// Patches applied since the last snapshot.
@@ -98,16 +99,18 @@ impl Thread {
     }
 
     /// Add a message to the thread (pure function, returns new Thread).
+    ///
+    /// Messages are Arc-wrapped for efficient cloning during agent loops.
     #[must_use]
     pub fn with_message(mut self, msg: Message) -> Self {
-        self.messages.push(msg);
+        self.messages.push(Arc::new(msg));
         self
     }
 
     /// Add multiple messages (pure function, returns new Thread).
     #[must_use]
     pub fn with_messages(mut self, msgs: impl IntoIterator<Item = Message>) -> Self {
-        self.messages.extend(msgs);
+        self.messages.extend(msgs.into_iter().map(Arc::new));
         self
     }
 
