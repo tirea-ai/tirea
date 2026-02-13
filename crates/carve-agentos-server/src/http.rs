@@ -8,7 +8,7 @@ use bytes::Bytes;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
     apply_agui_request_to_thread, AgentOs, Message, MessagePage, MessageQuery, RunAgentRequest,
-    RunContext, Thread, ThreadListPage, ThreadListQuery, SortOrder, Storage, Visibility,
+    RunContext, Thread, ThreadListPage, ThreadListQuery, SortOrder, ThreadQuery, Visibility,
     AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
@@ -23,7 +23,7 @@ use crate::protocol::{AgUiEncoder, AiSdkEncoder};
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
-    pub storage: Arc<dyn Storage>,
+    pub storage: Arc<dyn ThreadQuery>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,7 +69,7 @@ async fn health() -> impl IntoResponse {
     StatusCode::OK
 }
 
-fn default_session_limit() -> usize {
+fn default_thread_limit() -> usize {
     50
 }
 
@@ -77,7 +77,7 @@ fn default_session_limit() -> usize {
 struct ThreadListParams {
     #[serde(default)]
     offset: Option<usize>,
-    #[serde(default = "default_session_limit")]
+    #[serde(default = "default_thread_limit")]
     limit: usize,
     #[serde(default)]
     parent_thread_id: Option<String>,
@@ -106,7 +106,7 @@ async fn get_thread(
 ) -> Result<Json<Thread>, ApiError> {
     let Some(thread) = st
         .storage
-        .load(&id)
+        .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     else {
@@ -211,10 +211,10 @@ async fn run_ai_sdk_sse(
     let thread_id = req.thread_id.clone();
     let input = req.input.clone();
 
-    // Prepare session.
+    // Prepare thread.
     let mut thread = st
         .storage
-        .load(&thread_id)
+        .load_thread(&thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_else(|| Thread::new(thread_id.clone()));
@@ -386,7 +386,7 @@ async fn run_ag_ui_sse(
 
     let base = st
         .storage
-        .load(&req.thread_id)
+        .load_thread(&req.thread_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .unwrap_or_else(|| {

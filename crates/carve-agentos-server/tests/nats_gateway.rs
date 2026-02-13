@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
-use carve_agent::{AgentDefinition, AgentOsBuilder, MemoryStorage, StepContext, Storage};
+use carve_agent::{AgentDefinition, AgentOsBuilder, MemoryStorage, StepContext, ThreadQuery};
 use carve_agentos_server::nats::NatsGateway;
 use futures::StreamExt;
 use serde_json::json;
@@ -63,9 +63,9 @@ async fn start_nats() -> (testcontainers::ContainerAsync<Nats>, String) {
 }
 
 /// Spawn the gateway and return the NATS client for publishing test requests.
-async fn setup_gateway(nats_url: &str) -> (Arc<dyn Storage>, async_nats::Client) {
+async fn setup_gateway(nats_url: &str) -> (Arc<dyn ThreadQuery>, async_nats::Client) {
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
 
     let gateway = NatsGateway::connect(os, storage.clone(), nats_url)
         .await
@@ -153,7 +153,7 @@ async fn test_nats_agui_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load("nats-agui-1").await.unwrap();
+    let saved = storage.load_thread("nats-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -231,7 +231,7 @@ async fn test_nats_aisdk_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load("nats-sdk-1").await.unwrap();
+    let saved = storage.load_thread("nats-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -330,7 +330,7 @@ async fn test_nats_aisdk_agent_not_found() {
 
     // Unknown agent should fail fast without persisting user input.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let saved = storage.load("s1").await.unwrap();
+    let saved = storage.load_thread("s1").await.unwrap();
     assert!(
         saved.is_none(),
         "thread should not be persisted when agent is missing"

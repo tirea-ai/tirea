@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use carve_agent::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
-    FileStorage, Message, RunContext, Thread, Storage, Tool, ToolDescriptor, ToolError,
+    FileStorage, Message, RunContext, Thread, ThreadStore, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_state_derive::State;
@@ -685,7 +685,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     // Load the session (simulating app restart)
     let loaded_thread = storage
-        .load("persist-test")
+        .load_thread("persist-test")
         .await?
         .ok_or("Thread not found")?;
 
@@ -1141,7 +1141,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let save_time = save_start.elapsed();
 
     let load_start = std::time::Instant::now();
-    let loaded = storage.load("test-long-conv").await?.unwrap();
+    let loaded = storage.load_thread("test-long-conv").await?.unwrap();
     let load_time = load_start.elapsed();
 
     println!("\n[Storage Performance]");

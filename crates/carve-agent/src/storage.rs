@@ -1,4 +1,4 @@
-//! Storage backend trait for session persistence.
+//! Storage backend traits for thread persistence.
 
 use crate::thread::Thread;
 use crate::types::{Message, Visibility};
@@ -283,6 +283,18 @@ pub trait ThreadStore: Send + Sync {
 
     /// Delete a thread.
     async fn delete(&self, id: &str) -> Result<(), StorageError>;
+
+    /// Upsert a thread (delete + create). Convenience wrapper.
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+        let _ = self.delete(&thread.id).await;
+        self.create(thread).await?;
+        Ok(())
+    }
+
+    /// Load a thread without version info. Convenience wrapper.
+    async fn load_thread(&self, id: &str) -> Result<Option<Thread>, StorageError> {
+        Ok(self.load(id).await?.map(|h| h.thread))
+    }
 }
 
 /// Query operations — default impls based on `ThreadStore::load()`.
@@ -308,6 +320,36 @@ pub trait ThreadQuery: ThreadStore {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, StorageError>;
+
+    /// List all thread IDs. Convenience wrapper.
+    async fn list(&self) -> Result<Vec<String>, StorageError> {
+        let page = self
+            .list_threads(&ThreadListQuery {
+                offset: 0,
+                limit: 200,
+                resource_id: None,
+                parent_thread_id: None,
+            })
+            .await?;
+        Ok(page.items)
+    }
+
+    /// List threads with pagination. Convenience alias for `list_threads`.
+    async fn list_paginated(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, StorageError> {
+        self.list_threads(query).await
+    }
+
+    /// Get total message count for a thread. Convenience wrapper.
+    async fn message_count(&self, id: &str) -> Result<usize, StorageError> {
+        let head = self
+            .load(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+        Ok(head.thread.messages.len())
+    }
 }
 
 /// Sync operations — for backends with delta replay capability.
@@ -321,88 +363,6 @@ pub trait ThreadSync: ThreadStore {
     ) -> Result<Vec<ThreadDelta>, StorageError>;
 }
 
-/// Storage backend trait for session persistence.
-///
-/// Implementations handle the actual IO operations.
-#[async_trait]
-pub trait Storage: Send + Sync {
-    /// Load a session by ID.
-    ///
-    /// Returns `Ok(None)` if the session doesn't exist.
-    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError>;
-
-    /// Save a session.
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError>;
-
-    /// Delete a session.
-    async fn delete(&self, id: &str) -> Result<(), StorageError>;
-
-    /// List all session IDs.
-    async fn list(&self) -> Result<Vec<String>, StorageError>;
-
-    /// Load a paginated slice of messages for a session.
-    ///
-    /// Default implementation loads the full session and paginates in-memory.
-    async fn load_messages(
-        &self,
-        thread_id: &str,
-        query: &MessageQuery,
-    ) -> Result<MessagePage, StorageError> {
-        let thread = self
-            .load(thread_id)
-            .await?
-            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
-        Ok(paginate_in_memory(&thread.messages, query))
-    }
-
-    /// Get total message count for a thread.
-    ///
-    /// Default implementation loads the full thread and returns message count.
-    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
-        let thread = self
-            .load(thread_id)
-            .await?
-            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
-        Ok(thread.messages.len())
-    }
-
-    /// List sessions with pagination.
-    ///
-    /// Default implementation calls `list()` and paginates in-memory.
-    async fn list_paginated(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
-        let mut all = self.list().await?;
-
-        // Filter by resource_id if specified.
-        if let Some(ref resource_id) = query.resource_id {
-            let mut filtered = Vec::new();
-            for id in &all {
-                if let Some(thread) = self.load(id).await? {
-                    if thread.resource_id.as_deref() == Some(resource_id.as_str()) {
-                        filtered.push(id.clone());
-                    }
-                }
-            }
-            all = filtered;
-        }
-
-        all.sort();
-        let total = all.len();
-        let limit = query.limit.clamp(1, 200);
-        let offset = query.offset.min(total);
-        let end = (offset + limit + 1).min(total);
-        let slice = &all[offset..end];
-        let has_more = slice.len() > limit;
-        let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(ThreadListPage {
-            items,
-            total,
-            has_more,
-        })
-    }
-}
 
 /// File-based storage implementation.
 pub struct FileStorage {
@@ -444,97 +404,6 @@ impl FileStorage {
     }
 }
 
-#[async_trait]
-impl Storage for FileStorage {
-    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
-        let path = self.thread_path(id)?;
-
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let content = tokio::fs::read_to_string(&path).await?;
-        let thread: Thread = serde_json::from_str(&content)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-
-        Ok(Some(thread))
-    }
-
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
-        // Ensure directory exists
-        if !self.base_path.exists() {
-            tokio::fs::create_dir_all(&self.base_path).await?;
-        }
-
-        let path = self.thread_path(&thread.id)?;
-        let content = serde_json::to_string_pretty(thread)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let tmp_path = self.base_path.join(format!(
-            ".{}.{}.tmp",
-            thread.id,
-            uuid::Uuid::new_v4().simple()
-        ));
-
-        let write_result = async {
-            let mut file = tokio::fs::File::create(&tmp_path).await?;
-            file.write_all(content.as_bytes()).await?;
-            file.flush().await?;
-            file.sync_all().await?;
-            drop(file);
-            match tokio::fs::rename(&tmp_path, &path).await {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    tokio::fs::remove_file(&path).await?;
-                    tokio::fs::rename(&tmp_path, &path).await?;
-                }
-                Err(e) => return Err(e),
-            }
-            Ok::<(), std::io::Error>(())
-        }
-        .await;
-
-        if let Err(e) = write_result {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(StorageError::Io(e));
-        }
-
-        Ok(())
-    }
-
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let path = self.thread_path(id)?;
-
-        if path.exists() {
-            tokio::fs::remove_file(&path).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn list(&self) -> Result<Vec<String>, StorageError> {
-        if !self.base_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut entries = tokio::fs::read_dir(&self.base_path).await?;
-        let mut ids = Vec::new();
-
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                if let Some(stem) = path.file_stem() {
-                    if let Some(id) = stem.to_str() {
-                        ids.push(id.to_string());
-                    }
-                }
-            }
-        }
-
-        Ok(ids)
-    }
-}
-
-// --- New ThreadStore / ThreadQuery for FileStorage ---
 
 #[async_trait]
 impl ThreadStore for FileStorage {
@@ -588,7 +457,11 @@ impl ThreadStore for FileStorage {
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        <Self as Storage>::delete(self, id).await
+        let path = self.thread_path(id)?;
+        if path.exists() {
+            tokio::fs::remove_file(&path).await?;
+        }
+        Ok(())
     }
 }
 
@@ -598,8 +471,64 @@ impl ThreadQuery for FileStorage {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, StorageError> {
-        // Delegate to legacy list_paginated (which iterates files)
-        <Self as Storage>::list_paginated(self, query).await
+        // Read directory for all thread IDs
+        let mut all = if !self.base_path.exists() {
+            Vec::new()
+        } else {
+            let mut entries = tokio::fs::read_dir(&self.base_path).await?;
+            let mut ids = Vec::new();
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "json") {
+                    if let Some(stem) = path.file_stem() {
+                        if let Some(id) = stem.to_str() {
+                            ids.push(id.to_string());
+                        }
+                    }
+                }
+            }
+            ids
+        };
+
+        // Filter by resource_id if specified.
+        if let Some(ref resource_id) = query.resource_id {
+            let mut filtered = Vec::new();
+            for id in &all {
+                if let Some(head) = self.load(id).await? {
+                    if head.thread.resource_id.as_deref() == Some(resource_id.as_str()) {
+                        filtered.push(id.clone());
+                    }
+                }
+            }
+            all = filtered;
+        }
+
+        // Filter by parent_thread_id if specified.
+        if let Some(ref parent_thread_id) = query.parent_thread_id {
+            let mut filtered = Vec::new();
+            for id in &all {
+                if let Some(head) = self.load(id).await? {
+                    if head.thread.parent_thread_id.as_deref() == Some(parent_thread_id.as_str()) {
+                        filtered.push(id.clone());
+                    }
+                }
+            }
+            all = filtered;
+        }
+
+        all.sort();
+        let total = all.len();
+        let limit = query.limit.clamp(1, 200);
+        let offset = query.offset.min(total);
+        let end = (offset + limit + 1).min(total);
+        let slice = &all[offset..end];
+        let has_more = slice.len() > limit;
+        let items: Vec<String> = slice.iter().take(limit).cloned().collect();
+        Ok(ThreadListPage {
+            items,
+            total,
+            has_more,
+        })
     }
 }
 
@@ -689,8 +618,6 @@ struct MemoryEntry {
 }
 
 /// In-memory storage for testing.
-///
-/// Implements both the legacy `Storage` trait and the new `ThreadStore`/`ThreadQuery`/`ThreadSync` traits.
 #[derive(Default)]
 pub struct MemoryStorage {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
@@ -713,42 +640,6 @@ fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
     }
 }
 
-// --- Legacy Storage trait (delegates to the entries map) ---
-
-#[async_trait]
-impl Storage for MemoryStorage {
-    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
-        let entries = self.entries.read().await;
-        Ok(entries.get(id).map(|e| e.thread.clone()))
-    }
-
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
-        let mut entries = self.entries.write().await;
-        let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
-        entries.insert(
-            thread.id.clone(),
-            MemoryEntry {
-                thread: thread.clone(),
-                version,
-                deltas: Vec::new(),
-            },
-        );
-        Ok(())
-    }
-
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let mut entries = self.entries.write().await;
-        entries.remove(id);
-        Ok(())
-    }
-
-    async fn list(&self) -> Result<Vec<String>, StorageError> {
-        let entries = self.entries.read().await;
-        Ok(entries.keys().cloned().collect())
-    }
-}
-
-// --- New ThreadStore / ThreadQuery / ThreadSync traits ---
 
 #[async_trait]
 impl ThreadStore for MemoryStorage {
@@ -805,6 +696,20 @@ impl ThreadStore for MemoryStorage {
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
         let mut entries = self.entries.write().await;
         entries.remove(id);
+        Ok(())
+    }
+
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+        let mut entries = self.entries.write().await;
+        let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
+        entries.insert(
+            thread.id.clone(),
+            MemoryEntry {
+                thread: thread.clone(),
+                version,
+                deltas: Vec::new(),
+            },
+        );
         Ok(())
     }
 }
@@ -970,353 +875,6 @@ impl PostgresStorage {
 
     fn sql_err(e: sqlx::Error) -> StorageError {
         StorageError::Io(std::io::Error::other(e.to_string()))
-    }
-}
-
-#[cfg(feature = "postgres")]
-#[async_trait]
-impl Storage for PostgresStorage {
-    async fn load(&self, id: &str) -> Result<Option<Thread>, StorageError> {
-        // Load session skeleton (data has messages: []).
-        let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-
-        let Some((mut v,)) = row else {
-            return Ok(None);
-        };
-
-        // Load messages from separate table and inject into session JSON.
-        let msg_sql = format!(
-            "SELECT data FROM {} WHERE session_id = $1 ORDER BY seq",
-            self.messages_table
-        );
-        let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
-            .bind(id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-
-        let messages: Vec<serde_json::Value> = msg_rows.into_iter().map(|(d,)| d).collect();
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert("messages".to_string(), serde_json::Value::Array(messages));
-        }
-
-        let thread: Thread =
-            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        Ok(Some(thread))
-    }
-
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
-        // Serialize session skeleton (without messages).
-        let mut v = serde_json::to_value(thread)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
-        }
-
-        // Use a transaction to keep sessions and messages consistent.
-        let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
-
-        // Upsert session skeleton.
-        let upsert_sql = format!(
-            r#"
-            INSERT INTO {} (id, data, updated_at)
-            VALUES ($1, $2, now())
-            ON CONFLICT (id) DO UPDATE
-            SET data = EXCLUDED.data, updated_at = now()
-            "#,
-            self.table
-        );
-        sqlx::query(&upsert_sql)
-            .bind(&thread.id)
-            .bind(&v)
-            .execute(&mut *tx)
-            .await
-            .map_err(Self::sql_err)?;
-
-        // Incremental append: only INSERT messages not yet persisted.
-        let existing_sql = format!(
-            "SELECT message_id FROM {} WHERE session_id = $1 AND message_id IS NOT NULL",
-            self.messages_table,
-        );
-        let existing_rows: Vec<(String,)> = sqlx::query_as(&existing_sql)
-            .bind(&thread.id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(Self::sql_err)?;
-        let existing_ids: HashSet<String> = existing_rows.into_iter().map(|(id,)| id).collect();
-
-        let new_messages: Vec<&Message> = thread
-            .messages
-            .iter()
-            .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
-            .map(|m| m.as_ref())
-            .collect();
-
-        let insert_sql = format!(
-            "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
-            self.messages_table,
-        );
-        for msg in &new_messages {
-            let data = serde_json::to_value(msg)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            let message_id = msg.id.as_deref();
-            let (run_id, step_index) = msg
-                .metadata
-                .as_ref()
-                .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
-                .unwrap_or((None, None));
-
-            sqlx::query(&insert_sql)
-                .bind(&thread.id)
-                .bind(message_id)
-                .bind(run_id)
-                .bind(step_index)
-                .bind(&data)
-                .execute(&mut *tx)
-                .await
-                .map_err(Self::sql_err)?;
-        }
-
-        tx.commit().await.map_err(Self::sql_err)?;
-        Ok(())
-    }
-
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        // CASCADE will delete messages automatically.
-        let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
-        sqlx::query(&sql)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-        Ok(())
-    }
-
-    async fn list(&self) -> Result<Vec<String>, StorageError> {
-        let sql = format!("SELECT id FROM {} ORDER BY id", self.table);
-        let rows: Vec<(String,)> = sqlx::query_as(&sql)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-        Ok(rows.into_iter().map(|(id,)| id).collect())
-    }
-
-    async fn load_messages(
-        &self,
-        thread_id: &str,
-        query: &MessageQuery,
-    ) -> Result<MessagePage, StorageError> {
-        // Check session exists.
-        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
-        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-        if exists.is_none() {
-            return Err(StorageError::NotFound(thread_id.to_string()));
-        }
-
-        let limit = query.limit.min(200).max(1);
-        // Fetch limit+1 rows to determine has_more.
-        let fetch_limit = (limit + 1) as i64;
-
-        // Visibility filter on JSONB data.
-        // Messages without a "visibility" field default to "all".
-        let vis_clause = match query.visibility {
-            Some(Visibility::All) => {
-                " AND COALESCE(data->>'visibility', 'all') = 'all'".to_string()
-            }
-            Some(Visibility::Internal) => " AND data->>'visibility' = 'internal'".to_string(),
-            None => String::new(),
-        };
-
-        // Run ID filter on the run_id column.
-        let run_clause = if query.run_id.is_some() {
-            " AND run_id = $4"
-        } else {
-            ""
-        };
-
-        // Build query with dynamic param offsets.
-        // Params: $1=session_id, $2=cursor, $3=limit, $4=run_id (opt), $N=before/after (opt).
-        let extra_param_idx = if query.run_id.is_some() { 5 } else { 4 };
-
-        let (sql, cursor_val) = match query.order {
-            SortOrder::Asc => {
-                let cursor = query.after.unwrap_or(-1);
-                let before_clause = if query.before.is_some() {
-                    format!("AND seq < ${extra_param_idx}")
-                } else {
-                    String::new()
-                };
-                let sql = format!(
-                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq > $2{}{} {} ORDER BY seq ASC LIMIT $3",
-                    self.messages_table, vis_clause, run_clause, before_clause,
-                );
-                (sql, cursor)
-            }
-            SortOrder::Desc => {
-                let cursor = query.before.unwrap_or(i64::MAX);
-                let after_clause = if query.after.is_some() {
-                    format!("AND seq > ${extra_param_idx}")
-                } else {
-                    String::new()
-                };
-                let sql = format!(
-                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq < $2{}{} {} ORDER BY seq DESC LIMIT $3",
-                    self.messages_table, vis_clause, run_clause, after_clause,
-                );
-                (sql, cursor)
-            }
-        };
-
-        let rows: Vec<(i64, serde_json::Value)> = match query.order {
-            SortOrder::Asc => {
-                let mut q = sqlx::query_as(&sql)
-                    .bind(thread_id)
-                    .bind(cursor_val)
-                    .bind(fetch_limit);
-                if let Some(ref rid) = query.run_id {
-                    q = q.bind(rid);
-                }
-                if let Some(before) = query.before {
-                    q = q.bind(before);
-                }
-                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
-            }
-            SortOrder::Desc => {
-                let mut q = sqlx::query_as(&sql)
-                    .bind(thread_id)
-                    .bind(cursor_val)
-                    .bind(fetch_limit);
-                if let Some(ref rid) = query.run_id {
-                    q = q.bind(rid);
-                }
-                if let Some(after) = query.after {
-                    q = q.bind(after);
-                }
-                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
-            }
-        };
-
-        let has_more = rows.len() > limit;
-        let limited: Vec<_> = rows.into_iter().take(limit).collect();
-
-        let messages: Vec<MessageWithCursor> = limited
-            .into_iter()
-            .map(|(seq, data)| {
-                let message: Message = serde_json::from_value(data)
-                    .unwrap_or_else(|_| Message::system("[deserialization error]"));
-                MessageWithCursor {
-                    cursor: seq,
-                    message,
-                }
-            })
-            .collect();
-
-        Ok(MessagePage {
-            next_cursor: messages.last().map(|m| m.cursor),
-            prev_cursor: messages.first().map(|m| m.cursor),
-            messages,
-            has_more,
-        })
-    }
-
-    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
-        // Check session exists.
-        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
-        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-        if exists.is_none() {
-            return Err(StorageError::NotFound(thread_id.to_string()));
-        }
-
-        let sql = format!(
-            "SELECT COUNT(*)::bigint FROM {} WHERE session_id = $1",
-            self.messages_table
-        );
-        let row: (i64,) = sqlx::query_as(&sql)
-            .bind(thread_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-        Ok(row.0 as usize)
-    }
-
-    async fn list_paginated(
-        &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, StorageError> {
-        let limit = query.limit.clamp(1, 200);
-        let fetch_limit = (limit + 1) as i64;
-        let offset = query.offset as i64;
-
-        // resource_id filter via JSONB.
-        let resource_clause = if query.resource_id.is_some() {
-            " WHERE data->>'resource_id' = $3"
-        } else {
-            ""
-        };
-
-        let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {}{}",
-            self.table, resource_clause
-        );
-        let total: i64 = if let Some(ref rid) = query.resource_id {
-            let (total,): (i64,) = sqlx::query_as(&count_sql)
-                .bind(fetch_limit)
-                .bind(offset)
-                .bind(rid)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(Self::sql_err)?;
-            total
-        } else {
-            let (total,): (i64,) = sqlx::query_as(&count_sql)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(Self::sql_err)?;
-            total
-        };
-
-        let sql = format!(
-            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
-            self.table, resource_clause
-        );
-        let rows: Vec<(String,)> = if let Some(ref rid) = query.resource_id {
-            sqlx::query_as(&sql)
-                .bind(fetch_limit)
-                .bind(offset)
-                .bind(rid)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(Self::sql_err)?
-        } else {
-            sqlx::query_as(&sql)
-                .bind(fetch_limit)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(Self::sql_err)?
-        };
-
-        let has_more = rows.len() > limit;
-        let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
-
-        Ok(ThreadListPage {
-            items,
-            total: total as usize,
-            has_more,
-        })
     }
 }
 
@@ -1526,7 +1084,90 @@ impl ThreadStore for PostgresStorage {
     }
 
     async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        Storage::delete(self, id).await
+        // CASCADE will delete messages automatically.
+        let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
+        sqlx::query(&sql)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        Ok(())
+    }
+
+    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+        // Serialize session skeleton (without messages).
+        let mut v = serde_json::to_value(thread)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
+        }
+
+        // Use a transaction to keep sessions and messages consistent.
+        let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
+
+        // Upsert session skeleton.
+        let upsert_sql = format!(
+            r#"
+            INSERT INTO {} (id, data, updated_at)
+            VALUES ($1, $2, now())
+            ON CONFLICT (id) DO UPDATE
+            SET data = EXCLUDED.data, updated_at = now()
+            "#,
+            self.table
+        );
+        sqlx::query(&upsert_sql)
+            .bind(&thread.id)
+            .bind(&v)
+            .execute(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+
+        // Incremental append: only INSERT messages not yet persisted.
+        let existing_sql = format!(
+            "SELECT message_id FROM {} WHERE session_id = $1 AND message_id IS NOT NULL",
+            self.messages_table,
+        );
+        let existing_rows: Vec<(String,)> = sqlx::query_as(&existing_sql)
+            .bind(&thread.id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(Self::sql_err)?;
+        let existing_ids: HashSet<String> = existing_rows.into_iter().map(|(id,)| id).collect();
+
+        let new_messages: Vec<&Message> = thread
+            .messages
+            .iter()
+            .filter(|m| m.id.as_ref().map_or(true, |id| !existing_ids.contains(id)))
+            .map(|m| m.as_ref())
+            .collect();
+
+        let insert_sql = format!(
+            "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
+            self.messages_table,
+        );
+        for msg in &new_messages {
+            let data = serde_json::to_value(msg)
+                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            let message_id = msg.id.as_deref();
+            let (run_id, step_index) = msg
+                .metadata
+                .as_ref()
+                .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
+                .unwrap_or((None, None));
+
+            sqlx::query(&insert_sql)
+                .bind(&thread.id)
+                .bind(message_id)
+                .bind(run_id)
+                .bind(step_index)
+                .bind(&data)
+                .execute(&mut *tx)
+                .await
+                .map_err(Self::sql_err)?;
+        }
+
+        tx.commit().await.map_err(Self::sql_err)?;
+        Ok(())
     }
 }
 
@@ -1538,7 +1179,142 @@ impl ThreadQuery for PostgresStorage {
         id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
-        Storage::load_messages(self, id, query).await
+        // Check session exists.
+        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
+        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+
+        let limit = query.limit.min(200).max(1);
+        // Fetch limit+1 rows to determine has_more.
+        let fetch_limit = (limit + 1) as i64;
+
+        // Visibility filter on JSONB data.
+        let vis_clause = match query.visibility {
+            Some(Visibility::All) => {
+                " AND COALESCE(data->>'visibility', 'all') = 'all'".to_string()
+            }
+            Some(Visibility::Internal) => " AND data->>'visibility' = 'internal'".to_string(),
+            None => String::new(),
+        };
+
+        // Run ID filter on the run_id column.
+        let run_clause = if query.run_id.is_some() {
+            " AND run_id = $4"
+        } else {
+            ""
+        };
+
+        let extra_param_idx = if query.run_id.is_some() { 5 } else { 4 };
+
+        let (sql, cursor_val) = match query.order {
+            SortOrder::Asc => {
+                let cursor = query.after.unwrap_or(-1);
+                let before_clause = if query.before.is_some() {
+                    format!("AND seq < ${extra_param_idx}")
+                } else {
+                    String::new()
+                };
+                let sql = format!(
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq > $2{}{} {} ORDER BY seq ASC LIMIT $3",
+                    self.messages_table, vis_clause, run_clause, before_clause,
+                );
+                (sql, cursor)
+            }
+            SortOrder::Desc => {
+                let cursor = query.before.unwrap_or(i64::MAX);
+                let after_clause = if query.after.is_some() {
+                    format!("AND seq > ${extra_param_idx}")
+                } else {
+                    String::new()
+                };
+                let sql = format!(
+                    "SELECT seq, data FROM {} WHERE session_id = $1 AND seq < $2{}{} {} ORDER BY seq DESC LIMIT $3",
+                    self.messages_table, vis_clause, run_clause, after_clause,
+                );
+                (sql, cursor)
+            }
+        };
+
+        let rows: Vec<(i64, serde_json::Value)> = match query.order {
+            SortOrder::Asc => {
+                let mut q = sqlx::query_as(&sql)
+                    .bind(id)
+                    .bind(cursor_val)
+                    .bind(fetch_limit);
+                if let Some(ref rid) = query.run_id {
+                    q = q.bind(rid);
+                }
+                if let Some(before) = query.before {
+                    q = q.bind(before);
+                }
+                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
+            }
+            SortOrder::Desc => {
+                let mut q = sqlx::query_as(&sql)
+                    .bind(id)
+                    .bind(cursor_val)
+                    .bind(fetch_limit);
+                if let Some(ref rid) = query.run_id {
+                    q = q.bind(rid);
+                }
+                if let Some(after) = query.after {
+                    q = q.bind(after);
+                }
+                q.fetch_all(&self.pool).await.map_err(Self::sql_err)?
+            }
+        };
+
+        let has_more = rows.len() > limit;
+        let limited: Vec<_> = rows.into_iter().take(limit).collect();
+
+        let messages: Vec<MessageWithCursor> = limited
+            .into_iter()
+            .map(|(seq, data)| {
+                let message: Message = serde_json::from_value(data)
+                    .unwrap_or_else(|_| Message::system("[deserialization error]"));
+                MessageWithCursor {
+                    cursor: seq,
+                    message,
+                }
+            })
+            .collect();
+
+        Ok(MessagePage {
+            next_cursor: messages.last().map(|m| m.cursor),
+            prev_cursor: messages.first().map(|m| m.cursor),
+            messages,
+            has_more,
+        })
+    }
+
+    async fn message_count(&self, id: &str) -> Result<usize, StorageError> {
+        // Check session exists.
+        let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
+        let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+
+        let sql = format!(
+            "SELECT COUNT(*)::bigint FROM {} WHERE session_id = $1",
+            self.messages_table
+        );
+        let row: (i64,) = sqlx::query_as(&sql)
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+        Ok(row.0 as usize)
     }
 
     async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
@@ -1672,7 +1448,7 @@ mod tests {
         let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
         storage.save(&thread).await.unwrap();
-        let loaded = Storage::load(&storage, "test-1").await.unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap();
 
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
@@ -1683,7 +1459,7 @@ mod tests {
     #[tokio::test]
     async fn test_memory_storage_load_not_found() {
         let storage = MemoryStorage::new();
-        let loaded = Storage::load(&storage, "nonexistent").await.unwrap();
+        let loaded = storage.load_thread("nonexistent").await.unwrap();
         assert!(loaded.is_none());
     }
 
@@ -1693,10 +1469,10 @@ mod tests {
         let thread = Thread::new("test-1");
 
         storage.save(&thread).await.unwrap();
-        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
+        assert!(storage.load_thread("test-1").await.unwrap().is_some());
 
-        Storage::delete(&storage, "test-1").await.unwrap();
-        assert!(Storage::load(&storage, "test-1").await.unwrap().is_none());
+        storage.delete("test-1").await.unwrap();
+        assert!(storage.load_thread("test-1").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1727,7 +1503,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Load and verify
-        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 2);
     }
 
@@ -1743,7 +1519,7 @@ mod tests {
 
         storage.save(&thread).await.unwrap();
 
-        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.patch_count(), 1);
         assert_eq!(loaded.state["counter"], 0);
 
@@ -1756,7 +1532,7 @@ mod tests {
     async fn test_memory_storage_delete_nonexistent() {
         let storage = MemoryStorage::new();
         // Deleting non-existent session should not error
-        Storage::delete(&storage, "nonexistent").await.unwrap();
+        storage.delete("nonexistent").await.unwrap();
     }
 
     #[tokio::test]
@@ -1801,7 +1577,7 @@ mod tests {
         let thread = Thread::new("test-1").with_message(Message::user("Hello"));
         storage.save(&thread).await.unwrap();
 
-        let loaded = Storage::load(&storage, "test-1").await.unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.id, "test-1");
@@ -1813,7 +1589,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let loaded = Storage::load(&storage, "nonexistent").await.unwrap();
+        let loaded = storage.load_thread("nonexistent").await.unwrap();
         assert!(loaded.is_none());
     }
 
@@ -1824,10 +1600,10 @@ mod tests {
 
         let thread = Thread::new("test-1");
         storage.save(&thread).await.unwrap();
-        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
+        assert!(storage.load_thread("test-1").await.unwrap().is_some());
 
-        Storage::delete(&storage, "test-1").await.unwrap();
-        assert!(Storage::load(&storage, "test-1").await.unwrap().is_none());
+        storage.delete("test-1").await.unwrap();
+        assert!(storage.load_thread("test-1").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1872,7 +1648,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         assert!(nested_path.exists());
-        assert!(Storage::load(&storage, "test-1").await.unwrap().is_some());
+        assert!(storage.load_thread("test-1").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1898,7 +1674,7 @@ mod tests {
 
         storage.save(&thread).await.unwrap();
 
-        let loaded = Storage::load(&storage, "complex-thread").await.unwrap().unwrap();
+        let loaded = storage.load_thread("complex-thread").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 2);
         assert_eq!(loaded.patch_count(), 1);
 
@@ -1922,7 +1698,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Verify
-        let loaded = Storage::load(&storage, "test-1").await.unwrap().unwrap();
+        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.message_count(), 3);
     }
 
@@ -2125,7 +1901,7 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = Storage::load_messages(&storage, "test-1", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-1", &query).await.unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert!(page.has_more);
@@ -2136,7 +1912,7 @@ mod tests {
     async fn test_memory_storage_load_messages_not_found() {
         let storage = MemoryStorage::new();
         let query = MessageQuery::default();
-        let result = Storage::load_messages(&storage, "nonexistent", &query).await;
+        let result = ThreadQuery::load_messages(&storage, "nonexistent", &query).await;
         assert!(matches!(result, Err(StorageError::NotFound(_))));
     }
 
@@ -2169,7 +1945,7 @@ mod tests {
             limit: 3,
             ..Default::default()
         };
-        let page = Storage::load_messages(&storage, "test-1", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-1", &query).await.unwrap();
 
         assert_eq!(page.messages.len(), 3);
         assert_eq!(page.messages[0].cursor, 5);
@@ -2333,7 +2109,7 @@ mod tests {
         storage.save(&thread).await.unwrap();
 
         // Default query (visibility = All)
-        let page = Storage::load_messages(&storage, "test-vis", &MessageQuery::default())
+        let page = ThreadQuery::load_messages(&storage, "test-vis", &MessageQuery::default())
             .await
             .unwrap();
         assert_eq!(page.messages.len(), 4);
@@ -2343,7 +2119,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = Storage::load_messages(&storage, "test-vis", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-vis", &query).await.unwrap();
         assert_eq!(page.messages.len(), 6);
     }
 
@@ -2456,7 +2232,7 @@ mod tests {
             visibility: None,
             ..Default::default()
         };
-        let page = Storage::load_messages(&storage, "test-run", &query).await.unwrap();
+        let page = ThreadQuery::load_messages(&storage, "test-run", &query).await.unwrap();
         assert_eq!(page.messages.len(), 3);
     }
 

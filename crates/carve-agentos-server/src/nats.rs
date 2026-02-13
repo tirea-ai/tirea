@@ -1,7 +1,7 @@
 use carve_agent::ag_ui::AGUIEvent;
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{
-    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread, Storage,
+    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread, ThreadQuery,
     AGUI_REQUEST_APPLIED_RUNTIME_KEY,
 };
 use futures::StreamExt;
@@ -34,14 +34,14 @@ pub enum NatsGatewayError {
 #[derive(Clone)]
 pub struct NatsGateway {
     os: Arc<AgentOs>,
-    storage: Arc<dyn Storage>,
+    storage: Arc<dyn ThreadQuery>,
     client: async_nats::Client,
 }
 
 impl NatsGateway {
     pub async fn connect(
         os: Arc<AgentOs>,
-        storage: Arc<dyn Storage>,
+        storage: Arc<dyn ThreadQuery>,
         nats_url: &str,
     ) -> Result<Self, NatsGatewayError> {
         let client = async_nats::connect(nats_url).await?;
@@ -109,7 +109,7 @@ impl NatsGateway {
 
         let thread = self
             .storage
-            .load(&req.request.thread_id)
+            .load_thread(&req.request.thread_id)
             .await
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
             .unwrap_or_else(|| {
@@ -256,7 +256,7 @@ impl NatsGateway {
 
         let mut thread = self
             .storage
-            .load(&req.thread_id)
+            .load_thread(&req.thread_id)
             .await
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
             .unwrap_or_else(|| Thread::new(req.thread_id.clone()));

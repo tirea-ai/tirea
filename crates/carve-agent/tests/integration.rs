@@ -589,7 +589,7 @@ async fn test_tool_provider_reminder_integration() {
 
 use carve_agent::{
     loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role, Thread,
-    Storage, StreamResult,
+    ThreadStore, ThreadQuery, StreamResult,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
 use std::sync::Arc;
@@ -671,7 +671,7 @@ async fn test_session_storage_roundtrip() {
     storage.save(&thread).await.unwrap();
 
     // Load session
-    let loaded = storage.load("storage-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("storage-test").await.unwrap().unwrap();
 
     // Verify
     assert_eq!(loaded.id, "storage-test");
@@ -711,7 +711,7 @@ async fn test_file_storage_session_persistence() {
     assert!(path.exists());
 
     // Load and verify
-    let loaded = storage.load("persist-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("persist-test").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert_eq!(state["user"]["level"], 2);
@@ -740,7 +740,7 @@ async fn test_session_snapshot_and_continue() {
 
     // Save and load
     storage.save(&thread).await.unwrap();
-    let loaded = storage.load("snapshot-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("snapshot-test").await.unwrap().unwrap();
 
     // Continue with more patches
     let thread = loaded.with_patch(TrackedPatch::new(
@@ -1028,7 +1028,7 @@ async fn test_large_session_storage_roundtrip() {
     storage.save(&thread).await.unwrap();
 
     // Load
-    let loaded = storage.load("large-storage-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("large-storage-test").await.unwrap().unwrap();
 
     assert_eq!(loaded.message_count(), 500);
     assert_eq!(loaded.patch_count(), 500);
@@ -1104,7 +1104,7 @@ async fn test_session_recovery_after_partial_save() {
     // "Crash" happens here - we don't save
 
     // Recovery: load from last checkpoint
-    let recovered = storage.load("recovery-test").await.unwrap().unwrap();
+    let recovered = storage.load_thread("recovery-test").await.unwrap().unwrap();
 
     // Should have state from checkpoint (step 2, not step 3)
     let state = recovered.rebuild_state().unwrap();
@@ -1138,7 +1138,7 @@ async fn test_session_incremental_checkpoints() {
     }
 
     // Verify final state
-    let loaded = storage.load("checkpoint-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("checkpoint-test").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
     assert_eq!(state["progress"], 50);
     assert_eq!(loaded.message_count(), 50);
@@ -1166,7 +1166,7 @@ async fn test_session_recovery_with_snapshot() {
     storage.save(&thread).await.unwrap();
 
     // Continue work
-    let mut thread = storage.load("snapshot-recovery").await.unwrap().unwrap();
+    let mut thread = storage.load_thread("snapshot-recovery").await.unwrap().unwrap();
     for _ in 0..25 {
         thread = thread.with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::increment(path!("counter"), 1)),
@@ -1177,7 +1177,7 @@ async fn test_session_recovery_with_snapshot() {
     storage.save(&thread).await.unwrap();
 
     // Load and verify
-    let loaded = storage.load("snapshot-recovery").await.unwrap().unwrap();
+    let loaded = storage.load_thread("snapshot-recovery").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
     assert_eq!(state["counter"], 75);
 }
@@ -1682,12 +1682,12 @@ async fn test_storage_error_recovery() {
     storage.save(&thread).await.unwrap();
 
     // Try to load non-existent session
-    let result = storage.load("non-existent").await;
+    let result = storage.load_thread("non-existent").await;
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 
     // Original session should still be loadable
-    let loaded = storage.load("valid-thread").await.unwrap().unwrap();
+    let loaded = storage.load_thread("valid-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 1);
 }
 
@@ -1708,7 +1708,7 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
             tokio::spawn(async move {
                 if i % 3 == 0 {
                     // Load
-                    storage.load("concurrent-test").await
+                    storage.load_thread("concurrent-test").await
                 } else {
                     // Save (potentially conflicting)
                     let thread = Thread::new("concurrent-test")
@@ -1722,7 +1722,7 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     futures::future::join_all(handles).await;
 
     // Storage should still be consistent
-    let final_thread = storage.load("concurrent-test").await.unwrap().unwrap();
+    let final_thread = storage.load_thread("concurrent-test").await.unwrap().unwrap();
     assert_eq!(final_thread.message_count(), 1); // Should have one message
 }
 
@@ -1840,7 +1840,7 @@ async fn test_file_storage_corrupted_json() {
     let storage = FileStorage::new(temp_dir.path());
 
     // Try to load corrupted session
-    let result = storage.load("corrupted").await;
+    let result = storage.load_thread("corrupted").await;
     assert!(result.is_err());
 
     match result {
@@ -2992,7 +2992,7 @@ async fn test_e2e_session_persistence_restore() {
     let state_before = thread.rebuild_state().unwrap();
 
     // Phase 2: "Restart" - load and continue
-    let mut loaded = storage.load("e2e-persist").await.unwrap().unwrap();
+    let mut loaded = storage.load_thread("e2e-persist").await.unwrap().unwrap();
 
     // Verify state preserved
     let state_after_load = loaded.rebuild_state().unwrap();
@@ -3129,7 +3129,7 @@ async fn test_e2e_long_conversation() {
     // Storage should handle this efficiently
     let storage = MemoryStorage::new();
     storage.save(&thread).await.unwrap();
-    let loaded = storage.load("e2e-long").await.unwrap().unwrap();
+    let loaded = storage.load_thread("e2e-long").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 200);
 }
 
@@ -3651,7 +3651,7 @@ async fn test_concurrent_session_modifications() {
             storage.save(&thread).await.unwrap();
 
             // Load and verify
-            let loaded = storage.load(&thread_id).await.unwrap().unwrap();
+            let loaded = storage.load_thread(&thread_id).await.unwrap().unwrap();
             assert_eq!(loaded.message_count(), 5);
             assert_eq!(loaded.state["value"], i);
 
@@ -3689,11 +3689,11 @@ async fn test_concurrent_read_write_same_session() {
         let handle = tokio::spawn(async move {
             if i % 2 == 0 {
                 // Reader
-                let loaded = storage.load("shared-thread").await.unwrap();
+                let loaded = storage.load_thread("shared-thread").await.unwrap();
                 loaded.is_some()
             } else {
                 // Writer (updates the thread)
-                let mut thread = storage.load("shared-thread").await.unwrap().unwrap();
+                let mut thread = storage.load_thread("shared-thread").await.unwrap().unwrap();
                 thread = thread.with_message(Message::user(format!("Update {}", i)));
                 storage.save(&thread).await.unwrap();
                 true
@@ -3712,7 +3712,7 @@ async fn test_concurrent_read_write_same_session() {
     assert!(results.iter().all(|&r| r));
 
     // Final session should have messages
-    let final_thread = storage.load("shared-thread").await.unwrap().unwrap();
+    let final_thread = storage.load_thread("shared-thread").await.unwrap().unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -3768,7 +3768,7 @@ async fn test_concurrent_tool_executions_isolated() {
 async fn test_storage_session_not_found() {
     let storage = MemoryStorage::new();
 
-    let result = storage.load("nonexistent").await.unwrap();
+    let result = storage.load_thread("nonexistent").await.unwrap();
     assert!(result.is_none());
 }
 
@@ -3796,7 +3796,7 @@ async fn test_storage_overwrite_session() {
     storage.save(&session2).await.unwrap();
 
     // Load and verify overwritten
-    let loaded = storage.load("overwrite-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("overwrite-test").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 2);
     assert!(loaded.messages[0].content.contains("Second"));
 }
@@ -3812,7 +3812,7 @@ async fn test_file_storage_special_characters_in_id() {
 
     storage.save(&thread).await.unwrap();
     let loaded = storage
-        .load("session_with-special.chars_123")
+        .load_thread("session_with-special.chars_123")
         .await
         .unwrap();
 
@@ -3846,7 +3846,7 @@ async fn test_file_storage_concurrent_writes_different_sessions() {
 
     // Verify all 20 sessions were persisted.
     for i in 0..20 {
-        let loaded = storage.load(&format!("session_{}", i)).await.unwrap();
+        let loaded = storage.load_thread(&format!("session_{}", i)).await.unwrap();
         assert!(loaded.is_some(), "session_{} should exist", i);
         let s = loaded.unwrap();
         assert_eq!(s.message_count(), 1);
@@ -3877,7 +3877,7 @@ async fn test_file_storage_concurrent_writes_same_session() {
     }
 
     // The session file should be valid (no corruption).
-    let loaded = storage.load("shared_session").await.unwrap();
+    let loaded = storage.load_thread("shared_session").await.unwrap();
     assert!(loaded.is_some(), "shared_session should exist");
     let thread = loaded.unwrap();
     assert_eq!(thread.message_count(), 1);
@@ -3922,7 +3922,7 @@ async fn test_file_storage_read_write_interleaved() {
     }
 
     // After all writes complete, a final read should succeed.
-    let final_thread = storage.load("interleaved").await.unwrap().unwrap();
+    let final_thread = storage.load_thread("interleaved").await.unwrap().unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -3934,7 +3934,7 @@ async fn test_storage_empty_session() {
     let thread = Thread::new("empty-thread");
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load("empty-thread").await.unwrap().unwrap();
+    let loaded = storage.load_thread("empty-thread").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 0);
     assert_eq!(loaded.patch_count(), 0);
 }
@@ -3961,7 +3961,7 @@ async fn test_storage_large_state() {
 
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load("large-state").await.unwrap().unwrap();
+    let loaded = storage.load_thread("large-state").await.unwrap().unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert!(state.as_object().unwrap().len() >= 1000);
@@ -4069,7 +4069,7 @@ async fn test_e2e_system_prompt_in_session() {
     let storage = MemoryStorage::new();
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load("system-prompt-test").await.unwrap().unwrap();
+    let loaded = storage.load_thread("system-prompt-test").await.unwrap().unwrap();
 
     // System prompt should be first message
     assert_eq!(loaded.messages[0].role, Role::System);

@@ -2168,17 +2168,12 @@ pub struct StreamWithThread {
     pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThreadCheckpointReason {
-    /// An assistant turn was committed to the session (final text and/or tool calls).
-    AssistantTurnCommitted,
-    /// Tool results were applied to the session (tool messages and patches).
-    ToolResultsCommitted,
-}
+/// Reason a thread checkpoint was emitted during a streaming run.
+pub type ThreadCheckpointReason = CheckpointReason;
 
 #[derive(Debug, Clone)]
 pub struct ThreadCheckpoint {
-    pub reason: ThreadCheckpointReason,
+    pub reason: CheckpointReason,
     pub thread: Thread,
     /// Delta since the last checkpoint (new messages and patches only).
     pub delta: crate::storage::ThreadDelta,
@@ -2718,7 +2713,7 @@ fn run_loop_stream_impl_with_provider(
                 msg_watermark = thread.messages.len();
                 patch_watermark = thread.patches.len();
                 let _ = tx.send(ThreadCheckpoint {
-                    reason: ThreadCheckpointReason::AssistantTurnCommitted,
+                    reason: CheckpointReason::AssistantTurnCommitted,
                     thread: thread.clone(),
                     delta,
                 });
@@ -2898,7 +2893,7 @@ fn run_loop_stream_impl_with_provider(
                 msg_watermark = thread.messages.len();
                 patch_watermark = thread.patches.len();
                 let _ = tx.send(ThreadCheckpoint {
-                    reason: ThreadCheckpointReason::ToolResultsCommitted,
+                    reason: CheckpointReason::ToolResultsCommitted,
                     thread: thread.clone(),
                     delta,
                 });

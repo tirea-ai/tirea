@@ -102,7 +102,7 @@ while let Some(event) = stream.next().await {
 ## Step 4: Persist Sessions
 
 ```rust,ignore
-use carve_agent::{FileStorage, Storage};
+use carve_agent::{FileStorage, ThreadStore};
 
 let storage = FileStorage::new("./sessions");
 

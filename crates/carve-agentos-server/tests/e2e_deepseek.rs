@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStorage, Storage, Tool, ToolDescriptor, ToolError,
+    AgentDefinition, AgentOsBuilder, MemoryStorage, ThreadQuery, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};
@@ -193,7 +193,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -233,7 +233,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load("e2e-sdk").await.unwrap();
+    let saved = storage.load_thread("e2e-sdk").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -251,7 +251,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -286,7 +286,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load("e2e-agui").await.unwrap();
+    let saved = storage.load_thread("e2e-agui").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -311,7 +311,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -349,7 +349,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 
     // Thread should be persisted with tool call history.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load("e2e-sdk-tool").await.unwrap();
+    let saved = storage.load_thread("e2e-sdk-tool").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -366,7 +366,7 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -435,7 +435,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     }
 
     let os = Arc::new(make_multiturn_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
 
     // Turn 1: ask the agent to remember a number.
     let app1 = router(AppState {
@@ -465,7 +465,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session has messages from turn 1.
-    let saved = storage.load("e2e-sdk-multi").await.unwrap().unwrap();
+    let saved = storage.load_thread("e2e-sdk-multi").await.unwrap().unwrap();
     assert!(
         saved.messages.len() >= 2,
         "turn 1 should persist at least user + assistant messages, got {}",
@@ -533,7 +533,7 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -593,7 +593,7 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -681,7 +681,7 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
     }
 
     let os = Arc::new(make_multiturn_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
 
     // Turn 1.
     let app1 = router(AppState {
@@ -758,7 +758,7 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -834,7 +834,7 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -916,7 +916,7 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -971,7 +971,7 @@ async fn e2e_ag_ui_multistep_tool_with_deepseek() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),

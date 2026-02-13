@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStorage, ModelDefinition, Storage, Tool, ToolDescriptor,
-    ToolError, ToolResult,
+    AgentDefinition, AgentOsBuilder, MemoryStorage, ModelDefinition, ThreadQuery, Tool,
+    ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -127,7 +127,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -193,7 +193,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
 
     // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load("tz-sdk-1").await.unwrap();
+    let saved = storage.load_thread("tz-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -209,7 +209,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -279,7 +279,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
 
     // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load("tz-agui-1").await.unwrap();
+    let saved = storage.load_thread("tz-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -508,7 +508,7 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -557,7 +557,7 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -625,7 +625,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
 
     // Turn 1.
     let app1 = router(AppState {
@@ -718,7 +718,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -771,7 +771,7 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -854,7 +854,7 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
     }
 
     let os = Arc::new(make_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
 
     // Turn 1.
     let app1 = router(AppState {
@@ -950,7 +950,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -1004,7 +1004,7 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
     }
 
     let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn Storage> = Arc::new(MemoryStorage::new());
+    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
