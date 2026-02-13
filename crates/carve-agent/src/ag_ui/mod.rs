@@ -1532,6 +1532,72 @@ fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
     ))
 }
 
+struct RequestWiring {
+    response: InteractionResponsePlugin,
+    frontend: FrontendToolPlugin,
+}
+
+impl RequestWiring {
+    fn from_request(request: &RunAgentRequest) -> Self {
+        Self {
+            response: InteractionResponsePlugin::from_request(request),
+            frontend: FrontendToolPlugin::from_request(request),
+        }
+    }
+
+    fn apply(
+        self,
+        mut config: AgentConfig,
+        tools: &mut HashMap<String, Arc<dyn Tool>>,
+        request: &RunAgentRequest,
+    ) -> AgentConfig {
+        if self.response.has_responses() {
+            config = config.with_plugin(Arc::new(self.response));
+        }
+
+        if !self.frontend.frontend_tools.is_empty() {
+            merge_frontend_tools(tools, request);
+            config = config.with_plugin(Arc::new(self.frontend));
+        }
+
+        config
+    }
+}
+
+fn apply_request_overrides(mut config: AgentConfig, request: &RunAgentRequest) -> AgentConfig {
+    if let Some(model) = request.model.as_ref() {
+        config.model = model.clone();
+    }
+    if let Some(prompt) = request.system_prompt.as_ref() {
+        config.system_prompt = prompt.clone();
+    }
+
+    if let Some(addendum) = build_context_addendum(request) {
+        config.system_prompt.push_str(&addendum);
+    }
+
+    config
+}
+
+fn set_run_identity(session: &mut Session, run_id: &str, parent_run_id: Option<&str>) {
+    let _ = session.runtime.set("run_id", run_id.to_string());
+    if let Some(parent) = parent_run_id {
+        let _ = session.runtime.set("parent_run_id", parent.to_string());
+    }
+}
+
+fn prepare_request_runtime(
+    config: AgentConfig,
+    session: Session,
+    mut tools: HashMap<String, Arc<dyn Tool>>,
+    request: &RunAgentRequest,
+) -> (AgentConfig, Session, HashMap<String, Arc<dyn Tool>>) {
+    let session = ensure_agui_request_applied(session, request);
+    let config = apply_request_overrides(config, request);
+    let config = RequestWiring::from_request(request).apply(config, &mut tools, request);
+    (config, session, tools)
+}
+
 // ============================================================================
 // AG-UI Run Agent Stream
 // ============================================================================
@@ -1609,11 +1675,7 @@ pub fn run_agent_stream_with_parent(
     Box::pin(stream! {
         let mut ctx = AGUIContext::new(thread_id.clone(), run_id.clone());
 
-        // Set run_id and parent_run_id on the session runtime
-        let _ = session.runtime.set("run_id", run_id.clone());
-        if let Some(parent) = parent_run_id.clone() {
-            let _ = session.runtime.set("parent_run_id", parent);
-        }
+        set_run_identity(&mut session, &run_id, parent_run_id.as_deref());
 
         let run_ctx = RunContext {
             cancellation_token: None,
@@ -1739,42 +1801,10 @@ pub fn run_agent_stream_with_request(
     client: Client,
     config: AgentConfig,
     session: Session,
-    mut tools: HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> Pin<Box<dyn Stream<Item = AGUIEvent> + Send>> {
-    let mut config = config;
-    let session = ensure_agui_request_applied(session, &request);
-
-    // Apply per-request overrides when present.
-    if let Some(model) = request.model.clone() {
-        config.model = model;
-    }
-    if let Some(prompt) = request.system_prompt.clone() {
-        config.system_prompt = prompt;
-    }
-
-    // Append frontend readable context to the system prompt.
-    if let Some(addendum) = build_context_addendum(&request) {
-        config.system_prompt.push_str(&addendum);
-    }
-
-    // Create interaction response plugin if there are responses in the request
-    // This handles resuming from a pending state
-    let response_plugin = InteractionResponsePlugin::from_request(&request);
-    if response_plugin.has_responses() {
-        config = config.with_plugin(Arc::new(response_plugin));
-    }
-
-    // Create frontend tool plugin if there are frontend tools
-    let frontend_plugin = FrontendToolPlugin::from_request(&request);
-    let has_frontend_tools = !frontend_plugin.frontend_tools.is_empty();
-
-    // Add frontend tool stubs so the LLM sees their definitions,
-    // and add the plugin to intercept execution.
-    if has_frontend_tools {
-        merge_frontend_tools(&mut tools, &request);
-        config = config.with_plugin(Arc::new(frontend_plugin));
-    }
+    let (config, session, tools) = prepare_request_runtime(config, session, tools, &request);
 
     // Use existing run_agent_stream with the enhanced config
     run_agent_stream_with_parent(
@@ -1797,44 +1827,15 @@ pub fn run_agent_events_with_request(
     client: Client,
     config: AgentConfig,
     session: Session,
-    mut tools: HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithSession {
-    let mut config = config;
-    let mut session = ensure_agui_request_applied(session, &request);
-
-    // Apply per-request overrides when present.
-    if let Some(model) = request.model.clone() {
-        config.model = model;
-    }
-    if let Some(prompt) = request.system_prompt.clone() {
-        config.system_prompt = prompt;
-    }
-
-    // Append frontend readable context to the system prompt.
-    if let Some(addendum) = build_context_addendum(&request) {
-        config.system_prompt.push_str(&addendum);
-    }
-
-    // Create interaction response plugin if there are responses in the request
-    // This handles resuming from a pending state.
-    let response_plugin = InteractionResponsePlugin::from_request(&request);
-    if response_plugin.has_responses() {
-        config = config.with_plugin(Arc::new(response_plugin));
-    }
-
-    // Create frontend tool plugin if there are frontend tools.
-    let frontend_plugin = FrontendToolPlugin::from_request(&request);
-    if !frontend_plugin.frontend_tools.is_empty() {
-        merge_frontend_tools(&mut tools, &request);
-        config = config.with_plugin(Arc::new(frontend_plugin));
-    }
-
-    // Set run_id and parent_run_id on the session runtime
-    let _ = session.runtime.set("run_id", request.run_id.clone());
-    if let Some(parent) = request.parent_run_id.clone() {
-        let _ = session.runtime.set("parent_run_id", parent);
-    }
+    let (config, mut session, tools) = prepare_request_runtime(config, session, tools, &request);
+    set_run_identity(
+        &mut session,
+        &request.run_id,
+        request.parent_run_id.as_deref(),
+    );
 
     let run_ctx = RunContext {
         cancellation_token: None,
@@ -1848,43 +1849,15 @@ pub fn run_agent_events_with_request_checkpoints(
     client: Client,
     config: AgentConfig,
     session: Session,
-    mut tools: HashMap<String, Arc<dyn Tool>>,
+    tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
 ) -> crate::r#loop::StreamWithCheckpoints {
-    let mut config = config;
-    let mut session = ensure_agui_request_applied(session, &request);
-
-    // Apply per-request overrides when present.
-    if let Some(model) = request.model.clone() {
-        config.model = model;
-    }
-    if let Some(prompt) = request.system_prompt.clone() {
-        config.system_prompt = prompt;
-    }
-
-    // Append frontend readable context to the system prompt.
-    if let Some(addendum) = build_context_addendum(&request) {
-        config.system_prompt.push_str(&addendum);
-    }
-
-    // Create interaction response plugin if there are responses in the request.
-    let response_plugin = InteractionResponsePlugin::from_request(&request);
-    if response_plugin.has_responses() {
-        config = config.with_plugin(Arc::new(response_plugin));
-    }
-
-    // Create frontend tool plugin if there are frontend tools.
-    let frontend_plugin = FrontendToolPlugin::from_request(&request);
-    if !frontend_plugin.frontend_tools.is_empty() {
-        merge_frontend_tools(&mut tools, &request);
-        config = config.with_plugin(Arc::new(frontend_plugin));
-    }
-
-    // Set run_id and parent_run_id on the session runtime
-    let _ = session.runtime.set("run_id", request.run_id.clone());
-    if let Some(parent) = request.parent_run_id.clone() {
-        let _ = session.runtime.set("parent_run_id", parent);
-    }
+    let (config, mut session, tools) = prepare_request_runtime(config, session, tools, &request);
+    set_run_identity(
+        &mut session,
+        &request.run_id,
+        request.parent_run_id.as_deref(),
+    );
 
     let run_ctx = RunContext {
         cancellation_token: None,
@@ -1988,6 +1961,77 @@ mod tests {
         } else {
             panic!("Expected RunStarted event");
         }
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_events_with_request_sets_runtime_identity() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("test-session");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        let mut request = RunAgentRequest::new("thread_1", "run_1");
+        request.parent_run_id = Some("parent_123".to_string());
+
+        let mut run = run_agent_events_with_request(client, config, session, tools, request);
+        while run.events.next().await.is_some() {}
+
+        let session = run.final_session.await.expect("final session");
+        assert_eq!(
+            session
+                .runtime
+                .value("run_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Some("run_1".to_string())
+        );
+        assert_eq!(
+            session
+                .runtime
+                .value("parent_run_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Some("parent_123".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_agent_events_with_request_checkpoints_sets_runtime_identity() {
+        use futures::StreamExt;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let client = Client::default();
+        let config = AgentConfig::default();
+        let session = Session::new("test-session");
+        let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+        let mut request = RunAgentRequest::new("thread_1", "run_2");
+        request.parent_run_id = Some("parent_456".to_string());
+
+        let mut run =
+            run_agent_events_with_request_checkpoints(client, config, session, tools, request);
+        while run.events.next().await.is_some() {}
+
+        let session = run.final_session.await.expect("final session");
+        assert_eq!(
+            session
+                .runtime
+                .value("run_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Some("run_2".to_string())
+        );
+        assert_eq!(
+            session
+                .runtime
+                .value("parent_run_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            Some("parent_456".to_string())
+        );
     }
 
     #[test]
@@ -7380,14 +7424,8 @@ mod tests {
 
     #[test]
     fn test_run_agent_stream_with_request_applies_all_options() {
-        // This test verifies that run_agent_stream_with_request correctly applies
-        // all request options: model override, system prompt, frontend tools,
-        // context addendum, and interaction responses — by inspecting the
-        // config/session state that would be passed to the inner loop.
-
-        // We can't easily run the full async stream without an LLM, but we CAN
-        // test the config/session preparation logic by replicating the same
-        // code path that run_agent_stream_with_request follows.
+        use std::collections::HashMap;
+        use std::sync::Arc;
 
         let config = AgentConfig::new("base-model").with_system_prompt("base prompt");
         let session = Session::new("t1");
@@ -7415,24 +7453,9 @@ mod tests {
             value: json!([{"title": "Review PR"}]),
         }];
 
-        // Replicate the config/session preparation from run_agent_stream_with_request
-        let mut config = config;
-        let session = super::apply_agui_request_to_session(session, &request);
-
-        if let Some(model) = request.model.clone() {
-            config.model = model;
-        }
-        if let Some(prompt) = request.system_prompt.clone() {
-            config.system_prompt = prompt;
-        }
-        if let Some(addendum) = super::build_context_addendum(&request) {
-            config.system_prompt.push_str(&addendum);
-        }
-
-        let response_plugin = InteractionResponsePlugin::from_request(&request);
-        let frontend_plugin = FrontendToolPlugin::from_request(&request);
-
-        super::merge_frontend_tools(&mut tools, &request);
+        let (config, session, tools_out) =
+            super::prepare_request_runtime(config, session, tools, &request);
+        tools = tools_out;
 
         // Verify model override
         assert_eq!(config.model, "override-model");
@@ -7450,13 +7473,98 @@ mod tests {
         assert!(tools.contains_key("addTask"));
         assert!(!tools.contains_key("search")); // backend, not merged
 
-        // Verify interaction response plugin picked up the tool message
-        assert!(response_plugin.has_responses());
-        assert!(response_plugin.is_approved("perm_1"));
+        let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
+        assert_eq!(
+            plugin_ids,
+            vec!["interaction_response", "frontend_tool"],
+            "AG-UI request wiring should install response before frontend plugin"
+        );
+    }
 
-        // Verify frontend tool plugin knows about addTask
-        assert!(frontend_plugin.is_frontend_tool("addTask"));
-        assert!(!frontend_plugin.is_frontend_tool("search"));
+    #[test]
+    fn test_prepare_request_runtime_plugin_matrix() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        struct Case {
+            name: &'static str,
+            request: RunAgentRequest,
+            expected_plugins: Vec<&'static str>,
+            expect_frontend_stub: bool,
+        }
+
+        let cases = vec![
+            Case {
+                name: "none",
+                request: RunAgentRequest::new("t1", "r1"),
+                expected_plugins: vec![],
+                expect_frontend_stub: false,
+            },
+            Case {
+                name: "responses_only",
+                request: RunAgentRequest::new("t1", "r1")
+                    .with_messages(vec![AGUIMessage::tool("true", "permission_write")]),
+                expected_plugins: vec!["interaction_response"],
+                expect_frontend_stub: false,
+            },
+            Case {
+                name: "frontend_only",
+                request: RunAgentRequest::new("t1", "r1")
+                    .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
+                expected_plugins: vec!["frontend_tool"],
+                expect_frontend_stub: true,
+            },
+            Case {
+                name: "responses_and_frontend",
+                request: RunAgentRequest::new("t1", "r1")
+                    .with_messages(vec![AGUIMessage::tool("true", "permission_write")])
+                    .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
+                expected_plugins: vec!["interaction_response", "frontend_tool"],
+                expect_frontend_stub: true,
+            },
+        ];
+
+        for case in cases {
+            let config = AgentConfig::new("m");
+            let session = Session::new("t1");
+            let tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+            let (config, _session, tools) =
+                super::prepare_request_runtime(config, session, tools, &case.request);
+
+            let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
+            assert_eq!(
+                plugin_ids, case.expected_plugins,
+                "plugin wiring mismatch for case {}",
+                case.name
+            );
+            assert_eq!(
+                tools.contains_key("copyToClipboard"),
+                case.expect_frontend_stub,
+                "frontend stub mismatch for case {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_prepare_request_runtime_appends_after_existing_plugins() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let config = AgentConfig::new("m").with_plugin(Arc::new(crate::plugins::PermissionPlugin));
+        let session = Session::new("t1");
+        let tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_messages(vec![AGUIMessage::tool("true", "permission_write")])
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
+
+        let (config, _session, _tools) =
+            super::prepare_request_runtime(config, session, tools, &request);
+        let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
+        assert_eq!(
+            plugin_ids,
+            vec!["permission", "interaction_response", "frontend_tool"]
+        );
     }
 
     // ========================================================================
