@@ -214,6 +214,10 @@ pub struct RunRequest {
 ///
 /// Checkpoint persistence is handled internally — callers only consume the
 /// event stream and use the IDs for protocol encoding.
+///
+/// The final thread is **not** exposed here; it is consumed internally by the
+/// background checkpoint task which flushes the materialized thread to storage
+/// once the run completes (run-end flush strategy).
 pub struct RunStream {
     /// Resolved thread ID (may have been auto-generated).
     pub thread_id: String,
@@ -221,8 +225,6 @@ pub struct RunStream {
     pub run_id: String,
     /// The agent event stream.
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    /// Final in-memory thread (for sub-agent response extraction).
-    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
 #[derive(Clone)]
@@ -1021,18 +1023,42 @@ impl AgentOs {
             RunContext::default(),
         );
 
-        // 8. Spawn background checkpoint persistence
+        // 8. Spawn background checkpoint + run-end flush
+        //
+        // During the run, deltas are forwarded to storage.append() (the storage
+        // backend decides whether to write to DB or publish to NATS).
+        // After all deltas are consumed the background task awaits the final
+        // materialized thread and flushes it to storage in a single save().
         {
             let storage = storage.clone();
             let thread_id = thread_id.clone();
             let mut checkpoints = swc.checkpoints;
+            let final_thread_rx = swc.final_thread;
             tokio::spawn(async move {
                 while let Some(delta) = checkpoints.recv().await {
                     if let Err(e) = storage.append(&thread_id, &delta).await {
                         tracing::error!(
                             thread_id = %thread_id,
                             error = %e,
-                            "failed to persist checkpoint"
+                            "failed to persist checkpoint delta"
+                        );
+                    }
+                }
+                // Run-end flush: persist the final materialized thread.
+                match final_thread_rx.await {
+                    Ok(thread) => {
+                        if let Err(e) = storage.save(&thread).await {
+                            tracing::error!(
+                                thread_id = %thread_id,
+                                error = %e,
+                                "failed to flush final thread to storage"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            thread_id = %thread_id,
+                            "final_thread sender dropped; skipping run-end flush"
                         );
                     }
                 }
@@ -1043,7 +1069,6 @@ impl AgentOs {
             thread_id,
             run_id,
             events: swc.events,
-            final_thread: swc.final_thread,
         })
     }
 

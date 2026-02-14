@@ -2659,7 +2659,7 @@ mod tests {
             },
         ];
 
-        for (i, delta) in deltas.iter().enumerate() {
+        for delta in &deltas {
             store.append("t1", delta).await.unwrap();
         }
 
