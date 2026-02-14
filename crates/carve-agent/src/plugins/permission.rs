@@ -152,6 +152,8 @@ impl AgentPlugin for PermissionPlugin {
                 step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
+                let origin_call_id = step.tool_call_id().unwrap_or_default().to_string();
+                let origin_args = step.tool_args().cloned().unwrap_or_default();
                 let question = format!("Allow tool '{}' to execute?", tool_id);
                 // Create a pending interaction for confirmation
                 let interaction = Interaction::new(
@@ -176,7 +178,21 @@ impl AgentPlugin for PermissionPlugin {
                             ],
                             "multiSelect": false
                         }
-                    ]
+                    ],
+                    "ask_call_id": format!("permission_{}", tool_id),
+                    "origin_call_id": origin_call_id,
+                    "origin_call_name": tool_id,
+                    "origin_tool_call": {
+                        "id": origin_call_id,
+                        "name": tool_id,
+                        "arguments": origin_args
+                    },
+                    // legacy key kept for compatibility with existing replay path
+                    "tool_call": {
+                        "id": origin_call_id,
+                        "name": tool_id,
+                        "arguments": origin_args
+                    }
                 }));
                 push_pending_intent(step, interaction);
             }
@@ -462,6 +478,13 @@ mod tests {
             .expect("pending interaction should exist");
         assert_eq!(interaction.action, format!("tool:{ASK_USER_TOOL_NAME}"));
         assert!(interaction.parameters.get("questions").is_some());
+        assert_eq!(interaction.parameters["origin_call_id"], "call_1");
+        assert_eq!(interaction.parameters["origin_call_name"], "test_tool");
+        assert_eq!(interaction.parameters["origin_tool_call"]["id"], "call_1");
+        assert_eq!(
+            interaction.parameters["origin_tool_call"]["name"],
+            "test_tool"
+        );
     }
 
     #[test]

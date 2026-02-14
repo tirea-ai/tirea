@@ -187,6 +187,16 @@ impl InteractionResponsePlugin {
 
         if let Some(replay_call) = pending
             .parameters
+            .get("origin_tool_call")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
+        {
+            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+            return;
+        }
+
+        if let Some(replay_call) = pending
+            .parameters
             .get("tool_call")
             .cloned()
             .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
@@ -544,6 +554,42 @@ mod tests {
         assert_eq!(replay_after[0].id, "call_write");
         assert_eq!(replay_after[0].name, "write_file");
         assert_eq!(replay_after[0].arguments["path"], "a.txt");
+    }
+
+    #[tokio::test]
+    async fn session_start_permission_replay_prefers_origin_tool_call_mapping() {
+        let doc = json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "permission_write_file",
+                    "action": "tool:AskUserQuestion",
+                    "parameters": {
+                        "origin_call_id": "call_write",
+                        "origin_call_name": "write_file",
+                        "origin_tool_call": {
+                            "id": "call_write",
+                            "name": "write_file",
+                            "arguments": { "path": "b.txt" }
+                        }
+                    }
+                }
+            }
+        });
+        let ctx = Context::new(&doc, "test", "test");
+        let plugin =
+            InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
+        let thread = Thread::with_initial_state("s1", doc.clone());
+
+        let mut step = StepContext::new(&thread, vec![]);
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+
+        let replay_after: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert_eq!(replay_after.len(), 1);
+        assert_eq!(replay_after[0].id, "call_write");
+        assert_eq!(replay_after[0].name, "write_file");
+        assert_eq!(replay_after[0].arguments["path"], "b.txt");
     }
 
     #[tokio::test]
