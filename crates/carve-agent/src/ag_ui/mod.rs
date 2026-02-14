@@ -71,7 +71,7 @@ use crate::interaction::FrontendToolStub;
 pub use crate::interaction::InteractionPlugin;
 #[cfg(test)]
 use crate::interaction::InteractionResponsePlugin;
-use crate::interaction::{merge_frontend_tools as merge_frontend_tool_specs, FrontendToolSpec};
+use crate::interaction::{FrontendToolRegistry, FrontendToolSpec};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -97,7 +97,7 @@ fn merge_frontend_tools(
     request: &RunAgentRequest,
 ) {
     let frontend_specs = frontend_tool_specs_from_request(request);
-    merge_frontend_tool_specs(tools, &frontend_specs);
+    FrontendToolRegistry::new(frontend_specs).install_stubs(tools);
 }
 
 #[cfg(test)]
@@ -1735,11 +1735,12 @@ fn set_run_identity(thread: &mut Thread, run_id: &str, parent_run_id: Option<&st
 }
 
 fn set_interaction_request_context(thread: &mut Thread, request: &RunAgentRequest) {
-    let frontend_tools: Vec<String> = request
-        .frontend_tools()
-        .into_iter()
-        .map(|tool| tool.name.clone())
-        .collect();
+    let mut frontend_tools: Vec<String> =
+        FrontendToolRegistry::new(frontend_tool_specs_from_request(request))
+            .names()
+            .into_iter()
+            .collect();
+    frontend_tools.sort();
     if !frontend_tools.is_empty() {
         let _ = thread.runtime.set(
             crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY,

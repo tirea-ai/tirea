@@ -129,6 +129,51 @@ pub(crate) struct FrontendToolSpec {
     pub(crate) parameters: Option<Value>,
 }
 
+/// Registry for frontend tool definitions.
+///
+/// Frontend tools are presented to the model as normal callable tools (via
+/// [`FrontendToolStub`] descriptors). At execution time they are intercepted by
+/// [`FrontendToolPlugin`] and converted into pending interactions.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FrontendToolRegistry {
+    specs: HashMap<String, FrontendToolSpec>,
+}
+
+impl FrontendToolRegistry {
+    /// Build registry from an iterable of specs.
+    ///
+    /// First declaration wins for the same tool name.
+    pub(crate) fn new(specs: impl IntoIterator<Item = FrontendToolSpec>) -> Self {
+        let mut map = HashMap::new();
+        for spec in specs {
+            map.entry(spec.name.clone()).or_insert(spec);
+        }
+        Self { specs: map }
+    }
+
+    /// Return true when registry contains any tool.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.specs.is_empty()
+    }
+
+    /// Return all frontend tool names.
+    pub(crate) fn names(&self) -> HashSet<String> {
+        self.specs.keys().cloned().collect()
+    }
+
+    /// Install frontend tool stubs into the tool map without overriding existing tools.
+    pub(crate) fn install_stubs(
+        &self,
+        tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
+    ) {
+        for spec in self.specs.values() {
+            tools
+                .entry(spec.name.clone())
+                .or_insert_with(|| Arc::new(FrontendToolStub::from_spec(spec)));
+        }
+    }
+}
+
 #[async_trait]
 impl crate::traits::tool::Tool for FrontendToolStub {
     fn descriptor(&self) -> crate::traits::tool::ToolDescriptor {
@@ -153,11 +198,7 @@ pub(crate) fn merge_frontend_tools(
     tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
     frontend_tools: &[FrontendToolSpec],
 ) {
-    for spec in frontend_tools {
-        tools
-            .entry(spec.name.clone())
-            .or_insert_with(|| Arc::new(FrontendToolStub::from_spec(spec)));
-    }
+    FrontendToolRegistry::new(frontend_tools.iter().cloned()).install_stubs(tools);
 }
 
 #[cfg(test)]
@@ -207,5 +248,30 @@ mod tests {
             .expect("tool should exist")
             .descriptor();
         assert_eq!(descriptor.description, "Existing");
+    }
+
+    #[test]
+    fn frontend_registry_exposes_names_and_installs_stubs() {
+        let registry = FrontendToolRegistry::new(vec![
+            FrontendToolSpec {
+                name: "copy".to_string(),
+                description: "Copy".to_string(),
+                parameters: None,
+            },
+            FrontendToolSpec {
+                name: "notify".to_string(),
+                description: "Notify".to_string(),
+                parameters: None,
+            },
+        ]);
+        assert!(!registry.is_empty());
+        let names = registry.names();
+        assert!(names.contains("copy"));
+        assert!(names.contains("notify"));
+
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        registry.install_stubs(&mut tools);
+        assert!(tools.contains_key("copy"));
+        assert!(tools.contains_key("notify"));
     }
 }
