@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tracing;
 
 use carve_agent::protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
-    ProtocolInputAdapter,
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
+    AiSdkV6RunRequest, ProtocolInputAdapter,
 };
 use async_nats::ConnectErrorKind;
 use crate::transport::pump_encoded_stream;
@@ -165,9 +165,9 @@ impl NatsGateway {
             ));
         };
 
-        let run_request = AiSdkInputAdapter::to_run_request(
+        let run_request = AiSdkV6InputAdapter::to_run_request(
             req.agent_id,
-            AiSdkRunRequest {
+            AiSdkV6RunRequest {
                 thread_id: req.thread_id,
                 input: req.input,
                 run_id: req.run_id,
@@ -186,7 +186,7 @@ impl NatsGateway {
             }
         };
 
-        let enc = AiSdkProtocolEncoder::new(run.run_id, Some(run.thread_id));
+        let enc = AiSdkV6ProtocolEncoder::new(run.run_id, Some(run.thread_id));
         let client = self.client.clone();
         pump_encoded_stream(run.events, enc, move |event| {
             let client = client.clone();

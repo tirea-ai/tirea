@@ -2,7 +2,6 @@
 //!
 //! Handles client responses to pending interactions (approvals/denials).
 
-use super::RunAgentRequest;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{
@@ -48,14 +47,6 @@ impl InteractionResponsePlugin {
             approved_ids: approved_ids.into_iter().collect(),
             denied_ids: denied_ids.into_iter().collect(),
         }
-    }
-
-    /// Create plugin from a RunAgentRequest.
-    pub(crate) fn from_request(request: &RunAgentRequest) -> Self {
-        Self::new(
-            request.approved_interaction_ids(),
-            request.denied_interaction_ids(),
-        )
     }
 
     /// Check if an interaction was approved.

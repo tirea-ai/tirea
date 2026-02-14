@@ -15,8 +15,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use carve_agent::protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder,
-    AiSdkRunRequest, ProtocolInputAdapter,
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
+    AiSdkV6RunRequest, ProtocolInputAdapter, AI_SDK_VERSION,
 };
 use crate::transport::pump_encoded_stream;
 
@@ -186,7 +186,7 @@ async fn get_thread_messages(
 async fn run_ai_sdk_sse(
     State(st): State<AppState>,
     Path(agent_id): Path<String>,
-    Json(req): Json<AiSdkRunRequest>,
+    Json(req): Json<AiSdkV6RunRequest>,
 ) -> Result<Response, ApiError> {
     if req.input.trim().is_empty() {
         return Err(ApiError::BadRequest("input cannot be empty".to_string()));
@@ -197,7 +197,7 @@ async fn run_ai_sdk_sse(
         ));
     }
 
-    let run_request = AiSdkInputAdapter::to_run_request(agent_id, req);
+    let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
 
     let run = st.os.run_stream(run_request).await?;
 
@@ -206,7 +206,7 @@ async fn run_ai_sdk_sse(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
 
     tokio::spawn(async move {
-        let enc = AiSdkProtocolEncoder::new(run_id, Some(thread_id));
+        let enc = AiSdkV6ProtocolEncoder::new(run_id, Some(thread_id));
         let tx_events = tx.clone();
         pump_encoded_stream(run.events, enc, move |event| {
             let tx = tx_events.clone();
@@ -229,7 +229,7 @@ async fn run_ai_sdk_sse(
         }
     };
 
-    Ok(sse_response(body_stream))
+    Ok(ai_sdk_sse_response(body_stream))
 }
 
 async fn run_ag_ui_sse(
@@ -285,10 +285,21 @@ where
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     headers.insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
-    headers.insert(
+    (headers, Body::from_stream(stream)).into_response()
+}
+
+fn ai_sdk_sse_response<S>(stream: S) -> Response
+where
+    S: futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static,
+{
+    let mut response = sse_response(stream);
+    response.headers_mut().insert(
         header::HeaderName::from_static("x-vercel-ai-ui-message-stream"),
         HeaderValue::from_static("v1"),
     );
-
-    (headers, Body::from_stream(stream)).into_response()
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-carve-ai-sdk-version"),
+        HeaderValue::from_static(AI_SDK_VERSION),
+    );
+    response
 }

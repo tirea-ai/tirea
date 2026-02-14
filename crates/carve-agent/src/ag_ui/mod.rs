@@ -63,19 +63,14 @@
 //! let ag_ui_events = carve_agent::agent_event_to_agui(&event, &mut ctx);
 //! ```
 
-mod frontend_tool;
-mod interaction_plugin;
-mod interaction_response;
-
-pub use interaction_plugin::AgUiInteractionPlugin;
-
-use frontend_tool::merge_frontend_tools;
+pub use crate::interaction::AgUiInteractionPlugin;
+use crate::interaction::{merge_frontend_tools as merge_frontend_tool_specs, FrontendToolSpec};
 #[cfg(test)]
-use frontend_tool::FrontendToolPlugin;
+use crate::interaction::FrontendToolPlugin;
 #[cfg(test)]
-use frontend_tool::FrontendToolStub;
+use crate::interaction::FrontendToolStub;
 #[cfg(test)]
-use interaction_response::InteractionResponsePlugin;
+use crate::interaction::InteractionResponsePlugin;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -83,6 +78,49 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::state_types::{Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION};
+
+fn frontend_tool_specs_from_request(request: &RunAgentRequest) -> Vec<FrontendToolSpec> {
+    request
+        .frontend_tools()
+        .iter()
+        .map(|tool| FrontendToolSpec {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone(),
+        })
+        .collect()
+}
+
+fn merge_frontend_tools(
+    tools: &mut HashMap<String, std::sync::Arc<dyn crate::traits::tool::Tool>>,
+    request: &RunAgentRequest,
+) {
+    let frontend_specs = frontend_tool_specs_from_request(request);
+    merge_frontend_tool_specs(tools, &frontend_specs);
+}
+
+#[cfg(test)]
+impl FrontendToolPlugin {
+    fn from_request(request: &RunAgentRequest) -> Self {
+        Self::new(
+            request
+                .frontend_tools()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
+        )
+    }
+}
+
+#[cfg(test)]
+impl InteractionResponsePlugin {
+    fn from_request(request: &RunAgentRequest) -> Self {
+        Self::new(
+            request.approved_interaction_ids(),
+            request.denied_interaction_ids(),
+        )
+    }
+}
 
 // ============================================================================
 // Base Event Fields
@@ -1540,8 +1578,17 @@ struct RequestWiring {
 
 impl RequestWiring {
     fn from_request(request: &RunAgentRequest) -> Self {
+        let frontend_tools = request
+            .frontend_tools()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect();
         Self {
-            interaction: AgUiInteractionPlugin::from_request(request),
+            interaction: AgUiInteractionPlugin::new(
+                frontend_tools,
+                request.approved_interaction_ids(),
+                request.denied_interaction_ids(),
+            ),
         }
     }
 
@@ -4730,19 +4777,43 @@ mod tests {
     #[test]
     fn test_agui_interaction_plugin_activity_flags() {
         let none_request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
-        let none_plugin = AgUiInteractionPlugin::from_request(&none_request);
+        let none_plugin = AgUiInteractionPlugin::new(
+            none_request
+                .frontend_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+            none_request.approved_interaction_ids(),
+            none_request.denied_interaction_ids(),
+        );
         assert!(!none_plugin.is_active());
         assert!(!none_plugin.has_frontend_tools());
 
         let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_message(AGUIMessage::tool("true", "permission_write"));
-        let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+        let response_plugin = AgUiInteractionPlugin::new(
+            response_request
+                .frontend_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+            response_request.approved_interaction_ids(),
+            response_request.denied_interaction_ids(),
+        );
         assert!(response_plugin.is_active());
         assert!(!response_plugin.has_frontend_tools());
 
         let frontend_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
-        let frontend_plugin = AgUiInteractionPlugin::from_request(&frontend_request);
+        let frontend_plugin = AgUiInteractionPlugin::new(
+            frontend_request
+                .frontend_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+            frontend_request.approved_interaction_ids(),
+            frontend_request.denied_interaction_ids(),
+        );
         assert!(frontend_plugin.is_active());
         assert!(frontend_plugin.has_frontend_tools());
     }
@@ -4788,7 +4859,15 @@ mod tests {
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("dangerousAction", "Dangerous action"))
             .with_message(AGUIMessage::tool("false", "call_danger"));
-        let plugin = AgUiInteractionPlugin::from_request(&request);
+        let plugin = AgUiInteractionPlugin::new(
+            request
+                .frontend_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+            request.approved_interaction_ids(),
+            request.denied_interaction_ids(),
+        );
 
         let thread = Thread::with_initial_state(
             "test",
@@ -4812,7 +4891,15 @@ mod tests {
 
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("showNotification", "Show"));
-        let plugin = AgUiInteractionPlugin::from_request(&request);
+        let plugin = AgUiInteractionPlugin::new(
+            request
+                .frontend_tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect(),
+            request.approved_interaction_ids(),
+            request.denied_interaction_ids(),
+        );
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_1", "showNotification", json!({"text": "hello"}));

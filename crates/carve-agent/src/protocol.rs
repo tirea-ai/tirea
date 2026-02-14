@@ -4,6 +4,9 @@ use crate::{agent_event_to_agui, AgentEvent, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+/// Target AI SDK major version for the protocol adapters in this crate.
+pub const AI_SDK_VERSION: &str = "v6";
+
 /// Protocol input boundary:
 /// protocol request -> internal `RunRequest`.
 pub trait ProtocolInputAdapter {
@@ -32,7 +35,7 @@ pub trait ProtocolOutputEncoder {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct AiSdkRunRequest {
+pub struct AiSdkV6RunRequest {
     #[serde(rename = "sessionId")]
     pub thread_id: String,
     pub input: String,
@@ -40,10 +43,10 @@ pub struct AiSdkRunRequest {
     pub run_id: Option<String>,
 }
 
-pub struct AiSdkInputAdapter;
+pub struct AiSdkV6InputAdapter;
 
-impl ProtocolInputAdapter for AiSdkInputAdapter {
-    type Request = AiSdkRunRequest;
+impl ProtocolInputAdapter for AiSdkV6InputAdapter {
+    type Request = AiSdkV6RunRequest;
 
     fn to_run_request(agent_id: String, request: Self::Request) -> crate::agent_os::RunRequest {
         crate::agent_os::RunRequest {
@@ -178,17 +181,20 @@ impl AgUiEncoderState {
     }
 }
 
-pub struct AiSdkProtocolEncoder {
+pub struct AiSdkV6ProtocolEncoder {
     inner: AiSdkEncoder,
     run_info: Option<UIStreamEvent>,
 }
 
-impl AiSdkProtocolEncoder {
+impl AiSdkV6ProtocolEncoder {
     pub fn new(run_id: String, thread_id: Option<String>) -> Self {
         let run_info = thread_id.map(|thread_id| {
             UIStreamEvent::data(
                 "run-info",
                 json!({
+                    "protocol": "ai-sdk-ui-message-stream",
+                    "protocolVersion": "v1",
+                    "aiSdkVersion": AI_SDK_VERSION,
                     "threadId": thread_id,
                     "runId": run_id
                 }),
@@ -201,7 +207,7 @@ impl AiSdkProtocolEncoder {
     }
 }
 
-impl ProtocolOutputEncoder for AiSdkProtocolEncoder {
+impl ProtocolOutputEncoder for AiSdkV6ProtocolEncoder {
     type Event = UIStreamEvent;
 
     fn prologue(&mut self) -> Vec<Self::Event> {

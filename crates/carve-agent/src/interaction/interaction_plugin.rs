@@ -5,7 +5,6 @@
 
 use super::frontend_tool::FrontendToolPlugin;
 use super::interaction_response::InteractionResponsePlugin;
-use super::RunAgentRequest;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
@@ -33,14 +32,6 @@ impl AgUiInteractionPlugin {
         Self {
             response: InteractionResponsePlugin::new(approved_ids, denied_ids),
             frontend: FrontendToolPlugin::new(frontend_tools),
-        }
-    }
-
-    /// Build combined plugin from request payload.
-    pub fn from_request(request: &RunAgentRequest) -> Self {
-        Self {
-            response: InteractionResponsePlugin::from_request(request),
-            frontend: FrontendToolPlugin::from_request(request),
         }
     }
 
@@ -94,5 +85,33 @@ impl AgentPlugin for AgUiInteractionPlugin {
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         self.response.on_phase(phase, step).await;
         self.frontend.on_phase(phase, step).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_inactive_without_frontend_tools_or_responses() {
+        let plugin = AgUiInteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
+        assert!(!plugin.is_active());
+    }
+
+    #[test]
+    fn plugin_active_with_frontend_tools() {
+        let mut tools = HashSet::new();
+        tools.insert("copyToClipboard".to_string());
+        let plugin = AgUiInteractionPlugin::new(tools, Vec::new(), Vec::new());
+        assert!(plugin.is_active());
+        assert!(plugin.has_frontend_tools());
+    }
+
+    #[test]
+    fn plugin_active_with_responses() {
+        let plugin =
+            AgUiInteractionPlugin::new(HashSet::new(), vec!["call_1".to_string()], Vec::new());
+        assert!(plugin.is_active());
+        assert!(plugin.has_responses());
     }
 }

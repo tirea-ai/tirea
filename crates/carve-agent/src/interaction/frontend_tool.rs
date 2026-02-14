@@ -3,7 +3,6 @@
 //! Intercepts frontend tool execution and creates pending interactions
 //! for client-side handling.
 
-use super::{AGUIToolDef, RunAgentRequest};
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::Interaction;
@@ -42,16 +41,6 @@ impl FrontendToolPlugin {
     ///
     /// * `frontend_tools` - Set of tool names that should be executed on the frontend
     pub(crate) fn new(frontend_tools: HashSet<String>) -> Self {
-        Self { frontend_tools }
-    }
-
-    /// Create from a RunAgentRequest.
-    pub(crate) fn from_request(request: &RunAgentRequest) -> Self {
-        let frontend_tools = request
-            .frontend_tools()
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
         Self { frontend_tools }
     }
 
@@ -111,21 +100,32 @@ pub(crate) struct FrontendToolStub {
 }
 
 impl FrontendToolStub {
-    /// Create from an AG-UI tool definition.
-    pub(crate) fn from_agui_def(def: &AGUIToolDef) -> Self {
-        let parameters = def
+    /// Create from a frontend tool spec.
+    pub(crate) fn from_spec(spec: &FrontendToolSpec) -> Self {
+        let parameters = spec
             .parameters
             .clone()
             .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
         Self {
             descriptor: crate::traits::tool::ToolDescriptor::new(
-                &def.name,
-                &def.name,
-                &def.description,
+                &spec.name,
+                &spec.name,
+                &spec.description,
             )
             .with_parameters(parameters),
         }
     }
+}
+
+/// Protocol-agnostic frontend tool declaration used to install stub tools.
+#[derive(Debug, Clone)]
+pub(crate) struct FrontendToolSpec {
+    /// Tool name.
+    pub(crate) name: String,
+    /// Tool description.
+    pub(crate) description: String,
+    /// Optional JSON schema for parameters.
+    pub(crate) parameters: Option<Value>,
 }
 
 #[async_trait]
@@ -150,11 +150,61 @@ impl crate::traits::tool::Tool for FrontendToolStub {
 /// and merge them into the provided tools map.
 pub(crate) fn merge_frontend_tools(
     tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
-    request: &RunAgentRequest,
+    frontend_tools: &[FrontendToolSpec],
 ) {
-    for def in request.frontend_tools() {
+    for spec in frontend_tools {
         tools
-            .entry(def.name.clone())
-            .or_insert_with(|| Arc::new(FrontendToolStub::from_agui_def(def)));
+            .entry(spec.name.clone())
+            .or_insert_with(|| Arc::new(FrontendToolStub::from_spec(spec)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_frontend_tools_inserts_stub_tools() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let specs = vec![FrontendToolSpec {
+            name: "copy_to_clipboard".to_string(),
+            description: "Copy content".to_string(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } }
+            })),
+        }];
+
+        merge_frontend_tools(&mut tools, &specs);
+
+        let tool = tools.get("copy_to_clipboard").expect("tool should exist");
+        let descriptor = tool.descriptor();
+        assert_eq!(descriptor.name, "copy_to_clipboard");
+        assert_eq!(descriptor.description, "Copy content");
+    }
+
+    #[test]
+    fn merge_frontend_tools_does_not_override_existing_tool() {
+        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let existing = FrontendToolStub::from_spec(&FrontendToolSpec {
+            name: "copy_to_clipboard".to_string(),
+            description: "Existing".to_string(),
+            parameters: None,
+        });
+        tools.insert("copy_to_clipboard".to_string(), Arc::new(existing));
+
+        let specs = vec![FrontendToolSpec {
+            name: "copy_to_clipboard".to_string(),
+            description: "New".to_string(),
+            parameters: None,
+        }];
+        merge_frontend_tools(&mut tools, &specs);
+
+        let descriptor = tools
+            .get("copy_to_clipboard")
+            .expect("tool should exist")
+            .descriptor();
+        assert_eq!(descriptor.description, "Existing");
     }
 }

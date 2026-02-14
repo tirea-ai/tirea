@@ -86,6 +86,7 @@ pub mod agent;
 pub mod agent_os;
 pub mod convert;
 pub mod execute;
+pub mod interaction;
 pub mod r#loop;
 pub mod phase;
 pub mod plugin;
@@ -153,8 +154,8 @@ pub use ui_stream::{
 
 // Protocol adapters/encoders
 pub use protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
-    ProtocolInputAdapter, ProtocolOutputEncoder,
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
+    AiSdkV6RunRequest, ProtocolInputAdapter, ProtocolOutputEncoder, AI_SDK_VERSION,
 };
 
 // AG-UI exports (CopilotKit compatible)
