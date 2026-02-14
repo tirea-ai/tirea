@@ -4389,7 +4389,7 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // ============================================================================
 
 use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-use carve_agent::stream::{agent_event_to_agui, AgentEvent};
+use carve_agent::stream::AgentEvent;
 use carve_agent::Interaction;
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
@@ -4413,7 +4413,7 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
 
     // 3. Convert to AG-UI events
     let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
-    let ag_ui_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_ui_events = ctx.on_agent_event(&event);
 
     // 4. Verify AG-UI event sequence
     assert_eq!(ag_ui_events.len(), 3, "Should produce 3 AG-UI events");
@@ -4514,7 +4514,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let text_event = AgentEvent::TextDelta {
         delta: "I'll help you ".into(),
     };
-    let events1 = agent_event_to_agui(&text_event, &mut ctx);
+    let events1 = ctx.on_agent_event(&text_event);
     assert!(events1
         .iter()
         .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
@@ -4523,7 +4523,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let text_event2 = AgentEvent::TextDelta {
         delta: "with that file.".into(),
     };
-    let events2 = agent_event_to_agui(&text_event2, &mut ctx);
+    let events2 = ctx.on_agent_event(&text_event2);
     assert!(events2
         .iter()
         .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
@@ -4532,7 +4532,7 @@ fn test_scenario_text_interrupted_by_interaction() {
     let interaction =
         Interaction::new("int_1", "confirm").with_message("Proceed with file operation?");
     let pending_event = AgentEvent::Pending { interaction };
-    let events3 = agent_event_to_agui(&pending_event, &mut ctx);
+    let events3 = ctx.on_agent_event(&pending_event);
 
     // Should end text stream before tool call
     assert!(
@@ -4979,7 +4979,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 
     // 3. Convert to AG-UI events with context
     let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
-    let ag_ui_events = agent_event_to_agui(&agent_event, &mut ctx);
+    let ag_ui_events = ctx.on_agent_event(&agent_event);
 
     // 4. Verify complete event sequence
     assert_eq!(ag_ui_events.len(), 3);
@@ -5599,7 +5599,7 @@ fn test_scenario_agui_context_state_after_pending() {
     let text_event = AgentEvent::TextDelta {
         delta: "Let me help you ".into(),
     };
-    let events1 = agent_event_to_agui(&text_event, &mut ctx);
+    let events1 = ctx.on_agent_event(&text_event);
     // First text delta should produce TextMessageStart
     assert!(events1
         .iter()
@@ -5609,7 +5609,7 @@ fn test_scenario_agui_context_state_after_pending() {
     let text_event2 = AgentEvent::TextDelta {
         delta: "with that.".into(),
     };
-    let events2 = agent_event_to_agui(&text_event2, &mut ctx);
+    let events2 = ctx.on_agent_event(&text_event2);
     // Second text delta should produce only TextMessageContent (not Start)
     assert!(events2
         .iter()
@@ -5621,7 +5621,7 @@ fn test_scenario_agui_context_state_after_pending() {
     // Pending interaction arrives
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow?");
     let pending_event = AgentEvent::Pending { interaction };
-    let pending_events = agent_event_to_agui(&pending_event, &mut ctx);
+    let pending_events = ctx.on_agent_event(&pending_event);
 
     // Should have: TextMessageEnd + 3 tool call events
     assert!(pending_events.len() >= 4);
@@ -5639,7 +5639,7 @@ fn test_scenario_agui_context_state_after_pending() {
     let text_event3 = AgentEvent::TextDelta {
         delta: "New text".into(),
     };
-    let events3 = agent_event_to_agui(&text_event3, &mut ctx);
+    let events3 = ctx.on_agent_event(&text_event3);
     // Should produce TextMessageStart again since previous stream was ended
     assert!(events3
         .iter()
@@ -5681,19 +5681,19 @@ fn test_agui_stream_text_interrupted_by_tool_call() {
     let text1 = AgentEvent::TextDelta {
         delta: "Let me ".into(),
     };
-    let _ = agent_event_to_agui(&text1, &mut ctx);
+    let _ = ctx.on_agent_event(&text1);
 
     let text2 = AgentEvent::TextDelta {
         delta: "search for that.".into(),
     };
-    let _ = agent_event_to_agui(&text2, &mut ctx);
+    let _ = ctx.on_agent_event(&text2);
 
     // Tool call starts - should end text stream first
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
         name: "search".into(),
     };
-    let tool_events = agent_event_to_agui(&tool_start, &mut ctx);
+    let tool_events = ctx.on_agent_event(&tool_start);
 
     // Should have TEXT_MESSAGE_END followed by TOOL_CALL_START
     assert!(tool_events.len() >= 2);
@@ -5719,13 +5719,13 @@ fn test_agui_stream_tool_call_sequence() {
         id: "call_1".into(),
         name: "read_file".into(),
     };
-    let start_events = agent_event_to_agui(&start, &mut ctx);
+    let start_events = ctx.on_agent_event(&start);
 
     let args = AgentEvent::ToolCallDelta {
         id: "call_1".into(),
         args_delta: r#"{"path": "/tmp/file.txt"}"#.into(),
     };
-    let args_events = agent_event_to_agui(&args, &mut ctx);
+    let args_events = ctx.on_agent_event(&args);
 
     // ToolCallReady produces TOOL_CALL_END (marks end of args streaming)
     let ready = AgentEvent::ToolCallReady {
@@ -5733,7 +5733,7 @@ fn test_agui_stream_tool_call_sequence() {
         name: "read_file".into(),
         arguments: json!({"path": "/tmp/file.txt"}),
     };
-    let ready_events = agent_event_to_agui(&ready, &mut ctx);
+    let ready_events = ctx.on_agent_event(&ready);
 
     // ToolCallDone produces TOOL_CALL_RESULT
     let done = AgentEvent::ToolCallDone {
@@ -5742,7 +5742,7 @@ fn test_agui_stream_tool_call_sequence() {
         patch: None,
         message_id: String::new(),
     };
-    let done_events = agent_event_to_agui(&done, &mut ctx);
+    let done_events = ctx.on_agent_event(&done);
 
     // Verify sequence: Start events contain TOOL_CALL_START
     assert!(start_events
@@ -5777,7 +5777,7 @@ fn test_agui_stream_error_no_run_finished() {
     let error = AgentEvent::Error {
         message: "LLM API error: rate limited".into(),
     };
-    let error_events = agent_event_to_agui(&error, &mut ctx);
+    let error_events = ctx.on_agent_event(&error);
 
     // Should emit RUN_ERROR
     assert!(error_events
@@ -5798,7 +5798,7 @@ fn test_agui_stream_pending_no_run_finished() {
     // Pending interaction
     let interaction = Interaction::new("perm_1", "confirm").with_message("Allow tool execution?");
     let pending = AgentEvent::Pending { interaction };
-    let pending_events = agent_event_to_agui(&pending, &mut ctx);
+    let pending_events = ctx.on_agent_event(&pending);
 
     // Should have tool call events (for the interaction)
     assert!(pending_events
@@ -6468,7 +6468,7 @@ fn test_state_event_snapshot_conversion() {
     let event = AgentEvent::StateSnapshot {
         snapshot: state.clone(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     assert!(ag_events
@@ -6494,7 +6494,7 @@ fn test_state_event_delta_conversion() {
     let event = AgentEvent::StateDelta {
         delta: delta.clone(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     assert!(ag_events
@@ -6521,7 +6521,7 @@ fn test_state_event_messages_snapshot_conversion() {
     let event = AgentEvent::MessagesSnapshot {
         messages: messages.clone(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     assert!(ag_events
@@ -6553,7 +6553,7 @@ fn test_error_flow_tool_execution_failure() {
         patch: None,
         message_id: String::new(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     // Should have TOOL_CALL_RESULT with error
     assert!(ag_events
@@ -6593,7 +6593,7 @@ fn test_error_flow_agent_abort() {
     let event = AgentEvent::Aborted {
         reason: "User cancelled".into(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     // Should produce some events (depends on implementation)
     // At minimum, verify it doesn't panic
@@ -7014,7 +7014,7 @@ fn test_concurrent_tool_calls_event_ordering() {
             id: id.to_string(),
             name: name.to_string(),
         };
-        all_events.extend(agent_event_to_agui(&start, &mut ctx));
+        all_events.extend(ctx.on_agent_event(&start));
     }
 
     // All tools get args
@@ -7023,7 +7023,7 @@ fn test_concurrent_tool_calls_event_ordering() {
             id: id.to_string(),
             args_delta: "{}".into(),
         };
-        all_events.extend(agent_event_to_agui(&args, &mut ctx));
+        all_events.extend(ctx.on_agent_event(&args));
     }
 
     // All tools ready (end args streaming)
@@ -7033,7 +7033,7 @@ fn test_concurrent_tool_calls_event_ordering() {
             name: name.to_string(),
             arguments: json!({}),
         };
-        all_events.extend(agent_event_to_agui(&ready, &mut ctx));
+        all_events.extend(ctx.on_agent_event(&ready));
     }
 
     // All tools done
@@ -7044,7 +7044,7 @@ fn test_concurrent_tool_calls_event_ordering() {
             patch: None,
             message_id: String::new(),
         };
-        all_events.extend(agent_event_to_agui(&done, &mut ctx));
+        all_events.extend(ctx.on_agent_event(&done));
     }
 
     // Verify each tool has complete sequence
@@ -7079,21 +7079,21 @@ fn test_interleaved_tools_and_text() {
     let text1 = AgentEvent::TextDelta {
         delta: "Let me search ".into(),
     };
-    all_events.extend(agent_event_to_agui(&text1, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&text1));
 
     // Tool starts (interrupts text)
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
         name: "search".into(),
     };
-    all_events.extend(agent_event_to_agui(&tool_start, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&tool_start));
 
     // Tool args
     let tool_args = AgentEvent::ToolCallDelta {
         id: "call_1".into(),
         args_delta: r#"{"query": "rust"}"#.into(),
     };
-    all_events.extend(agent_event_to_agui(&tool_args, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&tool_args));
 
     // Tool ready
     let tool_ready = AgentEvent::ToolCallReady {
@@ -7101,7 +7101,7 @@ fn test_interleaved_tools_and_text() {
         name: "search".into(),
         arguments: json!({"query": "rust"}),
     };
-    all_events.extend(agent_event_to_agui(&tool_ready, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&tool_ready));
 
     // Tool done
     let tool_done = AgentEvent::ToolCallDone {
@@ -7110,13 +7110,13 @@ fn test_interleaved_tools_and_text() {
         patch: None,
         message_id: String::new(),
     };
-    all_events.extend(agent_event_to_agui(&tool_done, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&tool_done));
 
     // More text after tool
     let text2 = AgentEvent::TextDelta {
         delta: "Found 5 results.".into(),
     };
-    all_events.extend(agent_event_to_agui(&text2, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&text2));
 
     // Verify sequence: text → tool → text
     // First should have TEXT_MESSAGE_START
@@ -7185,7 +7185,7 @@ fn test_reconnection_state_snapshot() {
     let event = AgentEvent::StateSnapshot {
         snapshot: state.clone(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
@@ -7210,7 +7210,7 @@ fn test_reconnection_messages_snapshot() {
     let event = AgentEvent::MessagesSnapshot {
         messages: messages.clone(),
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     if let AGUIEvent::MessagesSnapshot { messages: m, .. } = &ag_events[0] {
@@ -7237,19 +7237,19 @@ fn test_full_reconnection_scenario() {
             json!({"role": "assistant", "content": "Previous response"}),
         ],
     };
-    reconnect_events.extend(agent_event_to_agui(&messages_event, &mut ctx));
+    reconnect_events.extend(ctx.on_agent_event(&messages_event));
 
     // 3. State snapshot (current state)
     let state_event = AgentEvent::StateSnapshot {
         snapshot: json!({"thread_id": "abc123", "active": true}),
     };
-    reconnect_events.extend(agent_event_to_agui(&state_event, &mut ctx));
+    reconnect_events.extend(ctx.on_agent_event(&state_event));
 
     // 4. Continue with new content
     let text = AgentEvent::TextDelta {
         delta: "Continuing from where we left off...".into(),
     };
-    reconnect_events.extend(agent_event_to_agui(&text, &mut ctx));
+    reconnect_events.extend(ctx.on_agent_event(&text));
 
     // Verify sequence
     assert!(matches!(&reconnect_events[0], AGUIEvent::RunStarted { .. }));
@@ -7356,7 +7356,7 @@ fn test_tool_timeout_ag_ui_flow() {
         id: "call_slow".into(),
         name: "slow_operation".into(),
     };
-    let start_events = agent_event_to_agui(&start, &mut ctx);
+    let start_events = ctx.on_agent_event(&start);
     assert!(start_events
         .iter()
         .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
@@ -7370,7 +7370,7 @@ fn test_tool_timeout_ag_ui_flow() {
         patch: None,
         message_id: String::new(),
     };
-    let done_events = agent_event_to_agui(&done, &mut ctx);
+    let done_events = ctx.on_agent_event(&done);
 
     // Should still have TOOL_CALL_RESULT with error
     assert!(done_events
@@ -7400,7 +7400,7 @@ fn test_rapid_text_delta_burst() {
         let delta = AgentEvent::TextDelta {
             delta: format!("word{} ", i),
         };
-        all_events.extend(agent_event_to_agui(&delta, &mut ctx));
+        all_events.extend(ctx.on_agent_event(&delta));
     }
 
     // Should have exactly 1 TEXT_MESSAGE_START
@@ -7438,22 +7438,22 @@ fn test_state_event_ordering() {
     let text1 = AgentEvent::TextDelta {
         delta: "Starting...".into(),
     };
-    all_events.extend(agent_event_to_agui(&text1, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&text1));
 
     let snapshot = AgentEvent::StateSnapshot {
         snapshot: json!({"step": 1}),
     };
-    all_events.extend(agent_event_to_agui(&snapshot, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&snapshot));
 
     let text2 = AgentEvent::TextDelta {
         delta: " Processing...".into(),
     };
-    all_events.extend(agent_event_to_agui(&text2, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&text2));
 
     let delta = AgentEvent::StateDelta {
         delta: vec![json!({"op": "replace", "path": "/step", "value": 2})],
     };
-    all_events.extend(agent_event_to_agui(&delta, &mut ctx));
+    all_events.extend(ctx.on_agent_event(&delta));
 
     // Verify presence of all event types
     assert!(all_events
@@ -7483,14 +7483,14 @@ fn test_sequential_runs_in_session() {
     let text1 = AgentEvent::TextDelta {
         delta: "First run response".into(),
     };
-    let text1_events = agent_event_to_agui(&text1, &mut ctx1);
+    let text1_events = ctx1.on_agent_event(&text1);
     // Run 2 (same thread, different run)
     let mut ctx2 = AGUIContext::new("t1".into(), "r2".into());
     let run2_start = AGUIEvent::run_started("t1", "r2", None);
     let text2 = AgentEvent::TextDelta {
         delta: "Second run response".into(),
     };
-    let text2_events = agent_event_to_agui(&text2, &mut ctx2);
+    let text2_events = ctx2.on_agent_event(&text2);
 
     // Verify runs are independent
     if let AGUIEvent::RunStarted {
@@ -7624,7 +7624,7 @@ fn test_large_tool_result_payload() {
         message_id: String::new(),
     };
 
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
     assert!(!ag_events.is_empty());
 
     // Verify the result can be serialized and parsed
@@ -7666,7 +7666,7 @@ fn test_large_state_snapshot() {
     let event = AgentEvent::StateSnapshot {
         snapshot: large_state,
     };
-    let ag_events = agent_event_to_agui(&event, &mut ctx);
+    let ag_events = ctx.on_agent_event(&event);
 
     assert!(!ag_events.is_empty());
     if let AGUIEvent::StateSnapshot { snapshot, .. } = &ag_events[0] {
@@ -7857,7 +7857,7 @@ fn test_multiple_step_sequences() {
 
     // Step 1
     let step1_start = AgentEvent::StepStart { message_id: String::new() };
-    let events1 = agent_event_to_agui(&step1_start, &mut ctx);
+    let events1 = ctx.on_agent_event(&step1_start);
     let step1_name = if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
         step_name.clone()
     } else {
@@ -7865,14 +7865,14 @@ fn test_multiple_step_sequences() {
     };
 
     let step1_end = AgentEvent::StepEnd;
-    let events1_end = agent_event_to_agui(&step1_end, &mut ctx);
+    let events1_end = ctx.on_agent_event(&step1_end);
     if let AGUIEvent::StepFinished { step_name, .. } = &events1_end[0] {
         assert_eq!(*step_name, step1_name);
     }
 
     // Step 2
     let step2_start = AgentEvent::StepStart { message_id: String::new() };
-    let events2 = agent_event_to_agui(&step2_start, &mut ctx);
+    let events2 = ctx.on_agent_event(&step2_start);
     let step2_name = if let AGUIEvent::StepStarted { step_name, .. } = &events2[0] {
         step_name.clone()
     } else {
@@ -8315,20 +8315,20 @@ fn test_complete_tool_call_protocol_flow() {
         id: "call_search".into(),
         name: "web_search".into(),
     };
-    events.extend(agent_event_to_agui(&start, &mut ctx));
+    events.extend(ctx.on_agent_event(&start));
 
     // Args streaming
     let args1 = AgentEvent::ToolCallDelta {
         id: "call_search".into(),
         args_delta: r#"{"query":"#.into(),
     };
-    events.extend(agent_event_to_agui(&args1, &mut ctx));
+    events.extend(ctx.on_agent_event(&args1));
 
     let args2 = AgentEvent::ToolCallDelta {
         id: "call_search".into(),
         args_delta: r#""rust tutorials"}"#.into(),
     };
-    events.extend(agent_event_to_agui(&args2, &mut ctx));
+    events.extend(ctx.on_agent_event(&args2));
 
     // Ready (end args)
     let ready = AgentEvent::ToolCallReady {
@@ -8336,7 +8336,7 @@ fn test_complete_tool_call_protocol_flow() {
         name: "web_search".into(),
         arguments: json!({"query": "rust tutorials"}),
     };
-    events.extend(agent_event_to_agui(&ready, &mut ctx));
+    events.extend(ctx.on_agent_event(&ready));
 
     // Result
     let done = AgentEvent::ToolCallDone {
@@ -8345,7 +8345,7 @@ fn test_complete_tool_call_protocol_flow() {
         patch: None,
         message_id: String::new(),
     };
-    events.extend(agent_event_to_agui(&done, &mut ctx));
+    events.extend(ctx.on_agent_event(&done));
 
     // Verify complete sequence
     assert!(events
@@ -8373,19 +8373,19 @@ fn test_state_sync_protocol_flow() {
     let snapshot = AgentEvent::StateSnapshot {
         snapshot: json!({"counter": 0, "items": []}),
     };
-    events.extend(agent_event_to_agui(&snapshot, &mut ctx));
+    events.extend(ctx.on_agent_event(&snapshot));
 
     // Delta 1: increment counter
     let delta1 = AgentEvent::StateDelta {
         delta: vec![json!({"op": "replace", "path": "/counter", "value": 1})],
     };
-    events.extend(agent_event_to_agui(&delta1, &mut ctx));
+    events.extend(ctx.on_agent_event(&delta1));
 
     // Delta 2: add item
     let delta2 = AgentEvent::StateDelta {
         delta: vec![json!({"op": "add", "path": "/items/-", "value": "item1"})],
     };
-    events.extend(agent_event_to_agui(&delta2, &mut ctx));
+    events.extend(ctx.on_agent_event(&delta2));
 
     // Verify flow
     assert_eq!(events.len(), 3);
@@ -8405,14 +8405,14 @@ fn test_mixed_content_protocol_flow() {
     let text1 = AgentEvent::TextDelta {
         delta: "Let me search".into(),
     };
-    events.extend(agent_event_to_agui(&text1, &mut ctx));
+    events.extend(ctx.on_agent_event(&text1));
 
     // Tool interrupts (should end text first)
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
         name: "search".into(),
     };
-    events.extend(agent_event_to_agui(&tool_start, &mut ctx));
+    events.extend(ctx.on_agent_event(&tool_start));
 
     // Tool completes
     let tool_ready = AgentEvent::ToolCallReady {
@@ -8420,7 +8420,7 @@ fn test_mixed_content_protocol_flow() {
         name: "search".into(),
         arguments: json!({}),
     };
-    events.extend(agent_event_to_agui(&tool_ready, &mut ctx));
+    events.extend(ctx.on_agent_event(&tool_ready));
 
     let tool_done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -8428,13 +8428,13 @@ fn test_mixed_content_protocol_flow() {
         patch: None,
         message_id: String::new(),
     };
-    events.extend(agent_event_to_agui(&tool_done, &mut ctx));
+    events.extend(ctx.on_agent_event(&tool_done));
 
     // Text resumes
     let text2 = AgentEvent::TextDelta {
         delta: "Found 5 results".into(),
     };
-    events.extend(agent_event_to_agui(&text2, &mut ctx));
+    events.extend(ctx.on_agent_event(&text2));
 
     // Verify TEXT_MESSAGE_END appears before TOOL_CALL_START
     let text_end_idx = events
@@ -8763,19 +8763,19 @@ fn test_event_sequence_canceled_run() {
         run_id: "r1".into(),
         parent_run_id: None,
     };
-    events.extend(agent_event_to_agui(&start, &mut ctx));
+    events.extend(ctx.on_agent_event(&start));
 
     // Text streaming begins
     let text = AgentEvent::TextDelta {
         delta: "Processing...".into(),
     };
-    events.extend(agent_event_to_agui(&text, &mut ctx));
+    events.extend(ctx.on_agent_event(&text));
 
     // Run aborted (simulating cancel)
     let abort = AgentEvent::Aborted {
         reason: "User canceled".into(),
     };
-    let abort_events = agent_event_to_agui(&abort, &mut ctx);
+    let abort_events = ctx.on_agent_event(&abort);
     events.extend(abort_events);
 
     // Verify run started
@@ -8796,13 +8796,13 @@ fn test_error_interrupts_text_stream() {
     let text = AgentEvent::TextDelta {
         delta: "Starting...".into(),
     };
-    events.extend(agent_event_to_agui(&text, &mut ctx));
+    events.extend(ctx.on_agent_event(&text));
 
     // Error occurs
     let error = AgentEvent::Error {
         message: "API rate limit exceeded".into(),
     };
-    events.extend(agent_event_to_agui(&error, &mut ctx));
+    events.extend(ctx.on_agent_event(&error));
 
     // Should have TEXT_MESSAGE_START and possibly TEXT_MESSAGE_END before error
     assert!(events
@@ -8821,7 +8821,7 @@ fn test_multiple_text_messages() {
     let text1 = AgentEvent::TextDelta {
         delta: "First message".into(),
     };
-    events.extend(agent_event_to_agui(&text1, &mut ctx));
+    events.extend(ctx.on_agent_event(&text1));
 
     // End first message by starting something else
     let finish1 = AgentEvent::RunFinish {
@@ -8830,7 +8830,7 @@ fn test_multiple_text_messages() {
         result: Some(serde_json::json!({"response": "First message"})),
         stop_reason: None,
     };
-    events.extend(agent_event_to_agui(&finish1, &mut ctx));
+    events.extend(ctx.on_agent_event(&finish1));
 
     // Reset context for new message
     ctx = AGUIContext::new("t1".into(), "r2".into());
@@ -8839,7 +8839,7 @@ fn test_multiple_text_messages() {
     let text2 = AgentEvent::TextDelta {
         delta: "Second message".into(),
     };
-    events.extend(agent_event_to_agui(&text2, &mut ctx));
+    events.extend(ctx.on_agent_event(&text2));
 
     // Count TEXT_MESSAGE_START events
     let start_count = events
@@ -8936,7 +8936,7 @@ fn test_tool_call_empty_args() {
         id: "call_1".into(),
         name: "getCurrentTime".into(),
     };
-    let events = agent_event_to_agui(&start, &mut ctx);
+    let events = ctx.on_agent_event(&start);
 
     assert!(events
         .iter()
@@ -8962,7 +8962,7 @@ fn test_tool_call_complex_args() {
         }))
         .unwrap(),
     };
-    let events = agent_event_to_agui(&args, &mut ctx);
+    let events = ctx.on_agent_event(&args);
 
     if let Some(AGUIEvent::ToolCallArgs { delta, .. }) = events.first() {
         let parsed: Value = serde_json::from_str(delta).unwrap();
@@ -8982,7 +8982,7 @@ fn test_tool_result_with_warning_status() {
         patch: None,
         message_id: String::new(),
     };
-    let events = agent_event_to_agui(&done, &mut ctx);
+    let events = ctx.on_agent_event(&done);
 
     assert!(events
         .iter()
@@ -9001,7 +9001,7 @@ fn test_tool_result_with_pending_status() {
         patch: None,
         message_id: String::new(),
     };
-    let events = agent_event_to_agui(&done, &mut ctx);
+    let events = ctx.on_agent_event(&done);
 
     if let Some(AGUIEvent::ToolCallResult { content, .. }) = events.first() {
         let parsed: Value = serde_json::from_str(content).unwrap();
@@ -9836,12 +9836,12 @@ fn test_run_started_is_first_event() {
         run_id: "r1".into(),
         parent_run_id: None,
     };
-    events.extend(agent_event_to_agui(&run_start, &mut ctx));
+    events.extend(ctx.on_agent_event(&run_start));
 
     let text = AgentEvent::TextDelta {
         delta: "Hello".into(),
     };
-    events.extend(agent_event_to_agui(&text, &mut ctx));
+    events.extend(ctx.on_agent_event(&text));
 
     let finish = AgentEvent::RunFinish {
         thread_id: "t1".into(),
@@ -9849,7 +9849,7 @@ fn test_run_started_is_first_event() {
         result: Some(serde_json::json!({"response": "Hello"})),
         stop_reason: None,
     };
-    events.extend(agent_event_to_agui(&finish, &mut ctx));
+    events.extend(ctx.on_agent_event(&finish));
 
     // First event must be RUN_STARTED
     assert!(matches!(&events[0], AGUIEvent::RunStarted { .. }));
@@ -9897,12 +9897,12 @@ fn test_text_message_sequence_ordering() {
     let text1 = AgentEvent::TextDelta {
         delta: "Hello".into(),
     };
-    events.extend(agent_event_to_agui(&text1, &mut ctx));
+    events.extend(ctx.on_agent_event(&text1));
 
     let text2 = AgentEvent::TextDelta {
         delta: " World".into(),
     };
-    events.extend(agent_event_to_agui(&text2, &mut ctx));
+    events.extend(ctx.on_agent_event(&text2));
 
     // End text stream
     ctx.end_text();
@@ -9955,20 +9955,20 @@ fn test_tool_call_sequence_ordering() {
         id: "call_1".into(),
         name: "search".into(),
     };
-    events.extend(agent_event_to_agui(&start, &mut ctx));
+    events.extend(ctx.on_agent_event(&start));
 
     let args = AgentEvent::ToolCallDelta {
         id: "call_1".into(),
         args_delta: r#"{"query": "test"}"#.into(),
     };
-    events.extend(agent_event_to_agui(&args, &mut ctx));
+    events.extend(ctx.on_agent_event(&args));
 
     let ready = AgentEvent::ToolCallReady {
         id: "call_1".into(),
         name: "search".into(),
         arguments: json!({"query": "test"}),
     };
-    events.extend(agent_event_to_agui(&ready, &mut ctx));
+    events.extend(ctx.on_agent_event(&ready));
 
     let done = AgentEvent::ToolCallDone {
         id: "call_1".into(),
@@ -9976,7 +9976,7 @@ fn test_tool_call_sequence_ordering() {
         patch: None,
         message_id: String::new(),
     };
-    events.extend(agent_event_to_agui(&done, &mut ctx));
+    events.extend(ctx.on_agent_event(&done));
 
     // Find indices
     let start_idx = events
@@ -10036,7 +10036,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
         },
     ]
     .iter()
-    .flat_map(|e| agent_event_to_agui(e, &mut ctx))
+    .flat_map(|e| ctx.on_agent_event(e))
     .collect();
 
     let has_finished = success_events
@@ -10063,7 +10063,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
         },
     ]
     .iter()
-    .flat_map(|e| agent_event_to_agui(e, &mut ctx2))
+    .flat_map(|e| ctx2.on_agent_event(e))
     .collect();
 
     let has_finished2 = error_events
@@ -10311,12 +10311,12 @@ fn test_text_message_flow_consistent_message_id() {
     let text1 = AgentEvent::TextDelta {
         delta: "Hello ".into(),
     };
-    let events1 = agent_event_to_agui(&text1, &mut ctx);
+    let events1 = ctx.on_agent_event(&text1);
 
     let text2 = AgentEvent::TextDelta {
         delta: "World".into(),
     };
-    let events2 = agent_event_to_agui(&text2, &mut ctx);
+    let events2 = ctx.on_agent_event(&text2);
 
     // Collect all messageIds
     let mut message_ids: Vec<String> = Vec::new();
@@ -11814,7 +11814,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
     let text = AgentEvent::TextDelta {
         delta: "Hello".into(),
     };
-    let _ = agent_event_to_agui(&text, &mut ctx);
+    let _ = ctx.on_agent_event(&text);
 
     // Finish run while text is active
     let finish = AgentEvent::RunFinish {
@@ -11823,7 +11823,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
         result: Some(json!({"ok": true})),
         stop_reason: None,
     };
-    let events = agent_event_to_agui(&finish, &mut ctx);
+    let events = ctx.on_agent_event(&finish);
 
     // Should produce TEXT_MESSAGE_END + RUN_FINISHED
     assert!(
@@ -11862,7 +11862,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
     let text = AgentEvent::TextDelta {
         delta: "Response".into(),
     };
-    let _ = agent_event_to_agui(&text, &mut ctx);
+    let _ = ctx.on_agent_event(&text);
 
     // RunFinish
     let finish = AgentEvent::RunFinish {
@@ -11871,7 +11871,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         result: Some(serde_json::json!({"response": "Response"})),
         stop_reason: None,
     };
-    let events = agent_event_to_agui(&finish, &mut ctx);
+    let events = ctx.on_agent_event(&finish);
 
     assert!(events
         .iter()
@@ -11891,7 +11891,7 @@ fn test_agent_event_aborted_produces_run_error() {
     let aborted = AgentEvent::Aborted {
         reason: "User cancelled".into(),
     };
-    let events = agent_event_to_agui(&aborted, &mut ctx);
+    let events = ctx.on_agent_event(&aborted);
 
     assert_eq!(events.len(), 1);
     if let AGUIEvent::RunError { message, code, .. } = &events[0] {
@@ -11912,7 +11912,7 @@ fn test_agent_event_error_produces_run_error() {
     let error = AgentEvent::Error {
         message: "API rate limit".into(),
     };
-    let events = agent_event_to_agui(&error, &mut ctx);
+    let events = ctx.on_agent_event(&error);
 
     assert_eq!(events.len(), 1);
     if let AGUIEvent::RunError { message, code, .. } = &events[0] {
@@ -11936,12 +11936,12 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
     let text = AgentEvent::TextDelta {
         delta: "Processing".into(),
     };
-    let _ = agent_event_to_agui(&text, &mut ctx);
+    let _ = ctx.on_agent_event(&text);
 
     // Pending interaction
     let interaction = Interaction::new("perm_1", "confirm");
     let pending = AgentEvent::Pending { interaction };
-    let events = agent_event_to_agui(&pending, &mut ctx);
+    let events = ctx.on_agent_event(&pending);
 
     // Should end text stream first
     assert!(
@@ -11964,8 +11964,7 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
 #[test]
 fn test_agent_event_activity_snapshot_to_ag_ui() {
     use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-    use carve_agent::stream::agent_event_to_agui;
-
+    
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivitySnapshot {
         message_id: "activity_1".to_string(),
@@ -11974,7 +11973,7 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
         replace: Some(true),
     };
 
-    let events = agent_event_to_agui(&event, &mut ctx);
+    let events = ctx.on_agent_event(&event);
     assert_eq!(events.len(), 1);
     match &events[0] {
         AGUIEvent::ActivitySnapshot {
@@ -11997,8 +11996,7 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
 #[test]
 fn test_agent_event_activity_delta_to_ag_ui() {
     use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-    use carve_agent::stream::agent_event_to_agui;
-
+    
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivityDelta {
         message_id: "activity_1".to_string(),
@@ -12006,7 +12004,7 @@ fn test_agent_event_activity_delta_to_ag_ui() {
         patch: vec![json!({"op": "replace", "path": "/progress", "value": 0.8})],
     };
 
-    let events = agent_event_to_agui(&event, &mut ctx);
+    let events = ctx.on_agent_event(&event);
     assert_eq!(events.len(), 1);
     match &events[0] {
         AGUIEvent::ActivityDelta {
@@ -12032,14 +12030,14 @@ fn test_agent_event_step_events() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     let step_start = AgentEvent::StepStart { message_id: String::new() };
-    let events = agent_event_to_agui(&step_start, &mut ctx);
+    let events = ctx.on_agent_event(&step_start);
     assert_eq!(events.len(), 1);
     assert!(
         matches!(&events[0], AGUIEvent::StepStarted { step_name, .. } if step_name == "step_1")
     );
 
     let step_end = AgentEvent::StepEnd;
-    let events = agent_event_to_agui(&step_end, &mut ctx);
+    let events = ctx.on_agent_event(&step_end);
     assert_eq!(events.len(), 1);
     assert!(
         matches!(&events[0], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_1")
@@ -12057,14 +12055,14 @@ fn test_tool_call_start_ends_active_text() {
     let text = AgentEvent::TextDelta {
         delta: "Thinking".into(),
     };
-    let _ = agent_event_to_agui(&text, &mut ctx);
+    let _ = ctx.on_agent_event(&text);
 
     // Tool starts - should end text first
     let tool_start = AgentEvent::ToolCallStart {
         id: "call_1".into(),
         name: "search".into(),
     };
-    let events = agent_event_to_agui(&tool_start, &mut ctx);
+    let events = ctx.on_agent_event(&tool_start);
 
     // First event should be TEXT_MESSAGE_END
     assert!(
@@ -12089,7 +12087,7 @@ fn test_tool_call_start_includes_parent_message_id() {
         id: "call_1".into(),
         name: "search".into(),
     };
-    let events = agent_event_to_agui(&tool_start, &mut ctx);
+    let events = ctx.on_agent_event(&tool_start);
 
     let start_event = events
         .iter()

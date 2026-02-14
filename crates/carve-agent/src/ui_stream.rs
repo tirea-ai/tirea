@@ -703,7 +703,94 @@ impl AiSdkAdapter {
 
     /// Convert an AgentEvent to UIStreamEvent(s).
     pub fn convert(&self, event: &crate::stream::AgentEvent) -> Vec<UIStreamEvent> {
-        crate::stream::agent_event_to_ui(event, &self.text_id)
+        use crate::stream::AgentEvent;
+
+        match event {
+            AgentEvent::RunStart { .. } => vec![],
+            AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish_with_reason("stop")],
+
+            AgentEvent::TextDelta { delta } => {
+                vec![UIStreamEvent::text_delta(&self.text_id, delta)]
+            }
+
+            AgentEvent::ToolCallStart { id, name } => {
+                vec![UIStreamEvent::tool_input_start(id, name)]
+            }
+            AgentEvent::ToolCallDelta { id, args_delta } => {
+                vec![UIStreamEvent::tool_input_delta(id, args_delta)]
+            }
+            AgentEvent::ToolCallReady {
+                id,
+                name,
+                arguments,
+            } => {
+                vec![UIStreamEvent::tool_input_available(
+                    id,
+                    name,
+                    arguments.clone(),
+                )]
+            }
+            AgentEvent::ToolCallDone { id, result, .. } => {
+                vec![UIStreamEvent::tool_output_available(id, result.to_json())]
+            }
+
+            AgentEvent::StepStart { .. } => vec![UIStreamEvent::start_step()],
+            AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
+
+            AgentEvent::StateSnapshot { snapshot } => {
+                vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
+            }
+            AgentEvent::StateDelta { delta } => {
+                vec![UIStreamEvent::data(
+                    "state-delta",
+                    serde_json::Value::Array(delta.clone()),
+                )]
+            }
+            AgentEvent::MessagesSnapshot { messages } => {
+                vec![UIStreamEvent::data(
+                    "messages-snapshot",
+                    serde_json::Value::Array(messages.clone()),
+                )]
+            }
+
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "content": content,
+                    "replace": replace,
+                });
+                vec![UIStreamEvent::data("activity-snapshot", payload)]
+            }
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                let payload = serde_json::json!({
+                    "messageId": message_id,
+                    "activityType": activity_type,
+                    "patch": patch,
+                });
+                vec![UIStreamEvent::data("activity-delta", payload)]
+            }
+
+            AgentEvent::Pending { interaction } => {
+                vec![UIStreamEvent::data(
+                    "interaction",
+                    serde_json::to_value(interaction).unwrap_or_default(),
+                )]
+            }
+
+            AgentEvent::Aborted { reason } => vec![UIStreamEvent::abort(reason)],
+            AgentEvent::Error { message } => vec![UIStreamEvent::error(message)],
+            AgentEvent::InferenceComplete { .. } => vec![],
+        }
     }
 
     /// Convert an AgentEvent to JSON strings.

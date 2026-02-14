@@ -60,7 +60,7 @@
 //!
 //! let mut ctx = AGUIContext::new("thread_1".into(), "run_1".into());
 //! let event = AgentEvent::TextDelta { delta: "Hello".into() };
-//! let ag_ui_events = carve_agent::agent_event_to_agui(&event, &mut ctx);
+//! let ag_ui_events = ctx.on_agent_event(&event);
 //! ```
 
 pub use crate::interaction::AgUiInteractionPlugin;
@@ -865,6 +865,159 @@ impl AGUIContext {
         self.message_id = format!("msg_{run_id_prefix}_{}", Uuid::new_v4().simple());
         self.message_id.clone()
     }
+
+    /// Convert an AgentEvent to AG-UI protocol compatible events.
+    ///
+    /// Uses internal state to track text message lifecycle (start/end pairs)
+    /// and step counters.
+    pub fn on_agent_event(&mut self, ev: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
+        use crate::stream::AgentEvent;
+
+        match ev {
+            AgentEvent::RunStart {
+                thread_id,
+                run_id,
+                parent_run_id,
+            } => {
+                vec![AGUIEvent::run_started(
+                    thread_id,
+                    run_id,
+                    parent_run_id.clone(),
+                )]
+            }
+            AgentEvent::RunFinish {
+                thread_id,
+                run_id,
+                result,
+                ..
+            } => {
+                let mut events = vec![];
+                if self.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.message_id));
+                }
+                events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+                events
+            }
+
+            AgentEvent::TextDelta { delta } => {
+                let mut events = vec![];
+                if self.start_text() {
+                    events.push(AGUIEvent::text_message_start(&self.message_id));
+                }
+                events.push(AGUIEvent::text_message_content(&self.message_id, delta));
+                events
+            }
+
+            AgentEvent::ToolCallStart { id, name } => {
+                let mut events = vec![];
+                if self.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.message_id));
+                }
+                events.push(AGUIEvent::tool_call_start(
+                    id,
+                    name,
+                    Some(self.message_id.clone()),
+                ));
+                events
+            }
+            AgentEvent::ToolCallDelta { id, args_delta } => {
+                vec![AGUIEvent::tool_call_args(id, args_delta)]
+            }
+            AgentEvent::ToolCallReady { id, .. } => {
+                vec![AGUIEvent::tool_call_end(id)]
+            }
+            AgentEvent::ToolCallDone {
+                id,
+                result,
+                message_id,
+                ..
+            } => {
+                let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
+                let msg_id = if message_id.is_empty() {
+                    format!("result_{id}")
+                } else {
+                    message_id.clone()
+                };
+                vec![AGUIEvent::tool_call_result(msg_id, id, content)]
+            }
+
+            AgentEvent::StepStart { message_id } => {
+                if !message_id.is_empty() {
+                    self.reset_for_step(message_id.clone());
+                }
+                vec![AGUIEvent::step_started(self.next_step_name())]
+            }
+            AgentEvent::StepEnd => {
+                vec![AGUIEvent::step_finished(self.current_step_name())]
+            }
+
+            AgentEvent::StateSnapshot { snapshot } => {
+                vec![AGUIEvent::state_snapshot(snapshot.clone())]
+            }
+            AgentEvent::StateDelta { delta } => {
+                vec![AGUIEvent::state_delta(delta.clone())]
+            }
+            AgentEvent::MessagesSnapshot { messages } => {
+                vec![AGUIEvent::messages_snapshot(messages.clone())]
+            }
+
+            AgentEvent::ActivitySnapshot {
+                message_id,
+                activity_type,
+                content,
+                replace,
+            } => {
+                vec![AGUIEvent::activity_snapshot(
+                    message_id.clone(),
+                    activity_type.clone(),
+                    value_to_map(content),
+                    *replace,
+                )]
+            }
+            AgentEvent::ActivityDelta {
+                message_id,
+                activity_type,
+                patch,
+            } => {
+                vec![AGUIEvent::activity_delta(
+                    message_id.clone(),
+                    activity_type.clone(),
+                    patch.clone(),
+                )]
+            }
+
+            AgentEvent::Pending { interaction } => {
+                let mut events = vec![];
+                if self.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.message_id));
+                }
+                events.extend(interaction.to_ag_ui_events());
+                events
+            }
+
+            AgentEvent::Aborted { reason } => {
+                vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
+            }
+            AgentEvent::Error { message } => {
+                vec![AGUIEvent::run_error(message, None)]
+            }
+            AgentEvent::InferenceComplete { .. } => vec![],
+        }
+    }
+}
+
+fn value_to_map(value: &Value) -> HashMap<String, Value> {
+    match value.as_object() {
+        Some(map) => map
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        None => {
+            let mut map = HashMap::new();
+            map.insert("value".to_string(), value.clone());
+            map
+        }
+    }
 }
 
 // ============================================================================
@@ -923,7 +1076,7 @@ impl AgUiAdapter {
 
     /// Convert an AgentEvent to AGUIEvent(s).
     pub fn convert(&mut self, event: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
-        crate::stream::agent_event_to_agui(event, &mut self.ctx)
+        self.ctx.on_agent_event(event)
     }
 
     /// Convert an AgentEvent to JSON strings.
@@ -1768,7 +1921,7 @@ pub fn run_agent_stream_with_parent(
             }
 
             // Uniform conversion — RunStart/RunFinish included.
-            let ag_ui_events = crate::stream::agent_event_to_agui(&event, &mut ctx);
+            let ag_ui_events = ctx.on_agent_event(&event);
             for ag_event in ag_ui_events {
                 yield ag_event;
             }
@@ -6226,7 +6379,7 @@ mod tests {
                 }
                 _ => {}
             }
-            let ag_ui_events = crate::stream::agent_event_to_agui(&event, &mut ctx);
+            let ag_ui_events = ctx.on_agent_event(&event);
             all_events.extend(ag_ui_events);
         }
 
@@ -6290,7 +6443,7 @@ mod tests {
                 }
                 _ => {}
             }
-            all_events.extend(crate::stream::agent_event_to_agui(event, &mut ctx));
+            all_events.extend(ctx.on_agent_event(event));
         }
 
         assert!(
@@ -6322,7 +6475,7 @@ mod tests {
             if let AgentEvent::RunFinish { .. } = event {
                 emitted_run_finished = true;
             }
-            all_events.extend(crate::stream::agent_event_to_agui(&event, &mut ctx));
+            all_events.extend(ctx.on_agent_event(&event));
         }
 
         // Fallback: emit RunFinished if not emitted
@@ -7226,22 +7379,18 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let text_events = crate::stream::agent_event_to_agui(
+        let text_events = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta {
                 delta: "thinking...".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(text_events.len(), 2); // TEXT_MESSAGE_START + TEXT_MESSAGE_CONTENT
 
         // Tool call should end text first
-        let tool_events = crate::stream::agent_event_to_agui(
+        let tool_events = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallStart {
                 id: "tc-1".into(),
                 name: "search".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(tool_events.len(), 2); // TEXT_MESSAGE_END + TOOL_CALL_START
         assert!(matches!(tool_events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(tool_events[1], AGUIEvent::ToolCallStart { .. }));
@@ -7251,13 +7400,11 @@ mod tests {
     fn test_agui_tool_without_prior_text_no_text_end() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallStart {
                 id: "tc-1".into(),
                 name: "search".into(),
-            },
-            &mut ctx,
-        );
+            });
         // No text was started, so just TOOL_CALL_START
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -7267,21 +7414,18 @@ mod tests {
     fn test_agui_multiple_text_deltas_only_one_start() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let e1 = crate::stream::agent_event_to_agui(
+        let e1 = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta { delta: "a".into() },
-            &mut ctx,
         );
         assert_eq!(e1.len(), 2); // START + CONTENT
 
-        let e2 = crate::stream::agent_event_to_agui(
+        let e2 = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta { delta: "b".into() },
-            &mut ctx,
         );
         assert_eq!(e2.len(), 1); // Just CONTENT, no duplicate START
 
-        let e3 = crate::stream::agent_event_to_agui(
+        let e3 = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta { delta: "c".into() },
-            &mut ctx,
         );
         assert_eq!(e3.len(), 1);
     }
@@ -7291,21 +7435,18 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text stream
-        let _ = crate::stream::agent_event_to_agui(
+        let _ = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
-            &mut ctx,
         );
 
         // RunFinish should end text then emit RUN_FINISHED
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::RunFinish {
                 thread_id: "th".into(),
                 run_id: "run".into(),
                 result: None,
                 stop_reason: None,
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(events[1], AGUIEvent::RunFinished { .. }));
@@ -7321,7 +7462,7 @@ mod tests {
             result: Some(json!({"response": "done"})),
             stop_reason: None,
         };
-        let events = crate::stream::agent_event_to_agui(&ev, &mut ctx);
+        let events = ctx.on_agent_event(&ev);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::RunFinished { .. }));
     }
@@ -7329,13 +7470,11 @@ mod tests {
     #[test]
     fn test_agui_tool_call_delta_produces_tool_call_args() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallDelta {
                 id: "tc-1".into(),
                 args_delta: r#"{"q":"#.into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallArgs {
             tool_call_id,
@@ -7358,7 +7497,7 @@ mod tests {
             name: "search".into(),
             arguments: json!({"query": "rust"}),
         };
-        let events = crate::stream::agent_event_to_agui(&ev, &mut ctx);
+        let events = ctx.on_agent_event(&ev);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallEnd { .. }));
     }
@@ -7366,15 +7505,13 @@ mod tests {
     #[test]
     fn test_agui_tool_call_done_produces_tool_call_result() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallDone {
                 id: "tc-1".into(),
                 result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
                 patch: None,
                 message_id: "pre-generated-tool-msg-id".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallResult {
             tool_call_id,
@@ -7394,12 +7531,10 @@ mod tests {
     #[test]
     fn test_agui_error_produces_run_error() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Error {
                 message: "LLM timeout".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "LLM timeout");
@@ -7412,12 +7547,10 @@ mod tests {
     #[test]
     fn test_agui_aborted_produces_run_error_with_code() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Aborted {
                 reason: "cancelled by user".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "cancelled by user");
@@ -7430,14 +7563,12 @@ mod tests {
     #[test]
     fn test_agui_inference_complete_ignored() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::InferenceComplete {
                 model: "gpt-4".into(),
                 usage: None,
                 duration_ms: 1234,
-            },
-            &mut ctx,
-        );
+            });
         assert!(events.is_empty());
     }
 
@@ -7447,9 +7578,8 @@ mod tests {
         let interaction =
             Interaction::new("int-1", "tool:addTask").with_parameters(json!({"title": "New task"}));
 
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Pending { interaction },
-            &mut ctx,
         );
         // Should produce TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
         assert_eq!(events.len(), 3);
@@ -7463,16 +7593,14 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let _ = crate::stream::agent_event_to_agui(
+        let _ = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
-            &mut ctx,
         );
 
         // Pending should close text first
         let interaction = Interaction::new("int-1", "tool:x");
-        let events = crate::stream::agent_event_to_agui(
+        let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Pending { interaction },
-            &mut ctx,
         );
 
         // TEXT_MESSAGE_END + 3 tool call events
@@ -7485,9 +7613,9 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         let start1 =
-            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
+            ctx.on_agent_event(&crate::stream::AgentEvent::StepStart { message_id: String::new() });
         let end1 =
-            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepEnd, &mut ctx);
+            ctx.on_agent_event(&crate::stream::AgentEvent::StepEnd);
 
         if let AGUIEvent::StepStarted { step_name, .. } = &start1[0] {
             assert_eq!(step_name, "step_1");
@@ -7498,7 +7626,7 @@ mod tests {
 
         // Second step
         let start2 =
-            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
+            ctx.on_agent_event(&crate::stream::AgentEvent::StepStart { message_id: String::new() });
         if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -7509,22 +7637,18 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Text phase 1
-        let e1 = crate::stream::agent_event_to_agui(
+        let e1 = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta {
                 delta: "Let me search".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(e1.len(), 2); // START + CONTENT
 
         // Tool call
-        let e2 = crate::stream::agent_event_to_agui(
+        let e2 = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallStart {
                 id: "tc".into(),
                 name: "search".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(e2.len(), 2); // END text + TOOL_CALL_START
 
         let ev3 = crate::stream::AgentEvent::ToolCallReady {
@@ -7532,27 +7656,23 @@ mod tests {
             name: "search".into(),
             arguments: json!({}),
         };
-        let e3 = crate::stream::agent_event_to_agui(&ev3, &mut ctx);
+        let e3 = ctx.on_agent_event(&ev3);
         assert_eq!(e3.len(), 1); // TOOL_CALL_END
 
-        let e4 = crate::stream::agent_event_to_agui(
+        let e4 = ctx.on_agent_event(
             &crate::stream::AgentEvent::ToolCallDone {
                 id: "tc".into(),
                 result: crate::traits::tool::ToolResult::success("test", "results"),
                 patch: None,
                 message_id: String::new(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
 
         // Text phase 2 — should get a new TEXT_MESSAGE_START with a different message_id
-        let e5 = crate::stream::agent_event_to_agui(
+        let e5 = ctx.on_agent_event(
             &crate::stream::AgentEvent::TextDelta {
                 delta: "Found it!".into(),
-            },
-            &mut ctx,
-        );
+            });
         assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
         assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
 
@@ -9276,5 +9396,60 @@ mod tests {
         assert!(
             matches!(&events[3], AGUIEvent::StepFinished { step_name, .. } if step_name == "step_2")
         );
+    }
+
+    // ========================================================================
+    // value_to_map Edge Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_value_to_map_with_object() {
+        let value = json!({"key": "val", "num": 42});
+        let map = value_to_map(&value);
+        assert_eq!(map.get("key"), Some(&json!("val")));
+        assert_eq!(map.get("num"), Some(&json!(42)));
+        assert!(
+            !map.contains_key("value"),
+            "Object should not wrap in 'value' key"
+        );
+    }
+
+    #[test]
+    fn test_value_to_map_with_number() {
+        let value = json!(42);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(42)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_boolean() {
+        let value = json!(true);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_null() {
+        let value = json!(null);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!(null)));
+    }
+
+    #[test]
+    fn test_value_to_map_with_array() {
+        let value = json!([1, 2, 3]);
+        let map = value_to_map(&value);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("value"), Some(&json!([1, 2, 3])));
+    }
+
+    #[test]
+    fn test_value_to_map_with_empty_object() {
+        let value = json!({});
+        let map = value_to_map(&value);
+        assert!(map.is_empty(), "Empty object should produce empty map");
     }
 }

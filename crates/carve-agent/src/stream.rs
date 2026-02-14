@@ -4,19 +4,13 @@
 //! - `AgentEvent`: Protocol-agnostic events emitted by the agent
 //! - `StreamCollector` / `StreamResult`: Helpers for collecting stream chunks
 //!
-//! Protocol-specific conversion is provided as standalone functions:
-//! - `agent_event_to_ui()`: Convert to AI SDK v6 UIStreamEvents
-//! - `agent_event_to_agui()`: Convert to AG-UI protocol events
-//!
-//! Stateful encoders that manage stream lifecycle (prologue, epilogue, etc.)
-//! should live in the transport layer (for example, protocol output encoders
-//! in a server/gateway crate).
+//! Protocol-specific conversion lives in the respective protocol modules:
+//! - `AGUIContext::on_agent_event()`: Convert to AG-UI protocol events
+//! - `AiSdkEncoder::on_agent_event()`: Convert to AI SDK v6 UIStreamEvents
 
-use crate::ag_ui::{AGUIContext, AGUIEvent};
 use crate::state_types::Interaction;
 use crate::traits::tool::ToolResult;
 use crate::types::ToolCall;
-use crate::ui_stream::UIStreamEvent;
 use carve_state::TrackedPatch;
 use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
@@ -231,7 +225,7 @@ impl StreamResult {
 /// Agent loop events for streaming execution.
 ///
 /// These events represent the protocol-agnostic internal agent loop state.
-/// Use [`agent_event_to_ui`] or [`agent_event_to_agui`] for protocol conversion.
+/// Use [`AGUIContext::on_agent_event`] or [`AiSdkEncoder::on_agent_event`] for protocol conversion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -366,257 +360,25 @@ impl AgentEvent {
     }
 }
 
-/// Convert an AgentEvent to AI SDK v6 compatible UI stream events.
-///
-/// This is a stateless conversion of a single event. For full stream lifecycle
-/// management (prologue, epilogue, text_id tracking), use a transport-layer
-/// protocol output encoder.
-pub fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
-    match ev {
-        AgentEvent::RunStart { .. } => vec![],
-        AgentEvent::RunFinish { .. } => vec![UIStreamEvent::finish_with_reason("stop")],
-
-        AgentEvent::TextDelta { delta } => {
-            vec![UIStreamEvent::text_delta(text_id, delta)]
-        }
-
-        AgentEvent::ToolCallStart { id, name } => {
-            vec![UIStreamEvent::tool_input_start(id, name)]
-        }
-        AgentEvent::ToolCallDelta { id, args_delta } => {
-            vec![UIStreamEvent::tool_input_delta(id, args_delta)]
-        }
-        AgentEvent::ToolCallReady {
-            id,
-            name,
-            arguments,
-        } => {
-            vec![UIStreamEvent::tool_input_available(
-                id,
-                name,
-                arguments.clone(),
-            )]
-        }
-        AgentEvent::ToolCallDone { id, result, .. } => {
-            vec![UIStreamEvent::tool_output_available(id, result.to_json())]
-        }
-
-        AgentEvent::StepStart { .. } => vec![UIStreamEvent::start_step()],
-        AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
-
-        AgentEvent::StateSnapshot { snapshot } => {
-            vec![UIStreamEvent::data("state-snapshot", snapshot.clone())]
-        }
-        AgentEvent::StateDelta { delta } => {
-            vec![UIStreamEvent::data(
-                "state-delta",
-                Value::Array(delta.clone()),
-            )]
-        }
-        AgentEvent::MessagesSnapshot { messages } => {
-            vec![UIStreamEvent::data(
-                "messages-snapshot",
-                Value::Array(messages.clone()),
-            )]
-        }
-
-        AgentEvent::ActivitySnapshot {
-            message_id,
-            activity_type,
-            content,
-            replace,
-        } => {
-            let payload = serde_json::json!({
-                "messageId": message_id,
-                "activityType": activity_type,
-                "content": content,
-                "replace": replace,
-            });
-            vec![UIStreamEvent::data("activity-snapshot", payload)]
-        }
-        AgentEvent::ActivityDelta {
-            message_id,
-            activity_type,
-            patch,
-        } => {
-            let payload = serde_json::json!({
-                "messageId": message_id,
-                "activityType": activity_type,
-                "patch": patch,
-            });
-            vec![UIStreamEvent::data("activity-delta", payload)]
-        }
-
-        AgentEvent::Pending { interaction } => {
-            vec![UIStreamEvent::data(
-                "interaction",
-                serde_json::to_value(interaction).unwrap_or_default(),
-            )]
-        }
-
-        AgentEvent::Aborted { reason } => vec![UIStreamEvent::abort(reason)],
-        AgentEvent::Error { message } => vec![UIStreamEvent::error(message)],
-        AgentEvent::InferenceComplete { .. } => vec![],
-    }
-}
-
-/// Convert an AgentEvent to AG-UI protocol compatible events.
-///
-/// This is a stateless conversion that uses `AGUIContext` for tracking text
-/// message state. For full stream lifecycle management (pending event filtering,
-/// fallback finish), use a transport-layer protocol output encoder.
-pub fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
-    match ev {
-        AgentEvent::RunStart {
-            thread_id,
-            run_id,
-            parent_run_id,
-        } => {
-            vec![AGUIEvent::run_started(
-                thread_id,
-                run_id,
-                parent_run_id.clone(),
-            )]
-        }
-        AgentEvent::RunFinish {
-            thread_id,
-            run_id,
-            result,
-            ..
-        } => {
-            let mut events = vec![];
-            if ctx.end_text() {
-                events.push(AGUIEvent::text_message_end(&ctx.message_id));
-            }
-            events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
-            events
-        }
-
-        AgentEvent::TextDelta { delta } => {
-            let mut events = vec![];
-            if ctx.start_text() {
-                events.push(AGUIEvent::text_message_start(&ctx.message_id));
-            }
-            events.push(AGUIEvent::text_message_content(&ctx.message_id, delta));
-            events
-        }
-
-        AgentEvent::ToolCallStart { id, name } => {
-            let mut events = vec![];
-            if ctx.end_text() {
-                events.push(AGUIEvent::text_message_end(&ctx.message_id));
-            }
-            events.push(AGUIEvent::tool_call_start(
-                id,
-                name,
-                Some(ctx.message_id.clone()),
-            ));
-            events
-        }
-        AgentEvent::ToolCallDelta { id, args_delta } => {
-            vec![AGUIEvent::tool_call_args(id, args_delta)]
-        }
-        AgentEvent::ToolCallReady { id, .. } => {
-            vec![AGUIEvent::tool_call_end(id)]
-        }
-        AgentEvent::ToolCallDone {
-            id,
-            result,
-            message_id,
-            ..
-        } => {
-            let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
-            let msg_id = if message_id.is_empty() {
-                format!("result_{id}")
-            } else {
-                message_id.clone()
-            };
-            vec![AGUIEvent::tool_call_result(msg_id, id, content)]
-        }
-
-        AgentEvent::StepStart { message_id } => {
-            if !message_id.is_empty() {
-                ctx.reset_for_step(message_id.clone());
-            }
-            vec![AGUIEvent::step_started(ctx.next_step_name())]
-        }
-        AgentEvent::StepEnd => {
-            vec![AGUIEvent::step_finished(ctx.current_step_name())]
-        }
-
-        AgentEvent::StateSnapshot { snapshot } => {
-            vec![AGUIEvent::state_snapshot(snapshot.clone())]
-        }
-        AgentEvent::StateDelta { delta } => {
-            vec![AGUIEvent::state_delta(delta.clone())]
-        }
-        AgentEvent::MessagesSnapshot { messages } => {
-            vec![AGUIEvent::messages_snapshot(messages.clone())]
-        }
-
-        AgentEvent::ActivitySnapshot {
-            message_id,
-            activity_type,
-            content,
-            replace,
-        } => {
-            vec![AGUIEvent::activity_snapshot(
-                message_id.clone(),
-                activity_type.clone(),
-                value_to_map(content),
-                *replace,
-            )]
-        }
-        AgentEvent::ActivityDelta {
-            message_id,
-            activity_type,
-            patch,
-        } => {
-            vec![AGUIEvent::activity_delta(
-                message_id.clone(),
-                activity_type.clone(),
-                patch.clone(),
-            )]
-        }
-
-        AgentEvent::Pending { interaction } => {
-            let mut events = vec![];
-            if ctx.end_text() {
-                events.push(AGUIEvent::text_message_end(&ctx.message_id));
-            }
-            events.extend(interaction.to_ag_ui_events());
-            events
-        }
-
-        AgentEvent::Aborted { reason } => {
-            vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
-        }
-        AgentEvent::Error { message } => {
-            vec![AGUIEvent::run_error(message, None)]
-        }
-        AgentEvent::InferenceComplete { .. } => vec![],
-    }
-}
-
-fn value_to_map(value: &Value) -> HashMap<String, Value> {
-    match value.as_object() {
-        Some(map) => map
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-        None => {
-            let mut map = HashMap::new();
-            map.insert("value".to_string(), value.clone());
-            map
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ag_ui::{AGUIContext, AGUIEvent};
+    use crate::ui_stream::{AiSdkAdapter, UIStreamEvent};
     use serde_json::json;
+
+    /// Helper: convert AgentEvent to UI stream events (replaces old free function).
+    fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
+        // AiSdkAdapter uses a fixed text_id; for tests that pass "txt_0" this matches.
+        let adapter = AiSdkAdapter::new("run_00000".to_string());
+        assert_eq!(adapter.text_id(), text_id, "test helper assumes text_id matches");
+        adapter.convert(ev)
+    }
+
+    /// Helper: convert AgentEvent to AG-UI events (replaces old free function).
+    fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
+        ctx.on_agent_event(ev)
+    }
 
     #[test]
     fn test_extract_response_with_value() {
@@ -2426,61 +2188,6 @@ mod tests {
         } else {
             panic!("Expected ToolCallResult, got: {:?}", events[0]);
         }
-    }
-
-    // ========================================================================
-    // value_to_map Edge Case Tests
-    // ========================================================================
-
-    #[test]
-    fn test_value_to_map_with_object() {
-        let value = json!({"key": "val", "num": 42});
-        let map = value_to_map(&value);
-        assert_eq!(map.get("key"), Some(&json!("val")));
-        assert_eq!(map.get("num"), Some(&json!(42)));
-        assert!(
-            !map.contains_key("value"),
-            "Object should not wrap in 'value' key"
-        );
-    }
-
-    #[test]
-    fn test_value_to_map_with_number() {
-        let value = json!(42);
-        let map = value_to_map(&value);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("value"), Some(&json!(42)));
-    }
-
-    #[test]
-    fn test_value_to_map_with_boolean() {
-        let value = json!(true);
-        let map = value_to_map(&value);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("value"), Some(&json!(true)));
-    }
-
-    #[test]
-    fn test_value_to_map_with_null() {
-        let value = json!(null);
-        let map = value_to_map(&value);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("value"), Some(&json!(null)));
-    }
-
-    #[test]
-    fn test_value_to_map_with_array() {
-        let value = json!([1, 2, 3]);
-        let map = value_to_map(&value);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get("value"), Some(&json!([1, 2, 3])));
-    }
-
-    #[test]
-    fn test_value_to_map_with_empty_object() {
-        let value = json!({});
-        let map = value_to_map(&value);
-        assert!(map.is_empty(), "Empty object should produce empty map");
     }
 
     // ========================================================================

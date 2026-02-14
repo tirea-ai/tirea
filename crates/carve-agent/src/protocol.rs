@@ -1,6 +1,6 @@
 use crate::ag_ui::{AGUIContext, AGUIEvent, AGUIMessage, MessageRole, RunAgentRequest};
 use crate::ui_stream::{AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent};
-use crate::{agent_event_to_agui, gen_message_id, AgentEvent, Message, Role, Visibility};
+use crate::{gen_message_id, AgentEvent, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -244,7 +244,7 @@ impl AgUiEncoderState {
             _ => {}
         }
 
-        agent_event_to_agui(ev, &mut self.ctx)
+        self.ctx.on_agent_event(ev)
     }
 
     fn fallback_finished_current(&mut self) -> Vec<AGUIEvent> {

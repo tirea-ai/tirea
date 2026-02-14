@@ -131,9 +131,7 @@ pub use storage::{
 };
 
 // Stream exports
-pub use stream::{
-    agent_event_to_agui, agent_event_to_ui, AgentEvent, StreamCollector, StreamOutput, StreamResult,
-};
+pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
 
 // Activity exports
 pub use activity::ActivityHub;

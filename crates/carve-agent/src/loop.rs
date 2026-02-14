@@ -6899,26 +6899,24 @@ mod tests {
     #[tokio::test]
     async fn test_message_id_agui_text_message_carries_step_id() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
-        use crate::stream::agent_event_to_agui;
+
 
         let step_msg_id = "pre-gen-assistant-uuid".to_string();
 
         let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
 
         // Simulate: StepStart → TextDelta
-        let step_events = agent_event_to_agui(
+        let step_events = ctx.on_agent_event(
             &AgentEvent::StepStart {
                 message_id: step_msg_id.clone(),
             },
-            &mut ctx,
         );
         assert!(!step_events.is_empty());
 
-        let text_events = agent_event_to_agui(
+        let text_events = ctx.on_agent_event(
             &AgentEvent::TextDelta {
                 delta: "Hello".to_string(),
             },
-            &mut ctx,
         );
 
         // The first AG-UI event on text should be TextMessageStart carrying
@@ -6941,20 +6939,19 @@ mod tests {
     #[tokio::test]
     async fn test_message_id_agui_tool_result_carries_tool_id() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
-        use crate::stream::agent_event_to_agui;
+
 
         let tool_msg_id = "pre-gen-tool-uuid".to_string();
 
         let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
 
-        let result_events = agent_event_to_agui(
+        let result_events = ctx.on_agent_event(
             &AgentEvent::ToolCallDone {
                 id: "call_1".into(),
                 result: ToolResult::success("echo", json!({"echoed": "test"})),
                 patch: None,
                 message_id: tool_msg_id.clone(),
             },
-            &mut ctx,
         );
 
         let tool_result = result_events
@@ -7008,7 +7005,7 @@ mod tests {
     #[tokio::test]
     async fn test_message_id_end_to_end_multi_step() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
-        use crate::stream::agent_event_to_agui;
+
 
         // Step 1: tool call round. Step 2: final text answer.
         let responses = vec![
@@ -7094,7 +7091,7 @@ mod tests {
         let mut agui_tool_result_ids: Vec<String> = Vec::new();
 
         for ev in &events {
-            let agui_events = agent_event_to_agui(ev, &mut ctx);
+            let agui_events = ctx.on_agent_event(ev);
             for ae in &agui_events {
                 match ae {
                     AGUIEvent::TextMessageStart { message_id, .. } => {
