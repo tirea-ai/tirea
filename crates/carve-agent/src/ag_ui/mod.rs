@@ -1315,7 +1315,7 @@ impl RunAgentRequest {
 }
 
 fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
-    use crate::types::{Message, Role};
+    use crate::types::{gen_message_id, Message, Role};
 
     let role = match msg.role {
         MessageRole::System => Role::System,
@@ -1326,7 +1326,7 @@ fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
     };
 
     Message {
-        id: msg.id.clone(),
+        id: Some(msg.id.clone().unwrap_or_else(gen_message_id)),
         role,
         content: msg.content.clone(),
         tool_calls: None,
@@ -6711,6 +6711,56 @@ mod tests {
         assert_eq!(result.messages.len(), 2);
         assert_eq!(result.messages[0].content, "继续");
         assert_eq!(result.messages[1].content, "继续");
+    }
+
+    #[test]
+    fn test_core_message_from_ag_ui_generates_id_when_client_omits_it() {
+        let msg = AGUIMessage::user("hello");
+        assert!(msg.id.is_none(), "precondition: client message has no id");
+
+        let internal = super::core_message_from_ag_ui(&msg);
+        assert!(
+            internal.id.is_some(),
+            "converted message must always have an id"
+        );
+        let id = internal.id.unwrap();
+        assert_eq!(id.len(), 36, "generated id should be a UUID");
+        assert_eq!(&id[14..15], "7", "generated id should be UUID v7");
+    }
+
+    #[test]
+    fn test_core_message_from_ag_ui_preserves_client_provided_id() {
+        let msg = AGUIMessage {
+            id: Some("client-stable-id".into()),
+            role: MessageRole::User,
+            content: "hello".into(),
+            tool_call_id: None,
+        };
+
+        let internal = super::core_message_from_ag_ui(&msg);
+        assert_eq!(internal.id.as_deref(), Some("client-stable-id"));
+    }
+
+    #[test]
+    fn test_idless_user_messages_still_not_deduplicated() {
+        // Even though core_message_from_ag_ui now generates IDs,
+        // dedup logic checks AGUIMessage.id (not the converted Message.id).
+        let thread = Thread::new("s1").with_message(crate::types::Message::user("existing"));
+        let request =
+            RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("no-id input"));
+
+        let s1 = super::apply_agui_request_to_thread(thread, &request);
+        let s2 = super::apply_agui_request_to_thread(s1, &request);
+        assert_eq!(
+            s2.messages.len(),
+            3,
+            "id-less user messages must not be deduplicated (behavior unchanged)"
+        );
+        // But each converted message has a unique generated ID.
+        assert_ne!(
+            s2.messages[1].id, s2.messages[2].id,
+            "each conversion should generate a distinct ID"
+        );
     }
 
     #[test]

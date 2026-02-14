@@ -1,6 +1,6 @@
 use crate::ag_ui::{AGUIContext, AGUIEvent, AGUIMessage, MessageRole, RunAgentRequest};
 use crate::ui_stream::{AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent};
-use crate::{agent_event_to_agui, AgentEvent, Message, Role, Visibility};
+use crate::{agent_event_to_agui, gen_message_id, AgentEvent, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -186,7 +186,7 @@ fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
                 MessageRole::Tool => Role::Tool,
             };
             Message {
-                id: m.id.clone(),
+                id: Some(m.id.clone().unwrap_or_else(gen_message_id)),
                 role,
                 content: m.content.clone(),
                 tool_calls: None,
@@ -661,5 +661,32 @@ mod tests {
         assert!(json.contains("toolName"));
         assert!(!json.contains("tool_call_id"));
         assert!(!json.contains("tool_name"));
+    }
+
+    #[test]
+    fn test_convert_agui_messages_generates_id_when_missing() {
+        let msg = AGUIMessage {
+            id: None,
+            role: MessageRole::User,
+            content: "hello".into(),
+            tool_call_id: None,
+        };
+        let result = convert_agui_messages(&[msg]);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].id.is_some(), "must generate id when client omits it");
+        let id = result[0].id.as_ref().unwrap();
+        assert_eq!(id.len(), 36, "generated id should be a UUID");
+    }
+
+    #[test]
+    fn test_convert_agui_messages_preserves_client_id() {
+        let msg = AGUIMessage {
+            id: Some("client-id-123".into()),
+            role: MessageRole::User,
+            content: "hello".into(),
+            tool_call_id: None,
+        };
+        let result = convert_agui_messages(&[msg]);
+        assert_eq!(result[0].id.as_deref(), Some("client-id-123"));
     }
 }
