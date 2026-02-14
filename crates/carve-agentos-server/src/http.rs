@@ -5,19 +5,21 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::ag_ui::{AGUIMessage, MessageRole, RunAgentRequest};
+use carve_agent::ag_ui::RunAgentRequest;
 use carve_agent::{
-    AgentEvent, AgentOs, AgentOsRunError, Message, MessagePage, MessageQuery, Role, RunRequest,
-    SortOrder, Thread, ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
+    AgentEvent, AgentOs, AgentOsRunError, MessagePage, MessageQuery, SortOrder, Thread,
+    ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::protocol::{AgUiProtocolEncoder, AiSdkProtocolEncoder, ProtocolEncoder};
+use crate::protocol::{
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder,
+    AiSdkRunRequest, ProtocolInputAdapter, ProtocolOutputEncoder,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -63,32 +65,6 @@ impl From<AgentOsRunError> for ApiError {
             other => ApiError::Internal(other.to_string()),
         }
     }
-}
-
-/// Convert AG-UI messages to internal format, filtering out assistant messages
-/// (which are echoed back by AG-UI clients and would cause duplicates).
-fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
-    messages
-        .iter()
-        .filter(|m| m.role != MessageRole::Assistant)
-        .map(|m| {
-            let role = match m.role {
-                MessageRole::System | MessageRole::Developer => Role::System,
-                MessageRole::User => Role::User,
-                MessageRole::Assistant => Role::Assistant,
-                MessageRole::Tool => Role::Tool,
-            };
-            Message {
-                id: m.id.clone(),
-                role,
-                content: m.content.clone(),
-                tool_calls: None,
-                tool_call_id: m.tool_call_id.clone(),
-                visibility: Visibility::default(),
-                metadata: None,
-            }
-        })
-        .collect()
 }
 
 pub fn router(state: AppState) -> Router {
@@ -208,15 +184,6 @@ async fn get_thread_messages(
         })
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct AiSdkRunRequest {
-    #[serde(rename = "sessionId")]
-    pub thread_id: String,
-    pub input: String,
-    #[serde(rename = "runId")]
-    pub run_id: Option<String>,
-}
-
 async fn send_sse_json<T: Serialize>(
     tx: &tokio::sync::mpsc::Sender<Bytes>,
     event: &T,
@@ -235,7 +202,7 @@ async fn stream_encoded_sse<E>(
     tx: tokio::sync::mpsc::Sender<Bytes>,
     done_marker: Option<&'static str>,
 ) where
-    E: ProtocolEncoder,
+    E: ProtocolOutputEncoder,
 {
     for event in encoder.prologue() {
         if send_sse_json(&tx, &event).await.is_err() {
@@ -276,19 +243,7 @@ async fn run_ai_sdk_sse(
         ));
     }
 
-    let run_request = RunRequest {
-        agent_id,
-        thread_id: if req.thread_id.trim().is_empty() {
-            None
-        } else {
-            Some(req.thread_id)
-        },
-        run_id: req.run_id,
-        resource_id: None,
-        initial_state: None,
-        messages: vec![Message::user(req.input)],
-        runtime: HashMap::new(),
-    };
+    let run_request = AiSdkInputAdapter::to_run_request(agent_id, req);
 
     let run = st.os.run_stream(run_request).await?;
 
@@ -318,24 +273,7 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    // Convert AG-UI protocol → internal RunRequest
-    let mut runtime = HashMap::new();
-    if let Some(ref parent_run_id) = req.parent_run_id {
-        runtime.insert(
-            "parent_run_id".to_string(),
-            serde_json::Value::String(parent_run_id.clone()),
-        );
-    }
-
-    let run_request = RunRequest {
-        agent_id,
-        thread_id: Some(req.thread_id.clone()),
-        run_id: Some(req.run_id.clone()),
-        resource_id: None,
-        initial_state: req.state.clone(),
-        messages: convert_agui_messages(&req.messages),
-        runtime,
-    };
+    let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
 
     let run = st.os.run_stream(run_request).await?;
 
