@@ -75,7 +75,7 @@ impl ProtocolInputAdapter for AiSdkV6InputAdapter {
             },
             run_id: request.run_id,
             resource_id: None,
-            initial_state: None,
+            state: None,
             messages: vec![Message::user(request.input)],
             runtime: std::collections::HashMap::new(),
         }
@@ -101,7 +101,7 @@ impl ProtocolInputAdapter for AgUiInputAdapter {
             thread_id: Some(request.thread_id),
             run_id: Some(request.run_id),
             resource_id: None,
-            initial_state: request.state,
+            state: request.state,
             messages: convert_agui_messages(&request.messages),
             runtime,
         }

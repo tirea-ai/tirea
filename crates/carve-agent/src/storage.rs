@@ -2862,4 +2862,53 @@ mod tests {
         assert_eq!(head.version, 1);
         assert_eq!(head.thread.message_count(), 1); // unchanged
     }
+
+    /// Simulates what `run_stream` does when the frontend sends a state snapshot
+    /// for an existing thread: the snapshot replaces the current state and is
+    /// persisted atomically in the UserMessage delta.
+    #[tokio::test]
+    async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
+        let store = MemoryStorage::new();
+
+        // 1. Create thread with initial state + a patch
+        let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
+        store.create(&thread).await.unwrap();
+        let patch_delta = ThreadDelta {
+            run_id: "run-0".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::ToolResultsCommitted,
+            messages: vec![],
+            patches: vec![TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            )],
+            snapshot: None,
+        };
+        store.append("t1", &patch_delta).await.unwrap();
+
+        // Verify current state: base={"counter":0}, 1 patch → rebuilt={"counter":5}
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.thread.rebuild_state().unwrap(), json!({"counter": 5}));
+        assert_eq!(head.thread.patches.len(), 1);
+
+        // 2. Frontend sends state={"counter":10, "name":"Alice"} along with a user message.
+        //    This simulates what run_stream does: include snapshot in UserMessage delta.
+        let frontend_state = json!({"counter": 10, "name": "Alice"});
+        let user_delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::UserMessage,
+            messages: vec![Arc::new(Message::user("hello"))],
+            patches: vec![],
+            snapshot: Some(frontend_state.clone()),
+        };
+        store.append("t1", &user_delta).await.unwrap();
+
+        // 3. Verify: state is fully replaced, patches cleared
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.thread.state, frontend_state);
+        assert!(head.thread.patches.is_empty());
+        assert_eq!(head.thread.rebuild_state().unwrap(), frontend_state);
+        // User message was also persisted
+        assert!(head.thread.messages.iter().any(|m| m.role == crate::types::Role::User));
+    }
 }
