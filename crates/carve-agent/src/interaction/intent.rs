@@ -9,8 +9,6 @@ const INTERACTION_INTENTS_KEY: &str = "__interaction_intents";
 /// Strategy-produced intent consumed by [`super::interaction_plugin::InteractionPlugin`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) enum InteractionIntent {
-    /// Block current tool execution.
-    Block { reason: String },
     /// Mark current tool as pending with a client interaction payload.
     Pending { interaction: Interaction },
 }
@@ -28,15 +26,6 @@ pub(crate) fn push_intent(step: &mut StepContext<'_>, intent: InteractionIntent)
     let mut intents = read_intents(step);
     intents.push(intent);
     write_intents(step, intents);
-}
-
-pub(crate) fn push_block_intent(step: &mut StepContext<'_>, reason: impl Into<String>) {
-    push_intent(
-        step,
-        InteractionIntent::Block {
-            reason: reason.into(),
-        },
-    );
 }
 
 pub(crate) fn push_pending_intent(step: &mut StepContext<'_>, interaction: Interaction) {

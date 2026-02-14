@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::interaction::{push_block_intent, push_pending_intent};
+use crate::interaction::push_pending_intent;
 use crate::plugin::AgentPlugin;
 use crate::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
@@ -147,7 +147,7 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                push_block_intent(step, format!("Tool '{}' is denied", tool_id));
+                step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
                 let tool_call_id = step.tool_call_id().unwrap_or_default().to_string();
@@ -179,16 +179,8 @@ mod tests {
 
     fn apply_interaction_intents(step: &mut crate::phase::StepContext<'_>) {
         let intents = take_intents(step);
-        if let Some(reason) = intents.iter().find_map(|intent| match intent {
-            InteractionIntent::Block { reason } => Some(reason.clone()),
-            _ => None,
-        }) {
-            step.block(reason);
-            return;
-        }
         if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
             InteractionIntent::Pending { interaction } => Some(interaction),
-            _ => None,
         }) {
             step.pending(interaction);
         }

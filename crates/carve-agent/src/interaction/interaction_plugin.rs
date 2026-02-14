@@ -150,17 +150,8 @@ impl AgentPlugin for InteractionPlugin {
             return;
         }
 
-        if let Some(reason) = intents.iter().find_map(|intent| match intent {
-            InteractionIntent::Block { reason } => Some(reason.clone()),
-            _ => None,
-        }) {
-            step.block(reason);
-            return;
-        }
-
         if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
             InteractionIntent::Pending { interaction } => Some(interaction),
-            _ => None,
         }) {
             step.pending(interaction);
         }
@@ -169,7 +160,7 @@ impl AgentPlugin for InteractionPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{push_block_intent, push_pending_intent};
+    use super::super::push_pending_intent;
     use super::*;
     use crate::phase::ToolContext;
     use crate::state_types::Interaction;
@@ -232,7 +223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn block_intent_has_priority_over_pending_intent() {
+    async fn first_pending_intent_is_applied() {
         let plugin = InteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
         let state = json!({});
         let ctx = Context::new(&state, "test", "test");
@@ -245,14 +236,22 @@ mod tests {
             &mut step,
             Interaction::new("perm_1", "confirm").with_message("allow?"),
         );
-        push_block_intent(&mut step, "denied by policy");
+        push_pending_intent(
+            &mut step,
+            Interaction::new("perm_2", "confirm").with_message("allow 2?"),
+        );
 
         plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
             .await;
 
-        assert!(step.tool_blocked());
-        assert!(!step.tool_pending());
+        assert!(step.tool_pending());
+        let pending = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.as_ref())
+            .expect("pending interaction should exist");
+        assert_eq!(pending.id, "perm_1");
     }
 
     #[tokio::test]

@@ -1977,16 +1977,8 @@ mod tests {
 
     fn apply_interaction_intents(step: &mut StepContext<'_>) {
         let intents = take_intents(step);
-        if let Some(reason) = intents.iter().find_map(|intent| match intent {
-            InteractionIntent::Block { reason } => Some(reason.clone()),
-            _ => None,
-        }) {
-            step.block(reason);
-            return;
-        }
         if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
             InteractionIntent::Pending { interaction } => Some(interaction),
-            _ => None,
         }) {
             step.pending(interaction);
         }
