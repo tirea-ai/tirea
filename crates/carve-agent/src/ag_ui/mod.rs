@@ -783,6 +783,8 @@ pub struct AGUIContext {
     /// Whether a terminal event (Error/Aborted) has been emitted.
     /// After this, all subsequent events are suppressed.
     stopped: bool,
+    /// Last emitted state snapshot, used to compute RFC 6902 deltas.
+    last_state: Option<Value>,
 }
 
 impl AGUIContext {
@@ -799,6 +801,7 @@ impl AGUIContext {
             text_ever_ended: false,
             current_step: None,
             stopped: false,
+            last_state: None,
         }
     }
 
@@ -978,7 +981,22 @@ impl AGUIContext {
             }
 
             AgentEvent::StateSnapshot { snapshot } => {
-                vec![AGUIEvent::state_snapshot(snapshot.clone())]
+                let mut events = Vec::new();
+                // Emit RFC 6902 delta if we have a previous state to diff against.
+                if let Some(ref old) = self.last_state {
+                    let patch = json_patch::diff(old, snapshot);
+                    if !patch.0.is_empty() {
+                        let delta = patch
+                            .0
+                            .iter()
+                            .map(|op| serde_json::to_value(op).expect("RFC 6902 op serializes"))
+                            .collect();
+                        events.push(AGUIEvent::state_delta(delta));
+                    }
+                }
+                self.last_state = Some(snapshot.clone());
+                events.push(AGUIEvent::state_snapshot(snapshot.clone()));
+                events
             }
             AgentEvent::StateDelta { delta } => {
                 vec![AGUIEvent::state_delta(delta.clone())]
@@ -2460,7 +2478,7 @@ mod tests {
 
         let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
-        // State snapshot
+        // First state snapshot — no previous state, so only snapshot (no delta).
         let snapshot_event = AgentEvent::StateSnapshot {
             snapshot: json!({"user": "Alice"}),
         };
@@ -2468,9 +2486,25 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], AGUIEvent::StateSnapshot { .. }));
 
-        // State delta
+        // Second state snapshot — has previous state, emits delta + snapshot.
+        let snapshot_event2 = AgentEvent::StateSnapshot {
+            snapshot: json!({"user": "Bob"}),
+        };
+        let outputs = ctx.on_agent_event(&snapshot_event2);
+        assert_eq!(outputs.len(), 2);
+        assert!(matches!(outputs[0], AGUIEvent::StateDelta { .. }));
+        assert!(matches!(outputs[1], AGUIEvent::StateSnapshot { .. }));
+        // Verify the delta contains the correct RFC 6902 replace operation.
+        if let AGUIEvent::StateDelta { delta, .. } = &outputs[0] {
+            assert_eq!(delta.len(), 1);
+            assert_eq!(delta[0]["op"], "replace");
+            assert_eq!(delta[0]["path"], "/user");
+            assert_eq!(delta[0]["value"], "Bob");
+        }
+
+        // Passthrough: AgentEvent::StateDelta still works directly.
         let delta_event = AgentEvent::StateDelta {
-            delta: vec![json!({"op": "replace", "path": "/user", "value": "Bob"})],
+            delta: vec![json!({"op": "replace", "path": "/user", "value": "Carol"})],
         };
         let outputs = ctx.on_agent_event(&delta_event);
         assert_eq!(outputs.len(), 1);
@@ -3051,7 +3085,7 @@ mod tests {
 
         let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        // State snapshot
+        // First snapshot — no delta (no previous state).
         let events = ctx.on_agent_event(&AgentEvent::StateSnapshot {
             snapshot: json!({"user": "Alice", "count": 0}),
         });
@@ -3060,12 +3094,19 @@ mod tests {
             assert_eq!(snapshot["user"], "Alice");
         }
 
-        // State delta
-        let events = ctx.on_agent_event(&AgentEvent::StateDelta {
-            delta: vec![json!({"op": "replace", "path": "/count", "value": 1})],
+        // Second snapshot — auto-computes delta from previous state.
+        let events = ctx.on_agent_event(&AgentEvent::StateSnapshot {
+            snapshot: json!({"user": "Alice", "count": 1}),
         });
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::StateDelta { .. }));
+        assert!(matches!(events[1], AGUIEvent::StateSnapshot { .. }));
+        if let AGUIEvent::StateDelta { delta, .. } = &events[0] {
+            assert_eq!(delta.len(), 1);
+            assert_eq!(delta[0]["op"], "replace");
+            assert_eq!(delta[0]["path"], "/count");
+            assert_eq!(delta[0]["value"], 1);
+        }
     }
 
     #[test]

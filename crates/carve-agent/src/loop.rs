@@ -7124,4 +7124,5 @@ mod tests {
             "AG-UI ToolCallResult must carry the pre-generated tool message_id"
         );
     }
+
 }
