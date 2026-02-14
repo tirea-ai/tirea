@@ -9,7 +9,8 @@
 //! - `agent_event_to_agui()`: Convert to AG-UI protocol events
 //!
 //! Stateful encoders that manage stream lifecycle (prologue, epilogue, etc.)
-//! live in `carve-agentos-server::protocol`.
+//! should live in the transport layer (for example, protocol output encoders
+//! in a server/gateway crate).
 
 use crate::ag_ui::{AGUIContext, AGUIEvent};
 use crate::state_types::Interaction;
@@ -361,8 +362,8 @@ impl AgentEvent {
 /// Convert an AgentEvent to AI SDK v6 compatible UI stream events.
 ///
 /// This is a stateless conversion of a single event. For full stream lifecycle
-/// management (prologue, epilogue, text_id tracking), use `AiSdkEncoder` in
-/// `carve-agentos-server::protocol`.
+/// management (prologue, epilogue, text_id tracking), use a transport-layer
+/// protocol output encoder.
 pub fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
     match ev {
         AgentEvent::RunStart { .. } => vec![],
@@ -456,7 +457,7 @@ pub fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
 ///
 /// This is a stateless conversion that uses `AGUIContext` for tracking text
 /// message state. For full stream lifecycle management (pending event filtering,
-/// fallback finish), use `AgUiEncoder` in `carve-agentos-server::protocol`.
+/// fallback finish), use a transport-layer protocol output encoder.
 pub fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEvent> {
     match ev {
         AgentEvent::RunStart {

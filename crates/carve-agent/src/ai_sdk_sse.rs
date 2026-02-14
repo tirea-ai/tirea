@@ -4,6 +4,10 @@
 //! Server-Sent Events formatted for the Vercel AI SDK v6 UI Message Stream
 //! protocol.
 //!
+//! Note: this module is a convenience transport helper that couples protocol
+//! encoding with SSE framing. In layered deployments, keep protocol adapters
+//! and transport channels in the server/gateway layer.
+//!
 //! # Example
 //!
 //! ```ignore

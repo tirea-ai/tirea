@@ -1734,6 +1734,8 @@ pub fn run_agent_stream_with_parent(
 ///
 /// This is a convenience function that wraps `run_agent_stream` and formats
 /// each event as Server-Sent Events (SSE) for direct HTTP streaming.
+/// Layered servers may prefer protocol-output encoding plus transport framing
+/// in a gateway crate.
 ///
 /// # Returns
 ///

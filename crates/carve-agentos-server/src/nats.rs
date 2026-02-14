@@ -1,13 +1,15 @@
-use carve_agent::ag_ui::{AGUIEvent, MessageRole, RunAgentRequest};
+use carve_agent::ag_ui::{AGUIEvent, RunAgentRequest};
 use carve_agent::ui_stream::UIStreamEvent;
-use carve_agent::{AgentOs, Message, Role, RunRequest, Visibility};
+use carve_agent::AgentOs;
 use futures::StreamExt;
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing;
 
-use crate::protocol::{AgUiEncoder, AiSdkEncoder};
+use crate::protocol::{
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
+    ProtocolInputAdapter, ProtocolOutputEncoder,
+};
 use async_nats::ConnectErrorKind;
 
 const SUBJECT_RUN_AGUI: &str = "agentos.run.agui";
@@ -101,26 +103,7 @@ impl NatsGateway {
             ));
         };
 
-        // Convert AG-UI protocol → internal RunRequest
-        let mut runtime = HashMap::new();
-        if let Some(ref parent_run_id) = req.request.parent_run_id {
-            runtime.insert(
-                "parent_run_id".to_string(),
-                serde_json::Value::String(parent_run_id.clone()),
-            );
-        }
-
-        let messages = convert_agui_messages(&req.request.messages);
-
-        let run_request = RunRequest {
-            agent_id: req.agent_id,
-            thread_id: Some(req.request.thread_id.clone()),
-            run_id: Some(req.request.run_id.clone()),
-            resource_id: None,
-            initial_state: req.request.state.clone(),
-            messages,
-            runtime,
-        };
+        let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
 
         let run = match self.os.run_stream(run_request).await {
             Ok(r) => r,
@@ -134,30 +117,8 @@ impl NatsGateway {
             }
         };
 
-        let mut events = run.events;
-        let mut enc = AgUiEncoder::new(run.thread_id.clone(), run.run_id.clone());
-
-        while let Some(ev) = events.next().await {
-            for ag in enc.on_agent_event(&ev) {
-                let _ = self
-                    .client
-                    .publish(
-                        reply.clone(),
-                        serde_json::to_vec(&ag).unwrap_or_default().into(),
-                    )
-                    .await;
-            }
-        }
-
-        for fallback in enc.fallback_finished(&run.thread_id, &run.run_id) {
-            let _ = self
-                .client
-                .publish(
-                    reply.clone(),
-                    serde_json::to_vec(&fallback).unwrap_or_default().into(),
-                )
-                .await;
-        }
+        let enc = AgUiProtocolEncoder::new(run.thread_id, run.run_id);
+        publish_encoded_nats_stream(self.client.clone(), reply, run.events, enc).await;
 
         Ok(())
     }
@@ -194,19 +155,14 @@ impl NatsGateway {
             ));
         };
 
-        let run_request = RunRequest {
-            agent_id: req.agent_id,
-            thread_id: if req.thread_id.trim().is_empty() {
-                None
-            } else {
-                Some(req.thread_id)
+        let run_request = AiSdkInputAdapter::to_run_request(
+            req.agent_id,
+            AiSdkRunRequest {
+                thread_id: req.thread_id,
+                input: req.input,
+                run_id: req.run_id,
             },
-            run_id: req.run_id,
-            resource_id: None,
-            initial_state: None,
-            messages: vec![Message::user(req.input)],
-            runtime: HashMap::new(),
-        };
+        );
 
         let run = match self.os.run_stream(run_request).await {
             Ok(r) => r,
@@ -220,56 +176,50 @@ impl NatsGateway {
             }
         };
 
-        let mut events = run.events;
-        let mut enc = AiSdkEncoder::new(run.run_id.clone());
-
-        for e in enc.prologue() {
-            let _ = self
-                .client
-                .publish(
-                    reply.clone(),
-                    serde_json::to_vec(&e).unwrap_or_default().into(),
-                )
-                .await;
-        }
-
-        while let Some(ev) = events.next().await {
-            for ui in enc.on_agent_event(&ev) {
-                let _ = self
-                    .client
-                    .publish(
-                        reply.clone(),
-                        serde_json::to_vec(&ui).unwrap_or_default().into(),
-                    )
-                    .await;
-            }
-        }
+        let enc = AiSdkProtocolEncoder::new(run.run_id, Some(run.thread_id));
+        publish_encoded_nats_stream(self.client.clone(), reply, run.events, enc).await;
 
         Ok(())
     }
 }
 
-/// Convert AG-UI messages to internal format, filtering out assistant messages.
-fn convert_agui_messages(messages: &[carve_agent::ag_ui::AGUIMessage]) -> Vec<Message> {
-    messages
-        .iter()
-        .filter(|m| m.role != MessageRole::Assistant)
-        .map(|m| {
-            let role = match m.role {
-                MessageRole::System | MessageRole::Developer => Role::System,
-                MessageRole::User => Role::User,
-                MessageRole::Assistant => Role::Assistant,
-                MessageRole::Tool => Role::Tool,
-            };
-            Message {
-                id: m.id.clone(),
-                role,
-                content: m.content.clone(),
-                tool_calls: None,
-                tool_call_id: m.tool_call_id.clone(),
-                visibility: Visibility::default(),
-                metadata: None,
+async fn publish_nats_json<T: Serialize>(
+    client: &async_nats::Client,
+    subject: &async_nats::Subject,
+    event: &T,
+) -> Result<(), ()> {
+    let payload = serde_json::to_vec(event).unwrap_or_default().into();
+    client
+        .publish(subject.clone(), payload)
+        .await
+        .map_err(|_| ())
+}
+
+async fn publish_encoded_nats_stream<E>(
+    client: async_nats::Client,
+    subject: async_nats::Subject,
+    mut events: std::pin::Pin<Box<dyn futures::Stream<Item = carve_agent::AgentEvent> + Send>>,
+    mut encoder: E,
+) where
+    E: ProtocolOutputEncoder,
+{
+    for event in encoder.prologue() {
+        if publish_nats_json(&client, &subject, &event).await.is_err() {
+            return;
+        }
+    }
+
+    while let Some(agent_event) = events.next().await {
+        for event in encoder.on_agent_event(&agent_event) {
+            if publish_nats_json(&client, &subject, &event).await.is_err() {
+                return;
             }
-        })
-        .collect()
+        }
+    }
+
+    for event in encoder.epilogue() {
+        if publish_nats_json(&client, &subject, &event).await.is_err() {
+            return;
+        }
+    }
 }
