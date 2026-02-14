@@ -32,6 +32,17 @@ pub(crate) fn push_pending_intent(step: &mut StepContext<'_>, interaction: Inter
     push_intent(step, InteractionIntent::Pending { interaction });
 }
 
+/// Set pending gate immediately and also enqueue intent for mechanism plugins.
+///
+/// This keeps strategy plugins usable standalone (without InteractionPlugin)
+/// while preserving the shared intent channel behavior when it is present.
+pub(crate) fn set_pending_and_push_intent(step: &mut StepContext<'_>, interaction: Interaction) {
+    if !step.tool_blocked() && !step.tool_pending() {
+        step.pending(interaction.clone());
+    }
+    push_pending_intent(step, interaction);
+}
+
 pub(crate) fn take_intents(step: &mut StepContext<'_>) -> Vec<InteractionIntent> {
     let intents = read_intents(step);
     write_intents(step, Vec::new());

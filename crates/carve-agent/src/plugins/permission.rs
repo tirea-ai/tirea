@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::interaction::push_pending_intent;
+use crate::interaction::set_pending_and_push_intent;
 use crate::plugin::AgentPlugin;
 use crate::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
@@ -156,10 +156,7 @@ impl AgentPlugin for PermissionPlugin {
                 let origin_args = step.tool_args().cloned().unwrap_or_default();
                 let question = format!("Allow tool '{}' to execute?", tool_id);
                 // Create a pending interaction for confirmation
-                let interaction = Interaction::new(
-                    format!("permission_{}", tool_id),
-                    format!("tool:{ASK_USER_TOOL_NAME}"),
-                )
+                let interaction = Interaction::new(format!("permission_{}", tool_id), "confirm")
                 .with_message(question.clone())
                 .with_parameters(json!({
                     "questions": [
@@ -180,6 +177,7 @@ impl AgentPlugin for PermissionPlugin {
                         }
                     ],
                     "ask_call_id": format!("permission_{}", tool_id),
+                    "ask_user_tool": ASK_USER_TOOL_NAME,
                     "origin_call_id": origin_call_id,
                     "origin_call_name": tool_id,
                     "origin_tool_call": {
@@ -194,7 +192,7 @@ impl AgentPlugin for PermissionPlugin {
                         "arguments": origin_args
                     }
                 }));
-                push_pending_intent(step, interaction);
+                set_pending_and_push_intent(step, interaction);
             }
         }
     }
@@ -476,8 +474,9 @@ mod tests {
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref())
             .expect("pending interaction should exist");
-        assert_eq!(interaction.action, format!("tool:{ASK_USER_TOOL_NAME}"));
+        assert_eq!(interaction.action, "confirm");
         assert!(interaction.parameters.get("questions").is_some());
+        assert_eq!(interaction.parameters["ask_user_tool"], ASK_USER_TOOL_NAME);
         assert_eq!(interaction.parameters["origin_call_id"], "call_1");
         assert_eq!(interaction.parameters["origin_call_name"], "test_tool");
         assert_eq!(interaction.parameters["origin_tool_call"]["id"], "call_1");

@@ -4320,8 +4320,8 @@ fn test_agui_context_step_pairing_in_multi_step() {
 
 #[test]
 fn test_agui_context_skips_pending_emits_run_finished() {
-    // AGUIContext skips Pending events internally (no tool call conversion).
-    // RunFinish is always emitted by the agent loop.
+    // AGUIContext converts Pending into tool call events.
+    // RunFinish is still emitted by the agent loop.
     use crate::stream::AgentEvent;
 
     let mut ctx = AGUIContext::new("t".into(), "r".into());
@@ -4360,12 +4360,12 @@ fn test_agui_context_skips_pending_emits_run_finished() {
         "RunFinished must be emitted"
     );
 
-    // Pending tool call events should NOT be present (skipped by AGUIContext)
+    // Pending tool call events should be present
     assert!(
-        !all_events
+        all_events
             .iter()
             .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-        "Pending interaction tool calls should be skipped"
+        "Pending interaction tool calls should be emitted"
     );
 }
 
@@ -4401,12 +4401,12 @@ fn test_agui_context_skips_all_pending_including_recovery() {
         all_events.extend(ctx.on_agent_event(event));
     }
 
-    // All Pending events are skipped — no tool call events emitted
+    // Recovery pending should also be converted to tool call events.
     assert!(
-        !all_events
+        all_events
             .iter()
             .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-        "Pending events (including recovery) must be skipped"
+        "Pending events (including recovery) must be emitted"
     );
 }
 
@@ -5363,8 +5363,10 @@ fn test_agui_pending_interaction_produces_tool_call_sequence() {
         Interaction::new("int-1", "tool:addTask").with_parameters(json!({"title": "New task"}));
 
     let events = ctx.on_agent_event(&crate::stream::AgentEvent::Pending { interaction });
-    // Pending events are skipped by AGUIContext
-    assert!(events.is_empty());
+    assert_eq!(events.len(), 3);
+    assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
+    assert!(matches!(events[1], AGUIEvent::ToolCallArgs { .. }));
+    assert!(matches!(events[2], AGUIEvent::ToolCallEnd { .. }));
 }
 
 #[test]
@@ -5374,13 +5376,16 @@ fn test_agui_pending_after_text_ends_text_first() {
     // Start text
     let _ = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() });
 
-    // Pending should close text but skip tool call conversion
+    // Pending should close text and emit tool call conversion
     let interaction = Interaction::new("int-1", "tool:x");
     let events = ctx.on_agent_event(&crate::stream::AgentEvent::Pending { interaction });
 
-    // Only TEXT_MESSAGE_END (no tool call events)
-    assert_eq!(events.len(), 1);
+    // TEXT_MESSAGE_END + ToolCallStart/Args/End
+    assert_eq!(events.len(), 4);
     assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
+    assert!(matches!(events[1], AGUIEvent::ToolCallStart { .. }));
+    assert!(matches!(events[2], AGUIEvent::ToolCallArgs { .. }));
+    assert!(matches!(events[3], AGUIEvent::ToolCallEnd { .. }));
 }
 
 #[test]

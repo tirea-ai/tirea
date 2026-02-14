@@ -419,7 +419,7 @@ impl RunAgentRequest {
     }
 }
 
-pub(super) fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
+pub(crate) fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Message {
     use crate::types::{gen_message_id, Message, Role};
 
     let role = match msg.role {

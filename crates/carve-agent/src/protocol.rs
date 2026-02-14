@@ -1,8 +1,12 @@
-use crate::ag_ui::{AGUIContext, AGUIEvent, AGUIMessage, MessageRole, RunAgentRequest};
+use crate::ag_ui::{
+    core_message_from_ag_ui, AGUIContext, AGUIEvent, AGUIMessage, MessageRole, RunAgentRequest,
+};
 use crate::ui_stream::{
     AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
 };
-use crate::{gen_message_id, AgentEvent, Message, Role, Visibility};
+#[cfg(test)]
+use crate::Visibility;
+use crate::{AgentEvent, Message, Role};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -203,23 +207,7 @@ fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
     messages
         .iter()
         .filter(|m| m.role != MessageRole::Assistant)
-        .map(|m| {
-            let role = match m.role {
-                MessageRole::System | MessageRole::Developer => Role::System,
-                MessageRole::User => Role::User,
-                MessageRole::Assistant => Role::Assistant,
-                MessageRole::Tool => Role::Tool,
-            };
-            Message {
-                id: Some(m.id.clone().unwrap_or_else(gen_message_id)),
-                role,
-                content: m.content.clone(),
-                tool_calls: None,
-                tool_call_id: m.tool_call_id.clone(),
-                visibility: Visibility::default(),
-                metadata: None,
-            }
-        })
+        .map(core_message_from_ag_ui)
         .collect()
 }
 

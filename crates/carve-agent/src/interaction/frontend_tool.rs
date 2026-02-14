@@ -2,7 +2,7 @@
 //!
 //! Intercepts frontend tool execution and emits pending interaction intents.
 
-use super::push_pending_intent;
+use super::set_pending_and_push_intent;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::Interaction;
@@ -87,7 +87,7 @@ impl AgentPlugin for FrontendToolPlugin {
         let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
             .with_parameters(tool.args.clone());
 
-        push_pending_intent(step, interaction);
+        set_pending_and_push_intent(step, interaction);
     }
 }
 

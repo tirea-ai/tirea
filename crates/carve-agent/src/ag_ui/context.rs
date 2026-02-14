@@ -138,13 +138,13 @@ impl AGUIContext {
             AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
                 return vec![];
             }
-            // Pending: close text but skip interaction→tool-call conversion.
-            // LLM TOOL_CALL events already inform the client about frontend tools.
-            AgentEvent::Pending { .. } => {
+            // Pending: close current text stream and emit interaction tool-call events.
+            AgentEvent::Pending { interaction } => {
                 let mut events = Vec::new();
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
+                events.extend(interaction.to_ag_ui_events());
                 return events;
             }
             _ => {}

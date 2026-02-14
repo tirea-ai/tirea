@@ -444,6 +444,33 @@ fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     messages
 }
 
+type InferenceInputs = (Vec<Message>, Vec<String>, bool, Option<tracing::Span>);
+
+fn inference_inputs_from_step(step: &mut StepContext<'_>, system_prompt: &str) -> InferenceInputs {
+    let messages = build_messages(step, system_prompt);
+    let filtered_tools = step
+        .tools
+        .iter()
+        .map(|td| td.id.clone())
+        .collect::<Vec<_>>();
+    let skip_inference = step.skip_inference;
+    let tracing_span = step.tracing_span.take();
+    (messages, filtered_tools, skip_inference, tracing_span)
+}
+
+fn build_request_for_filtered_tools(
+    messages: &[Message],
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    filtered_tools: &[String],
+) -> genai::chat::ChatRequest {
+    let filtered_tool_refs: Vec<&dyn Tool> = tools
+        .values()
+        .filter(|t| filtered_tools.contains(&t.descriptor().id))
+        .map(|t| t.as_ref())
+        .collect();
+    build_request(messages, &filtered_tool_refs)
+}
+
 fn set_agent_pending_interaction(state: &Value, interaction: Interaction) -> TrackedPatch {
     let ctx = Context::new(state, "agent_pending", "agent_loop");
     let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
@@ -747,6 +774,13 @@ fn next_step_index(thread: &Thread) -> u32 {
         .unwrap_or(0)
 }
 
+fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageMetadata {
+    MessageMetadata {
+        run_id,
+        step_index: Some(step_index),
+    }
+}
+
 /// Run one step of the agent loop (non-streaming).
 ///
 /// A step consists of:
@@ -772,17 +806,7 @@ pub async fn run_step(
         &config.plugins,
         &[Phase::StepStart, Phase::BeforeInference],
         |_| {},
-        |step| {
-            let messages = build_messages(step, &config.system_prompt);
-            let filtered_tools = step
-                .tools
-                .iter()
-                .map(|td| td.id.clone())
-                .collect::<Vec<_>>();
-            let skip_inference = step.skip_inference;
-            let tracing_span = step.tracing_span.take();
-            (messages, filtered_tools, skip_inference, tracing_span)
-        },
+        |step| inference_inputs_from_step(step, &config.system_prompt),
     )
     .await?;
     let ((messages, filtered_tools, skip_inference, tracing_span), pending) = phase_block;
@@ -801,12 +825,7 @@ pub async fn run_step(
     }
 
     // Build request with filtered tools
-    let filtered_tool_refs: Vec<&dyn Tool> = tools
-        .values()
-        .filter(|t| filtered_tools.contains(&t.descriptor().id))
-        .map(|t| t.as_ref())
-        .collect();
-    let request = build_request(&messages, &filtered_tool_refs);
+    let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
 
     // Call LLM (instrumented with tracing span for context propagation)
     let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
@@ -868,13 +887,13 @@ pub async fn run_step(
     let thread = apply_pending_patches(thread, pending);
 
     // Add assistant message
-    let step_meta = MessageMetadata {
-        run_id: thread
+    let step_meta = step_metadata(
+        thread
             .runtime
             .value("run_id")
             .and_then(|v| v.as_str().map(String::from)),
-        step_index: Some(next_step_index(&thread)),
-    };
+        next_step_index(&thread),
+    );
     let thread = if result.tool_calls.is_empty() {
         thread.with_message(assistant_message(&result.text).with_metadata(step_meta))
     } else {
@@ -917,42 +936,8 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<Thread, AgentLoopError> {
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
-        config.allowed_tools.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
-        config.excluded_tools.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY,
-        config.allowed_skills.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_EXCLUDED_SKILLS_KEY,
-        config.excluded_skills.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY,
-        config.allowed_agents.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    crate::tool_filter::set_runtime_filter_if_absent(
-        &mut thread.runtime,
-        crate::tool_filter::RUNTIME_EXCLUDED_AGENTS_KEY,
-        config.excluded_agents.as_deref(),
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    crate::tool_filter::set_runtime_filters_from_definition_if_absent(&mut thread.runtime, config)
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     execute_tools_with_plugins(
         thread,
@@ -983,42 +968,8 @@ fn runtime_with_tool_caller_context(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if let Some(cfg) = config {
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
-            cfg.allowed_tools.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
-            cfg.excluded_tools.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY,
-            cfg.allowed_skills.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_EXCLUDED_SKILLS_KEY,
-            cfg.excluded_skills.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY,
-            cfg.allowed_agents.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        crate::tool_filter::set_runtime_filter_if_absent(
-            &mut rt,
-            crate::tool_filter::RUNTIME_EXCLUDED_AGENTS_KEY,
-            cfg.excluded_agents.as_deref(),
-        )
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        crate::tool_filter::set_runtime_filters_from_definition_if_absent(&mut rt, cfg)
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)
 }
@@ -1562,17 +1513,7 @@ pub async fn run_loop(
             &config.plugins,
             &[Phase::StepStart, Phase::BeforeInference],
             |_| {},
-            |step| {
-                let messages = build_messages(step, &config.system_prompt);
-                let filtered_tools = step
-                    .tools
-                    .iter()
-                    .map(|td| td.id.clone())
-                    .collect::<Vec<_>>();
-                let skip_inference = step.skip_inference;
-                let tracing_span = step.tracing_span.take();
-                (messages, filtered_tools, skip_inference, tracing_span)
-            },
+            |step| inference_inputs_from_step(step, &config.system_prompt),
         )
         .await;
         let ((messages, filtered_tools, skip_inference, tracing_span), pending) = match step_prepare
@@ -1592,12 +1533,7 @@ pub async fn run_loop(
         }
 
         // Build request with filtered tools
-        let filtered_tool_refs: Vec<&dyn Tool> = tools
-            .values()
-            .filter(|t| filtered_tools.contains(&t.descriptor().id))
-            .map(|t| t.as_ref())
-            .collect();
-        let request = build_request(&messages, &filtered_tool_refs);
+        let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
 
         // Call LLM (instrumented with tracing span)
         let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
@@ -1689,10 +1625,7 @@ pub async fn run_loop(
 
         // Add assistant message
         let assistant_msg_id = gen_message_id();
-        let step_meta = MessageMetadata {
-            run_id: Some(run_id.clone()),
-            step_index: Some(loop_state.rounds as u32),
-        };
+        let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
         thread = if result.tool_calls.is_empty() {
             thread.with_message(
                 assistant_message(&result.text)
@@ -2229,13 +2162,7 @@ fn run_loop_stream_impl_with_provider(
                 &config.plugins,
                 &[Phase::StepStart, Phase::BeforeInference],
                 |_| {},
-                |step| {
-                    let messages = build_messages(step, &config.system_prompt);
-                    let filtered_tools = step.tools.iter().map(|td| td.id.clone()).collect::<Vec<_>>();
-                    let skip_inference = step.skip_inference;
-                    let tracing_span = step.tracing_span.take();
-                    (messages, filtered_tools, skip_inference, tracing_span)
-                },
+                |step| inference_inputs_from_step(step, &config.system_prompt),
             )
             .await;
             let ((messages, filtered_tools, skip_inference, tracing_span), pending) =
@@ -2283,12 +2210,7 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Build request with filtered tools
-            let filtered_tool_refs: Vec<&dyn Tool> = tools
-                .values()
-                .filter(|t| filtered_tools.contains(&t.descriptor().id))
-                .map(|t| t.as_ref())
-                .collect();
-            let request = build_request(&messages, &filtered_tool_refs);
+            let request = build_request_for_filtered_tools(&messages, &tools, &filtered_tools);
 
             // Step boundary: starting LLM call
             let assistant_msg_id = gen_message_id();
@@ -2433,10 +2355,7 @@ fn run_loop_stream_impl_with_provider(
             }
 
             // Add assistant message with run/step metadata.
-            let step_meta = MessageMetadata {
-                run_id: Some(run_id.clone()),
-                step_index: Some(loop_state.rounds as u32),
-            };
+            let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
             thread = if result.tool_calls.is_empty() {
                 thread.with_message(assistant_message(&result.text).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
             } else {
@@ -2482,13 +2401,12 @@ fn run_loop_stream_impl_with_provider(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
-                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-
                 let result_value = if result.text.is_empty() {
                     None
                 } else {
                     Some(serde_json::json!({"response": result.text}))
                 };
+                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),

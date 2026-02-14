@@ -13,7 +13,9 @@ pub const RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY: &str = "interaction_frontend_t
 pub const RUNTIME_INTERACTION_RESPONSES_KEY: &str = "interaction_responses";
 
 pub(crate) use frontend_tool::{FrontendToolRegistry, FrontendToolSpec};
-pub(crate) use intent::{push_pending_intent, take_intents, InteractionIntent};
+#[cfg(test)]
+pub(crate) use intent::push_pending_intent;
+pub(crate) use intent::{set_pending_and_push_intent, take_intents, InteractionIntent};
 pub use interaction_plugin::InteractionPlugin;
 pub use interaction_plugin::InteractionPlugin as AgUiInteractionPlugin;
 

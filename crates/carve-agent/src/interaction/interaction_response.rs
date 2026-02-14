@@ -5,8 +5,8 @@
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{
-    InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_STATE_PATH,
+    Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION,
+    AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use async_trait::async_trait;
 use carve_state::Context;
@@ -105,6 +105,28 @@ impl InteractionResponsePlugin {
         !self.responses.is_empty()
     }
 
+    fn pending_interaction_from_step_thread(step: &StepContext<'_>) -> Option<Interaction> {
+        let state = step.thread.rebuild_state().ok()?;
+        state
+            .get(AGENT_STATE_PATH)
+            .and_then(|agent| agent.get("pending_interaction"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
+    }
+
+    fn persisted_pending_interaction(
+        step: &StepContext<'_>,
+        ctx: &Context<'_>,
+    ) -> Option<Interaction> {
+        Self::pending_interaction_from_step_thread(step).or_else(|| {
+            use crate::state_types::AgentState;
+            ctx.state::<AgentState>(AGENT_STATE_PATH)
+                .pending_interaction()
+                .ok()
+                .flatten()
+        })
+    }
+
     fn push_resolution(
         step: &mut StepContext<'_>,
         interaction_id: String,
@@ -122,11 +144,8 @@ impl InteractionResponsePlugin {
 
     /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
     fn on_session_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
-        use crate::state_types::AgentState;
-
-        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-        let pending = agent.pending_interaction().ok().flatten();
-        let Some(pending) = pending else {
+        let agent = ctx.state::<crate::state_types::AgentState>(AGENT_STATE_PATH);
+        let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
         };
         let pending_id_owned = pending.id.clone();
@@ -299,13 +318,8 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        use crate::state_types::AgentState;
-        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-        let persisted_id = agent
-            .pending_interaction()
-            .ok()
-            .flatten()
-            .map(|i| i.id.clone());
+        let agent = ctx.state::<crate::state_types::AgentState>(AGENT_STATE_PATH);
+        let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
 
         let id_matches = persisted_id
             .as_deref()

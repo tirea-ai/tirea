@@ -14,14 +14,8 @@ use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
 };
-use crate::storage::{
-    CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadStore,
-};
-use crate::tool_filter::{
-    set_runtime_filter_if_absent, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_ALLOWED_SKILLS_KEY,
-    RUNTIME_ALLOWED_TOOLS_KEY, RUNTIME_EXCLUDED_AGENTS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
-    RUNTIME_EXCLUDED_TOOLS_KEY,
-};
+use crate::storage::{CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadStore};
+use crate::tool_filter::set_runtime_filters_from_definition_if_absent;
 use crate::traits::tool::Tool;
 use crate::types::Message;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Thread};
@@ -888,36 +882,7 @@ impl AgentOs {
                 .runtime
                 .set(RUNTIME_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_ALLOWED_TOOLS_KEY,
-            def.allowed_tools.as_deref(),
-        );
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_EXCLUDED_TOOLS_KEY,
-            def.excluded_tools.as_deref(),
-        );
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_ALLOWED_SKILLS_KEY,
-            def.allowed_skills.as_deref(),
-        );
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_EXCLUDED_SKILLS_KEY,
-            def.excluded_skills.as_deref(),
-        );
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_ALLOWED_AGENTS_KEY,
-            def.allowed_agents.as_deref(),
-        );
-        let _ = set_runtime_filter_if_absent(
-            &mut thread.runtime,
-            RUNTIME_EXCLUDED_AGENTS_KEY,
-            def.excluded_agents.as_deref(),
-        );
+        let _ = set_runtime_filters_from_definition_if_absent(&mut thread.runtime, &def);
 
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;
@@ -1030,13 +995,8 @@ impl AgentOs {
         // 7. Resolve agent wiring and run
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
 
-        let swc = run_loop_stream_with_checkpoints(
-            client,
-            cfg,
-            thread,
-            tools,
-            RunContext::default(),
-        );
+        let swc =
+            run_loop_stream_with_checkpoints(client, cfg, thread, tools, RunContext::default());
 
         // 8. Spawn background checkpoint + run-end flush
         //
@@ -1328,7 +1288,13 @@ mod tests {
                 self.0
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
+            async fn on_phase(
+                &self,
+                _phase: Phase,
+                _step: &mut StepContext<'_>,
+                _ctx: &Context<'_>,
+            ) {
+            }
         }
 
         let os = AgentOs::builder()
@@ -1358,7 +1324,13 @@ mod tests {
                 self.0
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
+            async fn on_phase(
+                &self,
+                _phase: Phase,
+                _step: &mut StepContext<'_>,
+                _ctx: &Context<'_>,
+            ) {
+            }
         }
 
         let os = AgentOs::builder()
@@ -2049,10 +2021,7 @@ mod tests {
 
         // Create thread with initial state {"counter": 0}
         let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
-        storage
-            .create(&thread)
-            .await
-            .unwrap();
+        storage.create(&thread).await.unwrap();
 
         // Verify initial state
         let head = storage.load("t1").await.unwrap().unwrap();

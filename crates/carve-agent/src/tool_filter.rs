@@ -41,6 +41,43 @@ pub(crate) fn set_runtime_filter_if_absent(
     Ok(())
 }
 
+pub(crate) fn set_runtime_filters_from_definition_if_absent(
+    runtime: &mut Runtime,
+    def: &AgentDefinition,
+) -> Result<(), carve_state::RuntimeError> {
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_ALLOWED_TOOLS_KEY,
+        def.allowed_tools.as_deref(),
+    )?;
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_EXCLUDED_TOOLS_KEY,
+        def.excluded_tools.as_deref(),
+    )?;
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_ALLOWED_SKILLS_KEY,
+        def.allowed_skills.as_deref(),
+    )?;
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_EXCLUDED_SKILLS_KEY,
+        def.excluded_skills.as_deref(),
+    )?;
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_ALLOWED_AGENTS_KEY,
+        def.allowed_agents.as_deref(),
+    )?;
+    set_runtime_filter_if_absent(
+        runtime,
+        RUNTIME_EXCLUDED_AGENTS_KEY,
+        def.excluded_agents.as_deref(),
+    )?;
+    Ok(())
+}
+
 fn parse_runtime_filter(values: Option<&Value>) -> Option<Vec<String>> {
     let arr = values?.as_array()?;
     let parsed: Vec<String> = arr
@@ -127,5 +164,44 @@ mod tests {
             RUNTIME_ALLOWED_TOOLS_KEY,
             RUNTIME_EXCLUDED_TOOLS_KEY
         ));
+    }
+
+    #[test]
+    fn test_set_runtime_filters_from_definition_if_absent() {
+        let mut rt = Runtime::new();
+        let def = AgentDefinition::default()
+            .with_allowed_tools(vec!["a".to_string()])
+            .with_excluded_tools(vec!["b".to_string()])
+            .with_allowed_skills(vec!["s1".to_string()])
+            .with_excluded_skills(vec!["s2".to_string()])
+            .with_allowed_agents(vec!["agent_a".to_string()])
+            .with_excluded_agents(vec!["agent_b".to_string()]);
+
+        set_runtime_filters_from_definition_if_absent(&mut rt, &def).unwrap();
+
+        assert_eq!(
+            rt.value(RUNTIME_ALLOWED_TOOLS_KEY),
+            Some(&serde_json::json!(["a"]))
+        );
+        assert_eq!(
+            rt.value(RUNTIME_EXCLUDED_TOOLS_KEY),
+            Some(&serde_json::json!(["b"]))
+        );
+        assert_eq!(
+            rt.value(RUNTIME_ALLOWED_SKILLS_KEY),
+            Some(&serde_json::json!(["s1"]))
+        );
+        assert_eq!(
+            rt.value(RUNTIME_EXCLUDED_SKILLS_KEY),
+            Some(&serde_json::json!(["s2"]))
+        );
+        assert_eq!(
+            rt.value(RUNTIME_ALLOWED_AGENTS_KEY),
+            Some(&serde_json::json!(["agent_a"]))
+        );
+        assert_eq!(
+            rt.value(RUNTIME_EXCLUDED_AGENTS_KEY),
+            Some(&serde_json::json!(["agent_b"]))
+        );
     }
 }
