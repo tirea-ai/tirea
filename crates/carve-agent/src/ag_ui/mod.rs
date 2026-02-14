@@ -1556,6 +1556,20 @@ fn ensure_agui_request_applied(mut thread: Thread, request: &RunAgentRequest) ->
 }
 
 impl InteractionResponse {
+    fn answer_values(result: &Value) -> Vec<String> {
+        result
+            .as_object()
+            .and_then(|obj| obj.get("answers"))
+            .and_then(|answers| answers.as_object())
+            .map(|answers| {
+                answers
+                    .values()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
     /// Check if a result value indicates approval.
     pub fn is_approved(result: &Value) -> bool {
         match result {
@@ -1575,6 +1589,12 @@ impl InteractionResponse {
                         .get("allowed")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false)
+                    || Self::answer_values(result).iter().any(|v| {
+                        matches!(
+                            v.as_str(),
+                            "allow" | "allowed" | "approve" | "approved" | "yes" | "true" | "ok"
+                        )
+                    })
             }
             _ => false,
         }
@@ -1597,6 +1617,12 @@ impl InteractionResponse {
                     .map(|v| !v)
                     .unwrap_or(false)
                     || obj.get("denied").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || Self::answer_values(result).iter().any(|v| {
+                        matches!(
+                            v.as_str(),
+                            "deny" | "denied" | "reject" | "rejected" | "no" | "false" | "cancel"
+                        )
+                    })
             }
             _ => false,
         }
@@ -4054,6 +4080,30 @@ mod tests {
         let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_message(AGUIMessage::tool(r#"{"denied":false}"#, "perm_2"));
         assert!(!request.is_interaction_denied("perm_2"));
+    }
+
+    #[test]
+    fn test_is_interaction_approved_from_ask_answers() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+            AGUIMessage::tool(
+                r#"{"answers":{"Allow tool 'write_file' to execute?":"Allow"}}"#,
+                "perm_1",
+            ),
+        );
+        assert!(request.is_interaction_approved("perm_1"));
+        assert!(!request.is_interaction_denied("perm_1"));
+    }
+
+    #[test]
+    fn test_is_interaction_denied_from_ask_answers() {
+        let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
+            AGUIMessage::tool(
+                r#"{"answers":{"Allow tool 'write_file' to execute?":"Deny"}}"#,
+                "perm_1",
+            ),
+        );
+        assert!(request.is_interaction_denied("perm_1"));
+        assert!(!request.is_interaction_approved("perm_1"));
     }
 
     #[test]

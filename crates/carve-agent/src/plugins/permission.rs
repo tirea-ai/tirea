@@ -33,6 +33,8 @@ use std::collections::HashMap;
 
 /// State path for permission state.
 pub const PERMISSION_STATE_PATH: &str = "permissions";
+/// Unified frontend ask tool name used for user interaction prompts.
+pub const ASK_USER_TOOL_NAME: &str = "AskUserQuestion";
 
 /// Permission state stored in session state.
 #[derive(Debug, Clone, Serialize, Deserialize, State)]
@@ -150,20 +152,32 @@ impl AgentPlugin for PermissionPlugin {
                 step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
-                let tool_call_id = step.tool_call_id().unwrap_or_default().to_string();
-                let tool_args = step.tool_args().cloned().unwrap_or_default();
+                let question = format!("Allow tool '{}' to execute?", tool_id);
                 // Create a pending interaction for confirmation
-                let interaction = Interaction::new(format!("permission_{}", tool_id), "confirm")
-                    .with_message(format!("Allow tool '{}' to execute?", tool_id))
-                    .with_parameters(json!({
-                        "tool_id": tool_id,
-                        "tool_call_id": tool_call_id,
-                        "tool_call": {
-                            "id": tool_call_id,
-                            "name": tool_id,
-                            "arguments": tool_args
+                let interaction = Interaction::new(
+                    format!("permission_{}", tool_id),
+                    format!("tool:{ASK_USER_TOOL_NAME}"),
+                )
+                .with_message(question.clone())
+                .with_parameters(json!({
+                    "questions": [
+                        {
+                            "question": question,
+                            "header": "Permission",
+                            "options": [
+                                {
+                                    "label": "Allow",
+                                    "description": format!("Allow '{}' to run.", tool_id)
+                                },
+                                {
+                                    "label": "Deny",
+                                    "description": format!("Deny '{}' from running.", tool_id)
+                                }
+                            ],
+                            "multiSelect": false
                         }
-                    }));
+                    ]
+                }));
                 push_pending_intent(step, interaction);
             }
         }
@@ -441,6 +455,13 @@ mod tests {
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
+        let interaction = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.as_ref())
+            .expect("pending interaction should exist");
+        assert_eq!(interaction.action, format!("tool:{ASK_USER_TOOL_NAME}"));
+        assert!(interaction.parameters.get("questions").is_some());
     }
 
     #[test]

@@ -195,14 +195,16 @@ impl InteractionResponsePlugin {
             return;
         }
 
-        if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-            let replay_call = crate::types::ToolCall::new(
-                pending_id_owned.clone(),
-                tool_name,
-                pending.parameters.clone(),
-            );
-            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
-            return;
+        if !pending_id_owned.starts_with("permission_") {
+            if let Some(tool_name) = pending.action.strip_prefix("tool:") {
+                let replay_call = crate::types::ToolCall::new(
+                    pending_id_owned.clone(),
+                    tool_name,
+                    pending.parameters.clone(),
+                );
+                step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+                return;
+            }
         }
 
         // Find the pending tool call from the last assistant message with tool_calls.
