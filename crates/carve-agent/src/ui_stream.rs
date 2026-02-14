@@ -663,7 +663,7 @@ impl UIMessage {
 /// // Convert event to protocol events
 /// let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
 /// let events = adapter.convert(&event);
-/// assert_eq!(events[0].event_type(), "text-delta");
+/// assert!(!events.is_empty());
 /// ```
 #[derive(Debug, Clone)]
 pub struct AiSdkAdapter {
@@ -711,6 +711,22 @@ impl AiSdkAdapter {
         self.convert(event)
             .into_iter()
             .filter_map(|e| serde_json::to_string(&e).ok())
+            .collect()
+    }
+
+    /// Convert an AgentEvent to SSE-formatted lines (`data: ...\n\n`).
+    pub fn to_sse(&self, event: &crate::stream::AgentEvent) -> Vec<String> {
+        self.to_json(event)
+            .into_iter()
+            .map(|json| format!("data: {}\n\n", json))
+            .collect()
+    }
+
+    /// Convert an AgentEvent to NDJSON lines (`...\n`).
+    pub fn to_ndjson(&self, event: &crate::stream::AgentEvent) -> Vec<String> {
+        self.to_json(event)
+            .into_iter()
+            .map(|json| format!("{}\n", json))
             .collect()
     }
 

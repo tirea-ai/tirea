@@ -267,13 +267,13 @@ pub trait ThreadStore: Send + Sync {
     ///
     /// Version is managed internally by the backend — callers do not need to
     /// track it. Each successful append atomically increments the version.
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError>;
+    async fn append(&self, thread_id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError>;
 
     /// Load a thread and its current version.
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError>;
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError>;
 
     /// Delete a thread.
-    async fn delete(&self, id: &str) -> Result<(), StorageError>;
+    async fn delete(&self, thread_id: &str) -> Result<(), StorageError>;
 
     /// Upsert a thread (delete + create). Convenience wrapper.
     async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
@@ -283,8 +283,8 @@ pub trait ThreadStore: Send + Sync {
     }
 
     /// Load a thread without version info. Convenience wrapper.
-    async fn load_thread(&self, id: &str) -> Result<Option<Thread>, StorageError> {
-        Ok(self.load(id).await?.map(|h| h.thread))
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, StorageError> {
+        Ok(self.load(thread_id).await?.map(|h| h.thread))
     }
 }
 
@@ -296,13 +296,13 @@ pub trait ThreadQuery: ThreadStore {
     /// Load a paginated slice of messages for a thread.
     async fn load_messages(
         &self,
-        id: &str,
+        thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
         let head = self
-            .load(id)
+            .load(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
         Ok(paginate_in_memory(&head.thread.messages, query))
     }
 
@@ -331,11 +331,11 @@ pub trait ThreadQuery: ThreadStore {
     }
 
     /// Get total message count for a thread. Convenience wrapper.
-    async fn message_count(&self, id: &str) -> Result<usize, StorageError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
         let head = self
-            .load(id)
+            .load(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
         Ok(head.thread.messages.len())
     }
 }
@@ -346,7 +346,7 @@ pub trait ThreadSync: ThreadStore {
     /// Load deltas appended after `after_version`.
     async fn load_deltas(
         &self,
-        id: &str,
+        thread_id: &str,
         after_version: Version,
     ) -> Result<Vec<ThreadDelta>, StorageError>;
 }
@@ -364,27 +364,27 @@ impl FileStorage {
         }
     }
 
-    fn thread_path(&self, id: &str) -> Result<PathBuf, StorageError> {
-        Self::validate_thread_id(id)?;
-        Ok(self.base_path.join(format!("{}.json", id)))
+    fn thread_path(&self, thread_id: &str) -> Result<PathBuf, StorageError> {
+        Self::validate_thread_id(thread_id)?;
+        Ok(self.base_path.join(format!("{}.json", thread_id)))
     }
 
     /// Validate that a session ID is safe for use as a filename.
     /// Rejects path separators, `..`, and control characters.
-    fn validate_thread_id(id: &str) -> Result<(), StorageError> {
-        if id.is_empty() {
+    fn validate_thread_id(thread_id: &str) -> Result<(), StorageError> {
+        if thread_id.is_empty() {
             return Err(StorageError::InvalidId(
                 "thread id cannot be empty".to_string(),
             ));
         }
-        if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains('\0') {
+        if thread_id.contains('/') || thread_id.contains('\\') || thread_id.contains("..") || thread_id.contains('\0') {
             return Err(StorageError::InvalidId(format!(
-                "thread id contains invalid characters: {id:?}"
+                "thread id contains invalid characters: {thread_id:?}"
             )));
         }
-        if id.chars().any(|c| c.is_control()) {
+        if thread_id.chars().any(|c| c.is_control()) {
             return Err(StorageError::InvalidId(format!(
-                "thread id contains control characters: {id:?}"
+                "thread id contains control characters: {thread_id:?}"
             )));
         }
         Ok(())
@@ -407,11 +407,11 @@ impl ThreadStore for FileStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
+    async fn append(&self, thread_id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let head = self
-            .load_head(id)
+            .load_head(thread_id)
             .await?
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
 
         let mut thread = head.thread;
         apply_delta(&mut thread, delta);
@@ -426,12 +426,12 @@ impl ThreadStore for FileStorage {
         })
     }
 
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        self.load_head(id).await
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        self.load_head(thread_id).await
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
-        let path = self.thread_path(id)?;
+    async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
+        let path = self.thread_path(thread_id)?;
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
         }
@@ -505,8 +505,8 @@ impl ThreadQuery for FileStorage {
 
 impl FileStorage {
     /// Load a thread head (thread + version) from file.
-    async fn load_head(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        let path = self.thread_path(id)?;
+    async fn load_head(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let path = self.thread_path(thread_id)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -629,11 +629,11 @@ impl ThreadStore for MemoryStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
+    async fn append(&self, thread_id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let mut entries = self.entries.write().await;
         let entry = entries
-            .get_mut(id)
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+            .get_mut(thread_id)
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
 
         apply_delta(&mut entry.thread, delta);
         entry.version += 1;
@@ -643,17 +643,17 @@ impl ThreadStore for MemoryStorage {
         })
     }
 
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
         let entries = self.entries.read().await;
-        Ok(entries.get(id).map(|e| ThreadHead {
+        Ok(entries.get(thread_id).map(|e| ThreadHead {
             thread: e.thread.clone(),
             version: e.version,
         }))
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         let mut entries = self.entries.write().await;
-        entries.remove(id);
+        entries.remove(thread_id);
         Ok(())
     }
 
@@ -714,13 +714,13 @@ impl ThreadQuery for MemoryStorage {
 impl ThreadSync for MemoryStorage {
     async fn load_deltas(
         &self,
-        id: &str,
+        thread_id: &str,
         after_version: Version,
     ) -> Result<Vec<ThreadDelta>, StorageError> {
         let entries = self.entries.read().await;
         let entry = entries
-            .get(id)
-            .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
+            .get(thread_id)
+            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
         // Deltas are 1-indexed: delta[0] produced version 1, delta[1] produced version 2, etc.
         let skip = after_version as usize;
         Ok(entry.deltas[skip..].to_vec())
@@ -891,19 +891,19 @@ impl ThreadStore for PostgresStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
+    async fn append(&self, thread_id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Lock the row for atomic read-modify-write.
         let sql = format!("SELECT data FROM {} WHERE id = $1 FOR UPDATE", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
 
         let Some((mut v,)) = row else {
-            return Err(StorageError::NotFound(id.to_string()));
+            return Err(StorageError::NotFound(thread_id.to_string()));
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -949,7 +949,7 @@ impl ThreadStore for PostgresStorage {
         );
         sqlx::query(&update_sql)
             .bind(&v)
-            .bind(id)
+            .bind(thread_id)
             .execute(&mut *tx)
             .await
             .map_err(Self::sql_err)?;
@@ -970,7 +970,7 @@ impl ThreadStore for PostgresStorage {
                     .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
                     .unwrap_or((None, None));
                 sqlx::query(&insert_sql)
-                    .bind(id)
+                    .bind(thread_id)
                     .bind(message_id)
                     .bind(run_id)
                     .bind(step_index)
@@ -987,10 +987,10 @@ impl ThreadStore for PostgresStorage {
         })
     }
 
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -1007,7 +1007,7 @@ impl ThreadStore for PostgresStorage {
             self.messages_table
         );
         let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_all(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -1023,11 +1023,11 @@ impl ThreadStore for PostgresStorage {
         Ok(Some(ThreadHead { thread, version }))
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
-            .bind(id)
+            .bind(thread_id)
             .execute(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -1116,18 +1116,18 @@ impl ThreadStore for PostgresStorage {
 impl ThreadQuery for PostgresStorage {
     async fn load_messages(
         &self,
-        id: &str,
+        thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, StorageError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(id.to_string()));
+            return Err(StorageError::NotFound(thread_id.to_string()));
         }
 
         let limit = query.limit.min(200).max(1);
@@ -1184,7 +1184,7 @@ impl ThreadQuery for PostgresStorage {
         let rows: Vec<(i64, serde_json::Value)> = match query.order {
             SortOrder::Asc => {
                 let mut q = sqlx::query_as(&sql)
-                    .bind(id)
+                    .bind(thread_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
                 if let Some(ref rid) = query.run_id {
@@ -1197,7 +1197,7 @@ impl ThreadQuery for PostgresStorage {
             }
             SortOrder::Desc => {
                 let mut q = sqlx::query_as(&sql)
-                    .bind(id)
+                    .bind(thread_id)
                     .bind(cursor_val)
                     .bind(fetch_limit);
                 if let Some(ref rid) = query.run_id {
@@ -1233,16 +1233,16 @@ impl ThreadQuery for PostgresStorage {
         })
     }
 
-    async fn message_count(&self, id: &str) -> Result<usize, StorageError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(id.to_string()));
+            return Err(StorageError::NotFound(thread_id.to_string()));
         }
 
         let sql = format!(
@@ -1250,7 +1250,7 @@ impl ThreadQuery for PostgresStorage {
             self.messages_table
         );
         let row: (i64,) = sqlx::query_as(&sql)
-            .bind(id)
+            .bind(thread_id)
             .fetch_one(&self.pool)
             .await
             .map_err(Self::sql_err)?;
@@ -1688,8 +1688,8 @@ mod tests {
             .collect()
     }
 
-    fn make_thread_with_messages(id: &str, n: usize) -> Thread {
-        let mut thread = Thread::new(id);
+    fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
+        let mut thread = Thread::new(thread_id);
         for msg in make_messages(n) {
             // Deref Arc to get Message for with_message
             thread = thread.with_message((*msg).clone());
@@ -1920,8 +1920,8 @@ mod tests {
     // Visibility tests
     // ========================================================================
 
-    fn make_mixed_visibility_thread(id: &str) -> Thread {
-        Thread::new(id)
+    fn make_mixed_visibility_thread(thread_id: &str) -> Thread {
+        Thread::new(thread_id)
             .with_message(Message::user("user-0"))
             .with_message(Message::assistant("assistant-1"))
             .with_message(Message::internal_system("reminder-2"))
@@ -2067,8 +2067,8 @@ mod tests {
 
     use crate::types::MessageMetadata;
 
-    fn make_multi_run_thread(id: &str) -> Thread {
-        Thread::new(id)
+    fn make_multi_run_thread(thread_id: &str) -> Thread {
+        Thread::new(thread_id)
             // User message (no run metadata)
             .with_message(Message::user("hello"))
             // Run A, step 0: assistant + tool
