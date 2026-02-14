@@ -210,12 +210,11 @@ pub struct RunRequest {
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
 ///
-/// Checkpoint persistence is handled internally — callers only consume the
-/// event stream and use the IDs for protocol encoding.
+/// Checkpoint persistence is handled internally in stream order — callers only
+/// consume the event stream and use the IDs for protocol encoding.
 ///
-/// The final thread is **not** exposed here; it is consumed internally by the
-/// background checkpoint task which flushes the materialized thread to storage
-/// once the run completes (run-end flush strategy).
+/// The final thread is **not** exposed here; storage is updated incrementally
+/// via `ThreadDelta` appends.
 pub struct RunStream {
     /// Resolved thread ID (may have been auto-generated).
     pub thread_id: String,
@@ -1163,6 +1162,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
     fn make_skills_root() -> (TempDir, PathBuf) {
@@ -1175,6 +1175,105 @@ mod tests {
         )
         .unwrap();
         (td, root)
+    }
+
+    #[derive(Clone)]
+    struct FailOnNthAppendStorage {
+        inner: Arc<crate::storage::MemoryStorage>,
+        fail_on_nth_append: usize,
+        append_calls: Arc<AtomicUsize>,
+    }
+
+    impl FailOnNthAppendStorage {
+        fn new(fail_on_nth_append: usize) -> Self {
+            Self {
+                inner: Arc::new(crate::storage::MemoryStorage::new()),
+                fail_on_nth_append,
+                append_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn append_call_count(&self) -> usize {
+            self.append_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl crate::storage::ThreadStore for FailOnNthAppendStorage {
+        async fn create(
+            &self,
+            thread: &Thread,
+        ) -> Result<crate::storage::Committed, crate::storage::StorageError> {
+            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::create(
+                self.inner.as_ref(),
+                thread,
+            )
+            .await
+        }
+
+        async fn append(
+            &self,
+            thread_id: &str,
+            delta: &crate::storage::ThreadDelta,
+        ) -> Result<crate::storage::Committed, crate::storage::StorageError> {
+            let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if append_idx == self.fail_on_nth_append {
+                return Err(crate::storage::StorageError::Serialization(format!(
+                    "injected append failure on call {append_idx}"
+                )));
+            }
+            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::append(
+                self.inner.as_ref(),
+                thread_id,
+                delta,
+            )
+            .await
+        }
+
+        async fn load(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<crate::storage::ThreadHead>, crate::storage::StorageError> {
+            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::load(
+                self.inner.as_ref(),
+                thread_id,
+            )
+            .await
+        }
+
+        async fn delete(&self, thread_id: &str) -> Result<(), crate::storage::StorageError> {
+            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::delete(
+                self.inner.as_ref(),
+                thread_id,
+            )
+            .await
+        }
+    }
+
+    #[derive(Debug)]
+    struct SkipWithSessionEndPatchPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipWithSessionEndPatchPlugin {
+        fn id(&self) -> &str {
+            "skip_with_session_end_patch"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+            if phase == Phase::SessionEnd {
+                let patch = carve_state::TrackedPatch::new(
+                    carve_state::Patch::new().with_op(carve_state::Op::set(
+                        carve_state::path!("session_end_marker"),
+                        json!(true),
+                    )),
+                )
+                .with_source("test:session_end_marker");
+                step.pending_patches.push(patch);
+            }
+        }
     }
 
     #[tokio::test]
@@ -2154,6 +2253,147 @@ mod tests {
         let head = storage.load("t1").await.unwrap().unwrap();
         let state = head.thread.rebuild_state().unwrap();
         assert_eq!(state, json!({"counter": 5}));
+    }
+
+    #[tokio::test]
+    async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent() {
+        use futures::StreamExt;
+
+        let storage = Arc::new(FailOnNthAppendStorage::new(2));
+        let os = AgentOs::builder()
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SkipWithSessionEndPatchPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let request = RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-checkpoint-fail".to_string()),
+            run_id: Some("run-checkpoint-fail".to_string()),
+            resource_id: None,
+            state: Some(json!({"base": 1})),
+            messages: vec![crate::types::Message::user("hello")],
+            runtime: HashMap::new(),
+        };
+
+        let run_stream = os.run_stream(request).await.unwrap();
+        let events: Vec<_> = run_stream.events.collect().await;
+
+        assert!(
+            matches!(events.first(), Some(AgentEvent::RunStart { .. })),
+            "expected RunStart as first event, got: {events:?}"
+        );
+        let err_msg = events
+            .iter()
+            .find_map(|ev| match ev {
+                AgentEvent::Error { message } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("expected checkpoint append failure to emit AgentEvent::Error");
+        assert!(
+            err_msg.contains("checkpoint append failed"),
+            "unexpected error message: {err_msg}"
+        );
+        assert!(
+            !events.iter().any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+            "RunFinish must not be emitted after checkpoint append failure: {events:?}"
+        );
+
+        let head = storage.load("t-checkpoint-fail").await.unwrap().unwrap();
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(
+            state,
+            json!({"base": 1}),
+            "failed checkpoint must not mutate persisted state"
+        );
+        assert_eq!(
+            head.thread.messages.len(),
+            1,
+            "only user message delta should be persisted before checkpoint failure"
+        );
+        assert_eq!(head.thread.messages[0].role, crate::Role::User);
+        assert_eq!(
+            head.thread
+                .messages[0]
+                .content
+                .as_str(),
+            "hello",
+            "unexpected persisted user message content"
+        );
+        assert_eq!(head.version, 1, "failed append must not advance version");
+        assert_eq!(
+            storage.append_call_count(),
+            2,
+            "expected one successful user append and one failed checkpoint append"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchanged() {
+        use futures::StreamExt;
+
+        let storage = Arc::new(FailOnNthAppendStorage::new(1));
+        let initial = Thread::with_initial_state("t-existing-fail", json!({"counter": 5}));
+        storage.create(&initial).await.unwrap();
+
+        let os = AgentOs::builder()
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SkipWithSessionEndPatchPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let request = RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-existing-fail".to_string()),
+            run_id: Some("run-existing-fail".to_string()),
+            resource_id: None,
+            state: None,
+            messages: vec![],
+            runtime: HashMap::new(),
+        };
+
+        let run_stream = os.run_stream(request).await.unwrap();
+        let events: Vec<_> = run_stream.events.collect().await;
+
+        assert!(
+            matches!(events.first(), Some(AgentEvent::RunStart { .. })),
+            "expected RunStart as first event, got: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::Error { message } if message.contains("checkpoint append failed"))),
+            "checkpoint failure must emit AgentEvent::Error: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+            "RunFinish must not be emitted after checkpoint append failure: {events:?}"
+        );
+
+        let head = storage.load("t-existing-fail").await.unwrap().unwrap();
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(
+            state,
+            json!({"counter": 5}),
+            "existing state must stay unchanged when first checkpoint append fails"
+        );
+        assert!(
+            head.thread
+                .state
+                .get("session_end_marker")
+                .is_none(),
+            "failed checkpoint must not persist SessionEnd patch"
+        );
+        assert_eq!(head.version, 0, "failed append must not advance version");
+        assert_eq!(storage.append_call_count(), 1);
     }
 
     #[test]
