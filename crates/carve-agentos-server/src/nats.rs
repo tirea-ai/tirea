@@ -2,15 +2,16 @@ use carve_agent::ag_ui::{AGUIEvent, RunAgentRequest};
 use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::AgentOs;
 use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing;
 
 use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
-    ProtocolInputAdapter, ProtocolOutputEncoder,
+    ProtocolInputAdapter,
 };
 use async_nats::ConnectErrorKind;
+use crate::transport::pump_encoded_stream;
 
 const SUBJECT_RUN_AGUI: &str = "agentos.run.agui";
 const SUBJECT_RUN_AISDK: &str = "agentos.run.aisdk";
@@ -118,7 +119,16 @@ impl NatsGateway {
         };
 
         let enc = AgUiProtocolEncoder::new(run.thread_id, run.run_id);
-        publish_encoded_nats_stream(self.client.clone(), reply, run.events, enc).await;
+        let client = self.client.clone();
+        pump_encoded_stream(run.events, enc, move |event| {
+            let client = client.clone();
+            let reply = reply.clone();
+            async move {
+                let payload = serde_json::to_vec(&event).unwrap_or_default().into();
+                client.publish(reply, payload).await.map_err(|_| ())
+            }
+        })
+        .await;
 
         Ok(())
     }
@@ -177,49 +187,17 @@ impl NatsGateway {
         };
 
         let enc = AiSdkProtocolEncoder::new(run.run_id, Some(run.thread_id));
-        publish_encoded_nats_stream(self.client.clone(), reply, run.events, enc).await;
+        let client = self.client.clone();
+        pump_encoded_stream(run.events, enc, move |event| {
+            let client = client.clone();
+            let reply = reply.clone();
+            async move {
+                let payload = serde_json::to_vec(&event).unwrap_or_default().into();
+                client.publish(reply, payload).await.map_err(|_| ())
+            }
+        })
+        .await;
 
         Ok(())
-    }
-}
-
-async fn publish_nats_json<T: Serialize>(
-    client: &async_nats::Client,
-    subject: &async_nats::Subject,
-    event: &T,
-) -> Result<(), ()> {
-    let payload = serde_json::to_vec(event).unwrap_or_default().into();
-    client
-        .publish(subject.clone(), payload)
-        .await
-        .map_err(|_| ())
-}
-
-async fn publish_encoded_nats_stream<E>(
-    client: async_nats::Client,
-    subject: async_nats::Subject,
-    mut events: std::pin::Pin<Box<dyn futures::Stream<Item = carve_agent::AgentEvent> + Send>>,
-    mut encoder: E,
-) where
-    E: ProtocolOutputEncoder,
-{
-    for event in encoder.prologue() {
-        if publish_nats_json(&client, &subject, &event).await.is_err() {
-            return;
-        }
-    }
-
-    while let Some(agent_event) = events.next().await {
-        for event in encoder.on_agent_event(&agent_event) {
-            if publish_nats_json(&client, &subject, &event).await.is_err() {
-                return;
-            }
-        }
-    }
-
-    for event in encoder.epilogue() {
-        if publish_nats_json(&client, &subject, &event).await.is_err() {
-            return;
-        }
     }
 }

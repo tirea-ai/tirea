@@ -7,19 +7,18 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::ag_ui::RunAgentRequest;
 use carve_agent::{
-    AgentEvent, AgentOs, AgentOsRunError, MessagePage, MessageQuery, SortOrder, Thread,
-    ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
+    AgentOs, AgentOsRunError, MessagePage, MessageQuery, SortOrder, Thread, ThreadListPage,
+    ThreadListQuery, ThreadQuery, Visibility,
 };
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::convert::Infallible;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder,
-    AiSdkRunRequest, ProtocolInputAdapter, ProtocolOutputEncoder,
+    AiSdkRunRequest, ProtocolInputAdapter,
 };
+use crate::transport::pump_encoded_stream;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -184,51 +183,6 @@ async fn get_thread_messages(
         })
 }
 
-async fn send_sse_json<T: Serialize>(
-    tx: &tokio::sync::mpsc::Sender<Bytes>,
-    event: &T,
-) -> Result<(), ()> {
-    let Ok(json) = serde_json::to_string(event) else {
-        return Ok(());
-    };
-    tx.send(Bytes::from(format!("data: {}\n\n", json)))
-        .await
-        .map_err(|_| ())
-}
-
-async fn stream_encoded_sse<E>(
-    mut events: Pin<Box<dyn futures::Stream<Item = AgentEvent> + Send>>,
-    mut encoder: E,
-    tx: tokio::sync::mpsc::Sender<Bytes>,
-    done_marker: Option<&'static str>,
-) where
-    E: ProtocolOutputEncoder,
-{
-    for event in encoder.prologue() {
-        if send_sse_json(&tx, &event).await.is_err() {
-            return;
-        }
-    }
-
-    while let Some(agent_event) = events.next().await {
-        for event in encoder.on_agent_event(&agent_event) {
-            if send_sse_json(&tx, &event).await.is_err() {
-                return;
-            }
-        }
-    }
-
-    for event in encoder.epilogue() {
-        if send_sse_json(&tx, &event).await.is_err() {
-            return;
-        }
-    }
-
-    if let Some(done) = done_marker {
-        let _ = tx.send(Bytes::from(done)).await;
-    }
-}
-
 async fn run_ai_sdk_sse(
     State(st): State<AppState>,
     Path(agent_id): Path<String>,
@@ -253,7 +207,20 @@ async fn run_ai_sdk_sse(
 
     tokio::spawn(async move {
         let enc = AiSdkProtocolEncoder::new(run_id, Some(thread_id));
-        stream_encoded_sse(run.events, enc, tx, Some("data: [DONE]\n\n")).await;
+        let tx_events = tx.clone();
+        pump_encoded_stream(run.events, enc, move |event| {
+            let tx = tx_events.clone();
+            async move {
+                let Ok(json) = serde_json::to_string(&event) else {
+                    return Ok(());
+                };
+                tx.send(Bytes::from(format!("data: {}\n\n", json)))
+                    .await
+                    .map_err(|_| ())
+            }
+        })
+        .await;
+        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
     });
 
     let body_stream = async_stream::stream! {
@@ -283,7 +250,19 @@ async fn run_ag_ui_sse(
 
     tokio::spawn(async move {
         let enc = AgUiProtocolEncoder::new(thread_id, run_id);
-        stream_encoded_sse(run.events, enc, tx, None).await;
+        let tx_events = tx.clone();
+        pump_encoded_stream(run.events, enc, move |event| {
+            let tx = tx_events.clone();
+            async move {
+                let Ok(json) = serde_json::to_string(&event) else {
+                    return Ok(());
+                };
+                tx.send(Bytes::from(format!("data: {}\n\n", json)))
+                    .await
+                    .map_err(|_| ())
+            }
+        })
+        .await;
     });
 
     let body_stream = async_stream::stream! {
