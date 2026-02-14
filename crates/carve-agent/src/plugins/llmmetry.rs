@@ -6,6 +6,7 @@
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
+use carve_state::Context;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -360,7 +361,7 @@ impl AgentPlugin for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
         match phase {
             Phase::SessionStart => {
                 *lock_unpoison(&self.session_start) = Some(Instant::now());
@@ -599,6 +600,7 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
 
 #[cfg(test)]
 mod tests {
+    use carve_state::Context;
     use super::*;
     use crate::phase::ToolContext as PhaseToolContext;
     use crate::stream::StreamResult;
@@ -750,6 +752,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -758,7 +762,7 @@ mod tests {
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -766,7 +770,7 @@ mod tests {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -780,6 +784,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_with_cache() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -788,7 +794,7 @@ mod tests {
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -796,7 +802,7 @@ mod tests {
             usage: Some(usage_with_cache(100, 50, 150, 30)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let m = sink.metrics();
         let span = &m.inferences[0];
@@ -806,6 +812,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_tool() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
@@ -815,12 +823,12 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert_eq!(m.tool_count(), 1);
@@ -833,6 +841,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_tool_failure() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
@@ -842,11 +852,11 @@ mod tests {
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert!(!m.tools[0].is_success());
@@ -855,17 +865,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_session_lifecycle() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        plugin.on_phase(Phase::SessionEnd, &mut step).await;
+        plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert!(m.session_duration_ms >= 10);
@@ -873,19 +885,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_no_usage() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: None,
         });
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -895,6 +909,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_multiple_rounds() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
@@ -902,13 +918,13 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
 
         for i in 0..3 {
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: format!("r{i}"),
                 tool_calls: vec![],
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
         }
 
         let m = sink.metrics();
@@ -919,6 +935,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -927,12 +945,12 @@ mod tests {
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         step.scratchpad_set(
             "llmmetry.inference_error",
             serde_json::json!({ "type": "rate_limited", "message": "429" }),
         );
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert_eq!(m.inference_count(), 1);
@@ -941,6 +959,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_parallel_tool_spans_are_isolated_by_call_id() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         use std::time::Duration;
 
         let sink = InMemorySink::new();
@@ -952,18 +972,19 @@ mod tests {
             ToolCall::new("c3", "read", json!({"path": "y"})),
         ];
 
+        let ctx = &ctx;
         let tasks = calls.into_iter().enumerate().map(|(i, call)| {
             let plugin = plugin.clone();
             async move {
                 let thread = Thread::new("test");
                 let mut step = StepContext::new(&thread, vec![]);
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step, ctx).await;
                 // Stagger completion to maximize the chance of cross-talk.
                 tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
                 step.tool.as_mut().unwrap().result =
                     Some(ToolResult::success(&call.name, json!({"ok": true})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.on_phase(Phase::AfterToolExecute, &mut step, ctx).await;
             }
         });
 
@@ -1272,6 +1293,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tracing_span_inference() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1287,13 +1310,13 @@ mod tests {
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         step.response = Some(StreamResult {
             text: "hi".into(),
             tool_calls: vec![],
             usage: Some(usage(10, 20, 30)),
         });
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let spans = captured.lock().unwrap();
         let inference_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1303,6 +1326,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tracing_span_tool() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1319,10 +1344,10 @@ mod tests {
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
         let spans = captured.lock().unwrap();
         let tool_span = spans.iter().find(|s| s.name == "gen_ai");
@@ -1371,6 +1396,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_span() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1381,13 +1408,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hello".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1431,6 +1458,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1443,12 +1472,12 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.scratchpad_set(
                 "llmmetry.inference_error",
                 serde_json::json!({ "type": "rate_limited", "message": "429" }),
             );
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1470,6 +1499,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_parent_child_propagation() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1484,7 +1515,7 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
             // Verify tracing_span is set on step context
             assert!(
@@ -1497,7 +1528,7 @@ mod tests {
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1530,6 +1561,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tool_parent_child_propagation() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1544,7 +1577,7 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
             assert!(
                 step.tracing_span.is_some(),
@@ -1553,7 +1586,7 @@ mod tests {
 
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             drop(_parent_guard);
             drop(parent);
@@ -1584,6 +1617,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_no_parent_context() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1593,13 +1628,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1619,6 +1654,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tracing_span_cleared_after_phases() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, _exporter, _provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1629,14 +1666,14 @@ mod tests {
             // Test inference: tracing_span should be None after AfterInference
             {
                 let mut step = StepContext::new(&thread, vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
                 assert!(step.tracing_span.is_some());
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: None,
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
                 assert!(
                     step.tracing_span.is_none(),
                     "AfterInference should clear tracing_span"
@@ -1648,10 +1685,10 @@ mod tests {
                 let mut step = StepContext::new(&thread, vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
                 assert!(step.tracing_span.is_some());
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
                 assert!(
                     step.tracing_span.is_none(),
                     "AfterToolExecute should clear tracing_span"
@@ -1661,6 +1698,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_and_tool_are_siblings() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1674,13 +1713,13 @@ mod tests {
             // Inference phase
             {
                 let mut step = StepContext::new(&thread, vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
                 step.response = Some(StreamResult {
                     text: "calling tool".into(),
                     tool_calls: vec![ToolCall::new("c1", "search", json!({}))],
                     usage: Some(usage(10, 5, 15)),
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
             }
 
             // Tool phase
@@ -1688,9 +1727,9 @@ mod tests {
                 let mut step = StepContext::new(&thread, vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
-                plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+                plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-                plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+                plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
             }
 
             drop(_parent_guard);
@@ -1744,6 +1783,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tool_span() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1755,10 +1796,10 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1791,6 +1832,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_inference_span_name_format() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1801,13 +1844,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1826,6 +1869,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_name_format() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1837,9 +1882,9 @@ mod tests {
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1858,6 +1903,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_inference_span_kind_client() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1868,13 +1915,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1893,6 +1940,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_kind_internal() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1906,9 +1955,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1927,6 +1976,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_has_provider() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1938,9 +1989,9 @@ mod tests {
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -1961,6 +2012,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_error_sets_status_code() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1974,10 +2027,10 @@ mod tests {
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
-            plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+            plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2002,6 +2055,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_success_no_error_status() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2012,13 +2067,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "ok".into(),
                 tool_calls: vec![],
                 usage: Some(usage(10, 5, 15)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2040,6 +2095,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_required_attributes_present() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2050,13 +2107,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: Some(usage(100, 50, 150)),
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2100,6 +2157,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_no_usage_omits_token_attributes() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2108,13 +2167,13 @@ mod tests {
             let thread = mock_thread();
             let mut step = StepContext::new(&thread, vec![]);
 
-            plugin.on_phase(Phase::BeforeInference, &mut step).await;
+            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
                 tool_calls: vec![],
                 usage: None,
             });
-            plugin.on_phase(Phase::AfterInference, &mut step).await;
+            plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
             let _ = provider.force_flush();
             let exported = exporter.get_finished_spans().unwrap();
@@ -2137,6 +2196,8 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_cache_tokens_only_when_present() {
+            let doc = json!({});
+            let ctx = Context::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2147,13 +2208,13 @@ mod tests {
             // Test with cache tokens present
             {
                 let mut step = StepContext::new(&thread, vec![]);
-                plugin.on_phase(Phase::BeforeInference, &mut step).await;
+                plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
                     tool_calls: vec![],
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
                 });
-                plugin.on_phase(Phase::AfterInference, &mut step).await;
+                plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
             }
 
             let _ = provider.force_flush();

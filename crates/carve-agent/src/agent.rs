@@ -355,6 +355,7 @@ pub(crate) fn uuid_v7() -> String {
 mod tests {
     use super::*;
     use crate::r#loop::AgentDefinition;
+    use carve_state::Context;
 
     #[test]
     fn test_filter_tools_no_filters() {
@@ -1112,7 +1113,7 @@ mod tests {
         fn id(&self) -> &str {
             "skip_inference"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1128,7 +1129,7 @@ mod tests {
             "session_end_state_patch"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase != Phase::SessionEnd {
                 return;
             }
@@ -1162,7 +1163,7 @@ mod tests {
         fn id(&self) -> &str {
             "tool_recorder"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 let tool_ids: Vec<String> = step.tools.iter().map(|t| t.id.clone()).collect();
                 self.recorded.lock().unwrap().push(tool_ids);
@@ -1451,7 +1452,7 @@ mod tests {
         fn id(&self) -> &str {
             "blocking"
         }
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 self.ready.notify_one();
                 // Block forever (until task is cancelled)

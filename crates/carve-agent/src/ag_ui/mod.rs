@@ -1946,8 +1946,13 @@ mod tests {
     use super::*;
     use crate::phase::{Phase, StepContext};
     use crate::plugin::AgentPlugin;
+    use carve_state::Context;
     use serde_json::json;
     use std::collections::HashSet;
+
+    fn test_ctx() -> serde_json::Value {
+        json!({})
+    }
 
     #[test]
     fn test_run_started_serialization() {
@@ -4232,6 +4237,8 @@ mod tests {
         use crate::thread::Thread;
         use crate::types::ToolCall;
 
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
@@ -4245,7 +4252,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should set pending
         assert!(step.tool_pending());
@@ -4270,6 +4277,8 @@ mod tests {
         use crate::thread::Thread;
         use crate::types::ToolCall;
 
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
@@ -4283,7 +4292,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should NOT set pending
         assert!(!step.tool_pending());
@@ -4296,6 +4305,8 @@ mod tests {
         use crate::thread::Thread;
         use crate::types::ToolCall;
 
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
@@ -4316,7 +4327,7 @@ mod tests {
             Phase::StepEnd,
             Phase::SessionEnd,
         ] {
-            plugin.on_phase(phase, &mut step).await;
+            plugin.on_phase(phase, &mut step, &ctx).await;
             assert!(
                 !step.tool_pending(),
                 "Phase {:?} should not set pending",
@@ -4331,6 +4342,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         // 1. Setup: Create plugin from request
         let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
@@ -4357,7 +4371,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // 3. Plugin intercepts in BeforeToolExecute
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
 
@@ -4421,6 +4435,9 @@ mod tests {
         use crate::thread::Thread;
         use crate::types::ToolCall;
 
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
+
         let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_tool(AGUIToolDef::backend("search", "Search"))
             .with_tool(AGUIToolDef::backend("read_file", "Read"))
@@ -4436,7 +4453,7 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c1", "search", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             assert!(
                 !step.tool_pending(),
                 "Backend tool 'search' should not be pending"
@@ -4448,7 +4465,7 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c2", "read_file", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             assert!(
                 !step.tool_pending(),
                 "Backend tool 'read_file' should not be pending"
@@ -4460,7 +4477,7 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c3", "copyToClipboard", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             assert!(
                 step.tool_pending(),
                 "Frontend tool 'copyToClipboard' should be pending"
@@ -4472,7 +4489,7 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c4", "showNotification", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
             assert!(
                 step.tool_pending(),
                 "Frontend tool 'showNotification' should be pending"
@@ -4485,6 +4502,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         let frontend_tools: HashSet<String> =
             ["copyToClipboard"].iter().map(|s| s.to_string()).collect();
@@ -4500,7 +4520,7 @@ mod tests {
         step.block("Tool denied by permission");
 
         // FrontendToolPlugin should not create pending for blocked tool
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_blocked(), "Tool should remain blocked");
         assert!(
@@ -4523,22 +4543,21 @@ mod tests {
         let frontend_plugin = FrontendToolPlugin::new(frontend_tools);
         let permission_plugin = PermissionPlugin;
 
-        let thread = Thread::with_initial_state(
-            "test",
-            json!({
-                "permissions": {
-                    "default_behavior": "allow",
-                    "tools": { "frontend_action": "deny" }
-                }
-            }),
-        );
+        let state = json!({
+            "permissions": {
+                "default_behavior": "allow",
+                "tools": { "frontend_action": "deny" }
+            }
+        });
+        let thread = Thread::with_initial_state("test", state.clone());
+        let ctx = Context::new(&state, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("c1", "frontend_action", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         // Run PermissionPlugin first (simulating plugin order)
         permission_plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
             .await;
         assert!(
             step.tool_blocked(),
@@ -4547,7 +4566,7 @@ mod tests {
 
         // Run FrontendToolPlugin second
         frontend_plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step)
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
             .await;
         assert!(step.tool_blocked(), "Tool should still be blocked");
         assert!(
@@ -4613,10 +4632,9 @@ mod tests {
         use crate::types::ToolCall;
 
         // Thread must have a persisted pending interaction matching the denied ID.
-        let thread = Thread::with_initial_state(
-            "test",
-            json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
-        );
+        let state = json!({ "agent": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } });
+        let thread = Thread::with_initial_state("test", state.clone());
+        let ctx = Context::new(&state, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
 
         // Create plugin with denied permission interaction
@@ -4628,7 +4646,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should block the tool
         assert!(step.tool_blocked());
@@ -4640,6 +4658,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         // Thread must have a persisted pending interaction matching the approved ID.
         let thread = Thread::with_initial_state(
@@ -4657,7 +4678,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should NOT block or set pending
         assert!(!step.tool_blocked());
@@ -4669,6 +4690,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         // Thread must have a persisted pending interaction matching the frontend tool call ID.
         let thread = Thread::with_initial_state(
@@ -4685,7 +4709,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should NOT block (approved by matching call ID)
         assert!(!step.tool_blocked());
@@ -4696,6 +4720,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         // Thread has NO persisted pending interaction.
         let thread = Thread::new("test");
@@ -4709,7 +4736,7 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Plugin should have done nothing — tool is neither confirmed nor blocked.
         assert!(!step.tool_blocked());
@@ -4722,6 +4749,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         // Server has a pending interaction for a DIFFERENT tool.
         let thread = Thread::with_initial_state(
@@ -4737,7 +4767,7 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Plugin should have done nothing — IDs don't match.
         assert!(!step.tool_blocked());
@@ -4748,6 +4778,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
@@ -4768,7 +4801,7 @@ mod tests {
             Phase::StepEnd,
             Phase::SessionEnd,
         ] {
-            plugin.on_phase(phase, &mut step).await;
+            plugin.on_phase(phase, &mut step, &ctx).await;
             assert!(!step.tool_blocked(), "Phase {:?} should not block", phase);
         }
     }
@@ -4872,15 +4905,14 @@ mod tests {
             request.denied_interaction_ids(),
         );
 
-        let thread = Thread::with_initial_state(
-            "test",
-            json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
-        );
+        let state = json!({ "agent": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } });
+        let thread = Thread::with_initial_state("test", state.clone());
+        let ctx = Context::new(&state, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_blocked());
         assert!(!step.tool_pending());
@@ -4891,6 +4923,9 @@ mod tests {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
+
+        let doc = test_ctx();
+        let ctx = Context::new(&doc, "test", "test");
 
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("showNotification", "Show"));
@@ -4908,7 +4943,7 @@ mod tests {
         let call = ToolCall::new("call_1", "showNotification", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
         assert!(!step.tool_blocked());
@@ -5770,7 +5805,7 @@ mod tests {
             fn id(&self) -> &str {
                 "skip"
             }
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::BeforeInference {
                     step.skip_inference = true;
                 }
@@ -5855,6 +5890,7 @@ mod tests {
             &self,
             phase: crate::phase::Phase,
             step: &mut crate::phase::StepContext<'_>,
+            _ctx: &carve_state::Context<'_>,
         ) {
             if phase == crate::phase::Phase::BeforeInference {
                 step.skip_inference = true;

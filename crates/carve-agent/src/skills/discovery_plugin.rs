@@ -6,6 +6,7 @@ use crate::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
 use async_trait::async_trait;
+use carve_state::Context;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -124,20 +125,19 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         "skills_discovery"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         if phase != Phase::BeforeInference {
             return;
         }
 
         // Read active skills from session state (if present) to annotate the catalog.
-        let mut active: HashSet<String> = HashSet::new();
-        if let Ok(state) = step.thread.rebuild_state() {
-            if let Some(skills_value) = state.get(SKILLS_STATE_PATH).cloned() {
-                if let Ok(parsed) = serde_json::from_value::<SkillState>(skills_value) {
-                    active.extend(parsed.active);
-                }
-            }
-        }
+        let skill_state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+        let active: HashSet<String> = skill_state
+            .active()
+            .ok()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         let rendered = self.render_catalog(&active, Some(&step.thread.runtime));
         if rendered.is_empty() {
@@ -159,6 +159,7 @@ mod tests {
     use crate::skills::FsSkillRegistry;
     use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
+    use carve_state::Context;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
@@ -184,11 +185,13 @@ mod tests {
 
     #[tokio::test]
     async fn injects_catalog_with_usage() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
@@ -201,6 +204,8 @@ mod tests {
 
     #[tokio::test]
     async fn marks_active_skills() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
         let thread = Thread::with_initial_state(
@@ -215,7 +220,7 @@ mod tests {
             }),
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
         // Does not include active annotations; active skills are handled by runtime plugin injection.
         assert!(s.contains("<name>a-skill</name>"));
@@ -223,6 +228,8 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_inject_when_registry_empty() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(&root).unwrap();
@@ -230,12 +237,14 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
     async fn does_not_inject_when_all_skills_invalid() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("BadSkill")).unwrap();
@@ -251,12 +260,14 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
     async fn injects_only_valid_skills_and_never_warnings() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("good-skill")).unwrap();
@@ -276,7 +287,7 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
@@ -288,6 +299,8 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_entry_limit_and_emits_note() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         for i in 0..5 {
@@ -303,7 +316,7 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("truncated"));
@@ -313,6 +326,8 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_char_limit() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s")).unwrap();
@@ -325,13 +340,15 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
         let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
     }
 
     #[tokio::test]
     async fn filters_catalog_by_runtime_skill_policy() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
         let mut thread = Thread::with_initial_state("s", json!({}));
@@ -340,7 +357,7 @@ mod tests {
             .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
         assert!(s.contains("<name>a-skill</name>"));

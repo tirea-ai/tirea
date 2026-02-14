@@ -1,7 +1,7 @@
 use super::{AgentOs, AgentRegistry};
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
-use crate::plugins::{resolve_permission_behavior_for_tool, PERMISSION_STATE_PATH};
+use crate::plugins::PermissionContextExt;
 pub(crate) use crate::r#loop::TOOL_RUNTIME_CALLER_AGENT_ID_KEY as RUNTIME_CALLER_AGENT_ID_KEY;
 use crate::r#loop::{
     RunCancellationToken, RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
@@ -1401,7 +1401,7 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_session_start(&self, step: &mut StepContext<'_>) {
+    async fn on_session_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         let state = match step.thread.rebuild_state() {
             Ok(v) => v,
             Err(_) => return,
@@ -1437,10 +1437,7 @@ impl AgentRecoveryPlugin {
             return;
         };
 
-        let behavior = resolve_permission_behavior_for_tool(
-            state.get(PERMISSION_STATE_PATH),
-            AGENT_RECOVERY_INTERACTION_ACTION,
-        );
+        let behavior = ctx.get_permission(AGENT_RECOVERY_INTERACTION_ACTION);
         match behavior {
             ToolPermissionBehavior::Allow => {
                 schedule_recovery_replay(step, &run_id);
@@ -1478,9 +1475,9 @@ impl AgentPlugin for AgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         match phase {
-            Phase::SessionStart => self.on_session_start(step).await,
+            Phase::SessionStart => self.on_session_start(step, ctx).await,
             Phase::BeforeInference => self.on_before_inference(step).await,
             _ => {}
         }
@@ -1619,7 +1616,7 @@ impl AgentPlugin for AgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
@@ -1688,6 +1685,8 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_adds_reminder_for_running_and_stopped_runs() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let mut reg = InMemoryAgentRegistry::new();
         reg.upsert("worker", crate::AgentDefinition::new("mock"));
         let manager = Arc::new(AgentRunManager::new());
@@ -1707,7 +1706,7 @@ mod tests {
 
         let owner = Thread::new("owner-1");
         let mut step = StepContext::new(&owner, vec![]);
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
         let reminder = step
             .system_reminders
             .first()
@@ -1716,7 +1715,7 @@ mod tests {
 
         manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
         let mut step2 = StepContext::new(&owner, vec![]);
-        plugin.on_phase(Phase::AfterToolExecute, &mut step2).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step2, &ctx).await;
         let reminder2 = step2
             .system_reminders
             .first()
@@ -1847,7 +1846,7 @@ mod tests {
             "slow_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 tokio::time::sleep(Duration::from_millis(120)).await;
                 step.skip_inference = true;
@@ -2412,8 +2411,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
         assert!(
             !step.pending_patches.is_empty(),
             "expected reconciliation + pending patches for orphan running entry"
@@ -2440,7 +2441,7 @@ mod tests {
 
         let updated_thread = thread.clone().with_patches(step.pending_patches);
         let mut before = StepContext::new(&updated_thread, vec![]);
-        plugin.on_phase(Phase::BeforeInference, &mut before).await;
+        plugin.on_phase(Phase::BeforeInference, &mut before, &ctx).await;
         assert!(
             before.skip_inference,
             "recovery confirmation should pause inference"
@@ -2472,8 +2473,10 @@ mod tests {
             }),
         );
 
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
         assert!(
             !step.skip_inference,
             "existing pending interaction should not be replaced"
@@ -2516,8 +2519,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -2567,8 +2572,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -2614,8 +2621,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -2659,8 +2668,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -2707,8 +2718,10 @@ mod tests {
                 }
             }),
         );
+        let doc = thread.rebuild_state().unwrap();
+        let ctx = Context::new(&doc, "test", "test");
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")

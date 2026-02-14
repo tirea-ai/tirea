@@ -5,10 +5,10 @@
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{
-    Interaction, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_STATE_PATH,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use async_trait::async_trait;
+use carve_state::Context;
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -65,17 +65,14 @@ impl InteractionResponsePlugin {
     }
 
     /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
-    fn on_session_start(&self, step: &mut StepContext<'_>) {
-        let Ok(state) = step.thread.rebuild_state() else {
-            return;
-        };
+    fn on_session_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+        use crate::state_types::AgentState;
 
-        // Check if there's a persisted pending_interaction.
-        let pending = state
-            .get(AGENT_STATE_PATH)
-            .and_then(|a| a.get("pending_interaction"))
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Interaction>(v).ok());
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+        let pending = agent
+            .pending_interaction()
+            .ok()
+            .flatten();
         let Some(pending) = pending else {
             return;
         };
@@ -83,7 +80,7 @@ impl InteractionResponsePlugin {
         let pending_id = pending_id_owned.as_str();
 
         if self.denied_ids.iter().any(|id| id == pending_id) {
-            clear_agent_pending_interaction(step);
+            agent.pending_interaction_none();
             return;
         }
 
@@ -105,7 +102,7 @@ impl InteractionResponsePlugin {
                         .map(str::to_string)
                 });
             let Some(run_id) = run_id else {
-                clear_agent_pending_interaction(step);
+                agent.pending_interaction_none();
                 return;
             };
 
@@ -164,10 +161,10 @@ impl AgentPlugin for InteractionResponsePlugin {
         "interaction_response"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         match phase {
             Phase::SessionStart => {
-                self.on_session_start(step);
+                self.on_session_start(step, ctx);
                 return;
             }
             Phase::BeforeToolExecute => {}
@@ -205,13 +202,13 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let persisted_id = step.thread.rebuild_state().ok().and_then(|s| {
-            s.get(crate::state_types::AGENT_STATE_PATH)?
-                .get("pending_interaction")?
-                .get("id")?
-                .as_str()
-                .map(String::from)
-        });
+        use crate::state_types::AgentState;
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+        let persisted_id = agent
+            .pending_interaction()
+            .ok()
+            .flatten()
+            .map(|i| i.id.clone());
 
         let id_matches = persisted_id
             .as_deref()
@@ -227,31 +224,13 @@ impl AgentPlugin for InteractionResponsePlugin {
             // Interaction was denied - block the tool
             step.confirm();
             step.block("User denied the action".to_string());
-            clear_agent_pending_interaction(step);
+            agent.pending_interaction_none();
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
             // This allows the tool to execute normally.
             step.confirm();
-            clear_agent_pending_interaction(step);
+            agent.pending_interaction_none();
         }
-    }
-}
-
-fn clear_agent_pending_interaction(step: &mut StepContext<'_>) {
-    use crate::state_types::{AgentState, AGENT_STATE_PATH};
-    use carve_state::Context;
-
-    let Ok(state) = step.thread.rebuild_state() else {
-        return;
-    };
-
-    // Persist the clearance via patch so subsequent steps/runs don't remain stuck in Pending.
-    let ctx = Context::new(&state, "agent_state", "interaction_response");
-    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-    agent.pending_interaction_none();
-    let patch = ctx.take_patch();
-    if !patch.patch().is_empty() {
-        step.pending_patches.push(patch);
     }
 }
 
@@ -260,11 +239,20 @@ mod tests {
     use super::*;
     use crate::thread::Thread;
     use crate::types::{Message, ToolCall};
-    use carve_state::apply_patches;
+    use carve_state::{apply_patches, Context};
     use serde_json::json;
 
     #[tokio::test]
     async fn session_start_replays_tool_matching_pending_interaction() {
+        let doc = json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "permission_write_file",
+                    "action": "confirm"
+                }
+            }
+        });
+        let ctx = Context::new(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
@@ -288,7 +276,7 @@ mod tests {
         ));
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -300,6 +288,18 @@ mod tests {
 
     #[tokio::test]
     async fn session_start_recovery_approval_schedules_agent_run_replay() {
+        let doc = json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "agent_recovery_run-1",
+                    "action": "recover_agent_run",
+                    "parameters": {
+                        "run_id": "run-1"
+                    }
+                }
+            }
+        });
+        let ctx = Context::new(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
 
@@ -319,7 +319,7 @@ mod tests {
         );
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         let replay_calls: Vec<ToolCall> = step
             .scratchpad_get("__replay_tool_calls")
@@ -332,6 +332,18 @@ mod tests {
 
     #[tokio::test]
     async fn session_start_recovery_denial_clears_pending_interaction() {
+        let doc = json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "agent_recovery_run-1",
+                    "action": "recover_agent_run",
+                    "parameters": {
+                        "run_id": "run-1"
+                    }
+                }
+            }
+        });
+        let ctx = Context::new(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
 
@@ -351,15 +363,18 @@ mod tests {
         );
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+
+        // Plugin ops are collected in ctx; flush them
         assert!(
-            !step.pending_patches.is_empty(),
+            ctx.has_changes(),
             "denied recovery must clear pending interaction state"
         );
+        let ctx_patch = ctx.take_patch();
 
         let updated = apply_patches(
             &thread.rebuild_state().unwrap(),
-            step.pending_patches.iter().map(|p| p.patch()),
+            std::iter::once(ctx_patch.patch()),
         )
         .expect("pending patch should apply");
         let pending = updated

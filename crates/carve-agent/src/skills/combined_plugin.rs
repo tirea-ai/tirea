@@ -2,6 +2,7 @@ use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin};
 use async_trait::async_trait;
+use carve_state::Context;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -40,10 +41,10 @@ impl AgentPlugin for SkillPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         // Keep ordering stable: catalog first (enables selection), then active skill content.
-        self.discovery.on_phase(phase, step).await;
-        self.runtime.on_phase(phase, step).await;
+        self.discovery.on_phase(phase, step, ctx).await;
+        self.runtime.on_phase(phase, step, ctx).await;
     }
 
     fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
@@ -57,12 +58,15 @@ mod tests {
     use crate::skills::{FsSkillRegistry, SkillRegistry};
     use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
+    use carve_state::Context;
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn combined_plugin_injects_catalog_and_active_skills() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
@@ -97,7 +101,7 @@ mod tests {
             }),
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert_eq!(step.system_context.len(), 2);
         assert!(step.system_context[0].contains("<available_skills>"));

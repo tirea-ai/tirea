@@ -7,6 +7,7 @@ use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::Interaction;
 use async_trait::async_trait;
+use carve_state::Context;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -61,7 +62,7 @@ impl AgentPlugin for FrontendToolPlugin {
         "frontend_tool"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }

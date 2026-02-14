@@ -130,6 +130,7 @@ mod tests {
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::types::{Message, ToolCall};
     use async_trait::async_trait;
+    use carve_state::Context;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
@@ -275,7 +276,9 @@ mod tests {
         // Run the subsystem plugin and verify both discovery and runtime injections exist.
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert_eq!(step.system_context.len(), 2);
         assert!(step.system_context[0].contains("<available_skills>"));

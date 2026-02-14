@@ -6,6 +6,7 @@ use crate::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
 use async_trait::async_trait;
+use carve_state::Context;
 use serde_json::Value;
 
 /// Injects activated skills (instructions + loaded materials) into the LLM context.
@@ -117,7 +118,7 @@ impl AgentPlugin for SkillRuntimePlugin {
         "skills_runtime"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
         if phase != Phase::BeforeInference {
             return;
         }
@@ -157,10 +158,13 @@ mod tests {
     use super::*;
     use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
+    use carve_state::Context;
     use serde_json::json;
 
     #[tokio::test]
     async fn plugin_does_not_inject_skill_instructions_from_state() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::with_initial_state(
             "s",
             json!({
@@ -174,12 +178,14 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
     async fn plugin_sorts_references_and_scripts_by_path() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::with_initial_state(
             "s",
             json!({
@@ -203,7 +209,7 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
         assert!(!s.contains("<skill id=\"a\">"));
 
@@ -222,6 +228,8 @@ mod tests {
 
     #[tokio::test]
     async fn plugin_filters_injected_skill_materials_by_runtime_policy() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let mut thread = Thread::with_initial_state(
             "s",
             json!({
@@ -244,7 +252,7 @@ mod tests {
 
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
-        p.on_phase(Phase::BeforeInference, &mut step).await;
+        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
         assert!(s.contains("skill=\"a\""));

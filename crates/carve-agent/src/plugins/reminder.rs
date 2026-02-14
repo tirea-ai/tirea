@@ -123,30 +123,14 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
+    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>, ctx: &carve_state::Context<'_>) {
         use crate::phase::Phase;
 
         if phase != Phase::BeforeInference {
             return;
         }
 
-        // Read reminders from session state
-        let state = match step.thread.rebuild_state() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-
-        let reminders: Vec<String> = state
-            .get(REMINDER_STATE_PATH)
-            .and_then(|v| v.get("items"))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
+        let reminders = ctx.reminders();
         if reminders.is_empty() {
             return;
         }
@@ -155,18 +139,15 @@ impl AgentPlugin for ReminderPlugin {
             step.thread(format!("Reminder: {}", text));
         }
 
-        // Clear reminders from session state via pending patch
         if self.clear_after_llm_request {
-            let ctx = Context::new(&state, "reminder_clear", "plugin:reminder");
-            let rs = ctx.state::<ReminderState>(REMINDER_STATE_PATH);
-            rs.set_items(Vec::new());
-            step.pending_patches.push(ctx.take_patch());
+            ctx.clear_reminders();
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use carve_state::Context;
     use super::*;
     use serde_json::json;
 
@@ -265,6 +246,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
+        let doc = json!({ "reminders": { "items": ["Test reminder"] } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext};
         use crate::thread::Thread;
 
@@ -275,7 +258,7 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert!(!step.session_context.is_empty());
         assert!(step.session_context[0].contains("Test reminder"));
@@ -283,6 +266,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
+        let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext};
         use crate::thread::Thread;
 
@@ -293,21 +278,23 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         // Should have injected reminders as session context
         assert_eq!(step.session_context.len(), 2);
         assert!(step.session_context[0].contains("Reminder A"));
         assert!(step.session_context[1].contains("Reminder B"));
 
-        // Should have generated a pending patch to clear reminders
-        assert_eq!(step.pending_patches.len(), 1);
-        let patch = &step.pending_patches[0];
+        // Plugin ops are collected in ctx; flush them to verify
+        assert!(ctx.has_changes());
+        let patch = ctx.take_patch();
         assert!(!patch.patch().is_empty());
     }
 
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
+        let doc = json!({ "reminders": { "items": ["Reminder"] } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext};
         use crate::thread::Thread;
 
@@ -316,7 +303,7 @@ mod tests {
             Thread::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert!(!step.session_context.is_empty());
         // No pending patches when clearing is disabled
@@ -325,6 +312,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
+        let doc = json!({ "reminders": { "items": [] } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext};
         use crate::thread::Thread;
 
@@ -332,7 +321,7 @@ mod tests {
         let thread = Thread::with_initial_state("test", json!({ "reminders": { "items": [] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());
@@ -340,6 +329,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext};
         use crate::thread::Thread;
 
@@ -347,7 +338,7 @@ mod tests {
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());

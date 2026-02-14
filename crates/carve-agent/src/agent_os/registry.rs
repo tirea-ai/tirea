@@ -792,6 +792,7 @@ mod tests {
     use crate::plugin::AgentPlugin;
     use crate::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use async_trait::async_trait;
+    use carve_state::Context;
     use serde_json::json;
 
     #[derive(Debug)]
@@ -821,7 +822,7 @@ mod tests {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
     }
 
     #[test]

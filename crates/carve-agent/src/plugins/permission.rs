@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 
 /// State path for permission state.
@@ -122,7 +122,7 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>) {
+    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>, ctx: &carve_state::Context<'_>) {
         use crate::phase::Phase;
 
         if phase != Phase::BeforeToolExecute {
@@ -133,13 +133,7 @@ impl AgentPlugin for PermissionPlugin {
             return;
         };
 
-        // Read permission state from session state
-        let permission_state = step
-            .thread
-            .rebuild_state()
-            .ok()
-            .and_then(|s| s.get(PERMISSION_STATE_PATH).cloned());
-        let permission = resolve_permission_behavior_for_tool(permission_state.as_ref(), tool_id);
+        let permission = ctx.get_permission(tool_id);
 
         match permission {
             ToolPermissionBehavior::Allow => {
@@ -163,48 +157,9 @@ impl AgentPlugin for PermissionPlugin {
     }
 }
 
-/// Resolve permission behavior for a tool from optional `permissions` state.
-///
-/// Resolution order:
-/// 1. `permissions.tools[tool_id]`
-/// 2. `permissions.default_behavior`
-/// 3. `ask` fallback
-pub(crate) fn resolve_permission_behavior_for_tool(
-    permission_state: Option<&Value>,
-    tool_id: &str,
-) -> ToolPermissionBehavior {
-    permission_state
-        .and_then(|state| {
-            state
-                .get("tools")
-                .and_then(|tools| tools.get(tool_id))
-                .and_then(|v| v.as_str())
-                .and_then(parse_behavior)
-        })
-        .unwrap_or_else(|| {
-            permission_state
-                .and_then(|state| {
-                    state
-                        .get("default_behavior")
-                        .and_then(|v| v.as_str())
-                        .and_then(parse_behavior)
-                })
-                .unwrap_or(ToolPermissionBehavior::Ask)
-        })
-}
-
-/// Parse a behavior string into a ToolPermissionBehavior.
-fn parse_behavior(s: &str) -> Option<ToolPermissionBehavior> {
-    match s {
-        "allow" => Some(ToolPermissionBehavior::Allow),
-        "deny" => Some(ToolPermissionBehavior::Deny),
-        "ask" => Some(ToolPermissionBehavior::Ask),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use carve_state::Context;
     use super::*;
     use serde_json::json;
 
@@ -232,59 +187,45 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_permission_behavior_prefers_tool_override() {
-        let state = json!({
-            "default_behavior": "deny",
-            "tools": {
-                "recover_agent_run": "allow"
+    fn test_get_permission_prefers_tool_override() {
+        let doc = json!({
+            "permissions": {
+                "default_behavior": "deny",
+                "tools": {
+                    "recover_agent_run": "allow"
+                }
             }
         });
-
-        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
-        assert_eq!(behavior, ToolPermissionBehavior::Allow);
+        let ctx = Context::new(&doc, "call_1", "test");
+        assert_eq!(
+            ctx.get_permission("recover_agent_run"),
+            ToolPermissionBehavior::Allow
+        );
     }
 
     #[test]
-    fn test_resolve_permission_behavior_falls_back_to_default() {
-        let state = json!({
-            "default_behavior": "deny",
-            "tools": {}
-        });
-
-        let behavior = resolve_permission_behavior_for_tool(Some(&state), "unknown_tool");
-        assert_eq!(behavior, ToolPermissionBehavior::Deny);
-    }
-
-    #[test]
-    fn test_resolve_permission_behavior_invalid_values_fall_back_to_ask() {
-        let state = json!({
-            "default_behavior": "invalid",
-            "tools": {
-                "recover_agent_run": 42
+    fn test_get_permission_falls_back_to_default() {
+        let doc = json!({
+            "permissions": {
+                "default_behavior": "deny",
+                "tools": {}
             }
         });
-
-        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
-        assert_eq!(behavior, ToolPermissionBehavior::Ask);
+        let ctx = Context::new(&doc, "call_1", "test");
+        assert_eq!(
+            ctx.get_permission("unknown_tool"),
+            ToolPermissionBehavior::Deny
+        );
     }
 
     #[test]
-    fn test_resolve_permission_behavior_missing_state_falls_back_to_ask() {
-        let behavior = resolve_permission_behavior_for_tool(None, "recover_agent_run");
-        assert_eq!(behavior, ToolPermissionBehavior::Ask);
-    }
-
-    #[test]
-    fn test_resolve_permission_behavior_invalid_tool_value_uses_default() {
-        let state = json!({
-            "default_behavior": "allow",
-            "tools": {
-                "recover_agent_run": 42
-            }
-        });
-
-        let behavior = resolve_permission_behavior_for_tool(Some(&state), "recover_agent_run");
-        assert_eq!(behavior, ToolPermissionBehavior::Allow);
+    fn test_get_permission_missing_state_falls_back_to_ask() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "call_1", "test");
+        assert_eq!(
+            ctx.get_permission("recover_agent_run"),
+            ToolPermissionBehavior::Ask
+        );
     }
 
     #[test]
@@ -402,6 +343,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_allow() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -416,7 +359,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(!step.tool_blocked());
         assert!(!step.tool_pending());
@@ -424,6 +367,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_deny() {
+        let doc = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -438,13 +383,15 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
+        let doc = json!({ "permissions": { "default_behavior": "ask", "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -459,7 +406,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
     }
@@ -505,6 +452,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_allow() {
+        let doc = json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -519,13 +468,15 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(!step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_deny() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -540,13 +491,15 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_blocked());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_ask() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -561,13 +514,15 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_tool_behavior() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -582,7 +537,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should fall back to default "allow" behavior
         assert!(!step.tool_blocked());
@@ -591,6 +546,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_default_behavior() {
+        let doc = json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -605,7 +562,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Should fall back to Ask behavior
         assert!(step.tool_pending());
@@ -613,6 +570,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_no_state() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -625,7 +584,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
     }
@@ -636,6 +595,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tools_is_string_not_object() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -652,7 +613,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // "tools" is not an object → tools.get(tool_id) returns None → falls
         // back to default_behavior "allow"
@@ -662,6 +623,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_invalid_string() {
+        let doc = json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -677,7 +640,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // parse_behavior("invalid_value") returns None → unwrap_or(Ask)
         assert!(step.tool_pending());
@@ -685,6 +648,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_is_number() {
+        let doc = json!({ "permissions": { "default_behavior": 42, "tools": {} } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -700,7 +665,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // as_str() on a number returns None → parse_behavior not called → unwrap_or(Ask)
         assert!(step.tool_pending());
@@ -708,6 +673,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_value_is_number() {
+        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -723,7 +690,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // tools.get("my_tool") returns Some(123), as_str() returns None →
         // parse_behavior not called → falls to default_behavior "allow"
@@ -733,6 +700,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_permissions_is_array() {
+        let doc = json!({ "permissions": [1, 2, 3] });
+        let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -745,7 +714,7 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         // Array can't .get("tools") → None → falls to default check →
         // Array can't .get("default_behavior") → None → unwrap_or(Ask)

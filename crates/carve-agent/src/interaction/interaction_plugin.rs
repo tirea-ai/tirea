@@ -9,6 +9,7 @@ use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
 use std::collections::HashSet;
+use carve_state::Context;
 
 /// Combined AG-UI interaction plugin.
 ///
@@ -82,9 +83,9 @@ impl AgentPlugin for AgUiInteractionPlugin {
         "agui_interaction"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
-        self.response.on_phase(phase, step).await;
-        self.frontend.on_phase(phase, step).await;
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+        self.response.on_phase(phase, step, ctx).await;
+        self.frontend.on_phase(phase, step, ctx).await;
     }
 }
 

@@ -523,11 +523,12 @@ fn validate_phase_mutation(
 async fn emit_phase_checked(
     phase: Phase,
     step: &mut StepContext<'_>,
+    ctx: &Context<'_>,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     for plugin in plugins {
         let before = phase_mutation_snapshot(step);
-        plugin.on_phase(phase, step).await;
+        plugin.on_phase(phase, step, ctx).await;
         let after = phase_mutation_snapshot(step);
         validate_phase_mutation(phase, plugin.id(), &before, &after)?;
     }
@@ -564,10 +565,20 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
     Extract: FnOnce(&mut StepContext<'_>) -> R,
 {
+    let current_state = thread
+        .rebuild_state()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let ctx = Context::new(&current_state, "phase", "plugin:phase")
+        .with_runtime(Some(&thread.runtime));
     let mut step = scratchpad.new_step_context(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
-        emit_phase_checked(*phase, &mut step, plugins).await?;
+        emit_phase_checked(*phase, &mut step, &ctx, plugins).await?;
+    }
+    // Flush plugin state ops into pending patches
+    let plugin_patch = ctx.take_patch();
+    if !plugin_patch.patch().is_empty() {
+        step.pending_patches.push(plugin_patch);
     }
     let output = extract(&mut step);
     let pending = take_step_side_effects(scratchpad, &mut step);
@@ -641,9 +652,22 @@ async fn emit_session_end(
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Thread {
     let pending = {
+        let current_state = match thread.rebuild_state() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "SessionEnd: failed to rebuild state");
+                return thread;
+            }
+        };
+        let ctx = Context::new(&current_state, "phase", "plugin:session_end")
+            .with_runtime(Some(&thread.runtime));
         let mut step = scratchpad.new_step_context(&thread, tool_descriptors.to_vec());
-        if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, plugins).await {
+        if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, &ctx, plugins).await {
             tracing::warn!(error = %e, "SessionEnd plugin phase validation failed");
+        }
+        let plugin_patch = ctx.take_patch();
+        if !plugin_patch.patch().is_empty() {
+            step.pending_patches.push(plugin_patch);
         }
         take_step_side_effects(scratchpad, &mut step)
     };
@@ -1615,13 +1639,17 @@ async fn execute_single_tool_with_phases(
         temp_thread.runtime = rt.clone();
     }
 
+    // Create plugin Context for tool phases (separate from tool's own Context)
+    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase")
+        .with_runtime(runtime);
+
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
     step.set_scratchpad_map(scratchpad);
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
-    emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
+    emit_phase_checked(Phase::BeforeToolExecute, &mut step, &plugin_ctx, plugins).await?;
 
     // Check if blocked or pending
     let (execution, pending_interaction) = if !crate::tool_filter::is_runtime_allowed(
@@ -1678,9 +1706,9 @@ async fn execute_single_tool_with_phases(
             None,
         )
     } else {
-        // Execute the tool with context (instrumented with tracing span)
+        // Execute the tool with its own Context (instrumented with tracing span)
         let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
-        let ctx = carve_state::Context::new_with_activity_manager(
+        let tool_ctx = carve_state::Context::new_with_activity_manager(
             state,
             &call.id,
             format!("tool:{}", call.name),
@@ -1688,7 +1716,7 @@ async fn execute_single_tool_with_phases(
         )
         .with_runtime(runtime);
         let result = async {
-            match tool.unwrap().execute(call.arguments.clone(), &ctx).await {
+            match tool.unwrap().execute(call.arguments.clone(), &tool_ctx).await {
                 Ok(r) => r,
                 Err(e) => ToolResult::error(&call.name, e.to_string()),
             }
@@ -1696,7 +1724,7 @@ async fn execute_single_tool_with_phases(
         .instrument(tool_span)
         .await;
 
-        let patch = ctx.take_patch();
+        let patch = tool_ctx.take_patch();
         let patch = if patch.patch().is_empty() {
             None
         } else {
@@ -1717,7 +1745,13 @@ async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_phase_checked(Phase::AfterToolExecute, &mut step, plugins).await?;
+    emit_phase_checked(Phase::AfterToolExecute, &mut step, &plugin_ctx, plugins).await?;
+
+    // Flush plugin state ops into pending patches
+    let plugin_patch = plugin_ctx.take_patch();
+    if !plugin_patch.patch().is_empty() {
+        step.pending_patches.push(plugin_patch);
+    }
 
     let pending_patches = std::mem::take(&mut step.pending_patches);
 
@@ -3663,7 +3697,7 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             match phase {
                 Phase::StepStart => {
                     step.system("Test system context");
@@ -3698,7 +3732,7 @@ mod tests {
             "blocker"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
                 step.block("Echo tool is blocked");
             }
@@ -3744,7 +3778,7 @@ mod tests {
             "invalid_after_tool_mutation"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::AfterToolExecute {
                 step.block("too late");
             }
@@ -3791,7 +3825,7 @@ mod tests {
             "reminder"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::AfterToolExecute {
                 step.reminder("Tool execution completed");
             }
@@ -3867,7 +3901,7 @@ mod tests {
             "filter"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 step.exclude("dangerous_tool");
             }
@@ -3885,8 +3919,10 @@ mod tests {
             ];
             let mut step = StepContext::new(&thread, tool_descriptors);
             let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
+            let doc = serde_json::json!({});
+            let ctx = Context::new(&doc, "test", "test");
 
-            emit_phase_checked(Phase::BeforeInference, &mut step, &plugins)
+            emit_phase_checked(Phase::BeforeInference, &mut step, &ctx, &plugins)
                 .await
                 .expect("BeforeInference should not fail");
 
@@ -3905,7 +3941,7 @@ mod tests {
                 "data"
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
 
             fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("plugin_config", json!({"enabled": true})))
@@ -3937,7 +3973,7 @@ mod tests {
                 Some(("allow_exec", json!(true)))
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::BeforeToolExecute
                     && step.scratchpad_get::<bool>("allow_exec") != Some(true)
                 {
@@ -3983,7 +4019,7 @@ mod tests {
                 Some(("allow_exec_v2", json!(true)))
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::BeforeToolExecute
                     && step.scratchpad_get::<bool>("allow_exec_v2") != Some(true)
                 {
@@ -4029,7 +4065,7 @@ mod tests {
                 "session_check"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::BeforeToolExecute {
                     assert_eq!(step.thread.id, "real-thread-42");
                     assert_eq!(step.thread.runtime.value("user_id"), Some(&json!("u-abc")),);
@@ -4081,7 +4117,7 @@ mod tests {
                 Some(("seed", json!(1)))
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 match phase {
                     Phase::SessionStart => {
                         step.scratchpad_set("seed", 2);
@@ -4103,14 +4139,17 @@ mod tests {
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(LifecyclePlugin)];
         let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
 
+        let doc = serde_json::json!({});
+        let ctx = Context::new(&doc, "test", "test");
+
         let mut session_step = scratchpad.new_step_context(&thread, tools.clone());
-        emit_phase_checked(Phase::SessionStart, &mut session_step, &plugins)
+        emit_phase_checked(Phase::SessionStart, &mut session_step, &ctx, &plugins)
             .await
             .expect("SessionStart should not fail");
         scratchpad.sync_from_step(&session_step);
 
         let mut step = scratchpad.new_step_context(&thread, tools);
-        emit_phase_checked(Phase::StepStart, &mut step, &plugins)
+        emit_phase_checked(Phase::StepStart, &mut step, &ctx, &plugins)
             .await
             .expect("StepStart should not fail");
 
@@ -4129,7 +4168,7 @@ mod tests {
                 "phase_block"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 self.phases.lock().unwrap().push(phase);
                 match phase {
                     Phase::StepStart => {
@@ -4204,7 +4243,7 @@ mod tests {
                 "cleanup_plugin"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 self.phases.lock().unwrap().push(phase);
                 match phase {
                     Phase::AfterInference => {
@@ -4273,7 +4312,7 @@ mod tests {
                 Some(("counter", json!(0)))
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 match phase {
                     Phase::SessionStart | Phase::StepStart => {
                         let next = step.scratchpad_get::<i64>("counter").unwrap_or(0) + 1;
@@ -4373,7 +4412,7 @@ mod tests {
             fn id(&self) -> &str {
                 "dummy"
             }
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
         }
 
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -4389,7 +4428,7 @@ mod tests {
             "pending"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
                 use crate::state_types::Interaction;
                 step.pending(
@@ -4897,7 +4936,7 @@ mod tests {
                 "first_call_intermediate_patch"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                     return;
                 }
@@ -4964,7 +5003,7 @@ mod tests {
         fn id(&self) -> &str {
             "record_and_skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             self.phases.lock().unwrap().push(phase);
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -5077,7 +5116,7 @@ mod tests {
                 "pending_skip"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase != Phase::BeforeInference {
                     return;
                 }
@@ -5223,7 +5262,7 @@ mod tests {
                 "invalid_step_start_skip"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::StepStart {
                     step.skip_inference = true;
                 }
@@ -5257,7 +5296,7 @@ mod tests {
                 "invalid_step_start_skip"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::StepStart {
                     step.skip_inference = true;
                 }
@@ -5538,7 +5577,7 @@ mod tests {
                 "invalid_replay_payload"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::SessionStart {
                     step.scratchpad_set("__replay_tool_calls", json!({"bad": "payload"}));
                 }
@@ -5595,7 +5634,7 @@ mod tests {
                 "replay_state_failure"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::SessionStart {
                     step.scratchpad_set(
                         "__replay_tool_calls",
@@ -5632,8 +5671,8 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("replay"))),
-            "expected replay state rebuild error, got events: {events:?}"
+                .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("State error") || message.contains("replay"))),
+            "expected state rebuild error, got events: {events:?}"
         );
         assert!(
             !events
@@ -5657,7 +5696,7 @@ mod tests {
                 "replay_blocking"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 match phase {
                     Phase::SessionStart => {
                         step.scratchpad_set(
@@ -5725,7 +5764,7 @@ mod tests {
                 "replay_without_placeholder"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::SessionStart {
                     step.scratchpad_set(
                         "__replay_tool_calls",
@@ -5784,7 +5823,7 @@ mod tests {
                 "pending_and_session_end"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 match phase {
                     Phase::BeforeToolExecute => {
                         if let Some(call_id) = step.tool_call_id() {
@@ -5886,7 +5925,7 @@ mod tests {
                 Some(("seed", json!(true)))
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 match phase {
                     Phase::BeforeToolExecute => {
                         if let Some(call_id) = step.tool_call_id() {
@@ -6655,7 +6694,7 @@ mod tests {
             self.id
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             self.order_log
                 .lock()
                 .unwrap()
@@ -6734,7 +6773,7 @@ mod tests {
             "conditional_block"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeToolExecute && step.tool_pending() {
                 step.block("Blocked because tool was pending".to_string());
             }

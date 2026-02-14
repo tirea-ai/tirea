@@ -4,6 +4,7 @@ use carve_agent::{
     SkillScriptTool, StepContext, Thread, ToolCall, ToolDescriptor, ToolResult,
     APPEND_USER_MESSAGES_METADATA_KEY,
 };
+use carve_state::Context;
 use serde_json::json;
 use std::fs;
 use std::io::Write;
@@ -98,7 +99,9 @@ async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     assert!(
         step.system_context.is_empty(),
         "skill instructions should not be reinjected by runtime plugin"
@@ -178,7 +181,9 @@ async fn test_load_reference_injects_reference_content() {
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_reference"));
     assert!(injected.contains("Use docx-js for new documents."));
@@ -213,7 +218,9 @@ async fn test_script_result_is_persisted_and_injected() {
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_script_result"));
     assert!(injected.contains("hello"));
@@ -249,7 +256,9 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
     assert_eq!(result.data["encoding"], "base64");
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<skill_asset"));
     assert!(injected.contains("path=\"assets/logo.txt\""));
@@ -651,7 +660,9 @@ printf "%s" "$*"
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("<stdout>"));
     assert!(injected.contains("a b"));
@@ -814,7 +825,9 @@ async fn test_reference_truncation_flag_is_injected() {
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("path=\"references/BIG.md\""));
     assert!(injected.contains("truncated=\"true\""));
@@ -858,7 +871,9 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     assert!(result.is_success());
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    plugin.on_phase(Phase::BeforeInference, &mut step).await;
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
+    plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
     let injected = &step.system_context[0];
     assert!(injected.contains("script=\"scripts/big.sh\""));
     assert!(injected.contains("stdout_truncated=\"true\""));

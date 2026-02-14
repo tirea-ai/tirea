@@ -4595,6 +4595,8 @@ use carve_agent::types::ToolCall;
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
 #[tokio::test]
 async fn test_scenario_frontend_tool_request_to_agui() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // 1. Client sends request with mixed frontend/backend tools
     let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
         .with_tool(AGUIToolDef::backend("search", "Search the web"))
@@ -4626,7 +4628,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 4. Plugin intercepts in BeforeToolExecute phase
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     // 5. Tool should be pending
     assert!(step.tool_pending());
@@ -4670,6 +4672,8 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 /// Test scenario: Multiple frontend tools called in sequence
 #[tokio::test]
 async fn test_scenario_multiple_frontend_tools_sequence() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
         .with_tool(AGUIToolDef::frontend("showNotification", "Notify"))
@@ -4690,7 +4694,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending(), "Tool {} should be pending", tool_name);
 
@@ -4710,6 +4714,8 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
 /// Test scenario: Frontend tool with complex nested arguments
 #[tokio::test]
 async fn test_scenario_frontend_tool_complex_args() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let plugin = AgUiInteractionPlugin::with_frontend_tools(
         ["fileDialog".to_string()].into_iter().collect(),
     );
@@ -4743,7 +4749,7 @@ async fn test_scenario_frontend_tool_complex_args() {
     let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(step.tool_pending());
 
@@ -4770,6 +4776,8 @@ async fn test_scenario_frontend_tool_complex_args() {
 /// Test scenario: Frontend tool with empty/null arguments
 #[tokio::test]
 async fn test_scenario_frontend_tool_empty_args() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let plugin = AgUiInteractionPlugin::with_frontend_tools(
         ["getClipboard".to_string()].into_iter().collect(),
     );
@@ -4782,7 +4790,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -4801,7 +4809,7 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -4818,6 +4826,8 @@ async fn test_scenario_frontend_tool_empty_args() {
 /// Test scenario: Frontend tool names with special characters
 #[tokio::test]
 async fn test_scenario_frontend_tool_special_names() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // Various tool name formats that might appear
     let tool_names = vec![
         "copy_to_clipboard",       // snake_case
@@ -4838,7 +4848,7 @@ async fn test_scenario_frontend_tool_special_names() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert!(
             step.tool_pending(),
@@ -4866,6 +4876,8 @@ async fn test_scenario_frontend_tool_special_names() {
 /// Test scenario: Tool name case sensitivity
 #[tokio::test]
 async fn test_scenario_frontend_tool_case_sensitivity() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // Only "CopyToClipboard" is registered as frontend
     let plugin = AgUiInteractionPlugin::with_frontend_tools(
         ["CopyToClipboard".to_string()].into_iter().collect(),
@@ -4886,7 +4898,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert_eq!(
             step.tool_pending(),
@@ -4948,6 +4960,8 @@ fn test_scenario_frontend_tool_wire_format() {
 /// Test scenario: Frontend tool to AgentEvent::Pending to AG-UI events
 #[tokio::test]
 async fn test_scenario_frontend_tool_full_event_pipeline() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let plugin =
         AgUiInteractionPlugin::with_frontend_tools(["showModal".to_string()].into_iter().collect());
 
@@ -4965,7 +4979,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 1. Plugin creates pending state with interaction
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     // 2. Agent loop would create AgentEvent::Pending
     let interaction = step
@@ -4978,8 +4992,8 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let agent_event = AgentEvent::Pending { interaction };
 
     // 3. Convert to AG-UI events with context
-    let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
-    let ag_ui_events = ctx.on_agent_event(&agent_event);
+    let mut agui_ctx = AGUIContext::new("thread_123".into(), "run_456".into());
+    let ag_ui_events = agui_ctx.on_agent_event(&agent_event);
 
     // 4. Verify complete event sequence
     assert_eq!(ag_ui_events.len(), 3);
@@ -5011,6 +5025,8 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 /// Test scenario: Backend tool should not be affected by AgUiInteractionPlugin
 #[tokio::test]
 async fn test_scenario_backend_tool_passthrough() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let plugin = AgUiInteractionPlugin::with_frontend_tools(
         ["frontendOnly".to_string()].into_iter().collect(),
     );
@@ -5030,7 +5046,7 @@ async fn test_scenario_backend_tool_passthrough() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // Plugin should not interfere
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(!step.tool_pending(), "Backend tool should not be pending");
     assert!(!step.tool_blocked(), "Backend tool should not be blocked");
@@ -5080,6 +5096,8 @@ use carve_agent::plugins::PermissionPlugin;
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5100,7 +5118,7 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // PermissionPlugin creates pending interaction
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5134,6 +5152,8 @@ async fn test_scenario_permission_approved_complete_flow() {
 /// Test scenario: Complete permission denial flow
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5151,7 +5171,7 @@ async fn test_scenario_permission_denied_complete_flow() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5179,6 +5199,8 @@ async fn test_scenario_permission_denied_complete_flow() {
 /// Test scenario: Frontend tool execution complete flow
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     // Phase 1: Agent calls frontend tool
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
         AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
@@ -5192,7 +5214,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5229,6 +5251,8 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 /// Test scenario: Multiple interactions in sequence
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     let thread = Thread::new("test");
     let plugin = PermissionPlugin;
 
@@ -5241,7 +5265,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
     let interaction1 = step1
         .tool
         .as_ref()
@@ -5259,7 +5283,7 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
     let interaction2 = step2
         .tool
         .as_ref()
@@ -5395,6 +5419,8 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 /// Test scenario: AgUiInteractionPlugin blocks denied tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the denied ID.
@@ -5419,7 +5445,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     // Tool should be blocked
     assert!(step.tool_blocked(), "Denied tool should be blocked");
@@ -5435,6 +5461,8 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 /// Test scenario: AgUiInteractionPlugin allows approved tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_allows_approved() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the approved ID.
@@ -5459,7 +5487,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     // Tool should NOT be blocked
     assert!(!step.tool_blocked(), "Approved tool should not be blocked");
@@ -5468,6 +5496,8 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 /// Test scenario: Complete end-to-end flow with PermissionPlugin → AgUiInteractionPlugin
 #[tokio::test]
 async fn test_scenario_e2e_permission_to_response_flow() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
@@ -5483,7 +5513,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     step1.tool = Some(ToolContext::new(&call));
 
     permission_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
         .await;
     assert!(step1.tool_pending(), "Permission ask should create pending");
 
@@ -5521,7 +5551,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 
     // AgUiInteractionPlugin runs first
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
 
     // Tool should NOT be blocked (approved)
@@ -5532,7 +5562,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 
     // PermissionPlugin runs second - but AgUiInteractionPlugin didn't set pending
     permission_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
 
     // PermissionPlugin should still create pending (because permission wasn't updated to Allow)
@@ -5546,6 +5576,8 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 /// Test scenario: combined AG-UI plugin coordinates frontend and response handling
 #[tokio::test]
 async fn test_scenario_frontend_tool_with_response_plugin() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
@@ -5561,7 +5593,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     step1.tool = Some(ToolContext::new(&call));
 
     frontend_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
         .await;
     assert!(step1.tool_pending(), "Frontend tool should create pending");
 
@@ -5868,6 +5900,8 @@ fn test_agui_sse_multiple_events() {
 /// Ask → Pending → Client Approves → Tool Executes
 #[tokio::test]
 async fn test_permission_flow_approval_e2e() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
@@ -5883,7 +5917,7 @@ async fn test_permission_flow_approval_e2e() {
 
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
     assert!(
         step.tool_pending(),
         "Tool should be pending after permission ask"
@@ -5923,7 +5957,7 @@ async fn test_permission_flow_approval_e2e() {
     step2.tool = Some(ToolContext::new(&tool_call2));
 
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
     assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
 }
@@ -5932,6 +5966,8 @@ async fn test_permission_flow_approval_e2e() {
 /// Ask → Pending → Client Denies → Tool Blocked
 #[tokio::test]
 async fn test_permission_flow_denial_e2e() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission
@@ -5946,7 +5982,7 @@ async fn test_permission_flow_denial_e2e() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
     assert!(step.tool_pending());
 
     let interaction = step
@@ -5976,7 +6012,7 @@ async fn test_permission_flow_denial_e2e() {
     step2.tool = Some(ToolContext::new(&tool_call2));
 
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
     assert!(step2.tool_blocked(), "Denied tool should be blocked");
 
@@ -5990,6 +6026,8 @@ async fn test_permission_flow_denial_e2e() {
 /// Test: Multiple tools with mixed permissions
 #[tokio::test]
 async fn test_permission_flow_multiple_tools_mixed() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
@@ -6004,7 +6042,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     step1.tool = Some(ToolContext::new(&call1));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
     let int1 = step1
         .tool
         .as_ref()
@@ -6021,7 +6059,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     );
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
     let int2 = step2
         .tool
         .as_ref()
@@ -6046,7 +6084,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
     resume1.tool = Some(ToolContext::new(&resume_call1));
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut resume1)
+        .on_phase(Phase::BeforeToolExecute, &mut resume1, &ctx)
         .await;
     assert!(!resume1.tool_blocked(), "First tool should not be blocked");
 
@@ -6059,7 +6097,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
     resume2.tool = Some(ToolContext::new(&resume_call2));
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut resume2)
+        .on_phase(Phase::BeforeToolExecute, &mut resume2, &ctx)
         .await;
     assert!(resume2.tool_blocked(), "Second tool should be blocked");
 }
@@ -6331,6 +6369,8 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 /// Test: Frontend tool creates pending interaction
 #[tokio::test]
 async fn test_frontend_tool_flow_creates_pending() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
@@ -6348,7 +6388,7 @@ async fn test_frontend_tool_flow_creates_pending() {
     );
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
     assert!(step.tool_pending(), "Frontend tool should be pending");
 
@@ -6381,6 +6421,8 @@ fn test_frontend_tool_flow_result_from_client() {
 /// Test: Mixed frontend and backend tools
 #[tokio::test]
 async fn test_frontend_tool_flow_mixed_with_backend() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -6395,7 +6437,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
     step_backend.tool = Some(ToolContext::new(&call_backend));
     plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step_backend)
+        .on_phase(Phase::BeforeToolExecute, &mut step_backend, &ctx)
         .await;
     assert!(
         !step_backend.tool_pending(),
@@ -6407,7 +6449,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
     step_frontend.tool = Some(ToolContext::new(&call_frontend));
     plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step_frontend)
+        .on_phase(Phase::BeforeToolExecute, &mut step_frontend, &ctx)
         .await;
     assert!(
         step_frontend.tool_pending(),
@@ -6607,6 +6649,8 @@ fn test_error_flow_agent_abort() {
 /// Test: Resume with approval continues execution
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Simulate: Previous run ended with pending permission
@@ -6626,13 +6670,15 @@ async fn test_resume_flow_with_approval() {
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
     assert!(!step.tool_blocked());
 }
 
 /// Test: Resume with denial blocks execution
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let interaction_id = "permission_dangerous_tool";
@@ -6652,13 +6698,15 @@ async fn test_resume_flow_with_denial() {
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
     assert!(step.tool_blocked());
 }
 
 /// Test: Resume with multiple pending responses
 #[tokio::test]
 async fn test_resume_flow_multiple_responses() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Previous run had 3 pending interactions
@@ -6682,7 +6730,7 @@ async fn test_resume_flow_multiple_responses() {
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
         assert_eq!(
             step.tool_blocked(),
             should_block,
@@ -6695,6 +6743,8 @@ async fn test_resume_flow_multiple_responses() {
 /// Test: Resume with partial responses (some missing)
 #[tokio::test]
 async fn test_resume_flow_partial_responses() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Only respond to some interactions
@@ -6716,7 +6766,7 @@ async fn test_resume_flow_partial_responses() {
     let mut step1 = StepContext::new(&session1, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
     assert!(!step1.tool_blocked());
 
     // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
@@ -6724,7 +6774,7 @@ async fn test_resume_flow_partial_responses() {
     let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2).await;
+    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
     assert!(!step2.tool_blocked()); // Not blocked by response plugin (no response)
 }
 
@@ -6735,6 +6785,8 @@ async fn test_resume_flow_partial_responses() {
 /// Test: combined AG-UI plugin handles both frontend and interaction responses
 #[tokio::test]
 async fn test_plugin_interaction_frontend_and_response() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Request has both frontend tools and interaction responses
@@ -6756,10 +6808,10 @@ async fn test_plugin_interaction_frontend_and_response() {
     step1.tool = Some(ToolContext::new(&call1));
 
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
         .await;
     frontend_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
         .await;
 
     assert!(step1.tool_pending(), "Frontend tool should be pending");
@@ -6776,10 +6828,10 @@ async fn test_plugin_interaction_frontend_and_response() {
     step2.tool = Some(ToolContext::new(&call2));
 
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
     frontend_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
 
     assert!(!step2.tool_blocked(), "Approved tool should not be blocked");
@@ -6788,6 +6840,8 @@ async fn test_plugin_interaction_frontend_and_response() {
 /// Test: Plugin execution order matters
 #[tokio::test]
 async fn test_plugin_interaction_execution_order() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Setup: Frontend tool that was previously denied
@@ -6809,13 +6863,13 @@ async fn test_plugin_interaction_execution_order() {
 
     // Response plugin runs first - denies the tool
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
         .await;
     assert!(step.tool_blocked(), "Tool should be blocked by denial");
 
     // Frontend plugin runs second - should NOT override the block
     frontend_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
         .await;
     assert!(step.tool_blocked(), "Tool should still be blocked");
     assert!(!step.tool_pending(), "Blocked tool should not be pending");
@@ -6824,6 +6878,8 @@ async fn test_plugin_interaction_execution_order() {
 /// Test: Permission plugin with frontend tool
 #[tokio::test]
 async fn test_plugin_interaction_permission_and_frontend() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Frontend tool with permission set to Ask
@@ -6845,11 +6901,11 @@ async fn test_plugin_interaction_permission_and_frontend() {
 
     // Permission plugin runs first - creates pending for "ask"
     permission_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
         .await;
     // Frontend plugin runs second
     frontend_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step)
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
         .await;
 
     // Tool should be pending (frontend takes precedence for frontend tools)
@@ -7299,6 +7355,8 @@ async fn test_multiple_pending_interactions_flow() {
 /// Test: Client responds to multiple interactions
 #[tokio::test]
 async fn test_multiple_interaction_responses() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Client responds to all 3 interactions: approve, deny, approve
@@ -7329,7 +7387,7 @@ async fn test_multiple_interaction_responses() {
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         assert_eq!(
             step.tool_blocked(),
@@ -11831,8 +11889,8 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::{
-        AgentPlugin, InMemorySink, LLMMetryPlugin, Phase, StepContext, StreamResult, Thread,
-        ToolCall, ToolContext, ToolResult,
+        AgentPlugin, Context, InMemorySink, LLMMetryPlugin, Phase, StepContext, StreamResult,
+        Thread, ToolCall, ToolContext, ToolResult,
     };
     use serde_json::json;
     use std::sync::{Arc, Mutex};
@@ -11903,6 +11961,8 @@ mod llmmetry_tracing {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_inference_tracing_span_lifecycle() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -11914,7 +11974,7 @@ mod llmmetry_tracing {
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -11922,7 +11982,7 @@ mod llmmetry_tracing {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -11946,6 +12006,8 @@ mod llmmetry_tracing {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_tool_tracing_span_lifecycle() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -11958,12 +12020,12 @@ mod llmmetry_tracing {
         let call = ToolCall::new("tc1", "search", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -11983,6 +12045,8 @@ mod llmmetry_tracing {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_full_session_with_tracing_spans() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -11995,27 +12059,27 @@ mod llmmetry_tracing {
         let mut step = StepContext::new(&thread, vec![]);
 
         // Thread start
-        plugin.on_phase(Phase::SessionStart, &mut step).await;
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         // Inference
-        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         step.response = Some(StreamResult {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),
         });
-        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
 
         // Tool execution
         let call = ToolCall::new("c1", "search", json!({"q": "test"}));
         step.tool = Some(ToolContext::new(&call));
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"results": []})));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
 
         // Thread end
-        plugin.on_phase(Phase::SessionEnd, &mut step).await;
+        plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12045,6 +12109,8 @@ mod llmmetry_tracing {
 /// Test: on_session_start sets __replay_tool_calls when pending_interaction is approved
 #[tokio::test]
 async fn test_interaction_response_session_start_sets_replay_on_approval() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
@@ -12079,7 +12145,7 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
     let mut step = StepContext::new(&thread, vec![]);
 
     // Run SessionStart phase
-    plugin.on_phase(Phase::SessionStart, &mut step).await;
+    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
     // Should have set __replay_tool_calls
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12093,6 +12159,8 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
 /// Test: on_session_start does NOT set __replay_tool_calls when interaction is denied
 #[tokio::test]
 async fn test_interaction_response_session_start_no_replay_on_denial() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
@@ -12113,7 +12181,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
     );
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step).await;
+    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
@@ -12125,6 +12193,8 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
 /// Test: on_session_start does nothing when no pending_interaction exists
 #[tokio::test]
 async fn test_interaction_response_session_start_no_pending() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let thread = Thread::with_initial_state("test", json!({ "agent": {} }));
@@ -12132,7 +12202,7 @@ async fn test_interaction_response_session_start_no_pending() {
     let plugin = AgUiInteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step).await;
+    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
@@ -12144,6 +12214,8 @@ async fn test_interaction_response_session_start_no_pending() {
 /// Test: on_session_start does nothing when approved ID doesn't match pending
 #[tokio::test]
 async fn test_interaction_response_session_start_mismatched_id() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let thread = Thread::with_initial_state(
@@ -12159,7 +12231,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
     let plugin = AgUiInteractionPlugin::with_responses(vec!["permission_y".to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step).await;
+    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
@@ -12171,6 +12243,8 @@ async fn test_interaction_response_session_start_mismatched_id() {
 /// Test: on_session_start does nothing when no assistant message with tool_calls
 #[tokio::test]
 async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
@@ -12187,7 +12261,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
     let plugin = AgUiInteractionPlugin::with_responses(vec![pending_id.to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step).await;
+    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
     assert!(
@@ -12205,6 +12279,8 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 /// schedules __replay_tool_calls with correct tool call data
 #[tokio::test]
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Phase 1: PermissionPlugin creates pending interaction
@@ -12219,7 +12295,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     step1.tool = Some(ToolContext::new(&call));
 
     permission_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step1)
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
         .await;
     assert!(
         step1.tool_pending(),
@@ -12268,7 +12344,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
     let mut step2 = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step2)
+        .on_phase(Phase::SessionStart, &mut step2, &ctx)
         .await;
 
     // Verify: __replay_tool_calls is set with correct tool call
@@ -12284,6 +12360,8 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 /// Test: HITL replay — denial path does NOT schedule replay
 #[tokio::test]
 async fn test_hitl_replay_denial_does_not_schedule() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_call_add";
@@ -12312,7 +12390,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step)
+        .on_phase(Phase::SessionStart, &mut step, &ctx)
         .await;
 
     let replay: Option<Vec<ToolCall>> = step.scratchpad_get("__replay_tool_calls");
@@ -12325,6 +12403,8 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 /// Test: HITL replay — multiple tool calls, only first is scheduled
 #[tokio::test]
 async fn test_hitl_replay_picks_first_tool_call() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_multi";
@@ -12354,7 +12434,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step)
+        .on_phase(Phase::SessionStart, &mut step, &ctx)
         .await;
 
     let replay: Vec<ToolCall> = step
@@ -12367,6 +12447,8 @@ async fn test_hitl_replay_picks_first_tool_call() {
 /// Test: HITL replay — SessionStart + BeforeToolExecute phases are independent
 #[tokio::test]
 async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
+    let doc = json!({});
+    let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     let pending_id = "permission_phase_test";
@@ -12394,7 +12476,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     // SessionStart sets __replay_tool_calls
     let mut step1 = StepContext::new(&thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step1)
+        .on_phase(Phase::SessionStart, &mut step1, &ctx)
         .await;
     assert!(step1
         .scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls")
@@ -12405,7 +12487,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     let call = ToolCall::new(pending_id, "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call));
     response_plugin
-        .on_phase(Phase::BeforeToolExecute, &mut step2)
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
         .await;
     // Tool should be allowed (approved)
     assert!(

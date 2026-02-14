@@ -201,8 +201,10 @@ pub struct RunRequest {
     pub run_id: Option<String>,
     /// Resource this thread belongs to (for listing/querying).
     pub resource_id: Option<String>,
-    /// Initial state for a new thread. Ignored if the thread already exists.
-    pub initial_state: Option<serde_json::Value>,
+    /// Frontend state snapshot. For new threads, this becomes the initial state.
+    /// For existing threads, this replaces the current state (persisted atomically
+    /// with the user message).
+    pub state: Option<serde_json::Value>,
     /// Messages to append before running (already converted to internal format).
     /// Duplicates (by message ID / tool_call_id) are automatically skipped.
     pub messages: Vec<Message>,
@@ -952,7 +954,7 @@ impl AgentOs {
     /// 3. Persisting pre-run state
     /// 4. Agent resolution and execution
     /// 5. Background checkpoint persistence
-    pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
+    pub async fn run_stream(&self, mut request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         let storage = self.require_storage()?;
 
         // 0. Validate agent exists (fail fast before creating thread)
@@ -962,10 +964,23 @@ impl AgentOs {
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
 
         // 1. Load or create thread
+        //    If frontend sent a state snapshot, apply it:
+        //    - New thread: used as initial state
+        //    - Existing thread: replaces current state (persisted in UserMessage delta)
+        let frontend_state = request.state.take();
+        let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
         let mut thread = match storage.load(&thread_id).await? {
-            Some(head) => head.thread,
+            Some(head) => {
+                let mut t = head.thread;
+                if let Some(state) = frontend_state {
+                    t.state = state.clone();
+                    t.patches.clear();
+                    state_snapshot_for_delta = Some(state);
+                }
+                t
+            }
             None => {
-                let thread = if let Some(state) = request.initial_state {
+                let thread = if let Some(state) = frontend_state {
                     Thread::with_initial_state(thread_id.clone(), state)
                 } else {
                     Thread::new(thread_id.clone())
@@ -994,9 +1009,9 @@ impl AgentOs {
             thread = thread.with_messages(deduped);
         }
 
-        // 6. Persist pending changes (user messages, etc.)
+        // 6. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
-        if !pending.is_empty() {
+        if !pending.is_empty() || state_snapshot_for_delta.is_some() {
             let delta = ThreadDelta {
                 run_id: run_id.clone(),
                 parent_run_id: request
@@ -1007,7 +1022,7 @@ impl AgentOs {
                 reason: CheckpointReason::UserMessage,
                 messages: pending.messages,
                 patches: pending.patches,
-                snapshot: None,
+                snapshot: state_snapshot_for_delta,
             };
             storage.append(&thread_id, &delta).await?;
         }
@@ -1180,6 +1195,7 @@ mod tests {
     use crate::traits::tool::ToolDescriptor;
     use crate::traits::tool::{ToolError, ToolResult};
     use async_trait::async_trait;
+    use carve_state::Context;
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
@@ -1199,6 +1215,8 @@ mod tests {
 
     #[tokio::test]
     async fn wire_skills_inserts_tools_and_plugin() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
             .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -1234,7 +1252,7 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         cfg.plugins[0]
-            .on_phase(Phase::BeforeInference, &mut step)
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;
         assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));
@@ -1242,6 +1260,8 @@ mod tests {
 
     #[tokio::test]
     async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let (_td, root) = make_skills_root();
         let os = AgentOs::builder()
             .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -1272,7 +1292,7 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         cfg.plugins[0]
-            .on_phase(Phase::BeforeInference, &mut step)
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;
         assert!(step.system_context.is_empty());
     }
@@ -1308,7 +1328,7 @@ mod tests {
                 self.0
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
         }
 
         let os = AgentOs::builder()
@@ -1338,7 +1358,7 @@ mod tests {
                 self.0
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
         }
 
         let os = AgentOs::builder()
@@ -1363,7 +1383,7 @@ mod tests {
             "skills"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
     }
 
     #[test]
@@ -1394,7 +1414,7 @@ mod tests {
             "agent_tools"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
     }
 
     #[test]
@@ -1425,7 +1445,7 @@ mod tests {
             "agent_recovery"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
     }
 
     #[test]
@@ -1518,7 +1538,7 @@ mod tests {
                 "skip_inference"
             }
 
-            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
                 if phase == Phase::BeforeInference {
                     step.skip_inference = true;
                 }
@@ -1734,7 +1754,7 @@ mod tests {
             self.0
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeInference {
                 step.system(format!("<plugin id=\"{}\"/>", self.0));
             }
@@ -1743,6 +1763,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_wires_plugins_from_registry() {
+        let doc = json!({});
+        let ctx = Context::new(&doc, "test", "test");
         let os = AgentOs::builder()
             .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
             .with_agent(
@@ -1758,7 +1780,7 @@ mod tests {
 
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         for p in &cfg.plugins {
-            p.on_phase(Phase::BeforeInference, &mut step).await;
+            p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         }
         assert!(step.system_context.iter().any(|s| s.contains("p1")));
     }
@@ -1993,6 +2015,172 @@ mod tests {
             AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
             if agent_id == "a1" && plugin_id == "agent_tools"
         ));
+    }
+
+    #[tokio::test]
+    async fn run_stream_applies_frontend_state_to_existing_thread() {
+        use crate::storage::MemoryStorage;
+        use futures::StreamExt;
+
+        #[derive(Debug)]
+        struct SkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str {
+                "skip"
+            }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let storage = Arc::new(MemoryStorage::new());
+        let os = AgentOs::builder()
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        // Create thread with initial state {"counter": 0}
+        let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
+        storage
+            .create(&thread)
+            .await
+            .unwrap();
+
+        // Verify initial state
+        let head = storage.load("t1").await.unwrap().unwrap();
+        assert_eq!(head.thread.state, json!({"counter": 0}));
+
+        // Run with frontend state that replaces the thread state
+        let request = RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t1".to_string()),
+            run_id: Some("run-1".to_string()),
+            resource_id: None,
+            state: Some(json!({"counter": 42, "new_field": true})),
+            messages: vec![crate::types::Message::user("hello")],
+            runtime: std::collections::HashMap::new(),
+        };
+
+        let run_stream = os.run_stream(request).await.unwrap();
+        // Drain the stream to completion
+        let _events: Vec<_> = run_stream.events.collect().await;
+
+        // Verify state was replaced in storage
+        let head = storage.load("t1").await.unwrap().unwrap();
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(state, json!({"counter": 42, "new_field": true}));
+    }
+
+    #[tokio::test]
+    async fn run_stream_uses_state_as_initial_for_new_thread() {
+        use crate::storage::MemoryStorage;
+        use futures::StreamExt;
+
+        #[derive(Debug)]
+        struct SkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str {
+                "skip"
+            }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let storage = Arc::new(MemoryStorage::new());
+        let os = AgentOs::builder()
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        // Run with state on a new thread
+        let request = RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t-new".to_string()),
+            run_id: Some("run-1".to_string()),
+            resource_id: None,
+            state: Some(json!({"initial": true})),
+            messages: vec![crate::types::Message::user("hello")],
+            runtime: std::collections::HashMap::new(),
+        };
+
+        let run_stream = os.run_stream(request).await.unwrap();
+        let _events: Vec<_> = run_stream.events.collect().await;
+
+        // Verify state was set as initial state
+        let head = storage.load("t-new").await.unwrap().unwrap();
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(state, json!({"initial": true}));
+    }
+
+    #[tokio::test]
+    async fn run_stream_preserves_state_when_no_frontend_state() {
+        use crate::storage::MemoryStorage;
+        use futures::StreamExt;
+
+        #[derive(Debug)]
+        struct SkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str {
+                "skip"
+            }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let storage = Arc::new(MemoryStorage::new());
+        let os = AgentOs::builder()
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        // Create thread with initial state
+        let thread = Thread::with_initial_state("t1", json!({"counter": 5}));
+        storage.create(&thread).await.unwrap();
+
+        // Run without frontend state — state should be preserved
+        let request = RunRequest {
+            agent_id: "a1".to_string(),
+            thread_id: Some("t1".to_string()),
+            run_id: Some("run-1".to_string()),
+            resource_id: None,
+            state: None,
+            messages: vec![crate::types::Message::user("hello")],
+            runtime: std::collections::HashMap::new(),
+        };
+
+        let run_stream = os.run_stream(request).await.unwrap();
+        let _events: Vec<_> = run_stream.events.collect().await;
+
+        // Verify state was not changed
+        let head = storage.load("t1").await.unwrap().unwrap();
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(state, json!({"counter": 5}));
     }
 
     #[test]
