@@ -6,7 +6,8 @@
 //! ```
 
 use carve_agent::{
-    CheckpointReason, MemoryStorage, Message, Thread, ThreadDelta, ThreadStore,
+    CheckpointReason, MemoryStorage, Message, MessageQuery, Thread, ThreadDelta, ThreadQuery,
+    ThreadStore,
 };
 use carve_agentos_server::nats_storage::NatsBufferedStorage;
 use std::sync::Arc;
@@ -172,4 +173,183 @@ async fn test_recover_replays_unacked_deltas() {
     // Inner storage should now have all messages
     let loaded = inner.load("t1").await.unwrap().unwrap();
     assert_eq!(loaded.thread.messages.len(), 3); // hello + response 1 + response 2
+}
+
+// ============================================================================
+// CQRS consistency tests — queries read from last-flushed snapshot
+// ============================================================================
+
+/// During an active run, load() returns the pre-run snapshot without any
+/// buffered deltas.  This is the designed CQRS behaviour: real-time data
+/// is delivered through the SSE event stream, queries read durable storage.
+#[tokio::test]
+async fn test_query_returns_last_flush_snapshot_during_active_run() {
+    let (_container, url) = start_nats_js().await;
+    let (inner, storage) = make_storage(&url).await;
+
+    // Simulate a completed first run: thread with 1 user + 1 assistant msg.
+    let thread = Thread::new("t1")
+        .with_message(Message::user("hello"))
+        .with_message(Message::assistant("first reply"));
+    inner.create(&thread).await.unwrap();
+
+    // Second run starts — new deltas go to NATS only.
+    let delta = ThreadDelta {
+        run_id: "r2".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("second reply"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage.append("t1", &delta).await.unwrap();
+
+    // Query via NatsBufferedStorage.load() — should see first-run snapshot.
+    let head = storage.load("t1").await.unwrap().unwrap();
+    assert_eq!(
+        head.thread.messages.len(),
+        2,
+        "load() should return the pre-run snapshot (2 messages), not include buffered delta"
+    );
+    assert_eq!(head.thread.messages[0].content, "hello");
+    assert_eq!(head.thread.messages[1].content, "first reply");
+}
+
+/// load_messages() (ThreadQuery default) also reads from the inner storage,
+/// so during a run it returns the last-flushed message list.
+#[tokio::test]
+async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
+    let (_container, url) = start_nats_js().await;
+    let (inner, storage) = make_storage(&url).await;
+
+    let thread = Thread::new("t1")
+        .with_message(Message::user("msg-0"))
+        .with_message(Message::assistant("msg-1"));
+    inner.create(&thread).await.unwrap();
+
+    // Buffer 2 new deltas via NATS.
+    for i in 2..4 {
+        let delta = ThreadDelta {
+            run_id: "r2".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
+            patches: vec![],
+            snapshot: None,
+        };
+        storage.append("t1", &delta).await.unwrap();
+    }
+
+    // Query messages through the inner storage (which NatsBufferedStorage delegates to).
+    let page = ThreadQuery::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        page.messages.len(),
+        2,
+        "load_messages() should return 2 messages from last flush, not 4"
+    );
+}
+
+/// After save() completes, queries immediately see the flushed data.
+#[tokio::test]
+async fn test_query_accurate_after_run_end_flush() {
+    let (_container, url) = start_nats_js().await;
+    let (inner, storage) = make_storage(&url).await;
+
+    // First run: create thread with 1 message.
+    let thread = Thread::new("t1").with_message(Message::user("hello"));
+    inner.create(&thread).await.unwrap();
+
+    // Run produces deltas buffered in NATS.
+    let delta = ThreadDelta {
+        run_id: "r1".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("world"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage.append("t1", &delta).await.unwrap();
+
+    // Before flush: load sees 1 message.
+    let pre = storage.load("t1").await.unwrap().unwrap();
+    assert_eq!(pre.thread.messages.len(), 1);
+
+    // Run-end flush.
+    let final_thread = Thread::new("t1")
+        .with_message(Message::user("hello"))
+        .with_message(Message::assistant("world"));
+    storage.save(&final_thread).await.unwrap();
+
+    // After flush: load sees 2 messages.
+    let post = storage.load("t1").await.unwrap().unwrap();
+    assert_eq!(post.thread.messages.len(), 2);
+    assert_eq!(post.thread.messages[1].content, "world");
+
+    // load_messages also sees 2.
+    let page = ThreadQuery::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(page.messages.len(), 2);
+}
+
+/// Across two sequential runs: during the second run, queries return the
+/// first run's fully flushed state.
+#[tokio::test]
+async fn test_multi_run_query_sees_previous_run_data() {
+    let (_container, url) = start_nats_js().await;
+    let (inner, storage) = make_storage(&url).await;
+
+    // === Run 1 ===
+    let thread = Thread::new("t1").with_message(Message::user("q1"));
+    inner.create(&thread).await.unwrap();
+
+    let delta1 = ThreadDelta {
+        run_id: "r1".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("a1"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage.append("t1", &delta1).await.unwrap();
+
+    // Flush run 1.
+    let run1_thread = Thread::new("t1")
+        .with_message(Message::user("q1"))
+        .with_message(Message::assistant("a1"));
+    storage.save(&run1_thread).await.unwrap();
+
+    // === Run 2 (in progress) ===
+    let delta2 = ThreadDelta {
+        run_id: "r2".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("a2"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage.append("t1", &delta2).await.unwrap();
+
+    // Query during run 2: sees run 1's flushed state (2 messages), not run 2's delta.
+    let head = storage.load("t1").await.unwrap().unwrap();
+    assert_eq!(
+        head.thread.messages.len(),
+        2,
+        "during run 2, query should see run 1's flushed state (q1 + a1)"
+    );
+    assert_eq!(head.thread.messages[0].content, "q1");
+    assert_eq!(head.thread.messages[1].content, "a1");
+
+    // Flush run 2.
+    let run2_thread = Thread::new("t1")
+        .with_message(Message::user("q1"))
+        .with_message(Message::assistant("a1"))
+        .with_message(Message::assistant("a2"));
+    storage.save(&run2_thread).await.unwrap();
+
+    // Now query sees all 3 messages.
+    let head = storage.load("t1").await.unwrap().unwrap();
+    assert_eq!(head.thread.messages.len(), 3);
 }

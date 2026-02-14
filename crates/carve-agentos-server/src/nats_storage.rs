@@ -39,6 +39,16 @@ fn delta_subject(thread_id: &str) -> String {
 
 /// A [`ThreadStore`] decorator that buffers deltas in NATS JetStream and
 /// flushes the final thread to the inner storage at run end.
+///
+/// # Query consistency (CQRS)
+///
+/// [`load`](ThreadStore::load) always reads from the inner (durable) storage.
+/// During an active run, queries return the **last-flushed snapshot** — they do
+/// not include deltas that are buffered in NATS but not yet flushed.
+///
+/// Real-time data for in-progress runs is delivered through the SSE/NATS event
+/// stream.  Callers that need up-to-date messages during a run should consume
+/// the event stream rather than polling the query API.
 pub struct NatsBufferedStorage {
     inner: Arc<dyn ThreadStore>,
     jetstream: jetstream::Context,
