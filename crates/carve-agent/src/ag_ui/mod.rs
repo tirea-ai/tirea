@@ -1681,16 +1681,11 @@ fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
     ))
 }
 
-struct RequestWiring {
-    install_interaction: bool,
-}
+struct RequestWiring;
 
 impl RequestWiring {
-    fn from_request(request: &RunAgentRequest) -> Self {
-        Self {
-            install_interaction: request.tools.iter().any(|t| t.is_frontend())
-                || request.has_any_interaction_responses(),
-        }
+    fn from_request(_request: &RunAgentRequest) -> Self {
+        Self
     }
 
     fn apply(
@@ -1705,7 +1700,7 @@ impl RequestWiring {
             merge_frontend_tools(tools, request);
         }
 
-        if self.install_interaction && !config.plugins.iter().any(|p| p.id() == "interaction") {
+        if !config.plugins.iter().any(|p| p.id() == "interaction") {
             config = config.with_plugin(Arc::new(InteractionPlugin::default()));
         }
         config
@@ -7619,7 +7614,7 @@ mod tests {
             Case {
                 name: "none",
                 request: RunAgentRequest::new("t1", "r1"),
-                expected_plugins: vec![],
+                expected_plugins: vec!["interaction"],
                 expect_frontend_stub: false,
             },
             Case {
