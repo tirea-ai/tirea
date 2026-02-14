@@ -116,7 +116,7 @@ pub use traits::reminder::SystemReminder;
 pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Type exports
-pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
+pub use types::{gen_message_id, Message, MessageMetadata, Role, ToolCall, Visibility};
 
 // Thread exports
 pub use thread::{PendingDelta, Thread, ThreadMetadata};

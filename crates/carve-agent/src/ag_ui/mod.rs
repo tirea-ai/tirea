@@ -849,6 +849,16 @@ impl AGUIContext {
         self.text_started
     }
 
+    /// Reset text lifecycle state for a new step with a pre-generated message ID.
+    ///
+    /// This ensures that the streaming message ID matches the stored `Message.id`
+    /// for the assistant message produced by this step.
+    pub fn reset_for_step(&mut self, message_id: String) {
+        self.message_id = message_id;
+        self.text_started = false;
+        self.text_ever_ended = false;
+    }
+
     /// Generate a new message ID.
     pub fn new_message_id(&mut self) -> String {
         let run_id_prefix: String = self.run_id.chars().take(8).collect();
@@ -2399,6 +2409,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"count": 10})),
             patch: None,
+            message_id: String::new(),
         };
         let outputs4 = adapter.convert(&event4);
         assert_eq!(outputs4.len(), 1);
@@ -2647,6 +2658,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"results": 5})),
             patch: None,
+            message_id: String::new(),
         });
         all_events.extend(events);
 
@@ -3001,6 +3013,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"count": 5})),
             patch: None,
+            message_id: String::new(),
         }));
 
         // Should have tool call events
@@ -3096,6 +3109,7 @@ mod tests {
             id: "c1".to_string(),
             result: ToolResult::success("tool", json!({})),
             patch: None,
+            message_id: String::new(),
         });
         total_events += events.len();
 
@@ -3139,7 +3153,7 @@ mod tests {
 
         let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
 
-        let events1 = adapter.convert(&AgentEvent::StepStart);
+        let events1 = adapter.convert(&AgentEvent::StepStart { message_id: String::new() });
         assert_eq!(events1.len(), 1);
         if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
             assert_eq!(step_name, "step_1");
@@ -3152,7 +3166,7 @@ mod tests {
         }
 
         // Next step should be step_2
-        let events3 = adapter.convert(&AgentEvent::StepStart);
+        let events3 = adapter.convert(&AgentEvent::StepStart { message_id: String::new() });
         if let AGUIEvent::StepStarted { step_name, .. } = &events3[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -3294,6 +3308,7 @@ mod tests {
             id: "call_2".to_string(),
             result: ToolResult::success("calc", json!(42)),
             patch: None,
+            message_id: String::new(),
         }));
         events.extend(adapter.convert(&AgentEvent::ToolCallReady {
             id: "call_1".to_string(),
@@ -3304,6 +3319,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!([])),
             patch: None,
+            message_id: String::new(),
         }));
 
         let ends: Vec<_> = events
@@ -3328,6 +3344,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::error("search", "Connection timeout"),
             patch: None,
+            message_id: String::new(),
         });
 
         assert_eq!(events.len(), 1);
@@ -3347,6 +3364,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::pending("long_task", "Task is running"),
             patch: None,
+            message_id: String::new(),
         });
 
         assert_eq!(events.len(), 1);
@@ -3366,6 +3384,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::warning("search", json!({"partial": true}), "Rate limited"),
             patch: None,
+            message_id: String::new(),
         });
 
         assert_eq!(events.len(), 1);
@@ -6054,6 +6073,7 @@ mod tests {
             id: "c1".into(),
             result: ToolResult::success("search", json!({"ok": true})),
             patch: None,
+            message_id: String::new(),
         }));
 
         // Phase 3: more text (new text stream)
@@ -6106,14 +6126,14 @@ mod tests {
         let mut all = Vec::new();
 
         // Step 1
-        all.extend(adapter.convert(&AgentEvent::StepStart));
+        all.extend(adapter.convert(&AgentEvent::StepStart { message_id: String::new() }));
         all.extend(adapter.convert(&AgentEvent::TextDelta {
             delta: "Step 1".into(),
         }));
         all.extend(adapter.convert(&AgentEvent::StepEnd));
 
         // Step 2
-        all.extend(adapter.convert(&AgentEvent::StepStart));
+        all.extend(adapter.convert(&AgentEvent::StepStart { message_id: String::new() }));
         all.extend(adapter.convert(&AgentEvent::TextDelta {
             delta: "Step 2".into(),
         }));
@@ -7301,6 +7321,7 @@ mod tests {
                 id: "tc-1".into(),
                 result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
                 patch: None,
+                message_id: "pre-generated-tool-msg-id".into(),
             },
             &mut ctx,
         );
@@ -7314,7 +7335,7 @@ mod tests {
         {
             assert_eq!(tool_call_id, "tc-1");
             assert!(content.contains("found 42 results"));
-            assert!(message_id.starts_with("result_"));
+            assert_eq!(message_id, "pre-generated-tool-msg-id");
         } else {
             panic!("Expected ToolCallResult");
         }
@@ -7414,7 +7435,7 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         let start1 =
-            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
+            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
         let end1 =
             crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepEnd, &mut ctx);
 
@@ -7427,7 +7448,7 @@ mod tests {
 
         // Second step
         let start2 =
-            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart, &mut ctx);
+            crate::stream::agent_event_to_agui(&crate::stream::AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
         if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -7469,6 +7490,7 @@ mod tests {
                 id: "tc".into(),
                 result: crate::traits::tool::ToolResult::success("test", "results"),
                 patch: None,
+                message_id: String::new(),
             },
             &mut ctx,
         );
@@ -8000,6 +8022,7 @@ mod tests {
                 id: "tc_1".to_string(),
                 result: crate::ToolResult::success("search", json!({"results": []})),
                 patch: None,
+                message_id: String::new(),
             },
             AgentEvent::RunFinish {
                 thread_id: "th_rt".to_string(),

@@ -52,7 +52,7 @@ use crate::storage::{CheckpointReason, ThreadDelta};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::thread::Thread;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolResult};
-use crate::types::{Message, MessageMetadata};
+use crate::types::{gen_message_id, Message, MessageMetadata};
 use async_stream::stream;
 use async_trait::async_trait;
 use carve_state::{ActivityManager, Context, PatchExt, TrackedPatch};
@@ -846,6 +846,16 @@ fn apply_tool_results_to_session(
     metadata: Option<MessageMetadata>,
     parallel_tools: bool,
 ) -> Result<AppliedToolResults, AgentLoopError> {
+    apply_tool_results_impl(thread, results, metadata, parallel_tools, None)
+}
+
+fn apply_tool_results_impl(
+    thread: Thread,
+    results: &[ToolExecutionResult],
+    metadata: Option<MessageMetadata>,
+    parallel_tools: bool,
+    tool_msg_ids: Option<&HashMap<String, String>>,
+) -> Result<AppliedToolResults, AgentLoopError> {
     let mut pending_interactions = results
         .iter()
         .filter_map(|r| r.pending_interaction.clone())
@@ -896,7 +906,12 @@ fn apply_tool_results_to_session(
                     ),
                 )]
             } else {
-                vec![tool_response(&r.execution.call.id, &r.execution.result)]
+                let mut tool_msg = tool_response(&r.execution.call.id, &r.execution.result);
+                // Apply pre-generated message ID if provided.
+                if let Some(id) = tool_msg_ids.and_then(|ids| ids.get(&r.execution.call.id)) {
+                    tool_msg = tool_msg.with_id(id.clone());
+                }
+                vec![tool_msg]
             };
             for reminder in &r.reminders {
                 msgs.push(Message::internal_system(format!(
@@ -1970,15 +1985,17 @@ pub async fn run_loop(
         }
 
         // Add assistant message
+        let assistant_msg_id = gen_message_id();
         let step_meta = MessageMetadata {
             run_id: Some(run_id.clone()),
             step_index: Some(loop_state.rounds as u32),
         };
         thread = if result.tool_calls.is_empty() {
-            thread.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
+            thread.with_message(assistant_message(&result.text).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
         } else {
             thread.with_message(
                 assistant_tool_calls(&result.text, result.tool_calls.clone())
+                    .with_id(assistant_msg_id.clone())
                     .with_metadata(step_meta.clone()),
             )
         };
@@ -2419,6 +2436,7 @@ fn run_loop_stream_impl_with_provider(
                     id: tool_call.id.clone(),
                     result: replay_result.execution.result,
                     patch: replay_result.execution.patch,
+                    message_id: gen_message_id(),
                 };
             }
 
@@ -2535,7 +2553,8 @@ fn run_loop_stream_impl_with_provider(
             let request = build_request(&messages, &filtered_tool_refs);
 
             // Step boundary: starting LLM call
-            yield AgentEvent::StepStart;
+            let assistant_msg_id = gen_message_id();
+            yield AgentEvent::StepStart { message_id: assistant_msg_id.clone() };
 
             // Stream LLM response (instrumented with tracing span)
             let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
@@ -2681,9 +2700,9 @@ fn run_loop_stream_impl_with_provider(
                 step_index: Some(loop_state.rounds as u32),
             };
             thread = if result.tool_calls.is_empty() {
-                thread.with_message(assistant_message(&result.text).with_metadata(step_meta.clone()))
+                thread.with_message(assistant_message(&result.text).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
             } else {
-                thread.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_metadata(step_meta.clone()))
+                thread.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
             };
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
@@ -2870,11 +2889,20 @@ fn run_loop_stream_impl_with_provider(
                 }
             }
             let session_before_apply = thread.clone();
-            let applied = match apply_tool_results_to_session(
+            // Pre-generate message IDs for tool results so streaming events
+            // and stored Messages share the same ID.
+            let tool_msg_ids: HashMap<String, String> = results
+                .iter()
+                .filter(|r| r.pending_interaction.is_none())
+                .map(|r| (r.execution.call.id.clone(), gen_message_id()))
+                .collect();
+
+            let applied = match apply_tool_results_impl(
                 thread,
                 &results,
                 Some(step_meta),
                 config.parallel_tools,
+                Some(&tool_msg_ids),
             ) {
                 Ok(a) => a,
                 Err(e) => {
@@ -2906,6 +2934,7 @@ fn run_loop_stream_impl_with_provider(
                         id: exec_result.execution.call.id.clone(),
                         result: exec_result.execution.result.clone(),
                         patch: exec_result.execution.patch.clone(),
+                        message_id: tool_msg_ids.get(&exec_result.execution.call.id).cloned().unwrap_or_default(),
                     };
                 }
             }

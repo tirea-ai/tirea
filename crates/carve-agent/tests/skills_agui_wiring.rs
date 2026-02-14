@@ -49,6 +49,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
         id: "call_1".to_string(),
         result: exec.result.clone(),
         patch: exec.patch.clone(),
+        message_id: String::new(),
     };
 
     let mut events = Vec::new();

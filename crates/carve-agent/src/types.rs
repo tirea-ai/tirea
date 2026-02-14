@@ -43,7 +43,7 @@ pub struct MessageMetadata {
 }
 
 /// Generate a time-ordered UUID v7 message identifier.
-fn gen_message_id() -> String {
+pub fn gen_message_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
@@ -150,6 +150,13 @@ impl Message {
             visibility: Visibility::All,
             metadata: None,
         }
+    }
+
+    /// Override the auto-generated message ID.
+    #[must_use]
+    pub fn with_id(mut self, id: String) -> Self {
+        self.id = Some(id);
+        self
     }
 
     /// Attach run/step metadata to this message.
@@ -286,5 +293,18 @@ mod tests {
         assert_eq!(parsed.id, "id_1");
         assert_eq!(parsed.name, "calculator");
         assert_eq!(parsed.arguments["expr"], "2+2");
+    }
+
+    #[test]
+    fn test_with_id_overrides_auto_generated() {
+        let msg = Message::user("hi").with_id("custom-id".to_string());
+        assert_eq!(msg.id.as_deref(), Some("custom-id"));
+    }
+
+    #[test]
+    fn test_gen_message_id_is_public_and_uuid_v7() {
+        let id = gen_message_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "7");
     }
 }

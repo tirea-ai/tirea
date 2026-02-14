@@ -2056,9 +2056,10 @@ fn test_agent_event_all_variants() {
         id: "call_1".to_string(),
         result: ToolResult::success("search", json!({"results": []})),
         patch: None,
+        message_id: String::new(),
     };
     match tool_done {
-        AgentEvent::ToolCallDone { id, result, patch } => {
+        AgentEvent::ToolCallDone { id, result, patch, .. } => {
             assert_eq!(id, "call_1");
             assert!(result.is_success());
             assert!(patch.is_none());
@@ -5739,6 +5740,7 @@ fn test_agui_stream_tool_call_sequence() {
         id: "call_1".into(),
         result: ToolResult::success("read_file", json!({"content": "Hello"})),
         patch: None,
+        message_id: String::new(),
     };
     let done_events = agent_event_to_agui(&done, &mut ctx);
 
@@ -6549,6 +6551,7 @@ fn test_error_flow_tool_execution_failure() {
         id: "call_1".into(),
         result,
         patch: None,
+        message_id: String::new(),
     };
     let ag_events = agent_event_to_agui(&event, &mut ctx);
 
@@ -7039,6 +7042,7 @@ fn test_concurrent_tool_calls_event_ordering() {
             id: id.to_string(),
             result: ToolResult::success(*name, json!({"ok": true})),
             patch: None,
+            message_id: String::new(),
         };
         all_events.extend(agent_event_to_agui(&done, &mut ctx));
     }
@@ -7104,6 +7108,7 @@ fn test_interleaved_tools_and_text() {
         id: "call_1".into(),
         result: ToolResult::success("search", json!({"results": 5})),
         patch: None,
+        message_id: String::new(),
     };
     all_events.extend(agent_event_to_agui(&tool_done, &mut ctx));
 
@@ -7363,6 +7368,7 @@ fn test_tool_timeout_ag_ui_flow() {
         id: "call_slow".into(),
         result: timeout_result,
         patch: None,
+        message_id: String::new(),
     };
     let done_events = agent_event_to_agui(&done, &mut ctx);
 
@@ -7615,6 +7621,7 @@ fn test_large_tool_result_payload() {
         id: "call_large".into(),
         result,
         patch: None,
+        message_id: String::new(),
     };
 
     let ag_events = agent_event_to_agui(&event, &mut ctx);
@@ -7849,7 +7856,7 @@ fn test_multiple_step_sequences() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Step 1
-    let step1_start = AgentEvent::StepStart;
+    let step1_start = AgentEvent::StepStart { message_id: String::new() };
     let events1 = agent_event_to_agui(&step1_start, &mut ctx);
     let step1_name = if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
         step_name.clone()
@@ -7864,7 +7871,7 @@ fn test_multiple_step_sequences() {
     }
 
     // Step 2
-    let step2_start = AgentEvent::StepStart;
+    let step2_start = AgentEvent::StepStart { message_id: String::new() };
     let events2 = agent_event_to_agui(&step2_start, &mut ctx);
     let step2_name = if let AGUIEvent::StepStarted { step_name, .. } = &events2[0] {
         step_name.clone()
@@ -8336,6 +8343,7 @@ fn test_complete_tool_call_protocol_flow() {
         id: "call_search".into(),
         result: ToolResult::success("web_search", json!({"results": 10})),
         patch: None,
+        message_id: String::new(),
     };
     events.extend(agent_event_to_agui(&done, &mut ctx));
 
@@ -8418,6 +8426,7 @@ fn test_mixed_content_protocol_flow() {
         id: "call_1".into(),
         result: ToolResult::success("search", json!({"count": 5})),
         patch: None,
+        message_id: String::new(),
     };
     events.extend(agent_event_to_agui(&tool_done, &mut ctx));
 
@@ -8971,6 +8980,7 @@ fn test_tool_result_with_warning_status() {
         id: "call_1".into(),
         result: ToolResult::warning("search", json!({"results": 5}), "Results may be stale"),
         patch: None,
+        message_id: String::new(),
     };
     let events = agent_event_to_agui(&done, &mut ctx);
 
@@ -8989,6 +8999,7 @@ fn test_tool_result_with_pending_status() {
         id: "call_1".into(),
         result: ToolResult::pending("longRunningTask", "Task queued, check back later"),
         patch: None,
+        message_id: String::new(),
     };
     let events = agent_event_to_agui(&done, &mut ctx);
 
@@ -9963,6 +9974,7 @@ fn test_tool_call_sequence_ordering() {
         id: "call_1".into(),
         result: ToolResult::success("search", json!({"count": 5})),
         patch: None,
+        message_id: String::new(),
     };
     events.extend(agent_event_to_agui(&done, &mut ctx));
 
@@ -12019,7 +12031,7 @@ fn test_agent_event_activity_delta_to_ag_ui() {
 fn test_agent_event_step_events() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let step_start = AgentEvent::StepStart;
+    let step_start = AgentEvent::StepStart { message_id: String::new() };
     let events = agent_event_to_agui(&step_start, &mut ctx);
     assert_eq!(events.len(), 1);
     assert!(

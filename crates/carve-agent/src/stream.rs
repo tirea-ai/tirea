@@ -280,12 +280,19 @@ pub enum AgentEvent {
         id: String,
         result: ToolResult,
         patch: Option<TrackedPatch>,
+        /// Pre-generated ID for the stored tool result message.
+        #[serde(default)]
+        message_id: String,
     },
     // ========================================================================
     // Step Events
     // ========================================================================
     /// Step started (for multi-step agents).
-    StepStart,
+    StepStart {
+        /// Pre-generated ID for the assistant message this step will produce.
+        #[serde(default)]
+        message_id: String,
+    },
     /// Step completed.
     StepEnd,
 
@@ -394,7 +401,7 @@ pub fn agent_event_to_ui(ev: &AgentEvent, text_id: &str) -> Vec<UIStreamEvent> {
             vec![UIStreamEvent::tool_output_available(id, result.to_json())]
         }
 
-        AgentEvent::StepStart => vec![UIStreamEvent::start_step()],
+        AgentEvent::StepStart { .. } => vec![UIStreamEvent::start_step()],
         AgentEvent::StepEnd => vec![UIStreamEvent::finish_step()],
 
         AgentEvent::StateSnapshot { snapshot } => {
@@ -512,13 +519,25 @@ pub fn agent_event_to_agui(ev: &AgentEvent, ctx: &mut AGUIContext) -> Vec<AGUIEv
         AgentEvent::ToolCallReady { id, .. } => {
             vec![AGUIEvent::tool_call_end(id)]
         }
-        AgentEvent::ToolCallDone { id, result, .. } => {
-            let result_msg_id = format!("result_{}", id);
+        AgentEvent::ToolCallDone {
+            id,
+            result,
+            message_id,
+            ..
+        } => {
             let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
-            vec![AGUIEvent::tool_call_result(&result_msg_id, id, content)]
+            let msg_id = if message_id.is_empty() {
+                format!("result_{id}")
+            } else {
+                message_id.clone()
+            };
+            vec![AGUIEvent::tool_call_result(msg_id, id, content)]
         }
 
-        AgentEvent::StepStart => {
+        AgentEvent::StepStart { message_id } => {
+            if !message_id.is_empty() {
+                ctx.reset_for_step(message_id.clone());
+            }
             vec![AGUIEvent::step_started(ctx.next_step_name())]
         }
         AgentEvent::StepEnd => {
@@ -725,11 +744,13 @@ mod tests {
             id: "call_1".to_string(),
             result: result.clone(),
             patch: None,
+            message_id: String::new(),
         };
         if let AgentEvent::ToolCallDone {
             id,
             result: r,
             patch,
+            ..
         } = event
         {
             assert_eq!(id, "call_1");
@@ -866,6 +887,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("test", json!({})),
             patch: Some(patch.clone()),
+            message_id: String::new(),
         };
 
         if let AgentEvent::ToolCallDone { patch: p, .. } = event {
@@ -1341,6 +1363,7 @@ mod tests {
             id: "call_1".to_string(),
             result,
             patch: None,
+            message_id: String::new(),
         };
         let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
@@ -1351,7 +1374,7 @@ mod tests {
 
     #[test]
     fn test_agent_event_to_ui_events_step_start() {
-        let event = AgentEvent::StepStart;
+        let event = AgentEvent::StepStart { message_id: String::new() };
         let ui_events = agent_event_to_ui(&event, "txt_0");
         assert_eq!(ui_events.len(), 1);
         let json = serde_json::to_string(&ui_events[0]).unwrap();
@@ -1574,8 +1597,8 @@ mod tests {
 
     #[test]
     fn test_agent_event_step_start() {
-        let event = AgentEvent::StepStart;
-        assert!(matches!(event, AgentEvent::StepStart));
+        let event = AgentEvent::StepStart { message_id: String::new() };
+        assert!(matches!(event, AgentEvent::StepStart { .. }));
     }
 
     #[test]
@@ -1605,7 +1628,7 @@ mod tests {
         assert!(json.contains("text_delta"));
         assert!(json.contains("Hello"));
 
-        let event = AgentEvent::StepStart;
+        let event = AgentEvent::StepStart { message_id: String::new() };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("step_start"));
 
@@ -1624,7 +1647,7 @@ mod tests {
     fn test_agent_event_deserialization() {
         let json = r#"{"event_type":"step_start"}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
-        assert!(matches!(event, AgentEvent::StepStart));
+        assert!(matches!(event, AgentEvent::StepStart { .. }));
 
         let json = r#"{"event_type":"text_delta","delta":"Hello"}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
@@ -1660,7 +1683,7 @@ mod tests {
     fn test_complete_streaming_flow_conversion() {
         // Simulate a complete streaming flow and convert to UI events
         let events = vec![
-            AgentEvent::StepStart,
+            AgentEvent::StepStart { message_id: String::new() },
             AgentEvent::TextDelta {
                 delta: "Let me ".to_string(),
             },
@@ -1688,6 +1711,7 @@ mod tests {
                 id: "call_1".to_string(),
                 result: ToolResult::success("search", json!({"found": 3})),
                 patch: None,
+                message_id: String::new(),
             },
             AgentEvent::StepEnd,
             AgentEvent::RunFinish {
@@ -1789,6 +1813,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"found": 5})),
             patch: Some(patch),
+            message_id: String::new(),
         };
 
         let ui_events = agent_event_to_ui(&event, "txt_0");
@@ -1805,6 +1830,7 @@ mod tests {
             id: "call_1".to_string(),
             result: ToolResult::error("search", "Tool execution failed"),
             patch: None,
+            message_id: String::new(),
         };
 
         let ui_events = agent_event_to_ui(&event, "txt_0");
@@ -2079,7 +2105,7 @@ mod tests {
     fn test_ag_ui_step_started_finished_pairing() {
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-        let start_events = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
+        let start_events = agent_event_to_agui(&AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
         assert_eq!(start_events.len(), 1);
         let step_name = if let AGUIEvent::StepStarted { step_name, .. } = &start_events[0] {
             step_name.clone()
@@ -2108,11 +2134,11 @@ mod tests {
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
         // Step 1
-        let s1 = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
+        let s1 = agent_event_to_agui(&AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
         let _ = agent_event_to_agui(&AgentEvent::StepEnd, &mut ctx);
 
         // Step 2
-        let s2 = agent_event_to_agui(&AgentEvent::StepStart, &mut ctx);
+        let s2 = agent_event_to_agui(&AgentEvent::StepStart { message_id: String::new() }, &mut ctx);
         let _ = agent_event_to_agui(&AgentEvent::StepEnd, &mut ctx);
 
         let name1 = if let AGUIEvent::StepStarted { step_name, .. } = &s1[0] {
@@ -2144,7 +2170,7 @@ mod tests {
                 run_id: "r1".into(),
                 parent_run_id: None,
             },
-            AgentEvent::StepStart,
+            AgentEvent::StepStart { message_id: String::new() },
             AgentEvent::TextDelta {
                 delta: "Let me search".into(),
             },
@@ -2165,6 +2191,7 @@ mod tests {
                 id: "c1".into(),
                 result: ToolResult::success("search", json!({"found": 1})),
                 patch: None,
+                message_id: String::new(),
             },
             AgentEvent::StepEnd,
             AgentEvent::RunFinish {
@@ -2373,6 +2400,7 @@ mod tests {
             id: "c1".into(),
             result: ToolResult::error("search", "Connection refused"),
             patch: None,
+            message_id: String::new(),
         };
         let mut ctx = AGUIContext::new("t1".into(), "r1".into());
         let events = agent_event_to_agui(&event, &mut ctx);
@@ -2797,7 +2825,7 @@ mod tests {
     fn test_ui_complete_flow_event_ordering() {
         // Simulate a full step with text + tool call and verify AI SDK event types
         let agent_events = [
-            AgentEvent::StepStart,
+            AgentEvent::StepStart { message_id: String::new() },
             AgentEvent::TextDelta {
                 delta: "Searching...".into(),
             },
@@ -2818,6 +2846,7 @@ mod tests {
                 id: "c1".into(),
                 result: ToolResult::success("search", json!([])),
                 patch: None,
+                message_id: String::new(),
             },
             AgentEvent::StepEnd,
             AgentEvent::RunFinish {

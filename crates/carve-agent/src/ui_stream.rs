@@ -780,6 +780,8 @@ pub struct AiSdkEncoder {
     text_open: bool,
     text_counter: u32,
     finished: bool,
+    /// Whether an external message ID has been consumed from a StepStart event.
+    message_id_set: bool,
 }
 
 impl AiSdkEncoder {
@@ -792,6 +794,7 @@ impl AiSdkEncoder {
             text_open: false,
             text_counter: 0,
             finished: false,
+            message_id_set: false,
         }
     }
 
@@ -900,7 +903,13 @@ impl AiSdkEncoder {
                 vec![UIStreamEvent::abort(reason)]
             }
 
-            AgentEvent::StepStart => vec![UIStreamEvent::start_step()],
+            AgentEvent::StepStart { message_id } => {
+                if !self.message_id_set {
+                    self.message_id = message_id.clone();
+                    self.message_id_set = true;
+                }
+                vec![UIStreamEvent::start_step()]
+            },
             AgentEvent::StepEnd => {
                 // AI SDK v6 resets activeTextParts on finish-step, so we must
                 // close any open text block before emitting it.
@@ -2132,7 +2141,7 @@ mod tests {
 
         // Step 1: text + tool + step end
         for ev in &[
-            AgentEvent::StepStart,
+            AgentEvent::StepStart { message_id: String::new() },
             AgentEvent::TextDelta {
                 delta: "Plan: ".to_string(),
             },
@@ -2144,6 +2153,7 @@ mod tests {
                 id: "tc1".to_string(),
                 result: crate::ToolResult::success("search", serde_json::json!([])),
                 patch: None,
+                message_id: String::new(),
             },
             AgentEvent::StepEnd,
         ] {
@@ -2152,7 +2162,7 @@ mod tests {
 
         // Step 2: text + finish
         for ev in &[
-            AgentEvent::StepStart,
+            AgentEvent::StepStart { message_id: String::new() },
             AgentEvent::TextDelta {
                 delta: "Done".to_string(),
             },
