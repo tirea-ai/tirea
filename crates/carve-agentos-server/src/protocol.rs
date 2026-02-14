@@ -1,9 +1,32 @@
 use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+use carve_agent::ui_stream::UIStreamEvent;
 use carve_agent::{agent_event_to_agui, AgentEvent};
+use serde::Serialize;
+use serde_json::json;
 
 // Re-export the canonical AiSdkEncoder from carve-agent.
 pub use carve_agent::AiSdkEncoder;
 
+/// Protocol encoder boundary:
+/// internal `AgentEvent` -> protocol event(s).
+///
+/// Transport layers (SSE/NATS/etc.) should depend on this trait and remain
+/// agnostic to protocol-specific branching.
+pub trait ProtocolEncoder {
+    type Event: Serialize;
+
+    fn prologue(&mut self) -> Vec<Self::Event> {
+        Vec::new()
+    }
+
+    fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event>;
+
+    fn epilogue(&mut self) -> Vec<Self::Event> {
+        Vec::new()
+    }
+}
+
+#[derive(Debug)]
 pub struct AgUiEncoder {
     ctx: AGUIContext,
     emitted_run_finished: bool,
@@ -66,6 +89,75 @@ impl AgUiEncoder {
         }
         events.push(AGUIEvent::run_finished(thread_id, run_id, None));
         events
+    }
+
+    pub fn fallback_finished_current(&mut self) -> Vec<AGUIEvent> {
+        let thread_id = self.ctx.thread_id.clone();
+        let run_id = self.ctx.run_id.clone();
+        self.fallback_finished(&thread_id, &run_id)
+    }
+}
+
+pub struct AiSdkProtocolEncoder {
+    inner: AiSdkEncoder,
+    run_info: Option<UIStreamEvent>,
+}
+
+impl AiSdkProtocolEncoder {
+    pub fn new(run_id: String, thread_id: Option<String>) -> Self {
+        let run_info = thread_id.map(|thread_id| {
+            UIStreamEvent::data(
+                "run-info",
+                json!({
+                    "threadId": thread_id,
+                    "runId": run_id
+                }),
+            )
+        });
+        Self {
+            inner: AiSdkEncoder::new(run_id),
+            run_info,
+        }
+    }
+}
+
+impl ProtocolEncoder for AiSdkProtocolEncoder {
+    type Event = UIStreamEvent;
+
+    fn prologue(&mut self) -> Vec<Self::Event> {
+        let mut events = self.inner.prologue();
+        if let Some(run_info) = self.run_info.take() {
+            events.push(run_info);
+        }
+        events
+    }
+
+    fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {
+        self.inner.on_agent_event(ev)
+    }
+}
+
+pub struct AgUiProtocolEncoder {
+    inner: AgUiEncoder,
+}
+
+impl AgUiProtocolEncoder {
+    pub fn new(thread_id: String, run_id: String) -> Self {
+        Self {
+            inner: AgUiEncoder::new(thread_id, run_id),
+        }
+    }
+}
+
+impl ProtocolEncoder for AgUiProtocolEncoder {
+    type Event = AGUIEvent;
+
+    fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {
+        self.inner.on_agent_event(ev)
+    }
+
+    fn epilogue(&mut self) -> Vec<Self::Event> {
+        self.inner.fallback_finished_current()
     }
 }
 
