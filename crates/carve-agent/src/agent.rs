@@ -1666,6 +1666,7 @@ mod tests {
 
         let ctx = RunContext {
             cancellation_token: None,
+            ..RunContext::default()
         };
         let events =
             collect_events(run_loop_stream(Client::default(), def, thread, tools, ctx)).await;
@@ -1755,6 +1756,7 @@ mod tests {
 
         let ctx = RunContext {
             cancellation_token: None,
+            ..RunContext::default()
         };
         let events =
             collect_events(run_loop_stream(Client::default(), def, thread, tools, ctx)).await;

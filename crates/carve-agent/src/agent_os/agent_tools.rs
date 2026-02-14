@@ -297,7 +297,10 @@ async fn execute_target_agent(
     thread: crate::Thread,
     cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
-    let run_ctx = RunContext { cancellation_token };
+    let run_ctx = RunContext {
+        cancellation_token,
+        ..RunContext::default()
+    };
     let stream = match os.run_stream_with_session(&target_agent_id, thread.clone(), run_ctx) {
         Ok(stream) => stream,
         Err(e) => {

@@ -70,6 +70,7 @@ use tracing::Instrument;
 
 pub use config::{
     AgentConfig, AgentDefinition, RunCancellationToken, RunContext, ScratchpadMergePolicy,
+    StateCommitError, StateCommitter,
 };
 pub(crate) use config::{
     TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
@@ -131,6 +132,26 @@ fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref().map(|i| i.id.clone())),
         tool_has_result: step.tool.as_ref().and_then(|t| t.result.as_ref()).is_some(),
+    }
+}
+
+#[derive(Clone)]
+pub struct ChannelStateCommitter {
+    tx: tokio::sync::mpsc::UnboundedSender<ThreadDelta>,
+}
+
+impl ChannelStateCommitter {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<ThreadDelta>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl StateCommitter for ChannelStateCommitter {
+    async fn commit(&self, _thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError> {
+        self.tx
+            .send(delta)
+            .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))
     }
 }
 
@@ -358,6 +379,37 @@ async fn prepare_stream_error_termination(
         stop_reason: None,
     };
     (thread, error, finish)
+}
+
+async fn commit_pending_delta(
+    thread: &mut Thread,
+    reason: CheckpointReason,
+    force: bool,
+    run_id: &str,
+    parent_run_id: Option<&str>,
+    state_committer: Option<&Arc<dyn StateCommitter>>,
+) -> Result<(), AgentLoopError> {
+    let Some(committer) = state_committer else {
+        return Ok(());
+    };
+
+    let pending = thread.take_pending();
+    if !force && pending.is_empty() {
+        return Ok(());
+    }
+
+    let delta = ThreadDelta {
+        run_id: run_id.to_string(),
+        parent_run_id: parent_run_id.map(str::to_string),
+        reason,
+        messages: pending.messages,
+        patches: pending.patches,
+        snapshot: None,
+    };
+    committer
+        .commit(&thread.id, delta)
+        .await
+        .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))
 }
 
 /// Build initial scratchpad map.
@@ -1785,7 +1837,7 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx, None)
+    run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx)
 }
 
 /// A streaming agent run with access to intermediate session checkpoints.
@@ -1807,13 +1859,13 @@ pub fn run_loop_stream_with_checkpoints(
     run_ctx: RunContext,
 ) -> StreamWithCheckpoints {
     let (checkpoint_tx, checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_ctx = run_ctx.with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
     let events = run_loop_stream_impl_with_provider(
         Arc::new(client),
         config,
         thread,
         tools,
         run_ctx,
-        Some(checkpoint_tx),
     );
     StreamWithCheckpoints {
         events,
@@ -1827,13 +1879,13 @@ fn run_loop_stream_impl_with_provider(
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadDelta>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut thread = thread;
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
+    let state_committer = run_ctx.state_committer().cloned();
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
@@ -1858,17 +1910,17 @@ fn run_loop_stream_impl_with_provider(
 
         macro_rules! emit_run_finished_delta {
             () => {
-                if let Some(tx) = checkpoint_tx.as_ref() {
-                    let pending = thread.take_pending();
-                    let delta = ThreadDelta {
-                        run_id: run_id.clone(),
-                        parent_run_id: parent_run_id.clone(),
-                        reason: CheckpointReason::RunFinished,
-                        messages: pending.messages,
-                        patches: pending.patches,
-                        snapshot: None,
-                    };
-                    let _ = tx.send(delta);
+                if let Err(e) = commit_pending_delta(
+                    &mut thread,
+                    CheckpointReason::RunFinished,
+                    true,
+                    &run_id,
+                    parent_run_id.as_deref(),
+                    state_committer.as_ref(),
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "failed to commit run-finished delta");
                 }
             };
         }
@@ -2306,19 +2358,17 @@ fn run_loop_stream_impl_with_provider(
                 }
             }
 
-            if let Some(tx) = checkpoint_tx.as_ref() {
-                let pending = thread.take_pending();
-                if !pending.is_empty() {
-                    let delta = ThreadDelta {
-                        run_id: run_id.clone(),
-                        parent_run_id: parent_run_id.clone(),
-                        reason: CheckpointReason::AssistantTurnCommitted,
-                        messages: pending.messages,
-                        patches: pending.patches,
-                        snapshot: None,
-                    };
-                    let _ = tx.send(delta);
-                }
+            if let Err(e) = commit_pending_delta(
+                &mut thread,
+                CheckpointReason::AssistantTurnCommitted,
+                false,
+                &run_id,
+                parent_run_id.as_deref(),
+                state_committer.as_ref(),
+            )
+            .await
+            {
+                terminate_stream_error!(e.to_string());
             }
 
             // Step boundary: finished LLM call
@@ -2490,19 +2540,17 @@ fn run_loop_stream_impl_with_provider(
             };
             thread = applied.thread;
 
-            if let Some(tx) = checkpoint_tx.as_ref() {
-                let pending = thread.take_pending();
-                if !pending.is_empty() {
-                    let delta = ThreadDelta {
-                        run_id: run_id.clone(),
-                        parent_run_id: parent_run_id.clone(),
-                        reason: CheckpointReason::ToolResultsCommitted,
-                        messages: pending.messages,
-                        patches: pending.patches,
-                        snapshot: None,
-                    };
-                    let _ = tx.send(delta);
-                }
+            if let Err(e) = commit_pending_delta(
+                &mut thread,
+                CheckpointReason::ToolResultsCommitted,
+                false,
+                &run_id,
+                parent_run_id.as_deref(),
+                state_committer.as_ref(),
+            )
+            .await
+            {
+                terminate_stream_error!(e.to_string());
             }
 
             // Emit non-pending tool results (pending ones pause the run).

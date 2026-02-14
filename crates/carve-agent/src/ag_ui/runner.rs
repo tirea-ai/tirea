@@ -78,6 +78,7 @@ pub fn run_agent_stream_with_parent(
 
         let run_ctx = RunContext {
             cancellation_token: None,
+            ..RunContext::default()
         };
         let mut inner_stream = run_loop_stream(client, config, thread, tools, run_ctx);
 
@@ -170,6 +171,7 @@ pub fn run_agent_events_with_request_checkpoints(
 
     let run_ctx = RunContext {
         cancellation_token: None,
+        ..RunContext::default()
     };
 
     run_loop_stream_with_checkpoints(client, config, thread, tools, run_ctx)

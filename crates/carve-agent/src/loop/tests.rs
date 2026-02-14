@@ -2568,12 +2568,14 @@ async fn test_stream_run_finish_has_matching_thread_id() {
 fn test_run_context_default() {
     let ctx = RunContext::default();
     assert!(ctx.cancellation_token.is_none());
+    assert!(ctx.state_committer.is_none());
 }
 
 #[test]
 fn test_run_context_with_cancellation() {
     let ctx = RunContext {
         cancellation_token: Some(CancellationToken::new()),
+        ..RunContext::default()
     };
     assert!(ctx.cancellation_token.is_some());
 }
@@ -2583,6 +2585,7 @@ fn test_run_context_run_cancellation_token_accessor() {
     let token = RunCancellationToken::new();
     let ctx = RunContext {
         cancellation_token: Some(token),
+        ..RunContext::default()
     };
     assert!(ctx.run_cancellation_token().is_some());
 }
@@ -2591,6 +2594,7 @@ fn test_run_context_run_cancellation_token_accessor() {
 fn test_run_context_clone() {
     let ctx = RunContext {
         cancellation_token: None,
+        ..RunContext::default()
     };
     let cloned = ctx.clone();
     assert!(cloned.cancellation_token.is_none());
@@ -2731,7 +2735,6 @@ async fn run_mock_stream(
         thread,
         tools,
         RunContext::default(),
-        None,
     );
     collect_stream_events(stream).await
 }
@@ -2745,13 +2748,14 @@ async fn run_mock_stream_with_final_thread(
 ) -> (Vec<AgentEvent>, Thread) {
     let mut final_thread = thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_ctx = RunContext::default()
+        .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
     let stream = run_loop_stream_impl_with_provider(
         Arc::new(provider),
         config,
         thread,
         tools,
-        RunContext::default(),
-        Some(checkpoint_tx),
+        run_ctx,
     );
     let events = collect_stream_events(stream).await;
     while let Some(delta) = checkpoint_rx.recv().await {
@@ -3513,8 +3517,8 @@ async fn test_stop_cancellation_token() {
         tools,
         RunContext {
             cancellation_token: Some(token),
+            ..RunContext::default()
         },
-        None,
     );
     let events = collect_stream_events(stream).await;
     assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
@@ -3554,8 +3558,8 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         HashMap::new(),
         RunContext {
             cancellation_token: Some(token.clone()),
+            ..RunContext::default()
         },
-        None,
     );
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
