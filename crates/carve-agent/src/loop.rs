@@ -4868,6 +4868,60 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let thread = Thread::with_initial_state(
+                "test",
+                json!({
+                    "agent": {
+                        "pending_interaction": {
+                            "id": "permission_echo",
+                            "action": "tool:AskUserQuestion"
+                        }
+                    }
+                }),
+            );
+            let result = StreamResult {
+                text: "Trying tool after denial".to_string(),
+                tool_calls: vec![crate::types::ToolCall::new(
+                    "call_1",
+                    "echo",
+                    json!({"message": "test"}),
+                )],
+                usage: None,
+            };
+            let tools = tool_map([EchoTool]);
+            let interaction = crate::interaction::InteractionPlugin::with_responses(
+                Vec::new(),
+                vec!["permission_echo".to_string()],
+            );
+            let config =
+                AgentConfig::new("gpt-4").with_plugin(Arc::new(interaction) as Arc<dyn AgentPlugin>);
+
+            let thread = execute_tools_with_config(thread, &result, &tools, &config)
+                .await
+                .expect("denied permission should block tool and return thread");
+
+            assert_eq!(thread.message_count(), 1);
+            let msg = &thread.messages[0];
+            assert_eq!(msg.role, crate::types::Role::Tool);
+            assert!(
+                msg.content.contains("User denied the action")
+                    || msg.content.to_lowercase().contains("denied"),
+                "Denied permission should be visible in tool error message, got: {}",
+                msg.content
+            );
+
+            let final_state = thread.rebuild_state().expect("state should rebuild");
+            let pending = final_state
+                .get("agent")
+                .and_then(|a| a.get("pending_interaction"));
+            assert!(pending.is_none() || pending == Some(&Value::Null));
+        });
+    }
+
+    #[test]
     fn test_execute_tools_with_config_with_pending_plugin() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -5278,6 +5332,213 @@ mod tests {
             )),
             "missing denied InteractionResolved event: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_stream_permission_approval_replays_tool_and_replaces_placeholder() {
+        struct SkipInferencePlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipInferencePlugin {
+            fn id(&self) -> &str {
+                "skip_inference_for_permission_approval"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let interaction = crate::interaction::InteractionPlugin::with_responses(
+            vec!["permission_echo".to_string()],
+            Vec::new(),
+        );
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(interaction))
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let thread = Thread::with_initial_state(
+            "test",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "permission_echo",
+                        "action": "tool:AskUserQuestion",
+                        "parameters": {
+                            "origin_tool_call": {
+                                "id": "call_1",
+                                "name": "echo",
+                                "arguments": { "message": "approved-run" }
+                            }
+                        }
+                    }
+                }
+            }),
+        )
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::types::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "approved-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
+            "call_1",
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
+
+        let tools = tool_map([EchoTool]);
+        let (events, final_thread) = run_mock_stream_with_final_thread(
+            MockStreamProvider::new(vec![MockResponse::text("unused")]),
+            config,
+            thread,
+            tools,
+        )
+        .await;
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::InteractionResolved {
+                    interaction_id,
+                    result
+                } if interaction_id == "permission_echo" && result == &serde_json::Value::Bool(true)
+            )),
+            "missing approval InteractionResolved event: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolCallDone { id, result, .. }
+                    if id == "call_1" && result.status == crate::traits::tool::ToolStatus::Success
+            )),
+            "approved flow must replay and execute original tool call: {events:?}"
+        );
+
+        let tool_msg = final_thread
+            .messages
+            .iter()
+            .find(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+            .expect("tool result message should exist after replay");
+        assert!(
+            !tool_msg.content.contains("awaiting approval"),
+            "placeholder should be replaced after approved replay"
+        );
+        assert!(
+            tool_msg.content.contains("\"echoed\":\"approved-run\""),
+            "unexpected replayed tool result content: {}",
+            tool_msg.content
+        );
+
+        let final_state = final_thread.rebuild_state().expect("state should rebuild");
+        let pending = final_state
+            .get("agent")
+            .and_then(|a| a.get("pending_interaction"));
+        assert!(pending.is_none() || pending == Some(&Value::Null));
+    }
+
+    #[tokio::test]
+    async fn test_stream_permission_denied_does_not_replay_tool_call() {
+        struct SkipInferencePlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipInferencePlugin {
+            fn id(&self) -> &str {
+                "skip_inference_for_permission_denial"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let interaction = crate::interaction::InteractionPlugin::with_responses(
+            Vec::new(),
+            vec!["permission_echo".to_string()],
+        );
+        let config = AgentConfig::new("mock")
+            .with_plugin(Arc::new(interaction))
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let thread = Thread::with_initial_state(
+            "test",
+            json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "permission_echo",
+                        "action": "tool:AskUserQuestion",
+                        "parameters": {
+                            "origin_tool_call": {
+                                "id": "call_1",
+                                "name": "echo",
+                                "arguments": { "message": "denied-run" }
+                            }
+                        }
+                    }
+                }
+            }),
+        )
+        .with_message(Message::assistant_with_tool_calls(
+            "need permission",
+            vec![crate::types::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": "denied-run"}),
+            )],
+        ))
+        .with_message(Message::tool(
+            "call_1",
+            "Tool 'echo' is awaiting approval. Execution paused.",
+        ));
+
+        let tools = tool_map([EchoTool]);
+        let (events, final_thread) = run_mock_stream_with_final_thread(
+            MockStreamProvider::new(vec![MockResponse::text("unused")]),
+            config,
+            thread,
+            tools,
+        )
+        .await;
+
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::InteractionResolved {
+                    interaction_id,
+                    result
+                } if interaction_id == "permission_echo" && result == &serde_json::Value::Bool(false)
+            )),
+            "missing denied InteractionResolved event: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ToolCallDone { id, .. } if id == "call_1")),
+            "denied flow must not replay or execute original tool call: {events:?}"
+        );
+
+        let tool_msg = final_thread
+            .messages
+            .iter()
+            .find(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+            .expect("placeholder tool message should remain when denied");
+        assert!(
+            tool_msg.content.contains("awaiting approval"),
+            "denied flow should not replace placeholder with successful tool output"
+        );
+        assert!(
+            !tool_msg.content.contains("User denied the action"),
+            "denied session-start flow currently does not synthesize tool-denied message"
+        );
+
+        let final_state = final_thread.rebuild_state().expect("state should rebuild");
+        let pending = final_state
+            .get("agent")
+            .and_then(|a| a.get("pending_interaction"));
+        assert!(pending.is_none() || pending == Some(&Value::Null));
     }
 
     #[tokio::test]
