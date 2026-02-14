@@ -200,10 +200,6 @@ pub enum StorageError {
     #[error("Invalid thread id: {0}")]
     InvalidId(String),
 
-    /// Optimistic concurrency conflict.
-    #[error("Version conflict: expected {expected}, actual {actual}")]
-    VersionConflict { expected: Version, actual: Version },
-
     /// Thread already exists (for create operations).
     #[error("Thread already exists")]
     AlreadyExists,
@@ -269,14 +265,9 @@ pub trait ThreadStore: Send + Sync {
 
     /// Append a delta to an existing thread.
     ///
-    /// `base_version` is the version the caller last read; if it doesn't match
-    /// the current version the backend returns `VersionConflict`.
-    async fn append(
-        &self,
-        id: &str,
-        base_version: Version,
-        delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError>;
+    /// Version is managed internally by the backend — callers do not need to
+    /// track it. Each successful append atomically increments the version.
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError>;
 
     /// Load a thread and its current version.
     async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError>;
@@ -416,23 +407,11 @@ impl ThreadStore for FileStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(
-        &self,
-        id: &str,
-        base_version: Version,
-        delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let head = self
             .load_head(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
-
-        if head.version != base_version {
-            return Err(StorageError::VersionConflict {
-                expected: base_version,
-                actual: head.version,
-            });
-        }
 
         let mut thread = head.thread;
         apply_delta(&mut thread, delta);
@@ -650,23 +629,11 @@ impl ThreadStore for MemoryStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(
-        &self,
-        id: &str,
-        base_version: Version,
-        delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let mut entries = self.entries.write().await;
         let entry = entries
             .get_mut(id)
             .ok_or_else(|| StorageError::NotFound(id.to_string()))?;
-
-        if entry.version != base_version {
-            return Err(StorageError::VersionConflict {
-                expected: base_version,
-                actual: entry.version,
-            });
-        }
 
         apply_delta(&mut entry.thread, delta);
         entry.version += 1;
@@ -924,15 +891,10 @@ impl ThreadStore for PostgresStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(
-        &self,
-        id: &str,
-        base_version: Version,
-        delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
-        // Optimistic concurrency: check version.
+        // Lock the row for atomic read-modify-write.
         let sql = format!("SELECT data FROM {} WHERE id = $1 FOR UPDATE", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(id)
@@ -945,13 +907,6 @@ impl ThreadStore for PostgresStorage {
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
-        if current_version != base_version {
-            return Err(StorageError::VersionConflict {
-                expected: base_version,
-                actual: current_version,
-            });
-        }
-
         let new_version = current_version + 1;
 
         // Apply snapshot or patches to stored data.
@@ -2382,7 +2337,7 @@ mod tests {
         store.create(&Thread::new("t1")).await.unwrap();
 
         let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
-        let committed = store.append("t1", 0, &delta).await.unwrap();
+        let committed = store.append("t1", &delta).await.unwrap();
         assert_eq!(committed.version, 1);
 
         let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
@@ -2391,29 +2346,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_thread_store_append_version_conflict() {
-        let store = MemoryStorage::new();
-        store.create(&Thread::new("t1")).await.unwrap();
-
-        let delta = sample_delta("run-1", CheckpointReason::UserMessage);
-        store.append("t1", 0, &delta).await.unwrap(); // version -> 1
-
-        // Try to append with stale version
-        let err = store.append("t1", 0, &delta).await.unwrap_err();
-        assert!(matches!(
-            err,
-            StorageError::VersionConflict {
-                expected: 0,
-                actual: 1
-            }
-        ));
-    }
-
-    #[tokio::test]
     async fn test_thread_store_append_not_found() {
         let store = MemoryStorage::new();
         let delta = sample_delta("run-1", CheckpointReason::RunFinished);
-        let err = store.append("missing", 0, &delta).await.unwrap_err();
+        let err = store.append("missing", &delta).await.unwrap_err();
         assert!(matches!(err, StorageError::NotFound(_)));
     }
 
@@ -2439,7 +2375,7 @@ mod tests {
             patches: vec![],
             snapshot: Some(json!({"counter": 42})),
         };
-        store.append("t1", 0, &delta).await.unwrap();
+        store.append("t1", &delta).await.unwrap();
 
         let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
         assert_eq!(head.thread.state, json!({"counter": 42}));
@@ -2454,9 +2390,9 @@ mod tests {
         let d1 = sample_delta("run-1", CheckpointReason::UserMessage);
         let d2 = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
         let d3 = sample_delta("run-1", CheckpointReason::RunFinished);
-        store.append("t1", 0, &d1).await.unwrap();
-        store.append("t1", 1, &d2).await.unwrap();
-        store.append("t1", 2, &d3).await.unwrap();
+        store.append("t1", &d1).await.unwrap();
+        store.append("t1", &d2).await.unwrap();
+        store.append("t1", &d3).await.unwrap();
 
         // All deltas
         let deltas = store.load_deltas("t1", 0).await.unwrap();
@@ -2572,25 +2508,12 @@ mod tests {
         store.create(&Thread::new("t1")).await.unwrap();
 
         let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
-        let committed = store.append("t1", 0, &delta).await.unwrap();
+        let committed = store.append("t1", &delta).await.unwrap();
         assert_eq!(committed.version, 1);
 
         let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
         assert_eq!(head.version, 1);
         assert_eq!(head.thread.message_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_file_thread_store_version_conflict() {
-        let temp_dir = TempDir::new().unwrap();
-        let store = FileStorage::new(temp_dir.path());
-        store.create(&Thread::new("t1")).await.unwrap();
-
-        let delta = sample_delta("run-1", CheckpointReason::UserMessage);
-        store.append("t1", 0, &delta).await.unwrap();
-
-        let err = store.append("t1", 0, &delta).await.unwrap_err();
-        assert!(matches!(err, StorageError::VersionConflict { .. }));
     }
 
     #[tokio::test]
@@ -2631,7 +2554,7 @@ mod tests {
             patches: pending.patches,
             snapshot: None,
         };
-        let committed = store.append("t1", 0, &user_delta).await.unwrap();
+        let committed = store.append("t1", &user_delta).await.unwrap();
         assert_eq!(committed.version, 1);
 
         // 3. Assistant turn committed (LLM inference)
@@ -2647,7 +2570,7 @@ mod tests {
             patches: pending.patches,
             snapshot: None,
         };
-        let committed = store.append("t1", 1, &assistant_delta).await.unwrap();
+        let committed = store.append("t1", &assistant_delta).await.unwrap();
         assert_eq!(committed.version, 2);
 
         // 4. Tool results committed (with patches)
@@ -2669,7 +2592,7 @@ mod tests {
             patches: pending.patches,
             snapshot: None,
         };
-        let committed = store.append("t1", 2, &tool_delta).await.unwrap();
+        let committed = store.append("t1", &tool_delta).await.unwrap();
         assert_eq!(committed.version, 3);
 
         // 5. Run finished (final assistant message)
@@ -2684,7 +2607,7 @@ mod tests {
             patches: pending.patches,
             snapshot: None,
         };
-        let committed = store.append("t1", 3, &finished_delta).await.unwrap();
+        let committed = store.append("t1", &finished_delta).await.unwrap();
         assert_eq!(committed.version, 4);
 
         // 6. Verify final state
@@ -2737,7 +2660,7 @@ mod tests {
         ];
 
         for (i, delta) in deltas.iter().enumerate() {
-            store.append("t1", i as u64, delta).await.unwrap();
+            store.append("t1", delta).await.unwrap();
         }
 
         // Replay from scratch
@@ -2776,7 +2699,7 @@ mod tests {
                 patches: vec![],
                 snapshot: None,
             };
-            store.append("t1", i, &delta).await.unwrap();
+            store.append("t1", &delta).await.unwrap();
         }
 
         // Only deltas after version 3 (should be versions 4 and 5)
@@ -2809,7 +2732,7 @@ mod tests {
             patches: pending.patches,
             snapshot: None,
         };
-        store.append("t1", 0, &delta).await.unwrap();
+        store.append("t1", &delta).await.unwrap();
 
         // Verify provenance survived
         let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
@@ -2848,7 +2771,7 @@ mod tests {
             patches: vec![],
             snapshot: None,
         };
-        store.append("child", 0, &delta).await.unwrap();
+        store.append("child", &delta).await.unwrap();
 
         let deltas = store.load_deltas("child", 0).await.unwrap();
         assert_eq!(deltas[0].run_id, "child-run-1");
@@ -2877,7 +2800,7 @@ mod tests {
             patches: vec![],
             snapshot: None,
         };
-        let c1 = store.append("t1", 0, &d1).await.unwrap();
+        let c1 = store.append("t1", &d1).await.unwrap();
         assert_eq!(c1.version, 1);
 
         // Round 2: assistant response + patch
@@ -2891,7 +2814,7 @@ mod tests {
             )],
             snapshot: None,
         };
-        let c2 = store.append("t1", 1, &d2).await.unwrap();
+        let c2 = store.append("t1", &d2).await.unwrap();
         assert_eq!(c2.version, 2);
 
         // Round 3: run finished with snapshot
@@ -2903,7 +2826,7 @@ mod tests {
             patches: vec![],
             snapshot: Some(json!({"greeted": true})),
         };
-        let c3 = store.append("t1", 2, &d3).await.unwrap();
+        let c3 = store.append("t1", &d3).await.unwrap();
         assert_eq!(c3.version, 3);
 
         // Re-create store from same path (simulates restart)
@@ -2932,7 +2855,7 @@ mod tests {
             patches: vec![],
             snapshot: None,
         };
-        let committed = store.append("t1", 0, &empty).await.unwrap();
+        let committed = store.append("t1", &empty).await.unwrap();
         assert_eq!(committed.version, 1);
 
         let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();

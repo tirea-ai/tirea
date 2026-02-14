@@ -960,16 +960,16 @@ impl AgentOs {
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
 
         // 1. Load or create thread
-        let (mut thread, mut version) = match storage.load(&thread_id).await? {
-            Some(head) => (head.thread, head.version),
+        let mut thread = match storage.load(&thread_id).await? {
+            Some(head) => head.thread,
             None => {
                 let thread = if let Some(state) = request.initial_state {
                     Thread::with_initial_state(thread_id.clone(), state)
                 } else {
                     Thread::new(thread_id.clone())
                 };
-                let committed = storage.create(&thread).await?;
-                (thread, committed.version)
+                storage.create(&thread).await?;
+                thread
             }
         };
 
@@ -1007,8 +1007,7 @@ impl AgentOs {
                 patches: pending.patches,
                 snapshot: None,
             };
-            let committed = storage.append(&thread_id, version, &delta).await?;
-            version = committed.version;
+            storage.append(&thread_id, &delta).await?;
         }
 
         // 7. Resolve agent wiring and run
@@ -1028,17 +1027,13 @@ impl AgentOs {
             let thread_id = thread_id.clone();
             let mut checkpoints = swc.checkpoints;
             tokio::spawn(async move {
-                let mut ver = version;
                 while let Some(delta) = checkpoints.recv().await {
-                    match storage.append(&thread_id, ver, &delta).await {
-                        Ok(committed) => ver = committed.version,
-                        Err(e) => {
-                            tracing::error!(
-                                thread_id = %thread_id,
-                                error = %e,
-                                "failed to persist checkpoint"
-                            );
-                        }
+                    if let Err(e) = storage.append(&thread_id, &delta).await {
+                        tracing::error!(
+                            thread_id = %thread_id,
+                            error = %e,
+                            "failed to persist checkpoint"
+                        );
                     }
                 }
             });

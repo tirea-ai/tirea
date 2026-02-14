@@ -1162,8 +1162,7 @@ async fn test_incremental_checkpoints_via_append() {
 
     // Create thread
     let mut thread = Thread::with_initial_state("append-test", json!({"progress": 0}));
-    let committed = storage.create(&thread).await.unwrap();
-    let mut version = committed.version;
+    storage.create(&thread).await.unwrap();
 
     // Simulate 5 checkpoints via append (not save)
     for checkpoint in 1..=5u64 {
@@ -1191,11 +1190,8 @@ async fn test_incremental_checkpoints_via_append() {
             snapshot: None,
         };
 
-        let committed = storage.append("append-test", version, &delta).await.unwrap();
-        version = committed.version;
+        storage.append("append-test", &delta).await.unwrap();
     }
-
-    assert_eq!(version, 5);
 
     // Verify final state matches
     let head = ThreadStore::load(&storage, "append-test")

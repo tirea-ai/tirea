@@ -6,7 +6,6 @@ use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
     AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStorage, StepContext, StorageError,
     Thread, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadQuery, ThreadStore,
-    Version,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -81,12 +80,7 @@ impl ThreadStore for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(
-        &self,
-        id: &str,
-        _base_version: Version,
-        delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
             for msg in &delta.messages {
@@ -762,7 +756,6 @@ impl ThreadStore for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _base_version: Version,
         _delta: &carve_agent::ThreadDelta,
     ) -> Result<Committed, StorageError> {
         Err(StorageError::Io(std::io::Error::new(
@@ -880,7 +873,6 @@ impl ThreadStore for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _base_version: Version,
         _delta: &carve_agent::ThreadDelta,
     ) -> Result<Committed, StorageError> {
         Err(StorageError::Io(std::io::Error::new(
