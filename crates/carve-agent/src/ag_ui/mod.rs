@@ -783,9 +783,6 @@ pub struct AGUIContext {
     /// Whether a terminal event (Error/Aborted) has been emitted.
     /// After this, all subsequent events are suppressed.
     stopped: bool,
-    /// Whether a RUN_FINISHED event has been emitted (or a terminal error
-    /// that replaces it). Used by `epilogue()` to emit a fallback finish.
-    emitted_run_finished: bool,
 }
 
 impl AGUIContext {
@@ -802,7 +799,6 @@ impl AGUIContext {
             text_ever_ended: false,
             current_step: None,
             stopped: false,
-            emitted_run_finished: false,
         }
     }
 
@@ -890,10 +886,15 @@ impl AGUIContext {
         match ev {
             AgentEvent::Error { .. } | AgentEvent::Aborted { .. } => {
                 self.stopped = true;
-                self.emitted_run_finished = true; // terminal error replaces RUN_FINISHED
             }
-            AgentEvent::RunFinish { .. } => {
-                self.emitted_run_finished = true;
+            // Pending: close text but skip interaction→tool-call conversion.
+            // LLM TOOL_CALL events already inform the client about frontend tools.
+            AgentEvent::Pending { .. } => {
+                let mut events = Vec::new();
+                if self.end_text() {
+                    events.push(AGUIEvent::text_message_end(&self.message_id));
+                }
+                return events;
             }
             _ => {}
         }
@@ -1011,14 +1012,8 @@ impl AGUIContext {
                 )]
             }
 
-            AgentEvent::Pending { interaction } => {
-                let mut events = vec![];
-                if self.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.message_id));
-                }
-                events.extend(interaction.to_ag_ui_events());
-                events
-            }
+            // Pending is handled above (early return).
+            AgentEvent::Pending { .. } => unreachable!(),
 
             AgentEvent::Aborted { reason } => {
                 vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
@@ -1030,25 +1025,6 @@ impl AGUIContext {
         }
     }
 
-    /// Emit fallback terminal events if the stream ended without a proper finish.
-    ///
-    /// Call this after the event stream is exhausted. If no `RunFinish` or
-    /// terminal error was seen, emits a fallback `RUN_FINISHED` event.
-    pub fn epilogue(&mut self) -> Vec<AGUIEvent> {
-        if self.stopped || self.emitted_run_finished {
-            return Vec::new();
-        }
-        let mut events = Vec::new();
-        if self.end_text() {
-            events.push(AGUIEvent::text_message_end(&self.message_id));
-        }
-        events.push(AGUIEvent::run_finished(
-            &self.thread_id,
-            &self.run_id,
-            None,
-        ));
-        events
-    }
 }
 
 fn value_to_map(value: &Value) -> HashMap<String, Value> {
@@ -1838,22 +1814,9 @@ pub fn run_agent_stream_with_parent(
         let mut inner_stream = run_loop_stream(client, config, thread, tools, run_ctx);
 
         while let Some(event) = inner_stream.next().await {
-            // Skip Pending interaction→tool-call conversion at transport level.
-            // LLM TOOL_CALL events already cover frontend/permission interactions.
-            if let crate::stream::AgentEvent::Pending { .. } = &event {
-                if ctx.end_text() {
-                    yield AGUIEvent::text_message_end(&ctx.message_id);
-                }
-                continue;
-            }
             for ag_event in ctx.on_agent_event(&event) {
                 yield ag_event;
             }
-        }
-
-        // Fallback: emit RUN_FINISHED if the stream ended without a terminal event.
-        for ag_event in ctx.epilogue() {
-            yield ag_event;
         }
     })
 }
@@ -6165,14 +6128,12 @@ mod tests {
 
     #[test]
     fn test_agui_context_skips_pending_emits_run_finished() {
-        // Simulate what run_agent_stream_with_parent does:
-        // Pending events are skipped (redundant with LLM tool calls),
-        // but RunFinish is always emitted for AG-UI clients.
+        // AGUIContext skips Pending events internally (no tool call conversion).
+        // RunFinish is always emitted by the agent loop.
         use crate::stream::AgentEvent;
 
         let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all_events = Vec::new();
-        let mut emitted_run_finished = false;
 
         let agent_events = vec![
             AgentEvent::RunStart {
@@ -6193,49 +6154,31 @@ mod tests {
         ];
 
         for event in &agent_events {
-            match event {
-                AgentEvent::Error { message } => {
-                    all_events.push(AGUIEvent::run_error(message.clone(), None));
-                    break;
-                }
-                AgentEvent::RunFinish { .. } => {
-                    emitted_run_finished = true;
-                }
-                // Skip Pending events (same as production code)
-                AgentEvent::Pending { .. } => {
-                    continue;
-                }
-                _ => {}
-            }
-            let ag_ui_events = ctx.on_agent_event(&event);
-            all_events.extend(ag_ui_events);
+            all_events.extend(ctx.on_agent_event(event));
         }
 
-        // RunFinished SHOULD be in the events
+        // RunStarted should be first
+        assert!(matches!(&all_events[0], AGUIEvent::RunStarted { .. }));
+
+        // RunFinished must be emitted
         assert!(
             all_events
                 .iter()
                 .any(|e| matches!(e, AGUIEvent::RunFinished { .. })),
             "RunFinished must be emitted"
         );
-        assert!(emitted_run_finished);
 
-        // RunStarted should be first
-        assert!(matches!(&all_events[0], AGUIEvent::RunStarted { .. }));
-
-        // Pending tool call events should NOT be present (they're skipped)
-        let tool_calls: Vec<_> = all_events
-            .iter()
-            .filter(|e| matches!(e, AGUIEvent::ToolCallStart { .. }))
-            .collect();
+        // Pending tool call events should NOT be present (skipped by AGUIContext)
         assert!(
-            tool_calls.is_empty(),
-            "Pending interaction tool calls should be skipped in AG-UI stream"
+            !all_events
+                .iter()
+                .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
+            "Pending interaction tool calls should be skipped"
         );
     }
 
     #[test]
-    fn test_agui_context_converts_pending_to_tool_calls() {
+    fn test_agui_context_skips_all_pending_including_recovery() {
         use crate::stream::AgentEvent;
 
         let mut ctx = AGUIContext::new("t".into(), "r".into());
@@ -6266,39 +6209,12 @@ mod tests {
             all_events.extend(ctx.on_agent_event(event));
         }
 
-        // AGUIContext converts Pending interactions to tool call events.
-        // Transport-level filtering (in AgUiProtocolEncoder / run_agent_stream_with_parent)
-        // is responsible for skipping Pending events when appropriate.
+        // All Pending events are skipped — no tool call events emitted
         assert!(
-            all_events
+            !all_events
                 .iter()
                 .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-            "AGUIContext should convert Pending to tool call events"
-        );
-    }
-
-    #[test]
-    fn test_agui_context_fallback_run_finished_on_empty_stream() {
-        use crate::stream::AgentEvent;
-
-        // Simulate fallback: inner stream ends without RunFinish
-        let mut ctx = AGUIContext::new("t".into(), "r".into());
-        let mut all_events = Vec::new();
-
-        // Only RunStart, no RunFinish
-        all_events.extend(ctx.on_agent_event(&AgentEvent::RunStart {
-            thread_id: "t".into(),
-            run_id: "r".into(),
-            parent_run_id: None,
-        }));
-
-        // epilogue() should emit fallback RunFinished
-        all_events.extend(ctx.epilogue());
-
-        assert!(matches!(&all_events[0], AGUIEvent::RunStarted { .. }));
-        assert!(
-            matches!(all_events.last().unwrap(), AGUIEvent::RunFinished { .. }),
-            "Fallback RunFinished must be emitted when stream ends without one"
+            "Pending events (including recovery) must be skipped"
         );
     }
 
@@ -7279,11 +7195,8 @@ mod tests {
         let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Pending { interaction },
         );
-        // Should produce TOOL_CALL_START, TOOL_CALL_ARGS, TOOL_CALL_END
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
-        assert!(matches!(events[1], AGUIEvent::ToolCallArgs { .. }));
-        assert!(matches!(events[2], AGUIEvent::ToolCallEnd { .. }));
+        // Pending events are skipped by AGUIContext
+        assert!(events.is_empty());
     }
 
     #[test]
@@ -7295,14 +7208,14 @@ mod tests {
             &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
         );
 
-        // Pending should close text first, then produce tool call events
+        // Pending should close text but skip tool call conversion
         let interaction = Interaction::new("int-1", "tool:x");
         let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Pending { interaction },
         );
 
-        // TEXT_MESSAGE_END + 3 tool call events
-        assert_eq!(events.len(), 4);
+        // Only TEXT_MESSAGE_END (no tool call events)
+        assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
     }
 

@@ -145,8 +145,7 @@ impl InteractionResponsePlugin {
                     }
                 }
 
-                // Fallback for unknown interaction id formats.
-                calls.first().cloned()
+                None
             });
 
         if let Some(call) = tool_call {

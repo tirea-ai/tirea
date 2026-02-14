@@ -256,21 +256,11 @@ impl ProtocolOutputEncoder for AgUiProtocolEncoder {
     type Event = AGUIEvent;
 
     fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {
-        // At the transport level, skip Pending interaction→tool-call conversion.
-        // LLM TOOL_CALL events already inform the client about frontend tools.
-        // Only close any open text block.
-        if let AgentEvent::Pending { .. } = ev {
-            let mut events = Vec::new();
-            if self.ctx.end_text() {
-                events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
-            }
-            return events;
-        }
         self.ctx.on_agent_event(ev)
     }
 
     fn epilogue(&mut self) -> Vec<Self::Event> {
-        self.ctx.epilogue()
+        Vec::new()
     }
 }
 
