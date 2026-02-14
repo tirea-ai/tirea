@@ -146,7 +146,7 @@ pub use skills::{
 
 // UI Stream exports (AI SDK v6 compatible)
 pub use ui_stream::{
-    AiSdkAdapter, AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole,
+    AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole,
     UIStreamEvent,
 };
 
@@ -161,7 +161,7 @@ pub use protocol::{
 pub use ag_ui::{
     run_agent_events_with_request, run_agent_events_with_request_checkpoints, run_agent_stream,
     run_agent_stream_with_parent, AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage,
-    AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
+    AGUIToolDef, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

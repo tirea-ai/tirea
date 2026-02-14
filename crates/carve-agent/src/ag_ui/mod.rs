@@ -77,7 +77,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::state_types::{Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION};
+use crate::state_types::{Interaction, InteractionResponse};
 
 fn frontend_tool_specs_from_request(request: &RunAgentRequest) -> Vec<FrontendToolSpec> {
     request
@@ -780,6 +780,12 @@ pub struct AGUIContext {
     text_ever_ended: bool,
     /// Current step name.
     current_step: Option<String>,
+    /// Whether a terminal event (Error/Aborted) has been emitted.
+    /// After this, all subsequent events are suppressed.
+    stopped: bool,
+    /// Whether a RUN_FINISHED event has been emitted (or a terminal error
+    /// that replaces it). Used by `epilogue()` to emit a fallback finish.
+    emitted_run_finished: bool,
 }
 
 impl AGUIContext {
@@ -795,6 +801,8 @@ impl AGUIContext {
             text_started: false,
             text_ever_ended: false,
             current_step: None,
+            stopped: false,
+            emitted_run_finished: false,
         }
     }
 
@@ -868,10 +876,27 @@ impl AGUIContext {
 
     /// Convert an AgentEvent to AG-UI protocol compatible events.
     ///
-    /// Uses internal state to track text message lifecycle (start/end pairs)
-    /// and step counters.
+    /// Handles full stream lifecycle: text start/end pairs, step counters,
+    /// terminal event suppression (after Error), and Pending event filtering.
     pub fn on_agent_event(&mut self, ev: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
         use crate::stream::AgentEvent;
+
+        // After a terminal event (Error/Aborted), suppress everything.
+        if self.stopped {
+            return Vec::new();
+        }
+
+        // Lifecycle bookkeeping before conversion.
+        match ev {
+            AgentEvent::Error { .. } | AgentEvent::Aborted { .. } => {
+                self.stopped = true;
+                self.emitted_run_finished = true; // terminal error replaces RUN_FINISHED
+            }
+            AgentEvent::RunFinish { .. } => {
+                self.emitted_run_finished = true;
+            }
+            _ => {}
+        }
 
         match ev {
             AgentEvent::RunStart {
@@ -1004,6 +1029,26 @@ impl AGUIContext {
             AgentEvent::InferenceComplete { .. } => vec![],
         }
     }
+
+    /// Emit fallback terminal events if the stream ended without a proper finish.
+    ///
+    /// Call this after the event stream is exhausted. If no `RunFinish` or
+    /// terminal error was seen, emits a fallback `RUN_FINISHED` event.
+    pub fn epilogue(&mut self) -> Vec<AGUIEvent> {
+        if self.stopped || self.emitted_run_finished {
+            return Vec::new();
+        }
+        let mut events = Vec::new();
+        if self.end_text() {
+            events.push(AGUIEvent::text_message_end(&self.message_id));
+        }
+        events.push(AGUIEvent::run_finished(
+            &self.thread_id,
+            &self.run_id,
+            None,
+        ));
+        events
+    }
 }
 
 fn value_to_map(value: &Value) -> HashMap<String, Value> {
@@ -1017,105 +1062,6 @@ fn value_to_map(value: &Value) -> HashMap<String, Value> {
             map.insert("value".to_string(), value.clone());
             map
         }
-    }
-}
-
-// ============================================================================
-// AG-UI Adapter
-// ============================================================================
-
-/// Adapter for AG-UI Protocol (CopilotKit compatible).
-///
-/// Converts `AgentEvent` to `AGUIEvent` for CopilotKit and AG-UI frontend integration.
-///
-/// # Example
-///
-/// ```rust
-/// use carve_agent::{AgentEvent, AgUiAdapter};
-///
-/// let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
-///
-/// // Convert event to protocol events
-/// let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
-/// let events = adapter.convert(&event);
-/// assert!(!events.is_empty());
-/// ```
-#[derive(Debug, Clone)]
-pub struct AgUiAdapter {
-    /// AG-UI context for event conversion.
-    ctx: AGUIContext,
-}
-
-impl AgUiAdapter {
-    /// Create a new AG-UI adapter.
-    pub fn new(thread_id: String, run_id: String) -> Self {
-        Self {
-            ctx: AGUIContext::new(thread_id, run_id),
-        }
-    }
-
-    /// Get the thread ID.
-    pub fn thread_id(&self) -> &str {
-        &self.ctx.thread_id
-    }
-
-    /// Get the run ID.
-    pub fn run_id(&self) -> &str {
-        &self.ctx.run_id
-    }
-
-    /// Get the message ID.
-    pub fn message_id(&self) -> &str {
-        &self.ctx.message_id
-    }
-
-    /// Get mutable access to the context.
-    pub fn context_mut(&mut self) -> &mut AGUIContext {
-        &mut self.ctx
-    }
-
-    /// Convert an AgentEvent to AGUIEvent(s).
-    pub fn convert(&mut self, event: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
-        self.ctx.on_agent_event(event)
-    }
-
-    /// Convert an AgentEvent to JSON strings.
-    pub fn to_json(&mut self, event: &crate::stream::AgentEvent) -> Vec<String> {
-        self.convert(event)
-            .into_iter()
-            .filter_map(|e| serde_json::to_string(&e).ok())
-            .collect()
-    }
-
-    /// Convert an AgentEvent to SSE-formatted lines (`data: ...\n\n`).
-    pub fn to_sse(&mut self, event: &crate::stream::AgentEvent) -> Vec<String> {
-        self.to_json(event)
-            .into_iter()
-            .map(|json| format!("data: {}\n\n", json))
-            .collect()
-    }
-
-    /// Convert an AgentEvent to NDJSON lines (`...\n`).
-    pub fn to_ndjson(&mut self, event: &crate::stream::AgentEvent) -> Vec<String> {
-        self.to_json(event)
-            .into_iter()
-            .map(|json| format!("{}\n", json))
-            .collect()
-    }
-
-    /// Generate run started event.
-    pub fn run_started(&self, parent_run_id: Option<String>) -> AGUIEvent {
-        AGUIEvent::run_started(&self.ctx.thread_id, &self.ctx.run_id, parent_run_id)
-    }
-
-    /// Generate run finished event.
-    pub fn run_finished(&self, result: Option<serde_json::Value>) -> AGUIEvent {
-        AGUIEvent::run_finished(&self.ctx.thread_id, &self.ctx.run_id, result)
-    }
-
-    /// Generate run error event.
-    pub fn run_error(&self, message: impl Into<String>, code: Option<String>) -> AGUIEvent {
-        AGUIEvent::run_error(message, code)
     }
 }
 
@@ -1796,10 +1742,6 @@ fn set_run_identity(thread: &mut Thread, run_id: &str, parent_run_id: Option<&st
     }
 }
 
-fn should_skip_pending_event(interaction: &Interaction) -> bool {
-    interaction.action != AGENT_RECOVERY_INTERACTION_ACTION
-}
-
 fn prepare_request_runtime(
     config: AgentConfig,
     thread: Thread,
@@ -1818,7 +1760,6 @@ fn prepare_request_runtime(
 
 use crate::r#loop::run_loop_stream_with_checkpoints;
 use crate::r#loop::{run_loop_stream, run_loop_stream_with_thread, AgentConfig, RunContext};
-use crate::stream::AgentEvent;
 use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use async_stream::stream;
@@ -1895,43 +1836,24 @@ pub fn run_agent_stream_with_parent(
             cancellation_token: None,
         };
         let mut inner_stream = run_loop_stream(client, config, thread, tools, run_ctx);
-        let mut emitted_run_finished = false;
 
         while let Some(event) = inner_stream.next().await {
-            match &event {
-                AgentEvent::Error { message } => {
-                    yield AGUIEvent::run_error(message.clone(), None);
-                    yield AGUIEvent::run_finished(&thread_id, &run_id, None);
-                    return;
+            // Skip Pending interaction→tool-call conversion at transport level.
+            // LLM TOOL_CALL events already cover frontend/permission interactions.
+            if let crate::stream::AgentEvent::Pending { .. } = &event {
+                if ctx.end_text() {
+                    yield AGUIEvent::text_message_end(&ctx.message_id);
                 }
-                AgentEvent::RunFinish { .. } => {
-                    emitted_run_finished = true;
-                }
-                // Skip regular Pending events: their interaction-to-tool-call conversion
-                // is redundant in AG-UI because LLM TOOL_CALL events already cover
-                // frontend/permission interactions.
-                // Agent recovery pending is synthetic (no prior LLM tool call), so we
-                // must forward it.
-                AgentEvent::Pending { interaction } => {
-                    if should_skip_pending_event(interaction) {
-                        continue;
-                    }
-                }
-                _ => {}
+                continue;
             }
-
-            // Uniform conversion — RunStart/RunFinish included.
-            let ag_ui_events = ctx.on_agent_event(&event);
-            for ag_event in ag_ui_events {
+            for ag_event in ctx.on_agent_event(&event) {
                 yield ag_event;
             }
         }
 
-        // Fallback: emit RUN_FINISHED if inner stream ended without one.
-        // This covers pending interactions (frontend tools, permissions) where
-        // the inner loop exits via PendingInteraction error without RunFinish.
-        if !emitted_run_finished {
-            yield AGUIEvent::run_finished(&thread_id, &run_id, None);
+        // Fallback: emit RUN_FINISHED if the stream ended without a terminal event.
+        for ag_event in ctx.epilogue() {
+            yield ag_event;
         }
     })
 }
@@ -2464,19 +2386,19 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter() {
+    fn test_agui_context() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
-        assert_eq!(adapter.thread_id(), "thread_1");
-        assert_eq!(adapter.run_id(), "run_123");
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
+        assert_eq!(&ctx.thread_id, "thread_1");
+        assert_eq!(&ctx.run_id, "run_123");
 
         let event = AgentEvent::TextDelta {
             delta: "Hello".to_string(),
         };
-        let outputs = adapter.to_json(&event);
-        let combined = outputs.join("");
-        assert!(combined.contains("TEXT_MESSAGE"));
+        let outputs = ctx.on_agent_event(&event);
+        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
     }
 
     // ========================================================================
@@ -2484,16 +2406,16 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_ag_ui_adapter_full_text_flow() {
+    fn test_agui_context_full_text_flow() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         // First text delta should emit START + CONTENT
         let event1 = AgentEvent::TextDelta {
             delta: "Hello".to_string(),
         };
-        let outputs1 = adapter.convert(&event1);
+        let outputs1 = ctx.on_agent_event(&event1);
         assert_eq!(outputs1.len(), 2);
         assert!(matches!(outputs1[0], AGUIEvent::TextMessageStart { .. }));
         assert!(matches!(outputs1[1], AGUIEvent::TextMessageContent { .. }));
@@ -2502,7 +2424,7 @@ mod tests {
         let event2 = AgentEvent::TextDelta {
             delta: " World".to_string(),
         };
-        let outputs2 = adapter.convert(&event2);
+        let outputs2 = ctx.on_agent_event(&event2);
         assert_eq!(outputs2.len(), 1);
         assert!(matches!(outputs2[0], AGUIEvent::TextMessageContent { .. }));
 
@@ -2513,25 +2435,25 @@ mod tests {
             result: Some(serde_json::json!({"response": "Hello World"})),
             stop_reason: None,
         };
-        let outputs3 = adapter.convert(&event3);
+        let outputs3 = ctx.on_agent_event(&event3);
         assert!(outputs3
             .iter()
             .any(|e| matches!(e, AGUIEvent::TextMessageEnd { .. })));
     }
 
     #[test]
-    fn test_ag_ui_adapter_tool_call_flow() {
+    fn test_agui_context_tool_call_flow() {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         // Tool call start
         let event1 = AgentEvent::ToolCallStart {
             id: "call_1".to_string(),
             name: "search".to_string(),
         };
-        let outputs1 = adapter.convert(&event1);
+        let outputs1 = ctx.on_agent_event(&event1);
         assert_eq!(outputs1.len(), 1);
         assert!(matches!(outputs1[0], AGUIEvent::ToolCallStart { .. }));
         if let AGUIEvent::ToolCallStart { tool_call_name, .. } = &outputs1[0] {
@@ -2543,7 +2465,7 @@ mod tests {
             id: "call_1".to_string(),
             args_delta: r#"{"query":"rust"}"#.to_string(),
         };
-        let outputs2 = adapter.convert(&event2);
+        let outputs2 = ctx.on_agent_event(&event2);
         assert_eq!(outputs2.len(), 1);
         assert!(matches!(outputs2[0], AGUIEvent::ToolCallArgs { .. }));
 
@@ -2553,7 +2475,7 @@ mod tests {
             name: "search".to_string(),
             arguments: json!({"query": "rust"}),
         };
-        let outputs3 = adapter.convert(&event3);
+        let outputs3 = ctx.on_agent_event(&event3);
         assert_eq!(outputs3.len(), 1);
         assert!(matches!(outputs3[0], AGUIEvent::ToolCallEnd { .. }));
 
@@ -2564,22 +2486,22 @@ mod tests {
             patch: None,
             message_id: String::new(),
         };
-        let outputs4 = adapter.convert(&event4);
+        let outputs4 = ctx.on_agent_event(&event4);
         assert_eq!(outputs4.len(), 1);
         assert!(matches!(outputs4[0], AGUIEvent::ToolCallResult { .. }));
     }
 
     #[test]
-    fn test_ag_ui_adapter_state_events() {
+    fn test_agui_context_state_events() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         // State snapshot
         let snapshot_event = AgentEvent::StateSnapshot {
             snapshot: json!({"user": "Alice"}),
         };
-        let outputs = adapter.convert(&snapshot_event);
+        let outputs = ctx.on_agent_event(&snapshot_event);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], AGUIEvent::StateSnapshot { .. }));
 
@@ -2587,21 +2509,21 @@ mod tests {
         let delta_event = AgentEvent::StateDelta {
             delta: vec![json!({"op": "replace", "path": "/user", "value": "Bob"})],
         };
-        let outputs = adapter.convert(&delta_event);
+        let outputs = ctx.on_agent_event(&delta_event);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], AGUIEvent::StateDelta { .. }));
     }
 
     #[test]
-    fn test_ag_ui_adapter_error_event() {
+    fn test_agui_context_error_event() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         let event = AgentEvent::Error {
             message: "Connection timeout".to_string(),
         };
-        let outputs = adapter.convert(&event);
+        let outputs = ctx.on_agent_event(&event);
         // Error event emits RUN_ERROR
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], AGUIEvent::RunError { .. }));
@@ -2611,64 +2533,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_step_end() {
+    fn test_agui_context_step_end() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
-        let outputs = adapter.convert(&AgentEvent::StepEnd);
+        let outputs = ctx.on_agent_event(&AgentEvent::StepEnd);
         assert!(outputs
             .iter()
             .any(|e| matches!(e, AGUIEvent::StepFinished { .. })));
     }
 
     #[test]
-    fn test_ag_ui_adapter_sse_format() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
-
-        let event = AgentEvent::TextDelta {
-            delta: "Hello".to_string(),
-        };
-        let sse_lines = adapter.to_sse(&event);
-
-        for line in &sse_lines {
-            assert!(
-                line.starts_with("data: "),
-                "SSE line should start with 'data: '"
-            );
-            assert!(line.ends_with("\n\n"), "SSE line should end with '\\n\\n'");
-        }
-    }
-
-    #[test]
-    fn test_ag_ui_adapter_ndjson_format() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
-
-        let event = AgentEvent::TextDelta {
-            delta: "Hello".to_string(),
-        };
-        let ndjson_lines = adapter.to_ndjson(&event);
-
-        for line in &ndjson_lines {
-            assert!(
-                !line.starts_with("data:"),
-                "NDJSON should not have 'data:' prefix"
-            );
-            assert!(line.ends_with("\n"), "NDJSON line should end with '\\n'");
-            assert!(!line.ends_with("\n\n"), "NDJSON should have single newline");
-        }
-    }
-
-    #[test]
-    fn test_ag_ui_adapter_helper_methods() {
-        let adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
-
-        // run_started
-        let event = adapter.run_started(None);
+    fn test_agui_event_factory_methods() {
+        let event = AGUIEvent::run_started("thread_1", "run_123", None);
         assert!(matches!(event, AGUIEvent::RunStarted { .. }));
         if let AGUIEvent::RunStarted {
             thread_id, run_id, ..
@@ -2678,18 +2556,15 @@ mod tests {
             assert_eq!(run_id, "run_123");
         }
 
-        // run_started with parent
-        let event = adapter.run_started(Some("parent_run".to_string()));
+        let event = AGUIEvent::run_started("thread_1", "run_123", Some("parent_run".to_string()));
         if let AGUIEvent::RunStarted { parent_run_id, .. } = &event {
             assert_eq!(parent_run_id.as_deref(), Some("parent_run"));
         }
 
-        // run_finished
-        let event = adapter.run_finished(Some(json!({"result": "ok"})));
+        let event = AGUIEvent::run_finished("thread_1", "run_123", Some(json!({"result": "ok"})));
         assert!(matches!(event, AGUIEvent::RunFinished { .. }));
 
-        // run_error
-        let event = adapter.run_error("Something went wrong", Some("ERR_001".to_string()));
+        let event = AGUIEvent::run_error("Something went wrong", Some("ERR_001".to_string()));
         assert!(matches!(event, AGUIEvent::RunError { .. }));
         if let AGUIEvent::RunError { message, code, .. } = &event {
             assert_eq!(message, "Something went wrong");
@@ -2698,25 +2573,25 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_context_access() {
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+    fn test_agui_context_context_access() {
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         // Access context for advanced operations
-        let ctx = adapter.context_mut();
+        let ctx = &mut ctx;
         let step_name = ctx.next_step_name();
         assert_eq!(step_name, "step_1");
 
         // Generate new message ID
-        let old_id = adapter.message_id().to_string();
-        let new_id = adapter.context_mut().new_message_id();
+        let old_id = &ctx.message_id.to_string();
+        let new_id = &mut ctx.new_message_id();
         assert_ne!(old_id, new_id);
     }
 
     #[test]
-    fn test_ag_ui_adapter_lifecycle_events() {
+    fn test_agui_context_lifecycle_events() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
 
         // Run start emits RUN_STARTED
         let event = AgentEvent::RunStart {
@@ -2724,7 +2599,7 @@ mod tests {
             run_id: "r".to_string(),
             parent_run_id: None,
         };
-        let outputs = adapter.convert(&event);
+        let outputs = ctx.on_agent_event(&event);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], AGUIEvent::RunStarted { .. }));
 
@@ -2735,7 +2610,7 @@ mod tests {
             result: Some(json!({"answer": 42})),
             stop_reason: None,
         };
-        let outputs = adapter.convert(&event);
+        let outputs = ctx.on_agent_event(&event);
         assert!(outputs
             .iter()
             .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
@@ -2764,7 +2639,7 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
+        let mut ctx = AGUIContext::new("thread_1".to_string(), "run_123".to_string());
         let mut all_events = Vec::new();
 
         // Simulate a complete agent session:
@@ -2775,31 +2650,31 @@ mod tests {
         // 5. Agent responds with final answer
 
         // Step 1: Text delta (thinking)
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Let me search for that...".to_string(),
         });
         all_events.extend(events);
 
         // Step 2: Step end (LLM finished)
-        let events = adapter.convert(&AgentEvent::StepEnd);
+        let events = ctx.on_agent_event(&AgentEvent::StepEnd);
         all_events.extend(events);
 
         // Step 3: Tool call start
-        let events = adapter.convert(&AgentEvent::ToolCallStart {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_1".to_string(),
             name: "search".to_string(),
         });
         all_events.extend(events);
 
         // Step 4: Tool call args
-        let events = adapter.convert(&AgentEvent::ToolCallDelta {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDelta {
             id: "call_1".to_string(),
             args_delta: r#"{"q":"rust"}"#.to_string(),
         });
         all_events.extend(events);
 
         // Step 5a: Tool call ready (args complete)
-        let events = adapter.convert(&AgentEvent::ToolCallReady {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "call_1".to_string(),
             name: "search".to_string(),
             arguments: json!({"q": "rust"}),
@@ -2807,7 +2682,7 @@ mod tests {
         all_events.extend(events);
 
         // Step 5b: Tool result
-        let events = adapter.convert(&AgentEvent::ToolCallDone {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"results": 5})),
             patch: None,
@@ -2816,13 +2691,13 @@ mod tests {
         all_events.extend(events);
 
         // Step 6: Final response
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Found 5 results!".to_string(),
         });
         all_events.extend(events);
 
         // Step 7: RunFinish
-        let events = adapter.convert(&AgentEvent::RunFinish {
+        let events = ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Found 5 results!"})),
@@ -3104,17 +2979,17 @@ mod tests {
     fn test_scenario_simple_text_response() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut events = Vec::new();
 
         // Simulate: User asks -> Agent responds with text
-        events.extend(adapter.convert(&AgentEvent::TextDelta {
+        events.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Hello, ".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::TextDelta {
+        events.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "how can I help?".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::RunFinish {
+        events.extend(ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Hello, how can I help?"})),
@@ -3145,24 +3020,24 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut events = Vec::new();
 
         // Agent calls tool
-        events.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_1".to_string(),
             name: "search".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallDelta {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallDelta {
             id: "call_1".to_string(),
             args_delta: r#"{"q":"rust"}"#.to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallReady {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "call_1".to_string(),
             name: "search".to_string(),
             arguments: json!({"q": "rust"}),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallDone {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!({"count": 5})),
             patch: None,
@@ -3188,15 +3063,15 @@ mod tests {
     fn test_scenario_error_during_execution() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         // Start text, then error
-        let events1 = adapter.convert(&AgentEvent::TextDelta {
+        let events1 = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Processing...".to_string(),
         });
         assert_eq!(events1.len(), 2); // START + CONTENT
 
-        let events2 = adapter.convert(&AgentEvent::Error {
+        let events2 = ctx.on_agent_event(&AgentEvent::Error {
             message: "Connection failed".to_string(),
         });
         assert_eq!(events2.len(), 1);
@@ -3211,10 +3086,10 @@ mod tests {
     fn test_scenario_state_updates() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         // State snapshot
-        let events = adapter.convert(&AgentEvent::StateSnapshot {
+        let events = ctx.on_agent_event(&AgentEvent::StateSnapshot {
             snapshot: json!({"user": "Alice", "count": 0}),
         });
         assert_eq!(events.len(), 1);
@@ -3223,7 +3098,7 @@ mod tests {
         }
 
         // State delta
-        let events = adapter.convert(&AgentEvent::StateDelta {
+        let events = ctx.on_agent_event(&AgentEvent::StateDelta {
             delta: vec![json!({"op": "replace", "path": "/count", "value": 1})],
         });
         assert_eq!(events.len(), 1);
@@ -3235,30 +3110,30 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut total_events = 0;
 
         // Step 1: Text response
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 1".to_string(),
         });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::StepEnd);
+        let events = ctx.on_agent_event(&AgentEvent::StepEnd);
         total_events += events.len();
 
         // Tool execution
-        let events = adapter.convert(&AgentEvent::ToolCallStart {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "c1".to_string(),
             name: "tool".to_string(),
         });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::ToolCallReady {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "c1".to_string(),
             name: "tool".to_string(),
             arguments: json!({}),
         });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::ToolCallDone {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "c1".to_string(),
             result: ToolResult::success("tool", json!({})),
             patch: None,
@@ -3267,11 +3142,11 @@ mod tests {
         total_events += events.len();
 
         // Step 2: Final response
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 2".to_string(),
         });
         total_events += events.len();
-        let events = adapter.convert(&AgentEvent::RunFinish {
+        let events = ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "Step 2"})),
@@ -3287,9 +3162,9 @@ mod tests {
     fn test_scenario_abort() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events = adapter.convert(&AgentEvent::Aborted {
+        let events = ctx.on_agent_event(&AgentEvent::Aborted {
             reason: "User cancelled".to_string(),
         });
 
@@ -3304,22 +3179,22 @@ mod tests {
     fn test_scenario_step_events() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events1 = adapter.convert(&AgentEvent::StepStart { message_id: String::new() });
+        let events1 = ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() });
         assert_eq!(events1.len(), 1);
         if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
             assert_eq!(step_name, "step_1");
         }
 
-        let events2 = adapter.convert(&AgentEvent::StepEnd);
+        let events2 = ctx.on_agent_event(&AgentEvent::StepEnd);
         assert_eq!(events2.len(), 1);
         if let AGUIEvent::StepFinished { step_name, .. } = &events2[0] {
             assert_eq!(step_name, "step_1");
         }
 
         // Next step should be step_2
-        let events3 = adapter.convert(&AgentEvent::StepStart { message_id: String::new() });
+        let events3 = ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() });
         if let AGUIEvent::StepStarted { step_name, .. } = &events3[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -3329,9 +3204,9 @@ mod tests {
     fn test_scenario_messages_snapshot() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events = adapter.convert(&AgentEvent::MessagesSnapshot {
+        let events = ctx.on_agent_event(&AgentEvent::MessagesSnapshot {
             messages: vec![
                 json!({"role": "user", "content": "Hi"}),
                 json!({"role": "assistant", "content": "Hello"}),
@@ -3352,10 +3227,10 @@ mod tests {
     fn test_edge_case_empty_text_delta() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         // Empty delta should still emit events
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "".to_string(),
         });
         // Should have START + CONTENT (even if content is empty)
@@ -3369,10 +3244,10 @@ mod tests {
     fn test_edge_case_unicode_and_emoji() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         let text = "Hello 你好 🎉 مرحبا";
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: text.to_string(),
         });
 
@@ -3390,11 +3265,11 @@ mod tests {
     fn test_edge_case_special_characters() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         // Text with JSON-sensitive characters
         let text = "Line1\nLine2\tTab\"Quote\\Backslash";
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: text.to_string(),
         });
 
@@ -3409,11 +3284,11 @@ mod tests {
     fn test_edge_case_very_long_text() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
         // Very long text (10KB)
         let text = "x".repeat(10 * 1024);
-        let events = adapter.convert(&AgentEvent::TextDelta {
+        let events = ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: text.clone(),
         });
 
@@ -3427,19 +3302,19 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut events = Vec::new();
 
         // Start multiple tools
-        events.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_1".to_string(),
             name: "search".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_2".to_string(),
             name: "calc".to_string(),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "call_3".to_string(),
             name: "read".to_string(),
         }));
@@ -3452,23 +3327,23 @@ mod tests {
         assert_eq!(starts.len(), 3);
 
         // End them in different order
-        events.extend(adapter.convert(&AgentEvent::ToolCallReady {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "call_2".to_string(),
             name: "calc".to_string(),
             arguments: json!({}),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallDone {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_2".to_string(),
             result: ToolResult::success("calc", json!(42)),
             patch: None,
             message_id: String::new(),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallReady {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "call_1".to_string(),
             name: "search".to_string(),
             arguments: json!({}),
         }));
-        events.extend(adapter.convert(&AgentEvent::ToolCallDone {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::success("search", json!([])),
             patch: None,
@@ -3491,9 +3366,9 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events = adapter.convert(&AgentEvent::ToolCallDone {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::error("search", "Connection timeout"),
             patch: None,
@@ -3511,9 +3386,9 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events = adapter.convert(&AgentEvent::ToolCallDone {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::pending("long_task", "Task is running"),
             patch: None,
@@ -3531,9 +3406,9 @@ mod tests {
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events = adapter.convert(&AgentEvent::ToolCallDone {
+        let events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "call_1".to_string(),
             result: ToolResult::warning("search", json!({"partial": true}), "Rate limited"),
             patch: None,
@@ -3620,54 +3495,6 @@ mod tests {
     // SSE Format Edge Cases
     // ========================================================================
 
-    #[test]
-    fn test_sse_format_with_newlines_in_content() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
-
-        let text_with_newlines = "Line 1\nLine 2\nLine 3";
-        let event = AgentEvent::TextDelta {
-            delta: text_with_newlines.to_string(),
-        };
-
-        let sse_lines = adapter.to_sse(&event);
-
-        // Each SSE line should be properly formatted
-        for line in &sse_lines {
-            assert!(line.starts_with("data: "));
-            assert!(line.ends_with("\n\n"));
-            // The JSON inside should have escaped newlines
-            let json_part = &line[6..line.len() - 2];
-            assert!(serde_json::from_str::<serde_json::Value>(json_part).is_ok());
-        }
-    }
-
-    #[test]
-    fn test_sse_format_multiple_events() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
-
-        // First event (generates 2: START + CONTENT)
-        let sse1 = adapter.to_sse(&AgentEvent::TextDelta {
-            delta: "Hello".to_string(),
-        });
-        assert_eq!(sse1.len(), 2);
-
-        // Second event (generates 1: CONTENT)
-        let sse2 = adapter.to_sse(&AgentEvent::TextDelta {
-            delta: " World".to_string(),
-        });
-        assert_eq!(sse2.len(), 1);
-
-        // All should be valid SSE format
-        for line in sse1.iter().chain(sse2.iter()) {
-            assert!(line.starts_with("data: "));
-            assert!(line.ends_with("\n\n"));
-        }
-    }
-
     // ========================================================================
     // BaseEvent Fields Tests
     // ========================================================================
@@ -3718,16 +3545,16 @@ mod tests {
     fn test_event_order_text_only() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut events = Vec::new();
 
         // Simulate: multiple text deltas then done
         for i in 0..5 {
-            events.extend(adapter.convert(&AgentEvent::TextDelta {
+            events.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
                 delta: format!("chunk_{}", i),
             }));
         }
-        events.extend(adapter.convert(&AgentEvent::RunFinish {
+        events.extend(ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".to_string(),
             run_id: "r".to_string(),
             result: Some(serde_json::json!({"response": "full response"})),
@@ -3747,16 +3574,16 @@ mod tests {
     fn test_event_order_text_then_tool() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut events = Vec::new();
 
         // Text first
-        events.extend(adapter.convert(&AgentEvent::TextDelta {
+        events.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Thinking...".to_string(),
         }));
 
         // Then tool call (should end text first)
-        events.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        events.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "c1".to_string(),
             name: "tool".to_string(),
         }));
@@ -6152,31 +5979,32 @@ mod tests {
             .any(|e| matches!(e, AGUIEvent::RunError { .. }));
         assert!(has_error, "Should have RunError when LLM fails");
 
-        // AG-UI protocol: RunFinished must always be emitted, even after RunError.
+        // RunError is terminal — no RunFinished is emitted after it.
+        // The `stopped` flag in AGUIContext suppresses all events after Error.
         let has_finished = events
             .iter()
             .any(|e| matches!(e, AGUIEvent::RunFinished { .. }));
         assert!(
-            has_finished,
-            "RunFinished MUST be emitted after RunError per AG-UI protocol"
+            !has_finished,
+            "RunFinished must NOT be emitted after RunError (Error is terminal)"
         );
     }
 
     #[test]
-    fn test_ag_ui_adapter_error_during_text_does_not_emit_text_end() {
+    fn test_agui_context_error_during_text_does_not_emit_text_end() {
         // AG-UI spec: RunError is terminal — no TextMessageEnd needed
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".to_string(), "r".to_string());
+        let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
         let mut all_events = Vec::new();
 
         // Start text
-        all_events.extend(adapter.convert(&AgentEvent::TextDelta {
+        all_events.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Processing...".into(),
         }));
 
         // Error — should only emit RunError, no TextMessageEnd
-        all_events.extend(adapter.convert(&AgentEvent::Error {
+        all_events.extend(ctx.on_agent_event(&AgentEvent::Error {
             message: "timeout".into(),
         }));
 
@@ -6199,30 +6027,30 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_text_tool_text_lifecycle() {
+    fn test_agui_context_text_tool_text_lifecycle() {
         // Test: text → tool call (auto-ends text) → more text (new text stream) → finish
         use crate::stream::AgentEvent;
         use crate::ToolResult;
 
-        let mut adapter = AgUiAdapter::new("t".into(), "r".into());
+        let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all = Vec::new();
 
         // Phase 1: text
-        all.extend(adapter.convert(&AgentEvent::TextDelta {
+        all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Thinking".into(),
         }));
 
         // Phase 2: tool call (should auto-end text)
-        all.extend(adapter.convert(&AgentEvent::ToolCallStart {
+        all.extend(ctx.on_agent_event(&AgentEvent::ToolCallStart {
             id: "c1".into(),
             name: "search".into(),
         }));
-        all.extend(adapter.convert(&AgentEvent::ToolCallReady {
+        all.extend(ctx.on_agent_event(&AgentEvent::ToolCallReady {
             id: "c1".into(),
             name: "search".into(),
             arguments: json!({}),
         }));
-        all.extend(adapter.convert(&AgentEvent::ToolCallDone {
+        all.extend(ctx.on_agent_event(&AgentEvent::ToolCallDone {
             id: "c1".into(),
             result: ToolResult::success("search", json!({"ok": true})),
             patch: None,
@@ -6230,12 +6058,12 @@ mod tests {
         }));
 
         // Phase 3: more text (new text stream)
-        all.extend(adapter.convert(&AgentEvent::TextDelta {
+        all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Found it".into(),
         }));
 
         // Finish
-        all.extend(adapter.convert(&AgentEvent::RunFinish {
+        all.extend(ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".into(),
             run_id: "r".into(),
             result: None,
@@ -6272,28 +6100,28 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_step_pairing_in_multi_step() {
+    fn test_agui_context_step_pairing_in_multi_step() {
         use crate::stream::AgentEvent;
 
-        let mut adapter = AgUiAdapter::new("t".into(), "r".into());
+        let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all = Vec::new();
 
         // Step 1
-        all.extend(adapter.convert(&AgentEvent::StepStart { message_id: String::new() }));
-        all.extend(adapter.convert(&AgentEvent::TextDelta {
+        all.extend(ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() }));
+        all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 1".into(),
         }));
-        all.extend(adapter.convert(&AgentEvent::StepEnd));
+        all.extend(ctx.on_agent_event(&AgentEvent::StepEnd));
 
         // Step 2
-        all.extend(adapter.convert(&AgentEvent::StepStart { message_id: String::new() }));
-        all.extend(adapter.convert(&AgentEvent::TextDelta {
+        all.extend(ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() }));
+        all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 2".into(),
         }));
-        all.extend(adapter.convert(&AgentEvent::StepEnd));
+        all.extend(ctx.on_agent_event(&AgentEvent::StepEnd));
 
         // Finish
-        all.extend(adapter.convert(&AgentEvent::RunFinish {
+        all.extend(ctx.on_agent_event(&AgentEvent::RunFinish {
             thread_id: "t".into(),
             run_id: "r".into(),
             result: None,
@@ -6336,7 +6164,7 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_ag_ui_adapter_skips_pending_emits_run_finished() {
+    fn test_agui_context_skips_pending_emits_run_finished() {
         // Simulate what run_agent_stream_with_parent does:
         // Pending events are skipped (redundant with LLM tool calls),
         // but RunFinish is always emitted for AG-UI clients.
@@ -6407,7 +6235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ag_ui_adapter_forwards_agent_recovery_pending() {
+    fn test_agui_context_converts_pending_to_tool_calls() {
         use crate::stream::AgentEvent;
 
         let mut ctx = AGUIContext::new("t".into(), "r".into());
@@ -6435,53 +6263,37 @@ mod tests {
         ];
 
         for event in &agent_events {
-            match event {
-                AgentEvent::Pending { interaction }
-                    if interaction.action != "recover_agent_run" =>
-                {
-                    continue;
-                }
-                _ => {}
-            }
             all_events.extend(ctx.on_agent_event(event));
         }
 
+        // AGUIContext converts Pending interactions to tool call events.
+        // Transport-level filtering (in AgUiProtocolEncoder / run_agent_stream_with_parent)
+        // is responsible for skipping Pending events when appropriate.
         assert!(
-            all_events.iter().any(|e| matches!(
-                e,
-                AGUIEvent::ToolCallStart { tool_call_id, tool_call_name, .. }
-                if tool_call_id == "agent_recovery_run-1"
-                    && tool_call_name == "recover_agent_run"
-            )),
-            "recovery pending must be forwarded as AG-UI tool call events"
+            all_events
+                .iter()
+                .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
+            "AGUIContext should convert Pending to tool call events"
         );
     }
 
     #[test]
-    fn test_ag_ui_adapter_fallback_run_finished_on_empty_stream() {
+    fn test_agui_context_fallback_run_finished_on_empty_stream() {
+        use crate::stream::AgentEvent;
+
         // Simulate fallback: inner stream ends without RunFinish
         let mut ctx = AGUIContext::new("t".into(), "r".into());
         let mut all_events = Vec::new();
-        let mut emitted_run_finished = false;
 
         // Only RunStart, no RunFinish
-        let agent_events = vec![AgentEvent::RunStart {
+        all_events.extend(ctx.on_agent_event(&AgentEvent::RunStart {
             thread_id: "t".into(),
             run_id: "r".into(),
             parent_run_id: None,
-        }];
+        }));
 
-        for event in &agent_events {
-            if let AgentEvent::RunFinish { .. } = event {
-                emitted_run_finished = true;
-            }
-            all_events.extend(ctx.on_agent_event(&event));
-        }
-
-        // Fallback: emit RunFinished if not emitted
-        if !emitted_run_finished {
-            all_events.push(AGUIEvent::run_finished("t", "r", None));
-        }
+        // epilogue() should emit fallback RunFinished
+        all_events.extend(ctx.epilogue());
 
         assert!(matches!(&all_events[0], AGUIEvent::RunStarted { .. }));
         assert!(
@@ -7255,120 +7067,6 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("[C]: val_c")));
     }
 
-    // ========================================================================
-    // SSE / NDJSON Format Edge Case Tests
-    // ========================================================================
-
-    #[test]
-    fn test_sse_format_contains_data_prefix_and_double_newline() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::TextDelta {
-            delta: "hello".to_string(),
-        };
-        let lines = adapter.to_sse(&event);
-        for line in &lines {
-            assert!(
-                line.starts_with("data: "),
-                "SSE line must start with 'data: '"
-            );
-            assert!(
-                line.ends_with("\n\n"),
-                "SSE line must end with double newline"
-            );
-        }
-    }
-
-    #[test]
-    fn test_ndjson_format_ends_with_single_newline() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::TextDelta {
-            delta: "hello".to_string(),
-        };
-        let lines = adapter.to_ndjson(&event);
-        for line in &lines {
-            assert!(line.ends_with('\n'), "NDJSON line must end with newline");
-            assert!(
-                !line.ends_with("\n\n"),
-                "NDJSON must not have double newline"
-            );
-        }
-    }
-
-    #[test]
-    fn test_sse_content_with_special_characters() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::TextDelta {
-            delta: "line1\nline2\ttab \"quotes\"".to_string(),
-        };
-        let lines = adapter.to_sse(&event);
-        // Should still produce valid SSE (JSON handles escaping)
-        assert!(!lines.is_empty());
-        for line in &lines {
-            // The JSON inside should parse correctly
-            let json_str = line
-                .strip_prefix("data: ")
-                .unwrap()
-                .strip_suffix("\n\n")
-                .unwrap();
-            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
-            // Should be a valid AG-UI event
-            assert!(parsed.get("type").is_some());
-        }
-    }
-
-    #[test]
-    fn test_sse_empty_text_delta() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::TextDelta {
-            delta: "".to_string(),
-        };
-        let lines = adapter.to_sse(&event);
-        // Even empty delta should produce valid SSE events
-        for line in &lines {
-            assert!(line.starts_with("data: "));
-            let json_str = line
-                .strip_prefix("data: ")
-                .unwrap()
-                .strip_suffix("\n\n")
-                .unwrap();
-            assert!(serde_json::from_str::<Value>(json_str).is_ok());
-        }
-    }
-
-    #[test]
-    fn test_to_json_produces_parseable_json() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::ToolCallStart {
-            id: "tc-1".to_string(),
-            name: "search".to_string(),
-        };
-        let jsons = adapter.to_json(&event);
-        for j in &jsons {
-            let parsed: Value = serde_json::from_str(j).unwrap();
-            assert!(parsed.get("type").is_some());
-        }
-    }
-
-    #[test]
-    fn test_sse_unicode_content() {
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = crate::stream::AgentEvent::TextDelta {
-            delta: "你好世界 🌍 émojis ñ".to_string(),
-        };
-        let lines = adapter.to_sse(&event);
-        assert!(!lines.is_empty());
-        for line in &lines {
-            let json_str = line
-                .strip_prefix("data: ")
-                .unwrap()
-                .strip_suffix("\n\n")
-                .unwrap();
-            let parsed: Value = serde_json::from_str(json_str).unwrap();
-            if let Some(delta) = parsed.get("delta") {
-                assert!(delta.as_str().unwrap().contains("你好世界"));
-            }
-        }
-    }
 
     // ========================================================================
     // AgentEvent → AG-UI Conversion Edge Case Tests
@@ -7597,7 +7295,7 @@ mod tests {
             &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
         );
 
-        // Pending should close text first
+        // Pending should close text first, then produce tool call events
         let interaction = Interaction::new("int-1", "tool:x");
         let events = ctx.on_agent_event(
             &crate::stream::AgentEvent::Pending { interaction },
@@ -8146,167 +7844,6 @@ mod tests {
         assert_eq!(event, deserialized);
     }
 
-    // ========================================================================
-    // SSE Serialize → Parse Round-Trip Tests
-    // ========================================================================
-
-    /// Helper: strip SSE framing (`data: …\n\n`) and parse back to AGUIEvent.
-    fn parse_sse_line(sse_line: &str) -> AGUIEvent {
-        let json_str = sse_line
-            .strip_prefix("data: ")
-            .expect("SSE line must start with 'data: '")
-            .strip_suffix("\n\n")
-            .expect("SSE line must end with '\\n\\n'");
-        serde_json::from_str(json_str).expect("SSE payload must be valid AGUIEvent JSON")
-    }
-
-    #[test]
-    fn test_sse_round_trip_full_lifecycle() {
-        // Simulate a realistic agent event sequence and verify every SSE
-        // line parses back to a valid AGUIEvent.
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("th_rt".to_string(), "run_rt".to_string());
-
-        let events = vec![
-            AgentEvent::TextDelta {
-                delta: "Hello ".to_string(),
-            },
-            AgentEvent::TextDelta {
-                delta: "world".to_string(),
-            },
-            AgentEvent::ToolCallStart {
-                id: "tc_1".to_string(),
-                name: "search".to_string(),
-            },
-            AgentEvent::ToolCallDelta {
-                id: "tc_1".to_string(),
-                args_delta: r#"{"q":"test"}"#.to_string(),
-            },
-            AgentEvent::ToolCallReady {
-                id: "tc_1".to_string(),
-                name: "search".to_string(),
-                arguments: json!({"q":"test"}),
-            },
-            AgentEvent::ToolCallDone {
-                id: "tc_1".to_string(),
-                result: crate::ToolResult::success("search", json!({"results": []})),
-                patch: None,
-                message_id: String::new(),
-            },
-            AgentEvent::RunFinish {
-                thread_id: "th_rt".to_string(),
-                run_id: "run_rt".to_string(),
-                result: None,
-                stop_reason: None,
-            },
-        ];
-
-        let mut all_sse: Vec<String> = Vec::new();
-        for ev in &events {
-            all_sse.extend(adapter.to_sse(ev));
-        }
-
-        // Every SSE line must parse back to a valid AGUIEvent.
-        assert!(
-            !all_sse.is_empty(),
-            "Should produce at least some SSE lines"
-        );
-        let mut parsed: Vec<AGUIEvent> = Vec::new();
-        for line in &all_sse {
-            parsed.push(parse_sse_line(line));
-        }
-
-        // Verify expected event types are present.
-        // Note: RUN_STARTED is emitted by the server wrapper, not the adapter.
-        let types: Vec<&str> = parsed
-            .iter()
-            .map(|e| match e {
-                AGUIEvent::RunStarted { .. } => "RUN_STARTED",
-                AGUIEvent::RunFinished { .. } => "RUN_FINISHED",
-                AGUIEvent::StepStarted { .. } => "STEP_STARTED",
-                AGUIEvent::StepFinished { .. } => "STEP_FINISHED",
-                AGUIEvent::TextMessageStart { .. } => "TEXT_MESSAGE_START",
-                AGUIEvent::TextMessageContent { .. } => "TEXT_MESSAGE_CONTENT",
-                AGUIEvent::TextMessageEnd { .. } => "TEXT_MESSAGE_END",
-                AGUIEvent::ToolCallStart { .. } => "TOOL_CALL_START",
-                AGUIEvent::ToolCallArgs { .. } => "TOOL_CALL_ARGS",
-                AGUIEvent::ToolCallEnd { .. } => "TOOL_CALL_END",
-                AGUIEvent::StateSnapshot { .. } => "STATE_SNAPSHOT",
-                _ => "OTHER",
-            })
-            .collect();
-
-        assert!(
-            types.contains(&"TEXT_MESSAGE_CONTENT"),
-            "Must have TEXT_MESSAGE_CONTENT"
-        );
-        assert!(
-            types.contains(&"TOOL_CALL_START"),
-            "Must have TOOL_CALL_START"
-        );
-        assert!(types.contains(&"RUN_FINISHED"), "Must have RUN_FINISHED");
-    }
-
-    #[test]
-    fn test_sse_round_trip_state_snapshot() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let state = json!({"trips": [{"name": "Paris"}], "count": 1});
-        let event = AgentEvent::StateSnapshot {
-            snapshot: state.clone(),
-        };
-        let sse_lines = adapter.to_sse(&event);
-
-        for line in &sse_lines {
-            let parsed = parse_sse_line(line);
-            if let AGUIEvent::StateSnapshot { snapshot, .. } = &parsed {
-                assert_eq!(snapshot, &state, "State snapshot must survive round-trip");
-            }
-        }
-    }
-
-    #[test]
-    fn test_sse_round_trip_error_event() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let event = AgentEvent::Error {
-            message: "something went wrong".to_string(),
-        };
-        let sse_lines = adapter.to_sse(&event);
-
-        assert!(!sse_lines.is_empty());
-        for line in &sse_lines {
-            let parsed = parse_sse_line(line);
-            if let AGUIEvent::RunError { message, .. } = &parsed {
-                assert!(message.contains("something went wrong"));
-            }
-        }
-    }
-
-    #[test]
-    fn test_sse_round_trip_special_chars_in_text() {
-        use crate::stream::AgentEvent;
-
-        let mut adapter = AgUiAdapter::new("th".to_string(), "run".to_string());
-        let text = "line1\nline2\t\"quotes\" 中文 emoji🎉 \\backslash";
-        let event = AgentEvent::TextDelta {
-            delta: text.to_string(),
-        };
-        let sse_lines = adapter.to_sse(&event);
-
-        for line in &sse_lines {
-            let parsed = parse_sse_line(line);
-            if let AGUIEvent::TextMessageContent { delta, .. } = &parsed {
-                assert_eq!(
-                    delta, text,
-                    "Special characters must survive SSE round-trip"
-                );
-            }
-        }
-    }
 
     // ========================================================================
     // RunAgentRequest Deserialization & Edge Case Tests

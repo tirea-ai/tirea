@@ -198,72 +198,6 @@ fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
         .collect()
 }
 
-#[derive(Debug)]
-struct AgUiEncoderState {
-    ctx: AGUIContext,
-    emitted_run_finished: bool,
-    stopped: bool,
-}
-
-impl AgUiEncoderState {
-    fn new(thread_id: String, run_id: String) -> Self {
-        Self {
-            ctx: AGUIContext::new(thread_id, run_id),
-            emitted_run_finished: false,
-            stopped: false,
-        }
-    }
-
-    fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
-        // After an error (RUN_ERROR), suppress all further events including
-        // RunFinish — the RUN_ERROR is already the terminal event and sending
-        // RUN_FINISHED after it violates the AG-UI protocol.
-        if self.stopped {
-            return Vec::new();
-        }
-
-        match ev {
-            AgentEvent::Error { .. } => {
-                self.stopped = true;
-                self.emitted_run_finished = true; // RUN_ERROR is terminal
-            }
-            AgentEvent::RunFinish { .. } => {
-                self.emitted_run_finished = true;
-            }
-            // Skip Pending events: their interaction-to-tool-call conversion
-            // is redundant in AG-UI — the LLM's own TOOL_CALL events already
-            // inform the client about frontend tool calls.
-            // However, we must still close any open text stream.
-            AgentEvent::Pending { .. } => {
-                let mut events = Vec::new();
-                if self.ctx.end_text() {
-                    events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
-                }
-                return events;
-            }
-            _ => {}
-        }
-
-        self.ctx.on_agent_event(ev)
-    }
-
-    fn fallback_finished_current(&mut self) -> Vec<AGUIEvent> {
-        if self.stopped || self.emitted_run_finished {
-            return Vec::new();
-        }
-        let mut events = Vec::new();
-        if self.ctx.end_text() {
-            events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
-        }
-        events.push(AGUIEvent::run_finished(
-            &self.ctx.thread_id,
-            &self.ctx.run_id,
-            None,
-        ));
-        events
-    }
-}
-
 pub struct AiSdkV6ProtocolEncoder {
     inner: AiSdkEncoder,
     run_info: Option<UIStreamEvent>,
@@ -307,13 +241,13 @@ impl ProtocolOutputEncoder for AiSdkV6ProtocolEncoder {
 }
 
 pub struct AgUiProtocolEncoder {
-    inner: AgUiEncoderState,
+    ctx: AGUIContext,
 }
 
 impl AgUiProtocolEncoder {
     pub fn new(thread_id: String, run_id: String) -> Self {
         Self {
-            inner: AgUiEncoderState::new(thread_id, run_id),
+            ctx: AGUIContext::new(thread_id, run_id),
         }
     }
 }
@@ -322,11 +256,21 @@ impl ProtocolOutputEncoder for AgUiProtocolEncoder {
     type Event = AGUIEvent;
 
     fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {
-        self.inner.on_agent_event(ev)
+        // At the transport level, skip Pending interaction→tool-call conversion.
+        // LLM TOOL_CALL events already inform the client about frontend tools.
+        // Only close any open text block.
+        if let AgentEvent::Pending { .. } = ev {
+            let mut events = Vec::new();
+            if self.ctx.end_text() {
+                events.push(AGUIEvent::text_message_end(&self.ctx.message_id));
+            }
+            return events;
+        }
+        self.ctx.on_agent_event(ev)
     }
 
     fn epilogue(&mut self) -> Vec<Self::Event> {
-        self.inner.fallback_finished_current()
+        self.ctx.epilogue()
     }
 }
 
