@@ -1,5 +1,7 @@
 use crate::ag_ui::{AGUIContext, AGUIEvent, AGUIMessage, MessageRole, RunAgentRequest};
-use crate::ui_stream::{AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent};
+use crate::ui_stream::{
+    AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
+};
 use crate::{gen_message_id, AgentEvent, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -27,7 +29,9 @@ pub trait ProtocolHistoryEncoder {
 
     fn encode_message(msg: &Message) -> Self::HistoryMessage;
 
-    fn encode_messages<'a>(msgs: impl IntoIterator<Item = &'a Message>) -> Vec<Self::HistoryMessage> {
+    fn encode_messages<'a>(
+        msgs: impl IntoIterator<Item = &'a Message>,
+    ) -> Vec<Self::HistoryMessage> {
         msgs.into_iter().map(Self::encode_message).collect()
     }
 }
@@ -93,6 +97,24 @@ impl ProtocolInputAdapter for AgUiInputAdapter {
             runtime.insert(
                 "parent_run_id".to_string(),
                 serde_json::Value::String(parent_run_id),
+            );
+        }
+        let frontend_tools: Vec<String> = request
+            .frontend_tools()
+            .into_iter()
+            .map(|tool| tool.name.clone())
+            .collect();
+        if !frontend_tools.is_empty() {
+            runtime.insert(
+                crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY.to_string(),
+                serde_json::to_value(frontend_tools).unwrap_or_default(),
+            );
+        }
+        let interaction_responses = request.interaction_responses();
+        if !interaction_responses.is_empty() {
+            runtime.insert(
+                crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY.to_string(),
+                serde_json::to_value(interaction_responses).unwrap_or_default(),
             );
         }
 
@@ -168,7 +190,10 @@ impl ProtocolHistoryEncoder for AiSdkV6InputAdapter {
         UIMessage {
             id: msg.id.clone().unwrap_or_default(),
             role,
-            metadata: msg.metadata.as_ref().and_then(|m| serde_json::to_value(m).ok()),
+            metadata: msg
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::to_value(m).ok()),
             parts,
         }
     }
@@ -398,10 +423,7 @@ mod tests {
 
     #[test]
     fn test_agui_encode_messages_batch() {
-        let msgs = vec![
-            Message::user("hello"),
-            Message::assistant("world"),
-        ];
+        let msgs = vec![Message::user("hello"), Message::assistant("world")];
         let encoded = AgUiInputAdapter::encode_messages(msgs.iter());
         assert_eq!(encoded.len(), 2);
         assert_eq!(encoded[0].role, MessageRole::User);
@@ -458,7 +480,9 @@ mod tests {
         let encoded = AiSdkV6InputAdapter::encode_message(&msg);
         assert_eq!(encoded.role, UIRole::Assistant);
         assert_eq!(encoded.parts.len(), 3); // 1 text + 2 tool parts
-        assert!(matches!(&encoded.parts[0], UIMessagePart::Text { text, .. } if text == "Let me search."));
+        assert!(
+            matches!(&encoded.parts[0], UIMessagePart::Text { text, .. } if text == "Let me search.")
+        );
         assert!(matches!(
             &encoded.parts[1],
             UIMessagePart::Tool { tool_call_id, tool_name, state: ToolState::OutputAvailable, .. }
@@ -486,7 +510,9 @@ mod tests {
         // In AI SDK, tool results are part of the assistant turn
         assert_eq!(encoded.role, UIRole::Assistant);
         assert_eq!(encoded.parts.len(), 1);
-        assert!(matches!(&encoded.parts[0], UIMessagePart::Text { text, .. } if text == "{\"result\":42}"));
+        assert!(
+            matches!(&encoded.parts[0], UIMessagePart::Text { text, .. } if text == "{\"result\":42}")
+        );
     }
 
     #[test]
@@ -563,10 +589,7 @@ mod tests {
 
     #[test]
     fn test_ai_sdk_encode_messages_batch() {
-        let msgs = vec![
-            Message::user("hello"),
-            Message::assistant("world"),
-        ];
+        let msgs = vec![Message::user("hello"), Message::assistant("world")];
         let encoded = AiSdkV6InputAdapter::encode_messages(msgs.iter());
         assert_eq!(encoded.len(), 2);
         assert_eq!(encoded[0].role, UIRole::User);
@@ -607,7 +630,10 @@ mod tests {
         };
         let result = convert_agui_messages(&[msg]);
         assert_eq!(result.len(), 1);
-        assert!(result[0].id.is_some(), "must generate id when client omits it");
+        assert!(
+            result[0].id.is_some(),
+            "must generate id when client omits it"
+        );
         let id = result[0].id.as_ref().unwrap();
         assert_eq!(id.len(), 36, "generated id should be a UUID");
     }

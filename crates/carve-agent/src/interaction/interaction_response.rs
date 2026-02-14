@@ -5,13 +5,14 @@
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
+    InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
 };
 use async_trait::async_trait;
 use carve_state::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 pub(crate) const INTERACTION_RESOLUTIONS_KEY: &str = "__interaction_resolutions";
 
@@ -43,34 +44,65 @@ pub(crate) struct InteractionResolution {
 /// let config = config.with_plugin(Arc::new(plugin));
 /// ```
 pub(crate) struct InteractionResponsePlugin {
-    /// Interaction IDs that were approved by the client.
-    approved_ids: HashSet<String>,
-    /// Interaction IDs that were denied by the client.
-    denied_ids: HashSet<String>,
+    /// Interaction responses keyed by interaction ID.
+    responses: HashMap<String, serde_json::Value>,
 }
 
 impl InteractionResponsePlugin {
     /// Create a new plugin with approved and denied interaction IDs.
     pub(crate) fn new(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
-        Self {
-            approved_ids: approved_ids.into_iter().collect(),
-            denied_ids: denied_ids.into_iter().collect(),
+        let mut responses = HashMap::new();
+        for id in approved_ids {
+            responses.insert(id, serde_json::Value::Bool(true));
         }
+        for id in denied_ids {
+            responses.insert(id, serde_json::Value::Bool(false));
+        }
+        Self { responses }
+    }
+
+    /// Create from explicit interaction response payloads.
+    pub(crate) fn from_responses(responses: Vec<InteractionResponse>) -> Self {
+        Self {
+            responses: responses
+                .into_iter()
+                .map(|r| (r.interaction_id, r.result))
+                .collect(),
+        }
+    }
+
+    /// Return a raw response payload for an interaction id.
+    pub(crate) fn result_for(&self, interaction_id: &str) -> Option<&serde_json::Value> {
+        self.responses.get(interaction_id)
+    }
+
+    /// Return all configured responses.
+    pub(crate) fn responses(&self) -> Vec<InteractionResponse> {
+        self.responses
+            .iter()
+            .map(|(interaction_id, result)| {
+                InteractionResponse::new(interaction_id.clone(), result.clone())
+            })
+            .collect()
     }
 
     /// Check if an interaction was approved.
     pub(crate) fn is_approved(&self, interaction_id: &str) -> bool {
-        self.approved_ids.contains(interaction_id)
+        self.result_for(interaction_id)
+            .map(InteractionResponse::is_approved)
+            .unwrap_or(false)
     }
 
     /// Check if an interaction was denied.
     pub(crate) fn is_denied(&self, interaction_id: &str) -> bool {
-        self.denied_ids.contains(interaction_id)
+        self.result_for(interaction_id)
+            .map(InteractionResponse::is_denied)
+            .unwrap_or(false)
     }
 
     /// Check if plugin has any responses to process.
     pub(crate) fn has_responses(&self) -> bool {
-        !self.approved_ids.is_empty() || !self.denied_ids.is_empty()
+        !self.responses.is_empty()
     }
 
     fn push_resolution(
@@ -100,21 +132,29 @@ impl InteractionResponsePlugin {
         let pending_id_owned = pending.id.clone();
         let pending_id = pending_id_owned.as_str();
 
-        if self.denied_ids.iter().any(|id| id == pending_id) {
+        if self.is_denied(pending_id) {
             agent.pending_interaction_none();
-            Self::push_resolution(step, pending_id_owned, serde_json::Value::Bool(false));
+            Self::push_resolution(
+                step,
+                pending_id_owned.clone(),
+                self.result_for(pending_id)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Bool(false)),
+            );
             return;
         }
 
         // Check if the client approved this interaction.
-        let is_approved = self.approved_ids.iter().any(|id| id == pending_id);
+        let is_approved = self.is_approved(pending_id);
         if !is_approved {
             return;
         }
         Self::push_resolution(
             step,
             pending_id_owned.clone(),
-            serde_json::Value::Bool(true),
+            self.result_for(pending_id)
+                .cloned()
+                .unwrap_or(serde_json::Value::Bool(true)),
         );
 
         if pending.action == AGENT_RECOVERY_INTERACTION_ACTION {
@@ -228,11 +268,9 @@ impl AgentPlugin for InteractionResponsePlugin {
         let frontend_interaction_id = tool.id.clone(); // FrontendToolPlugin uses tool call ID
         let permission_interaction_id = format!("permission_{}", tool.name); // PermissionPlugin format
 
-        // Check if any of these interactions were approved
+        // Check if any of these interactions were approved/denied
         let is_frontend_approved = self.is_approved(&frontend_interaction_id);
         let is_permission_approved = self.is_approved(&permission_interaction_id);
-
-        // Check if any of these interactions were denied
         let is_frontend_denied = self.is_denied(&frontend_interaction_id);
         let is_permission_denied = self.is_denied(&permission_interaction_id);
 

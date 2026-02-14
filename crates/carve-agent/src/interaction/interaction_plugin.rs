@@ -8,16 +8,18 @@ use super::frontend_tool::FrontendToolPlugin;
 use super::interaction_response::InteractionResponsePlugin;
 use super::take_intents;
 use super::InteractionIntent;
+use super::{RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY, RUNTIME_INTERACTION_RESPONSES_KEY};
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
+use crate::state_types::InteractionResponse;
 use async_trait::async_trait;
 use carve_state::Context;
 use std::collections::HashSet;
 
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {
-    response: InteractionResponsePlugin,
-    frontend: FrontendToolPlugin,
+    static_response: InteractionResponsePlugin,
+    static_frontend_tools: HashSet<String>,
 }
 
 impl InteractionPlugin {
@@ -28,8 +30,8 @@ impl InteractionPlugin {
         denied_ids: Vec<String>,
     ) -> Self {
         Self {
-            response: InteractionResponsePlugin::new(approved_ids, denied_ids),
-            frontend: FrontendToolPlugin::new(frontend_tools),
+            static_response: InteractionResponsePlugin::new(approved_ids, denied_ids),
+            static_frontend_tools: frontend_tools,
         }
     }
 
@@ -45,32 +47,81 @@ impl InteractionPlugin {
 
     /// Whether this plugin should be installed for the current request.
     pub fn is_active(&self) -> bool {
-        self.response.has_responses() || self.frontend.has_frontend_tools()
+        self.static_response.has_responses() || !self.static_frontend_tools.is_empty()
     }
 
     /// Whether request contains frontend tools and therefore needs tool stubs.
     pub fn has_frontend_tools(&self) -> bool {
-        self.frontend.has_frontend_tools()
+        !self.static_frontend_tools.is_empty()
     }
 
     /// Whether any interaction responses are present.
     pub fn has_responses(&self) -> bool {
-        self.response.has_responses()
+        self.static_response.has_responses()
     }
 
     /// Check if a specific tool is configured as a frontend tool.
     pub fn is_frontend_tool(&self, tool_name: &str) -> bool {
-        self.frontend.is_frontend_tool(tool_name)
+        self.static_frontend_tools.contains(tool_name)
     }
 
     /// Check if an interaction ID is approved.
     pub fn is_approved(&self, interaction_id: &str) -> bool {
-        self.response.is_approved(interaction_id)
+        self.static_response.is_approved(interaction_id)
     }
 
     /// Check if an interaction ID is denied.
     pub fn is_denied(&self, interaction_id: &str) -> bool {
-        self.response.is_denied(interaction_id)
+        self.static_response.is_denied(interaction_id)
+    }
+
+    fn runtime_frontend_tools(ctx: &Context<'_>) -> HashSet<String> {
+        ctx.runtime_value(RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY)
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+            .collect()
+    }
+
+    fn runtime_responses(ctx: &Context<'_>) -> Vec<InteractionResponse> {
+        let Some(raw) = ctx
+            .runtime_value(RUNTIME_INTERACTION_RESPONSES_KEY)
+            .cloned()
+        else {
+            return Vec::new();
+        };
+        serde_json::from_value::<Vec<InteractionResponse>>(raw).unwrap_or_default()
+    }
+
+    fn merged_frontend_plugin(&self, ctx: &Context<'_>) -> FrontendToolPlugin {
+        let mut frontend_tools = self.static_frontend_tools.clone();
+        frontend_tools.extend(Self::runtime_frontend_tools(ctx));
+        FrontendToolPlugin::new(frontend_tools)
+    }
+
+    fn merged_response_plugin(&self, ctx: &Context<'_>) -> InteractionResponsePlugin {
+        let mut merged: std::collections::HashMap<String, serde_json::Value> = self
+            .static_response
+            .responses()
+            .into_iter()
+            .map(|r| (r.interaction_id, r.result))
+            .collect();
+        for r in Self::runtime_responses(ctx) {
+            merged.insert(r.interaction_id, r.result);
+        }
+        InteractionResponsePlugin::from_responses(
+            merged
+                .into_iter()
+                .map(|(interaction_id, result)| InteractionResponse::new(interaction_id, result))
+                .collect(),
+        )
+    }
+}
+
+impl Default for InteractionPlugin {
+    fn default() -> Self {
+        Self::new(HashSet::new(), Vec::new(), Vec::new())
     }
 }
 
@@ -81,8 +132,10 @@ impl AgentPlugin for InteractionPlugin {
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
-        self.response.on_phase(phase, step, ctx).await;
-        self.frontend.on_phase(phase, step, ctx).await;
+        let response = self.merged_response_plugin(ctx);
+        let frontend = self.merged_frontend_plugin(ctx);
+        response.on_phase(phase, step, ctx).await;
+        frontend.on_phase(phase, step, ctx).await;
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -120,8 +173,10 @@ mod tests {
     use super::*;
     use crate::phase::ToolContext;
     use crate::state_types::Interaction;
+    use crate::state_types::InteractionResponse;
     use crate::thread::Thread;
     use crate::types::ToolCall;
+    use carve_state::Runtime;
     use serde_json::json;
 
     #[test]
@@ -229,5 +284,70 @@ mod tests {
             intents.is_empty(),
             "consumed/dropped intents should not leak to next step"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_frontend_tools_are_honored_by_static_plugin() {
+        let plugin = InteractionPlugin::default();
+        let state = json!({});
+        let mut runtime = Runtime::new();
+        runtime
+            .set(
+                crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY,
+                vec!["copyToClipboard"],
+            )
+            .unwrap();
+        let ctx = Context::new(&state, "test", "test").with_runtime(Some(&runtime));
+        let thread = Thread::new("t1");
+        let mut step = StepContext::new(&thread, vec![]);
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text": "hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+
+        assert!(step.tool_pending(), "frontend tool should become pending");
+    }
+
+    #[tokio::test]
+    async fn runtime_interaction_responses_are_honored_by_static_plugin() {
+        let plugin = InteractionPlugin::default();
+        let state = json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "permission_write_file",
+                    "action": "confirm",
+                    "parameters": {
+                        "tool_call": {
+                            "id": "call_1",
+                            "name": "write_file",
+                            "arguments": {"path": "a.txt"}
+                        }
+                    }
+                }
+            }
+        });
+        let mut runtime = Runtime::new();
+        runtime
+            .set(
+                crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY,
+                vec![InteractionResponse::new(
+                    "permission_write_file",
+                    json!(true),
+                )],
+            )
+            .unwrap();
+        let ctx = Context::new(&state, "test", "test").with_runtime(Some(&runtime));
+        let thread = Thread::new("t1");
+        let mut step = StepContext::new(&thread, vec![]);
+
+        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+
+        let replay: Vec<ToolCall> = step
+            .scratchpad_get("__replay_tool_calls")
+            .unwrap_or_default();
+        assert_eq!(replay.len(), 1, "approved response should schedule replay");
+        assert_eq!(replay[0].name, "write_file");
     }
 }

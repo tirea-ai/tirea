@@ -1682,22 +1682,14 @@ fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
 }
 
 struct RequestWiring {
-    interaction: InteractionPlugin,
+    install_interaction: bool,
 }
 
 impl RequestWiring {
     fn from_request(request: &RunAgentRequest) -> Self {
-        let frontend_tools = request
-            .frontend_tools()
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect();
         Self {
-            interaction: InteractionPlugin::new(
-                frontend_tools,
-                request.approved_interaction_ids(),
-                request.denied_interaction_ids(),
-            ),
+            install_interaction: request.tools.iter().any(|t| t.is_frontend())
+                || request.has_any_interaction_responses(),
         }
     }
 
@@ -1707,15 +1699,15 @@ impl RequestWiring {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
         request: &RunAgentRequest,
     ) -> AgentConfig {
-        if !self.interaction.is_active() {
-            return config;
-        }
-
-        if self.interaction.has_frontend_tools() {
+        if request.frontend_tools().is_empty() {
+            // no-op
+        } else {
             merge_frontend_tools(tools, request);
         }
 
-        config = config.with_plugin(Arc::new(self.interaction));
+        if self.install_interaction && !config.plugins.iter().any(|p| p.id() == "interaction") {
+            config = config.with_plugin(Arc::new(InteractionPlugin::default()));
+        }
         config
     }
 }
@@ -1742,13 +1734,36 @@ fn set_run_identity(thread: &mut Thread, run_id: &str, parent_run_id: Option<&st
     }
 }
 
+fn set_interaction_request_context(thread: &mut Thread, request: &RunAgentRequest) {
+    let frontend_tools: Vec<String> = request
+        .frontend_tools()
+        .into_iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    if !frontend_tools.is_empty() {
+        let _ = thread.runtime.set(
+            crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY,
+            frontend_tools,
+        );
+    }
+
+    let responses = request.interaction_responses();
+    if !responses.is_empty() {
+        let _ = thread.runtime.set(
+            crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY,
+            responses,
+        );
+    }
+}
+
 fn prepare_request_runtime(
     config: AgentConfig,
     thread: Thread,
     mut tools: HashMap<String, Arc<dyn Tool>>,
     request: &RunAgentRequest,
 ) -> (AgentConfig, Thread, HashMap<String, Arc<dyn Tool>>) {
-    let thread = ensure_agui_request_applied(thread, request);
+    let mut thread = ensure_agui_request_applied(thread, request);
+    set_interaction_request_context(&mut thread, request);
     let config = apply_request_overrides(config, request);
     let config = RequestWiring::from_request(request).apply(config, &mut tools, request);
     (config, thread, tools)
@@ -7676,6 +7691,42 @@ mod tests {
             super::prepare_request_runtime(config, thread, tools, &request);
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
         assert_eq!(plugin_ids, vec!["permission", "interaction"]);
+    }
+
+    #[test]
+    fn test_prepare_request_runtime_sets_interaction_runtime_context() {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let config = AgentConfig::new("m").with_plugin(Arc::new(InteractionPlugin::default()));
+        let thread = Thread::new("t1");
+        let tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
+        let request = RunAgentRequest::new("t1", "r1")
+            .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
+            .with_messages(vec![AGUIMessage::tool("true", "permission_write")]);
+
+        let (_config, thread, _tools) =
+            super::prepare_request_runtime(config, thread, tools, &request);
+
+        let frontend = thread
+            .runtime
+            .value(crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(frontend, json!(["copyToClipboard"]));
+
+        let responses = thread
+            .runtime
+            .value(crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            responses,
+            json!([{
+                "interaction_id": "permission_write",
+                "result": true
+            }])
+        );
     }
 
     // ========================================================================
