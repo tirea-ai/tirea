@@ -92,6 +92,7 @@ pub mod phase;
 pub mod plugin;
 pub mod plugins;
 pub mod prelude;
+pub mod protocol;
 pub mod skills;
 pub mod state_types;
 pub mod stop;
@@ -149,6 +150,12 @@ pub use skills::{
 pub use ui_stream::{
     AiSdkAdapter, AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole,
     UIStreamEvent,
+};
+
+// Protocol adapters/encoders
+pub use protocol::{
+    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
+    ProtocolInputAdapter, ProtocolOutputEncoder,
 };
 
 // AI SDK SSE exports

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing;
 
-use crate::protocol::{
+use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder, AiSdkRunRequest,
     ProtocolInputAdapter, ProtocolOutputEncoder,
 };

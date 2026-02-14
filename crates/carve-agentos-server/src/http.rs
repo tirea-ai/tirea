@@ -16,7 +16,7 @@ use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::protocol::{
+use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkInputAdapter, AiSdkProtocolEncoder,
     AiSdkRunRequest, ProtocolInputAdapter, ProtocolOutputEncoder,
 };
