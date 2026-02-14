@@ -101,25 +101,18 @@ async fn test_run_agent_events_with_request_sets_runtime_identity() {
     request.parent_run_id = Some("parent_123".to_string());
 
     let mut run = run_agent_events_with_request(client, config, thread, tools, request);
-    while run.events.next().await.is_some() {}
-
-    let thread = run.final_thread.await.expect("final thread");
-    assert_eq!(
-        thread
-            .runtime
-            .value("run_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        Some("run_1".to_string())
-    );
-    assert_eq!(
-        thread
-            .runtime
-            .value("parent_run_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        Some("parent_123".to_string())
-    );
+    let first = run.events.next().await.expect("first event");
+    match first {
+        crate::stream::AgentEvent::RunStart {
+            run_id,
+            parent_run_id,
+            ..
+        } => {
+            assert_eq!(run_id, "run_1");
+            assert_eq!(parent_run_id.as_deref(), Some("parent_123"));
+        }
+        other => panic!("expected RunStart, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -136,25 +129,18 @@ async fn test_run_agent_events_with_request_checkpoints_sets_runtime_identity() 
     request.parent_run_id = Some("parent_456".to_string());
 
     let mut run = run_agent_events_with_request_checkpoints(client, config, thread, tools, request);
-    while run.events.next().await.is_some() {}
-
-    let thread = run.final_thread.await.expect("final thread");
-    assert_eq!(
-        thread
-            .runtime
-            .value("run_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        Some("run_2".to_string())
-    );
-    assert_eq!(
-        thread
-            .runtime
-            .value("parent_run_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-        Some("parent_456".to_string())
-    );
+    let first = run.events.next().await.expect("first event");
+    match first {
+        crate::stream::AgentEvent::RunStart {
+            run_id,
+            parent_run_id,
+            ..
+        } => {
+            assert_eq!(run_id, "run_2");
+            assert_eq!(parent_run_id.as_deref(), Some("parent_456"));
+        }
+        other => panic!("expected RunStart, got {other:?}"),
+    }
 }
 
 #[test]

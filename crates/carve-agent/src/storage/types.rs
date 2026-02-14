@@ -239,3 +239,15 @@ pub struct ThreadDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<Value>,
 }
+
+impl ThreadDelta {
+    /// Apply this delta to a thread in place.
+    pub fn apply_to(&self, thread: &mut Thread) {
+        thread.messages.extend(self.messages.iter().cloned());
+        thread.patches.extend(self.patches.iter().cloned());
+        if let Some(ref snapshot) = self.snapshot {
+            thread.state = snapshot.clone();
+            thread.patches.clear();
+        }
+    }
+}

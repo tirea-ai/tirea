@@ -4,7 +4,8 @@
 //! creating subagents, and managing background agent tasks.
 
 use crate::r#loop::{
-    run_loop_stream, run_loop_stream_with_thread, AgentDefinition, AgentLoopError, RunContext,
+    run_loop_stream, run_loop_stream_with_checkpoints, AgentDefinition, AgentLoopError,
+    RunContext,
 };
 use crate::storage::{StorageError, ThreadStore};
 use crate::stream::AgentEvent;
@@ -177,27 +178,34 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let stream_with_session = run_loop_stream_with_thread(
+            let stream_with_checkpoints = run_loop_stream_with_checkpoints(
                 client,
                 definition,
                 thread.clone(),
                 filtered,
                 RunContext::default(),
             );
-            let mut stream = stream_with_session.events;
+            let mut stream = stream_with_checkpoints.events;
+            let mut checkpoints = stream_with_checkpoints.checkpoints;
             let mut last_response = String::new();
-            let mut saw_run_finish = false;
+            let mut final_thread = thread.clone();
+            let mut checkpoints_open = true;
 
             loop {
                 tokio::select! {
                     _ = cancel_clone.cancelled() => {
                         return Err(AgentLoopError::LlmError("Cancelled".to_string()));
                     }
+                    checkpoint = checkpoints.recv(), if checkpoints_open => {
+                        match checkpoint {
+                            Some(delta) => delta.apply_to(&mut final_thread),
+                            None => checkpoints_open = false,
+                        }
+                    }
                     event = stream.next() => {
                         match event {
                             Some(AgentEvent::RunFinish { result, .. }) => {
                                 last_response = AgentEvent::extract_response(&result);
-                                saw_run_finish = true;
                             }
                             Some(AgentEvent::Error { message }) => {
                                 return Err(AgentLoopError::LlmError(message));
@@ -209,11 +217,12 @@ impl Agent {
                 }
             }
 
-            let final_thread = if saw_run_finish {
-                stream_with_session.final_thread.await.unwrap_or(thread)
-            } else {
-                thread
-            };
+            while checkpoints_open {
+                match checkpoints.recv().await {
+                    Some(delta) => delta.apply_to(&mut final_thread),
+                    None => checkpoints_open = false,
+                }
+            }
 
             // Save session if storage available
             if let Some(ref storage) = storage {

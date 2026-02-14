@@ -70,7 +70,7 @@ impl ThreadStore for FileStorage {
             .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
 
         let mut thread = head.thread;
-        super::memory::apply_delta(&mut thread, delta);
+        delta.apply_to(&mut thread);
         let new_version = head.version + 1;
         let new_head = ThreadHead {
             thread,

@@ -2,7 +2,7 @@ use crate::ag_ui::context::AGUIContext;
 use crate::ag_ui::protocol::AGUIEvent;
 use crate::ag_ui::request::{prepare_request_runtime, set_run_identity, RunAgentRequest};
 use crate::r#loop::run_loop_stream_with_checkpoints;
-use crate::r#loop::{run_loop_stream, run_loop_stream_with_thread, AgentConfig, RunContext};
+use crate::r#loop::{run_loop_stream, AgentConfig, RunContext, StreamWithCheckpoints};
 use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use async_stream::stream;
@@ -142,40 +142,25 @@ pub fn run_agent_stream_with_request(
     )
 }
 
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus the final `Thread`.
-///
-/// This is useful for building transports (HTTP, NATS) that need to:
-/// - stream AG-UI compatible events to clients, and
-/// - persist the updated session once the run completes.
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus checkpoints.
 pub fn run_agent_events_with_request(
     client: Client,
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
-) -> crate::r#loop::StreamWithThread {
-    let (config, mut thread, tools) = prepare_request_runtime(config, thread, tools, &request);
-    set_run_identity(
-        &mut thread,
-        &request.run_id,
-        request.parent_run_id.as_deref(),
-    );
-
-    let run_ctx = RunContext {
-        cancellation_token: None,
-    };
-
-    run_loop_stream_with_thread(client, config, thread, tools, run_ctx)
+) -> StreamWithCheckpoints {
+    run_agent_events_with_request_checkpoints(client, config, thread, tools, request)
 }
 
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints and the final `Thread`.
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints.
 pub fn run_agent_events_with_request_checkpoints(
     client: Client,
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
-) -> crate::r#loop::StreamWithCheckpoints {
+) -> StreamWithCheckpoints {
     let (config, mut thread, tools) = prepare_request_runtime(config, thread, tools, &request);
     set_run_identity(
         &mut thread,

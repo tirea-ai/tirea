@@ -313,6 +313,9 @@ async fn execute_target_agent(
     let mut saw_error: Option<String> = None;
     let mut stop_reason: Option<StopReason> = None;
     let mut events = stream.events;
+    let mut checkpoints = stream.checkpoints;
+    let mut final_thread = thread.clone();
+    let mut checkpoints_open = true;
 
     while let Some(ev) = events.next().await {
         match ev {
@@ -329,9 +332,19 @@ async fn execute_target_agent(
             }
             _ => {}
         }
+
+        while let Ok(delta) = checkpoints.try_recv() {
+            delta.apply_to(&mut final_thread);
+        }
     }
 
-    let final_thread = stream.final_thread.await.unwrap_or(thread);
+    while checkpoints_open {
+        match checkpoints.recv().await {
+            Some(delta) => delta.apply_to(&mut final_thread),
+            None => checkpoints_open = false,
+        }
+    }
+
     let assistant = last_assistant_message(&final_thread);
 
     if saw_error.is_some() {

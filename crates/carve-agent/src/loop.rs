@@ -485,30 +485,6 @@ fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_patch()
 }
 
-/// Replace a placeholder tool message with the real result.
-///
-/// Finds the tool message matching `tool_call_id` that contains "awaiting approval"
-/// and replaces its content with the real tool result message.
-/// If no placeholder exists, append the real tool message.
-fn replace_placeholder_tool_message(thread: &mut Thread, tool_call_id: &str, real_msg: Message) {
-    // Find the placeholder message index (searching from end)
-    if let Some(index) = thread.messages.iter().rposition(|m| {
-        m.role == crate::types::Role::Tool
-            && m.tool_call_id.as_deref() == Some(tool_call_id)
-            && m.content.contains("awaiting approval")
-    }) {
-        // Replace the Arc with a new one containing the updated message.
-        // This is an in-place swap, not a new item — no pending tracking needed.
-        thread.messages[index] = std::sync::Arc::new(real_msg);
-        return;
-    }
-
-    // No placeholder found, append as new message and track in pending buffer.
-    let arc = std::sync::Arc::new(real_msg);
-    thread.pending.messages.push(arc.clone());
-    thread.messages.push(arc);
-}
-
 struct AppliedToolResults {
     thread: Thread,
     pending_interaction: Option<Interaction>,
@@ -1809,16 +1785,7 @@ pub fn run_loop_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx, None, None)
-}
-
-/// A streaming agent run with access to the final `Thread`.
-///
-/// This is primarily intended for transports (HTTP, NATS) that need to persist
-/// the updated session after the stream completes.
-pub struct StreamWithThread {
-    pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
+    run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx, None)
 }
 
 /// A streaming agent run with access to intermediate session checkpoints.
@@ -1829,38 +1796,9 @@ pub struct StreamWithThread {
 pub struct StreamWithCheckpoints {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
     pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadDelta>,
-    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
-/// Run the agent loop and return a stream of `AgentEvent`s plus the final `Thread`.
-///
-/// The returned `final_thread` receiver resolves when the stream finishes. If the
-/// stream terminates in a way that consumes the session (rare error paths), the
-/// receiver will be closed without a value.
-pub fn run_loop_stream_with_thread(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
-) -> StreamWithThread {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let events = run_loop_stream_impl_with_provider(
-        Arc::new(client),
-        config,
-        thread,
-        tools,
-        run_ctx,
-        Some(tx),
-        None,
-    );
-    StreamWithThread {
-        events,
-        final_thread: rx,
-    }
-}
-
-/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints and the final `Thread`.
+/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints.
 pub fn run_loop_stream_with_checkpoints(
     client: Client,
     config: AgentConfig,
@@ -1868,7 +1806,6 @@ pub fn run_loop_stream_with_checkpoints(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> StreamWithCheckpoints {
-    let (final_tx, final_rx) = tokio::sync::oneshot::channel();
     let (checkpoint_tx, checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let events = run_loop_stream_impl_with_provider(
         Arc::new(client),
@@ -1876,13 +1813,11 @@ pub fn run_loop_stream_with_checkpoints(
         thread,
         tools,
         run_ctx,
-        Some(final_tx),
         Some(checkpoint_tx),
     );
     StreamWithCheckpoints {
         events,
         checkpoints: checkpoint_rx,
-        final_thread: final_rx,
     }
 }
 
@@ -1892,7 +1827,6 @@ fn run_loop_stream_impl_with_provider(
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-    mut final_thread_tx: Option<tokio::sync::oneshot::Sender<Thread>>,
     checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadDelta>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
@@ -1951,12 +1885,9 @@ fn run_loop_stream_impl_with_provider(
                 )
                 .await;
                 thread = finalized;
+                emit_run_finished_delta!();
                 yield error;
                 yield finish;
-                emit_run_finished_delta!();
-                if let Some(tx) = final_thread_tx.take() {
-                    let _ = tx.send(thread);
-                }
                 return;
             }};
         }
@@ -2062,9 +1993,12 @@ fn run_loop_stream_impl_with_provider(
                     ));
                 }
 
-                // Replace the placeholder message with the real tool result.
-                let real_msg = tool_response(&tool_call.id, &replay_result.execution.result);
-                replace_placeholder_tool_message(&mut thread, &tool_call.id, real_msg);
+                // Append real replay tool result as a new tool message (append-only log).
+                let replay_msg_id = gen_message_id();
+                let real_msg =
+                    tool_response(&tool_call.id, &replay_result.execution.result)
+                        .with_id(replay_msg_id.clone());
+                thread = thread.with_message(real_msg);
 
                 // Preserve reminder emission semantics for replayed tool calls.
                 if !replay_result.reminders.is_empty() {
@@ -2090,7 +2024,7 @@ fn run_loop_stream_impl_with_provider(
                     id: tool_call.id.clone(),
                     result: replay_result.execution.result,
                     patch: replay_result.execution.patch,
-                    message_id: gen_message_id(),
+                    message_id: replay_msg_id,
                 };
             }
 
@@ -2140,16 +2074,13 @@ fn run_loop_stream_impl_with_provider(
             if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
                     thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                    emit_run_finished_delta!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
                         run_id: run_id.clone(),
                         result: None,
                         stop_reason: Some(StopReason::Cancelled),
                     };
-                    emit_run_finished_delta!();
-                    if let Some(tx) = final_thread_tx.take() {
-                        let _ = tx.send(thread);
-                    }
                     return;
                 }
             }
@@ -2192,6 +2123,7 @@ fn run_loop_stream_impl_with_provider(
                     yield AgentEvent::Pending { interaction };
                 }
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_run_finished_delta!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
@@ -2202,10 +2134,6 @@ fn run_loop_stream_impl_with_provider(
                         Some(StopReason::PluginRequested)
                     },
                 };
-                emit_run_finished_delta!();
-                if let Some(tx) = final_thread_tx.take() {
-                    let _ = tx.send(thread);
-                }
                 return;
             }
 
@@ -2261,16 +2189,13 @@ fn run_loop_stream_impl_with_provider(
                     tokio::select! {
                         _ = token.cancelled() => {
                             thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                            emit_run_finished_delta!();
                             yield AgentEvent::RunFinish {
                                 thread_id: thread.id.clone(),
                                 run_id: run_id.clone(),
                                 result: None,
                                 stop_reason: Some(StopReason::Cancelled),
                             };
-                            emit_run_finished_delta!();
-                            if let Some(tx) = final_thread_tx.take() {
-                                let _ = tx.send(thread);
-                            }
                             return;
                         }
                         ev = chat_stream.next() => ev,
@@ -2407,16 +2332,13 @@ fn run_loop_stream_impl_with_provider(
                     Some(serde_json::json!({"response": result.text}))
                 };
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_run_finished_delta!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: result_value,
                     stop_reason: Some(StopReason::NaturalEnd),
                 };
-                emit_run_finished_delta!();
-                if let Some(tx) = final_thread_tx.take() {
-                    let _ = tx.send(thread);
-                }
                 return;
             }
 
@@ -2482,16 +2404,13 @@ fn run_loop_stream_impl_with_provider(
                         }
                     } => {
                         thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                        emit_run_finished_delta!();
                         yield AgentEvent::RunFinish {
                             thread_id: thread.id.clone(),
                             run_id: run_id.clone(),
                             result: None,
                             stop_reason: Some(StopReason::Cancelled),
                         };
-                        emit_run_finished_delta!();
-                        if let Some(tx) = final_thread_tx.take() {
-                            let _ = tx.send(thread);
-                        }
                         return;
                     }
                     activity = activity_rx.recv(), if !activity_closed => {
@@ -2607,16 +2526,13 @@ fn run_loop_stream_impl_with_provider(
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_run_finished_delta!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
                     stop_reason: None, // Pause, not a stop
                 };
-                emit_run_finished_delta!();
-                if let Some(tx) = final_thread_tx.take() {
-                    let _ = tx.send(thread);
-                }
                 return;
             }
 
@@ -2632,16 +2548,13 @@ fn run_loop_stream_impl_with_provider(
             let stop_ctx = loop_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_run_finished_delta!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
                     stop_reason: Some(reason),
                 };
-                emit_run_finished_delta!();
-                if let Some(tx) = final_thread_tx.take() {
-                    let _ = tx.send(thread);
-                }
                 return;
             }
         }

@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use async_stream::stream;
 use futures::Stream;
+use futures::StreamExt;
 use genai::Client;
 
 use crate::plugin::AgentPlugin;
 use crate::r#loop::{
-    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_thread,
-    RunContext, StreamWithCheckpoints, StreamWithThread,
+    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, RunContext,
+    StreamWithCheckpoints,
 };
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -934,7 +936,7 @@ impl AgentOs {
         //    - Existing thread: replaces current state (persisted in UserMessage delta)
         let frontend_state = request.state.take();
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
-        let mut thread = match storage.load(&thread_id).await? {
+        let (mut thread, _version) = match storage.load(&thread_id).await? {
             Some(head) => {
                 let mut t = head.thread;
                 if let Some(state) = frontend_state {
@@ -942,7 +944,7 @@ impl AgentOs {
                     t.patches.clear();
                     state_snapshot_for_delta = Some(state);
                 }
-                t
+                (t, head.version)
             }
             None => {
                 let thread = if let Some(state) = frontend_state {
@@ -950,8 +952,8 @@ impl AgentOs {
                 } else {
                     Thread::new(thread_id.clone())
                 };
-                storage.create(&thread).await?;
-                thread
+                let committed = storage.create(&thread).await?;
+                (thread, committed.version)
             }
         };
 
@@ -989,7 +991,7 @@ impl AgentOs {
                 patches: pending.patches,
                 snapshot: state_snapshot_for_delta,
             };
-            storage.append(&thread_id, &delta).await?;
+            let _ = storage.append(&thread_id, &delta).await?;
         }
 
         // 7. Resolve agent wiring and run
@@ -998,52 +1000,57 @@ impl AgentOs {
         let swc =
             run_loop_stream_with_checkpoints(client, cfg, thread, tools, RunContext::default());
 
-        // 8. Spawn background checkpoint + run-end flush
-        //
-        // During the run, deltas are forwarded to storage.append() (the storage
-        // backend decides whether to write to DB or publish to NATS).
-        // After all deltas are consumed the background task awaits the final
-        // materialized thread and flushes it to storage in a single save().
-        {
-            let storage = storage.clone();
-            let thread_id = thread_id.clone();
-            let mut checkpoints = swc.checkpoints;
-            let final_thread_rx = swc.final_thread;
-            tokio::spawn(async move {
-                while let Some(delta) = checkpoints.recv().await {
-                    if let Err(e) = storage.append(&thread_id, &delta).await {
-                        tracing::error!(
-                            thread_id = %thread_id,
-                            error = %e,
-                            "failed to persist checkpoint delta"
-                        );
-                    }
-                }
-                // Run-end flush: persist the final materialized thread.
-                match final_thread_rx.await {
-                    Ok(thread) => {
-                        if let Err(e) = storage.save(&thread).await {
-                            tracing::error!(
-                                thread_id = %thread_id,
-                                error = %e,
-                                "failed to flush final thread to storage"
-                            );
+        // 8. Persist checkpoints synchronously in stream order (strong consistency).
+        let storage_for_stream = storage.clone();
+        let thread_id_for_stream = thread_id.clone();
+        let run_id_for_stream = run_id.clone();
+        let mut events = swc.events;
+        let mut checkpoints = swc.checkpoints;
+        let persisted_events = Box::pin(stream! {
+            loop {
+                let next_event = events.next().await;
+
+                while let Ok(delta) = checkpoints.try_recv() {
+                    match storage_for_stream.append(&thread_id_for_stream, &delta).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            yield AgentEvent::Error {
+                                message: format!("checkpoint append failed: {e}"),
+                            };
+                            return;
                         }
                     }
-                    Err(_) => {
-                        tracing::warn!(
-                            thread_id = %thread_id,
-                            "final_thread sender dropped; skipping run-end flush"
-                        );
+                }
+
+                match next_event {
+                    Some(ev) => yield ev,
+                    None => break,
+                }
+            }
+
+            while let Some(delta) = checkpoints.recv().await {
+                match storage_for_stream.append(&thread_id_for_stream, &delta).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        yield AgentEvent::Error {
+                            message: format!("checkpoint append failed: {e}"),
+                        };
+                        yield AgentEvent::RunFinish {
+                            thread_id: thread_id_for_stream.clone(),
+                            run_id: run_id_for_stream.clone(),
+                            result: None,
+                            stop_reason: None,
+                        };
+                        return;
                     }
                 }
-            });
-        }
+            }
+        });
 
         Ok(RunStream {
             thread_id,
             run_id,
-            events: swc.events,
+            events: persisted_events,
         })
     }
 
@@ -1126,11 +1133,8 @@ impl AgentOs {
         agent_id: &str,
         thread: Thread,
         run_ctx: RunContext,
-    ) -> Result<StreamWithThread, AgentOsResolveError> {
-        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
-        Ok(run_loop_stream_with_thread(
-            client, cfg, thread, tools, run_ctx,
-        ))
+    ) -> Result<StreamWithCheckpoints, AgentOsResolveError> {
+        self.run_stream_with_checkpoints(agent_id, thread, run_ctx)
     }
 
     pub fn run_stream_with_checkpoints(

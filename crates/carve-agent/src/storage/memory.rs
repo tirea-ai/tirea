@@ -19,16 +19,6 @@ impl MemoryStorage {
     }
 }
 
-/// Apply a delta to a thread in-place.
-pub(super) fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
-    thread.messages.extend(delta.messages.iter().cloned());
-    thread.patches.extend(delta.patches.iter().cloned());
-    if let Some(ref snapshot) = delta.snapshot {
-        thread.state = snapshot.clone();
-        thread.patches.clear();
-    }
-}
-
 #[async_trait]
 impl ThreadStore for MemoryStorage {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
@@ -57,7 +47,7 @@ impl ThreadStore for MemoryStorage {
             .get_mut(thread_id)
             .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
 
-        apply_delta(&mut entry.thread, delta);
+        delta.apply_to(&mut entry.thread);
         entry.version += 1;
         entry.deltas.push(delta.clone());
         Ok(Committed {

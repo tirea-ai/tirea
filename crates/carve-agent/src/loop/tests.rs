@@ -2152,7 +2152,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
 }
 
 #[tokio::test]
-async fn test_stream_permission_approval_replays_tool_and_replaces_placeholder() {
+async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() {
     struct SkipInferencePlugin;
 
     #[async_trait]
@@ -2234,19 +2234,23 @@ async fn test_stream_permission_approval_replays_tool_and_replaces_placeholder()
         "approved flow must replay and execute original tool call: {events:?}"
     );
 
-    let tool_msg = final_thread
+    let tool_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
-        .expect("tool result message should exist after replay");
+        .filter(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        .collect();
+    assert!(!tool_msgs.is_empty(), "expected tool messages for call_1");
+    let placeholder_index = tool_msgs
+        .iter()
+        .position(|m| m.content.contains("awaiting approval"))
+        .expect("placeholder must remain immutable in append-only stream");
+    let replay_index = tool_msgs
+        .iter()
+        .position(|m| m.content.contains("\"echoed\":\"approved-run\""))
+        .expect("missing replayed tool result content");
     assert!(
-        !tool_msg.content.contains("awaiting approval"),
-        "placeholder should be replaced after approved replay"
-    );
-    assert!(
-        tool_msg.content.contains("\"echoed\":\"approved-run\""),
-        "unexpected replayed tool result content: {}",
-        tool_msg.content
+        replay_index > placeholder_index,
+        "replayed tool output must be appended after placeholder"
     );
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
@@ -2728,7 +2732,6 @@ async fn run_mock_stream(
         tools,
         RunContext::default(),
         None,
-        None,
     );
     collect_stream_events(stream).await
 }
@@ -2740,18 +2743,20 @@ async fn run_mock_stream_with_final_thread(
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> (Vec<AgentEvent>, Thread) {
-    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut final_thread = thread.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let stream = run_loop_stream_impl_with_provider(
         Arc::new(provider),
         config,
         thread,
         tools,
         RunContext::default(),
-        Some(tx),
-        None,
+        Some(checkpoint_tx),
     );
     let events = collect_stream_events(stream).await;
-    let final_thread = rx.await.expect("final thread should be available");
+    while let Some(delta) = checkpoint_rx.recv().await {
+        delta.apply_to(&mut final_thread);
+    }
     (events, final_thread)
 }
 
@@ -3510,7 +3515,6 @@ async fn test_stop_cancellation_token() {
             cancellation_token: Some(token),
         },
         None,
-        None,
     );
     let events = collect_stream_events(stream).await;
     assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
@@ -3551,7 +3555,6 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         RunContext {
             cancellation_token: Some(token.clone()),
         },
-        None,
         None,
     );
 
