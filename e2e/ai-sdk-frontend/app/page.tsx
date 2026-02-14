@@ -1,10 +1,77 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
-import { useState, FormEvent } from "react";
+import { useChat, type UIMessage } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
+import { useState, useEffect, useRef, useMemo, FormEvent } from "react";
+
+function getSessionId(): string {
+  if (typeof window === "undefined") return "";
+  let id = localStorage.getItem("uncarve-session-id");
+  if (!id) {
+    id = `ai-sdk-${crypto.randomUUID()}`;
+    localStorage.setItem("uncarve-session-id", id);
+  }
+  return id;
+}
 
 export default function Chat() {
-  const { messages, sendMessage, status, error } = useChat();
+  const [sessionId, setSessionId] = useState("");
+  const [initialMessages, setInitialMessages] = useState<UIMessage[] | undefined>(undefined);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const historyFetched = useRef(false);
+
+  // Initialize sessionId from localStorage on mount.
+  useEffect(() => {
+    setSessionId(getSessionId());
+  }, []);
+
+  // Load history from backend once sessionId is available.
+  useEffect(() => {
+    if (!sessionId || historyFetched.current) return;
+    historyFetched.current = true;
+
+    fetch(`/api/history?sessionId=${encodeURIComponent(sessionId)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.messages && data.messages.length > 0) {
+          setInitialMessages(data.messages);
+        } else {
+          setInitialMessages(undefined);
+        }
+        setHistoryLoaded(true);
+      })
+      .catch(() => {
+        setHistoryLoaded(true);
+      });
+  }, [sessionId]);
+
+  if (!historyLoaded) {
+    return (
+      <main style={{ maxWidth: 640, margin: "2rem auto", fontFamily: "system-ui" }}>
+        <h1>Uncarve Chat</h1>
+        <div style={{ color: "#888" }}>Loading...</div>
+      </main>
+    );
+  }
+
+  return <ChatUI sessionId={sessionId} initialMessages={initialMessages} />;
+}
+
+function ChatUI({
+  sessionId,
+  initialMessages,
+}: {
+  sessionId: string;
+  initialMessages?: UIMessage[];
+}) {
+  const transport = useMemo(
+    () => new DefaultChatTransport({ headers: { "x-session-id": sessionId } }),
+    [sessionId],
+  );
+  const { messages, sendMessage, status, error } = useChat({
+    messages: initialMessages,
+    transport,
+  });
   const [input, setInput] = useState("");
 
   const isLoading = status === "streaming" || status === "submitted";

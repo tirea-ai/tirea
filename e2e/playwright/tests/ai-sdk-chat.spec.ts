@@ -75,6 +75,61 @@ test.describe("AI SDK Chat", () => {
     await expect(secondResponseDiv).toContainText("7", { timeout: 10_000 });
   });
 
+  test("history messages survive page reload", async ({ page }) => {
+    await page.goto("/");
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+
+    // Send a message and wait for the agent response.
+    await input.fill("Remember the fruit: pineapple. Just say OK.");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    const agentMsg = page.locator("strong", { hasText: "Agent:" }).first();
+    await expect(agentMsg).toBeVisible({ timeout: 45_000 });
+
+    // Wait for streaming to finish (Send button re-enabled).
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await expect(sendButton).toBeEnabled({ timeout: 15_000 });
+
+    // Count messages before reload.
+    const userCountBefore = await page
+      .locator("strong", { hasText: "You:" })
+      .count();
+    const agentCountBefore = await page
+      .locator("strong", { hasText: "Agent:" })
+      .count();
+
+    expect(userCountBefore).toBeGreaterThanOrEqual(1);
+    expect(agentCountBefore).toBeGreaterThanOrEqual(1);
+
+    // Reload the page — history should be restored from the backend.
+    await page.reload();
+
+    await expect(page.locator("h1")).toHaveText("Uncarve Chat", {
+      timeout: 15_000,
+    });
+
+    // Wait for history to load (messages should reappear).
+    await expect(
+      page.locator("strong", { hasText: "You:" }).first()
+    ).toBeVisible({ timeout: 15_000 });
+
+    await expect(
+      page.locator("strong", { hasText: "Agent:" }).first()
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Verify the original user message content is present.
+    const userDiv = page
+      .locator("strong", { hasText: "You:" })
+      .first()
+      .locator("..");
+    await expect(userDiv).toContainText("pineapple", { timeout: 5_000 });
+  });
+
   test("send button is disabled while loading", async ({ page }) => {
     await page.goto("/");
 

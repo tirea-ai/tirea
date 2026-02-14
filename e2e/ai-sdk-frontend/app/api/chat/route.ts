@@ -1,17 +1,14 @@
 const BACKEND_URL =
   process.env.BACKEND_URL ?? "http://localhost:8080";
-
-// Generate a unique session ID per browser session (stable across messages).
-let sessionId: string | null = null;
-function getSessionId(): string {
-  if (!sessionId) {
-    sessionId = `ai-sdk-${crypto.randomUUID()}`;
-  }
-  return sessionId;
-}
+const AGENT_ID = process.env.AGENT_ID ?? "default";
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const body = await req.json();
+  const { messages } = body;
+
+  // Session ID from client header (stable across reloads via localStorage).
+  const sessionId =
+    req.headers.get("x-session-id") || `ai-sdk-${crypto.randomUUID()}`;
 
   // Extract the last user message as input for our server.
   // AI SDK v6 sends parts-based messages; fall back to content for older formats.
@@ -37,12 +34,12 @@ export async function POST(req: Request) {
   }
 
   const upstream = await fetch(
-    `${BACKEND_URL}/v1/agents/${process.env.AGENT_ID ?? "travel"}/runs/ai-sdk/sse`,
+    `${BACKEND_URL}/v1/agents/${AGENT_ID}/runs/ai-sdk/sse`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        sessionId: getSessionId(),
+        sessionId,
         input,
         runId: crypto.randomUUID(),
       }),
@@ -66,6 +63,7 @@ export async function POST(req: Request) {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
       "X-Vercel-AI-UI-Message-Stream": "v1",
+      "X-Session-Id": sessionId,
     },
   });
 }

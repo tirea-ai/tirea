@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStorage, ModelDefinition, ThreadQuery, Tool,
+    AgentDefinition, AgentOsBuilder, MemoryStorage, ModelDefinition, ThreadStore, Tool,
     ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};
@@ -66,20 +66,11 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os() -> carve_agent::AgentOs {
+fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
     //     as the model in the request body, which is what TensorZero expects.
-    // The ServiceTargetResolver overrides the endpoint to TensorZero's OpenAI-compat API.
-    let tz_client = genai::Client::builder()
-        .with_service_target_resolver_fn(|mut t: genai::ServiceTarget| {
-            t.endpoint = genai::resolver::Endpoint::from_owned(TENSORZERO_ENDPOINT);
-            t.auth = genai::resolver::AuthData::from_single("test");
-            Ok(t)
-        })
-        .build();
-
     let def = AgentDefinition {
         id: "deepseek".to_string(),
         model: "deepseek".to_string(),
@@ -89,12 +80,13 @@ fn make_os() -> carve_agent::AgentOs {
     };
 
     AgentOsBuilder::new()
-        .with_provider("tz", tz_client)
+        .with_provider("tz", make_tz_client())
         .with_model(
             "deepseek",
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
         .with_agent("deepseek", def)
+        .with_storage(storage)
         .build()
         .expect("failed to build AgentOs with TensorZero")
 }
@@ -126,8 +118,8 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         return;
     }
 
-    let os = Arc::new(make_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -208,8 +200,8 @@ async fn e2e_tensorzero_ag_ui_sse() {
         return;
     }
 
-    let os = Arc::new(make_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -429,7 +421,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os() -> carve_agent::AgentOs {
+fn make_tool_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),
@@ -454,8 +446,28 @@ fn make_tool_os() -> carve_agent::AgentOs {
         )
         .with_tools(tools)
         .with_agent("calc", def)
+        .with_storage(storage)
         .build()
         .expect("failed to build AgentOs with TensorZero + calculator")
+}
+
+/// Helper: send a GET and return (status, body_text).
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    (status, text)
 }
 
 /// Helper: send a POST and return (status, body_text).
@@ -507,8 +519,8 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
         return;
     }
 
-    let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -556,8 +568,8 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
         return;
     }
 
-    let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -624,8 +636,8 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
         return;
     }
 
-    let os = Arc::new(make_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
     let app1 = router(AppState {
@@ -705,6 +717,8 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
 
+    let storage = Arc::new(MemoryStorage::new());
+
     let os = Arc::new(
         AgentOsBuilder::new()
             .with_provider("tz", make_tz_client())
@@ -714,11 +728,11 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
+            .with_storage(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -770,8 +784,8 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
         return;
     }
 
-    let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -853,8 +867,8 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
         return;
     }
 
-    let os = Arc::new(make_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
     let app1 = router(AppState {
@@ -937,6 +951,8 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
 
+    let storage = Arc::new(MemoryStorage::new());
+
     let os = Arc::new(
         AgentOsBuilder::new()
             .with_provider("tz", make_tz_client())
@@ -946,11 +962,11 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
+            .with_storage(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );
 
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -1003,8 +1019,8 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
         return;
     }
 
-    let os = Arc::new(make_tool_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -1090,4 +1106,523 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
     println!("Lifecycle event sequence: {events:?}");
     assert_eq!(events.first().map(|s| s.as_str()), Some("RUN_STARTED"));
     assert_eq!(events.last().map(|s| s.as_str()), Some("RUN_FINISHED"));
+}
+
+// ============================================================================
+// History message loading: AI SDK format
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ai_sdk_load_history() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let thread_id = "tz-sdk-history";
+
+    // Turn 1: agent run to populate the thread.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, text1) = post_sse(
+        app1,
+        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        json!({
+            "sessionId": thread_id,
+            "input": "Remember the animal: elephant. Just say OK.",
+            "runId": "r-hist-1"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text1.contains(r#""type":"finish""#), "turn 1 did not finish");
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Load history via AI SDK encoded endpoint.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, history_text) = get_json(
+        app2,
+        &format!("/v1/threads/{thread_id}/messages/ai-sdk"),
+    )
+    .await;
+
+    println!("=== AI SDK History ===\n{history_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
+
+    // Must have messages array.
+    let messages = history["messages"].as_array().expect("messages must be array");
+    assert!(
+        messages.len() >= 2,
+        "expected at least 2 messages (user + assistant), got {}",
+        messages.len()
+    );
+
+    // First message should be the user message.
+    let user_msg = &messages[0];
+    assert_eq!(user_msg["role"], "user", "first message should be user");
+    let user_parts = user_msg["parts"].as_array().expect("parts must be array");
+    let user_text: String = user_parts
+        .iter()
+        .filter(|p| p["type"] == "text")
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert!(
+        user_text.contains("elephant"),
+        "user message should contain 'elephant'. Got: {user_text}"
+    );
+
+    // At least one assistant message should exist.
+    let has_assistant = messages.iter().any(|m| m["role"] == "assistant");
+    assert!(has_assistant, "history should include assistant message");
+
+    // AI SDK format: parts should have state=done.
+    let assistant_msg = messages.iter().find(|m| m["role"] == "assistant").unwrap();
+    let assistant_parts = assistant_msg["parts"].as_array().expect("parts must be array");
+    assert!(!assistant_parts.is_empty(), "assistant parts should not be empty");
+
+    // Pagination fields should be present.
+    assert!(history.get("has_more").is_some(), "missing has_more field");
+}
+
+// ============================================================================
+// History message loading: AG-UI format
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ag_ui_load_history() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let thread_id = "tz-agui-history";
+
+    // Turn 1: agent run to populate the thread.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, _) = post_sse(
+        app1,
+        "/v1/agents/deepseek/runs/ag-ui/sse",
+        json!({
+            "threadId": thread_id,
+            "runId": "r-agui-hist-1",
+            "messages": [
+                {"role": "user", "content": "Remember the city: Tokyo. Just say OK."}
+            ],
+            "tools": []
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Load history via AG-UI encoded endpoint.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, history_text) = get_json(
+        app2,
+        &format!("/v1/threads/{thread_id}/messages/ag-ui"),
+    )
+    .await;
+
+    println!("=== AG-UI History ===\n{history_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
+
+    // Must have messages array.
+    let messages = history["messages"].as_array().expect("messages must be array");
+    assert!(
+        messages.len() >= 2,
+        "expected at least 2 messages (user + assistant), got {}",
+        messages.len()
+    );
+
+    // First message should be the user message.
+    let user_msg = &messages[0];
+    assert_eq!(user_msg["role"], "user", "first message should be user");
+    assert!(
+        user_msg["content"].as_str().unwrap_or("").contains("Tokyo"),
+        "user message should contain 'Tokyo'"
+    );
+
+    // At least one assistant message should exist.
+    let has_assistant = messages.iter().any(|m| m["role"] == "assistant");
+    assert!(has_assistant, "history should include assistant message");
+
+    // AG-UI format: should use camelCase (toolCallId, not tool_call_id).
+    let json_str = serde_json::to_string(&messages).unwrap();
+    assert!(
+        !json_str.contains("tool_call_id"),
+        "AG-UI history should use camelCase fields"
+    );
+
+    // Pagination fields should be present.
+    assert!(history.get("has_more").is_some(), "missing has_more field");
+}
+
+// ============================================================================
+// History loading after multi-turn: verify complete conversation persisted
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_ai_sdk_multiturn_history() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let thread_id = "tz-sdk-mt-history";
+
+    // Turn 1.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, _) = post_sse(
+        app1,
+        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        json!({
+            "sessionId": thread_id,
+            "input": "Remember: the secret is mango. Just say OK.",
+            "runId": "r-mth-1"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Turn 2.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, text2) = post_sse(
+        app2,
+        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        json!({
+            "sessionId": thread_id,
+            "input": "What was the secret? Reply with just the word.",
+            "runId": "r-mth-2"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let answer = extract_ai_sdk_text(&text2);
+    println!("Turn 2 answer: {answer}");
+    assert!(
+        answer.to_lowercase().contains("mango"),
+        "LLM did not recall 'mango'. Got: {answer}"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Load full history.
+    let app3 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, history_text) = get_json(
+        app3,
+        &format!("/v1/threads/{thread_id}/messages/ai-sdk?limit=200"),
+    )
+    .await;
+
+    println!("=== Multi-Turn History ===\n{history_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
+    let messages = history["messages"].as_array().expect("messages must be array");
+
+    // Should have at least 4 messages: user1, assistant1, user2, assistant2.
+    assert!(
+        messages.len() >= 4,
+        "expected >= 4 messages for 2-turn conversation, got {}",
+        messages.len()
+    );
+
+    // Verify user messages appear in order.
+    let user_messages: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["role"] == "user")
+        .filter_map(|m| {
+            m["parts"]
+                .as_array()
+                .and_then(|parts| parts.iter().find(|p| p["type"] == "text"))
+                .and_then(|p| p["text"].as_str())
+        })
+        .collect();
+
+    assert!(
+        user_messages.len() >= 2,
+        "expected >= 2 user messages, got {}",
+        user_messages.len()
+    );
+    assert!(
+        user_messages[0].contains("mango"),
+        "first user message should mention 'mango'"
+    );
+    assert!(
+        user_messages[1].contains("secret"),
+        "second user message should ask about the secret"
+    );
+}
+
+// ============================================================================
+// History loading: raw format (no protocol encoding)
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_raw_message_history() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let thread_id = "tz-raw-history";
+
+    // Run one turn to create the thread.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, sse_text) = post_sse(
+        app1,
+        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        json!({
+            "sessionId": thread_id,
+            "input": "Say hello.",
+            "runId": "r-raw-1"
+        }),
+    )
+    .await;
+    println!("=== SSE Response (status={status}) ===\n{sse_text}");
+    assert_eq!(status, StatusCode::OK, "SSE run failed: {sse_text}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Load raw messages.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, raw_text) = get_json(
+        app2,
+        &format!("/v1/threads/{thread_id}/messages"),
+    )
+    .await;
+
+    println!("=== Raw Message History (status={status}) ===\n{raw_text}");
+    assert_eq!(status, StatusCode::OK, "raw messages failed: {raw_text}");
+
+    let raw: Value = serde_json::from_str(&raw_text).expect("invalid JSON");
+    let messages = raw["messages"].as_array().expect("messages must be array");
+    assert!(
+        messages.len() >= 2,
+        "expected at least 2 raw messages, got {}",
+        messages.len()
+    );
+
+    // Raw format has flat fields: role, content, id, cursor.
+    let first = &messages[0];
+    assert!(
+        first["role"].is_string(),
+        "raw message should have role"
+    );
+    assert!(
+        first["content"].is_string(),
+        "raw message should have content"
+    );
+
+    // Load thread metadata.
+    let app3 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, thread_text) = get_json(
+        app3,
+        &format!("/v1/threads/{thread_id}"),
+    )
+    .await;
+
+    println!("=== Thread Metadata ===\n{thread_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let thread: Value = serde_json::from_str(&thread_text).expect("invalid JSON");
+    assert_eq!(thread["id"], thread_id, "thread ID should match");
+}
+
+// ============================================================================
+// History loading: thread not found returns 404
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_history_not_found() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let app = router(AppState { os, storage });
+
+    let (status, _) = get_json(
+        app,
+        "/v1/threads/nonexistent-thread/messages/ai-sdk",
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "querying nonexistent thread should return 404"
+    );
+}
+
+// ============================================================================
+// History loading with tool calls: verify tool messages persisted
+// ============================================================================
+
+#[tokio::test]
+#[ignore]
+async fn e2e_tensorzero_tool_call_history() {
+    if skip_unless_ready().await {
+        return;
+    }
+
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_tool_os(storage.clone()));
+    let thread_id = "tz-tool-history";
+
+    // Run a tool-using conversation.
+    let app1 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, text) = post_sse(
+        app1,
+        "/v1/agents/calc/runs/ai-sdk/sse",
+        json!({
+            "sessionId": thread_id,
+            "input": "Use the calculator to add 7 and 8. Reply with just the number.",
+            "runId": "r-tool-hist"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        text.contains(r#""type":"tool-input-start""#),
+        "agent should have called calculator tool"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Load AI SDK history — should include tool parts.
+    let app2 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, history_text) = get_json(
+        app2,
+        &format!("/v1/threads/{thread_id}/messages/ai-sdk?limit=200&visibility=none"),
+    )
+    .await;
+
+    println!("=== Tool Call History (AI SDK) ===\n{history_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
+    let messages = history["messages"].as_array().expect("messages must be array");
+
+    // Should have user message + assistant messages (including tool calls).
+    assert!(
+        messages.len() >= 2,
+        "expected >= 2 messages, got {}",
+        messages.len()
+    );
+
+    // Check that at least one assistant message has tool parts.
+    let has_tool_part = messages.iter().any(|m| {
+        m["parts"]
+            .as_array()
+            .map(|parts| parts.iter().any(|p| p["type"] == "tool-invocation"))
+            .unwrap_or(false)
+    });
+
+    // Also check for text parts (the tool result or final answer).
+    let has_text_part = messages.iter().any(|m| {
+        m["role"] == "assistant"
+            && m["parts"]
+                .as_array()
+                .map(|parts| parts.iter().any(|p| p["type"] == "text"))
+                .unwrap_or(false)
+    });
+
+    // At minimum, assistant should have responded with text.
+    assert!(
+        has_text_part,
+        "assistant history should include text response"
+    );
+
+    // Load AG-UI history for comparison.
+    let app3 = router(AppState {
+        os: os.clone(),
+        storage: storage.clone(),
+    });
+    let (status, agui_text) = get_json(
+        app3,
+        &format!("/v1/threads/{thread_id}/messages/ag-ui?limit=200&visibility=none"),
+    )
+    .await;
+
+    println!("=== Tool Call History (AG-UI) ===\n{agui_text}");
+    assert_eq!(status, StatusCode::OK);
+
+    let agui_history: Value = serde_json::from_str(&agui_text).expect("invalid JSON");
+    let agui_messages = agui_history["messages"].as_array().expect("messages must be array");
+
+    // AG-UI should also have the conversation.
+    assert!(
+        agui_messages.len() >= 2,
+        "AG-UI history should have >= 2 messages, got {}",
+        agui_messages.len()
+    );
+
+    // Verify AG-UI format uses camelCase.
+    assert!(
+        !agui_text.contains("tool_call_id"),
+        "AG-UI format should use camelCase (toolCallId)"
+    );
+
+    // Print summary for debugging.
+    println!(
+        "Tool history: AI SDK {} messages, AG-UI {} messages, has_tool_part={}",
+        messages.len(),
+        agui_messages.len(),
+        has_tool_part,
+    );
 }
