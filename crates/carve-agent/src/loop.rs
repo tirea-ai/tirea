@@ -568,8 +568,8 @@ where
     let current_state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let ctx = Context::new(&current_state, "phase", "plugin:phase")
-        .with_runtime(Some(&thread.runtime));
+    let ctx =
+        Context::new(&current_state, "phase", "plugin:phase").with_runtime(Some(&thread.runtime));
     let mut step = scratchpad.new_step_context(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
@@ -1640,8 +1640,7 @@ async fn execute_single_tool_with_phases(
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase")
-        .with_runtime(runtime);
+    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_runtime(runtime);
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
@@ -1716,7 +1715,11 @@ async fn execute_single_tool_with_phases(
         )
         .with_runtime(runtime);
         let result = async {
-            match tool.unwrap().execute(call.arguments.clone(), &tool_ctx).await {
+            match tool
+                .unwrap()
+                .execute(call.arguments.clone(), &tool_ctx)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => ToolResult::error(&call.name, e.to_string()),
             }
@@ -2025,7 +2028,11 @@ pub async fn run_loop(
             step_index: Some(loop_state.rounds as u32),
         };
         thread = if result.tool_calls.is_empty() {
-            thread.with_message(assistant_message(&result.text).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
+            thread.with_message(
+                assistant_message(&result.text)
+                    .with_id(assistant_msg_id.clone())
+                    .with_metadata(step_meta.clone()),
+            )
         } else {
             thread.with_message(
                 assistant_tool_calls(&result.text, result.tool_calls.clone())
@@ -2380,6 +2387,20 @@ fn run_loop_stream_impl_with_provider(
             parent_run_id: parent_run_id.clone(),
         };
 
+        if let Some(raw) = scratchpad
+            .data
+            .remove(crate::interaction::INTERACTION_RESOLUTIONS_KEY)
+        {
+            let resolutions: Vec<crate::interaction::InteractionResolution> =
+                serde_json::from_value(raw).unwrap_or_default();
+            for resolution in resolutions {
+                yield AgentEvent::InteractionResolved {
+                    interaction_id: resolution.interaction_id,
+                    result: resolution.result,
+                };
+            }
+        }
+
         // Resume pending tool execution via plugin mechanism.
         // Plugins can request tool replay during SessionStart by populating
         // `replay_tool_calls` in the step context. The loop handles actual execution
@@ -2502,6 +2523,20 @@ fn run_loop_stream_impl_with_provider(
         }
 
         loop {
+            if let Some(raw) = scratchpad
+                .data
+                .remove(crate::interaction::INTERACTION_RESOLUTIONS_KEY)
+            {
+                let resolutions: Vec<crate::interaction::InteractionResolution> =
+                    serde_json::from_value(raw).unwrap_or_default();
+                for resolution in resolutions {
+                    yield AgentEvent::InteractionResolved {
+                        interaction_id: resolution.interaction_id,
+                        result: resolution.result,
+                    };
+                }
+            }
+
             // Check cancellation at the top of each iteration.
             if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
@@ -2558,6 +2593,9 @@ fn run_loop_stream_impl_with_provider(
                     })
                     .and_then(|v| serde_json::from_value::<Interaction>(v).ok());
                 if let Some(interaction) = pending_interaction.clone() {
+                    yield AgentEvent::InteractionRequested {
+                        interaction: interaction.clone(),
+                    };
                     yield AgentEvent::Pending { interaction };
                 }
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
@@ -2917,6 +2955,9 @@ fn run_loop_stream_impl_with_provider(
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
+                    yield AgentEvent::InteractionRequested {
+                        interaction: interaction.clone(),
+                    };
                     yield AgentEvent::Pending {
                         interaction: interaction.clone(),
                     };
@@ -3941,7 +3982,13 @@ mod tests {
                 "data"
             }
 
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
+            async fn on_phase(
+                &self,
+                _phase: Phase,
+                _step: &mut StepContext<'_>,
+                _ctx: &Context<'_>,
+            ) {
+            }
 
             fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
                 Some(("plugin_config", json!({"enabled": true})))
@@ -4412,7 +4459,13 @@ mod tests {
             fn id(&self) -> &str {
                 "dummy"
             }
-            async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
+            async fn on_phase(
+                &self,
+                _phase: Phase,
+                _step: &mut StepContext<'_>,
+                _ctx: &Context<'_>,
+            ) {
+            }
         }
 
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -5148,17 +5201,83 @@ mod tests {
         assert!(matches!(events.get(0), Some(AgentEvent::RunStart { .. })));
         assert!(matches!(
             events.get(1),
-            Some(AgentEvent::Pending { interaction })
+            Some(AgentEvent::InteractionRequested { interaction })
                 if interaction.action == "recover_agent_run"
         ));
         assert!(matches!(
             events.get(2),
+            Some(AgentEvent::Pending { interaction })
+                if interaction.action == "recover_agent_run"
+        ));
+        assert!(matches!(
+            events.get(3),
             Some(AgentEvent::RunFinish {
                 stop_reason: None,
                 ..
             })
         ));
-        assert_eq!(events.len(), 3, "unexpected extra events: {events:?}");
+        assert_eq!(events.len(), 4, "unexpected extra events: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn test_stream_emits_interaction_resolved_on_denied_response() {
+        struct SkipInferencePlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipInferencePlugin {
+            fn id(&self) -> &str {
+                "skip_inference"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let interaction = crate::interaction::InteractionPlugin::with_responses(
+            Vec::new(),
+            vec!["permission_write_file".to_string()],
+        );
+        let config = AgentConfig::new("gpt-4o-mini")
+            .with_plugin(Arc::new(interaction))
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
+        let thread = Thread::with_initial_state(
+            "test",
+            serde_json::json!({
+                "agent": {
+                    "pending_interaction": {
+                        "id": "permission_write_file",
+                        "action": "confirm",
+                        "parameters": { "tool_id": "write_file" }
+                    }
+                }
+            }),
+        )
+        .with_message(crate::types::Message::user("continue"));
+        let tools = HashMap::new();
+
+        let events = collect_stream_events(run_loop_stream(
+            Client::default(),
+            config,
+            thread,
+            tools,
+            RunContext::default(),
+        ))
+        .await;
+
+        assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::InteractionResolved {
+                    interaction_id,
+                    result
+                } if interaction_id == "permission_write_file" && result == &serde_json::Value::Bool(false)
+            )),
+            "missing denied InteractionResolved event: {events:?}"
+        );
     }
 
     #[tokio::test]
@@ -6917,7 +7036,11 @@ mod tests {
             })
             .expect("stream must contain a ToolCallDone event");
 
-        assert_eq!(tool_done_msg_id.len(), 36, "tool message_id should be a UUID");
+        assert_eq!(
+            tool_done_msg_id.len(),
+            36,
+            "tool message_id should be a UUID"
+        );
 
         // Find the tool result message in the final thread.
         let tool_msg = final_thread
@@ -6939,24 +7062,19 @@ mod tests {
     async fn test_message_id_agui_text_message_carries_step_id() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
 
-
         let step_msg_id = "pre-gen-assistant-uuid".to_string();
 
         let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
 
         // Simulate: StepStart → TextDelta
-        let step_events = ctx.on_agent_event(
-            &AgentEvent::StepStart {
-                message_id: step_msg_id.clone(),
-            },
-        );
+        let step_events = ctx.on_agent_event(&AgentEvent::StepStart {
+            message_id: step_msg_id.clone(),
+        });
         assert!(!step_events.is_empty());
 
-        let text_events = ctx.on_agent_event(
-            &AgentEvent::TextDelta {
-                delta: "Hello".to_string(),
-            },
-        );
+        let text_events = ctx.on_agent_event(&AgentEvent::TextDelta {
+            delta: "Hello".to_string(),
+        });
 
         // The first AG-UI event on text should be TextMessageStart carrying
         // the same message_id we set via StepStart → reset_for_step.
@@ -6979,19 +7097,16 @@ mod tests {
     async fn test_message_id_agui_tool_result_carries_tool_id() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
 
-
         let tool_msg_id = "pre-gen-tool-uuid".to_string();
 
         let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
 
-        let result_events = ctx.on_agent_event(
-            &AgentEvent::ToolCallDone {
-                id: "call_1".into(),
-                result: ToolResult::success("echo", json!({"echoed": "test"})),
-                patch: None,
-                message_id: tool_msg_id.clone(),
-            },
-        );
+        let result_events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
+            id: "call_1".into(),
+            result: ToolResult::success("echo", json!({"echoed": "test"})),
+            patch: None,
+            message_id: tool_msg_id.clone(),
+        });
 
         let tool_result = result_events
             .iter()
@@ -7044,7 +7159,6 @@ mod tests {
     #[tokio::test]
     async fn test_message_id_end_to_end_multi_step() {
         use crate::ag_ui::{AGUIContext, AGUIEvent};
-
 
         // Step 1: tool call round. Step 2: final text answer.
         let responses = vec![
@@ -7163,5 +7277,4 @@ mod tests {
             "AG-UI ToolCallResult must carry the pre-generated tool message_id"
         );
     }
-
 }

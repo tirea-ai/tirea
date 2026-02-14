@@ -1,8 +1,8 @@
-//! AG-UI Frontend Tool Plugin.
+//! Frontend tool strategy plugin.
 //!
-//! Intercepts frontend tool execution and creates pending interactions
-//! for client-side handling.
+//! Intercepts frontend tool execution and emits pending interaction intents.
 
+use super::push_pending_intent;
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::Interaction;
@@ -12,12 +12,12 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Plugin that handles frontend tool execution for AG-UI protocol.
+/// Strategy plugin that marks frontend tools as pending interactions.
 ///
 /// When a tool call targets a frontend tool (defined with `execute: "frontend"`),
-/// this plugin intercepts the execution in `BeforeToolExecute` and creates
-/// a pending interaction. This causes the agent loop to emit `AgentEvent::Pending`,
-/// which gets converted to AG-UI tool call events for client-side execution.
+/// this plugin intercepts the execution in `BeforeToolExecute` and emits
+/// a pending interaction intent. The interaction mechanism plugin consumes
+/// those intents and applies the runtime gate state.
 ///
 /// # Example
 ///
@@ -77,7 +77,7 @@ impl AgentPlugin for FrontendToolPlugin {
             return;
         }
 
-        // Don't create pending if tool is already blocked (e.g., by PermissionPlugin)
+        // Don't emit pending if tool is already blocked.
         if step.tool_blocked() {
             return;
         }
@@ -87,7 +87,7 @@ impl AgentPlugin for FrontendToolPlugin {
         let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
             .with_parameters(tool.args.clone());
 
-        step.pending(interaction);
+        push_pending_intent(step, interaction);
     }
 }
 

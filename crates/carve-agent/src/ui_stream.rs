@@ -797,7 +797,7 @@ impl AiSdkEncoder {
                     self.message_id_set = true;
                 }
                 vec![UIStreamEvent::start_step()]
-            },
+            }
             AgentEvent::StepEnd => {
                 // AI SDK v6 resets activeTextParts on finish-step, so we must
                 // close any open text block before emitting it.
@@ -855,6 +855,24 @@ impl AiSdkEncoder {
                 vec![UIStreamEvent::data(
                     "interaction",
                     serde_json::to_value(interaction).unwrap_or_default(),
+                )]
+            }
+            AgentEvent::InteractionRequested { interaction } => {
+                vec![UIStreamEvent::data(
+                    "interaction-requested",
+                    serde_json::to_value(interaction).unwrap_or_default(),
+                )]
+            }
+            AgentEvent::InteractionResolved {
+                interaction_id,
+                result,
+            } => {
+                vec![UIStreamEvent::data(
+                    "interaction-resolved",
+                    serde_json::json!({
+                        "interactionId": interaction_id,
+                        "result": result,
+                    }),
                 )]
             }
         }
@@ -1927,7 +1945,9 @@ mod tests {
 
         // Step 1: text + tool + step end
         for ev in &[
-            AgentEvent::StepStart { message_id: String::new() },
+            AgentEvent::StepStart {
+                message_id: String::new(),
+            },
             AgentEvent::TextDelta {
                 delta: "Plan: ".to_string(),
             },
@@ -1948,7 +1968,9 @@ mod tests {
 
         // Step 2: text + finish
         for ev in &[
-            AgentEvent::StepStart { message_id: String::new() },
+            AgentEvent::StepStart {
+                message_id: String::new(),
+            },
             AgentEvent::TextDelta {
                 delta: "Done".to_string(),
             },

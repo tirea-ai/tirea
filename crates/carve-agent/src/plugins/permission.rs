@@ -21,6 +21,7 @@
 //! }
 //! ```
 
+use crate::interaction::{push_block_intent, push_pending_intent};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
@@ -108,12 +109,13 @@ impl PermissionContextExt for Context<'_> {
     }
 }
 
-/// Plugin that enforces tool permissions.
+/// Permission strategy plugin.
 ///
-/// This plugin checks permissions in `before_tool_execute` and:
-/// - Allows execution if permission is `Allow`
-/// - Blocks execution if permission is `Deny`
-/// - Creates a pending interaction if permission is `Ask`
+/// This plugin checks permissions in `before_tool_execute` and emits
+/// interaction intents consumed by [`crate::interaction::InteractionPlugin`].
+/// - `Allow`: no intent
+/// - `Deny`: block intent
+/// - `Ask`: pending interaction intent
 pub struct PermissionPlugin;
 
 #[async_trait]
@@ -122,7 +124,12 @@ impl AgentPlugin for PermissionPlugin {
         "permission"
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>, ctx: &carve_state::Context<'_>) {
+    async fn on_phase(
+        &self,
+        phase: crate::phase::Phase,
+        step: &mut crate::phase::StepContext<'_>,
+        ctx: &carve_state::Context<'_>,
+    ) {
         use crate::phase::Phase;
 
         if phase != Phase::BeforeToolExecute {
@@ -140,18 +147,24 @@ impl AgentPlugin for PermissionPlugin {
                 // Allowed - do nothing
             }
             ToolPermissionBehavior::Deny => {
-                step.block(format!("Tool '{}' is denied", tool_id));
+                push_block_intent(step, format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
+                let tool_call_id = step.tool_call_id().unwrap_or_default().to_string();
+                let tool_args = step.tool_args().cloned().unwrap_or_default();
                 // Create a pending interaction for confirmation
-                if !step.tool_pending() {
-                    let interaction =
-                        Interaction::new(format!("permission_{}", tool_id), "confirm")
-                            .with_message(format!("Allow tool '{}' to execute?", tool_id))
-                            .with_parameters(json!({ "tool_id": tool_id }));
-
-                    step.pending(interaction);
-                }
+                let interaction = Interaction::new(format!("permission_{}", tool_id), "confirm")
+                    .with_message(format!("Allow tool '{}' to execute?", tool_id))
+                    .with_parameters(json!({
+                        "tool_id": tool_id,
+                        "tool_call_id": tool_call_id,
+                        "tool_call": {
+                            "id": tool_call_id,
+                            "name": tool_id,
+                            "arguments": tool_args
+                        }
+                    }));
+                push_pending_intent(step, interaction);
             }
         }
     }
@@ -159,9 +172,27 @@ impl AgentPlugin for PermissionPlugin {
 
 #[cfg(test)]
 mod tests {
-    use carve_state::Context;
     use super::*;
+    use crate::interaction::{take_intents, InteractionIntent};
+    use carve_state::Context;
     use serde_json::json;
+
+    fn apply_interaction_intents(step: &mut crate::phase::StepContext<'_>) {
+        let intents = take_intents(step);
+        if let Some(reason) = intents.iter().find_map(|intent| match intent {
+            InteractionIntent::Block { reason } => Some(reason.clone()),
+            _ => None,
+        }) {
+            step.block(reason);
+            return;
+        }
+        if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
+            InteractionIntent::Pending { interaction } => Some(interaction),
+            _ => None,
+        }) {
+            step.pending(interaction);
+        }
+    }
 
     #[test]
     fn test_permission_state_default() {
@@ -359,7 +390,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
         assert!(!step.tool_pending());
@@ -383,7 +417,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
     }
@@ -406,7 +443,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
     }
@@ -468,7 +508,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
     }
@@ -491,7 +534,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
     }
@@ -514,7 +560,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
     }
@@ -537,7 +586,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should fall back to default "allow" behavior
         assert!(!step.tool_blocked());
@@ -562,7 +614,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should fall back to Ask behavior
         assert!(step.tool_pending());
@@ -584,7 +639,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
     }
@@ -613,7 +671,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // "tools" is not an object → tools.get(tool_id) returns None → falls
         // back to default_behavior "allow"
@@ -640,7 +701,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // parse_behavior("invalid_value") returns None → unwrap_or(Ask)
         assert!(step.tool_pending());
@@ -665,7 +729,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // as_str() on a number returns None → parse_behavior not called → unwrap_or(Ask)
         assert!(step.tool_pending());
@@ -673,7 +740,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_value_is_number() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
+        let doc =
+            json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
         let ctx = Context::new(&doc, "test", "test");
         use crate::phase::{Phase, StepContext, ToolContext};
         use crate::thread::Thread;
@@ -690,7 +758,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // tools.get("my_tool") returns Some(123), as_str() returns None →
         // parse_behavior not called → falls to default_behavior "allow"
@@ -714,7 +785,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Array can't .get("tools") → None → falls to default check →
         // Array can't .get("default_behavior") → None → unwrap_or(Ask)

@@ -64,13 +64,14 @@
 //! ```
 
 pub use crate::interaction::AgUiInteractionPlugin;
-use crate::interaction::{merge_frontend_tools as merge_frontend_tool_specs, FrontendToolSpec};
 #[cfg(test)]
 use crate::interaction::FrontendToolPlugin;
 #[cfg(test)]
 use crate::interaction::FrontendToolStub;
+pub use crate::interaction::InteractionPlugin;
 #[cfg(test)]
 use crate::interaction::InteractionResponsePlugin;
+use crate::interaction::{merge_frontend_tools as merge_frontend_tool_specs, FrontendToolSpec};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -890,6 +891,9 @@ impl AGUIContext {
             AgentEvent::Error { .. } | AgentEvent::Aborted { .. } => {
                 self.stopped = true;
             }
+            AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
+                return vec![];
+            }
             // Pending: close text but skip interaction→tool-call conversion.
             // LLM TOOL_CALL events already inform the client about frontend tools.
             AgentEvent::Pending { .. } => {
@@ -1040,9 +1044,11 @@ impl AGUIContext {
                 vec![AGUIEvent::run_error(message, None)]
             }
             AgentEvent::InferenceComplete { .. } => vec![],
+            AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
+                vec![]
+            }
         }
     }
-
 }
 
 fn value_to_map(value: &Value) -> HashMap<String, Value> {
@@ -1676,7 +1682,7 @@ fn build_context_addendum(request: &RunAgentRequest) -> Option<String> {
 }
 
 struct RequestWiring {
-    interaction: AgUiInteractionPlugin,
+    interaction: InteractionPlugin,
 }
 
 impl RequestWiring {
@@ -1687,7 +1693,7 @@ impl RequestWiring {
             .map(|tool| tool.name.clone())
             .collect();
         Self {
-            interaction: AgUiInteractionPlugin::new(
+            interaction: InteractionPlugin::new(
                 frontend_tools,
                 request.approved_interaction_ids(),
                 request.denied_interaction_ids(),
@@ -1839,7 +1845,6 @@ pub fn run_agent_stream_with_parent(
     })
 }
 
-
 /// Run the agent loop with an AG-UI request, handling frontend tools automatically.
 ///
 /// This function extracts frontend tool definitions from the request and configures
@@ -1944,6 +1949,7 @@ pub fn run_agent_events_with_request_checkpoints(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interaction::{take_intents, InteractionIntent};
     use crate::phase::{Phase, StepContext};
     use crate::plugin::AgentPlugin;
     use carve_state::Context;
@@ -1952,6 +1958,23 @@ mod tests {
 
     fn test_ctx() -> serde_json::Value {
         json!({})
+    }
+
+    fn apply_interaction_intents(step: &mut StepContext<'_>) {
+        let intents = take_intents(step);
+        if let Some(reason) = intents.iter().find_map(|intent| match intent {
+            InteractionIntent::Block { reason } => Some(reason.clone()),
+            _ => None,
+        }) {
+            step.block(reason);
+            return;
+        }
+        if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
+            InteractionIntent::Pending { interaction } => Some(interaction),
+            _ => None,
+        }) {
+            step.pending(interaction);
+        }
     }
 
     #[test]
@@ -2383,8 +2406,12 @@ mod tests {
             delta: "Hello".to_string(),
         };
         let outputs = ctx.on_agent_event(&event);
-        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
-        assert!(outputs.iter().any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
+        assert!(outputs
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageStart { .. })));
+        assert!(outputs
+            .iter()
+            .any(|e| matches!(e, AGUIEvent::TextMessageContent { .. })));
     }
 
     // ========================================================================
@@ -3190,7 +3217,9 @@ mod tests {
 
         let mut ctx = AGUIContext::new("t".to_string(), "r".to_string());
 
-        let events1 = ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() });
+        let events1 = ctx.on_agent_event(&AgentEvent::StepStart {
+            message_id: String::new(),
+        });
         assert_eq!(events1.len(), 1);
         if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
             assert_eq!(step_name, "step_1");
@@ -3203,7 +3232,9 @@ mod tests {
         }
 
         // Next step should be step_2
-        let events3 = ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() });
+        let events3 = ctx.on_agent_event(&AgentEvent::StepStart {
+            message_id: String::new(),
+        });
         if let AGUIEvent::StepStarted { step_name, .. } = &events3[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -4252,7 +4283,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should set pending
         assert!(step.tool_pending());
@@ -4292,7 +4326,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should NOT set pending
         assert!(!step.tool_pending());
@@ -4371,7 +4408,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // 3. Plugin intercepts in BeforeToolExecute
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
 
@@ -4453,7 +4493,10 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c1", "search", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .await;
+            apply_interaction_intents(&mut step);
             assert!(
                 !step.tool_pending(),
                 "Backend tool 'search' should not be pending"
@@ -4465,7 +4508,10 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c2", "read_file", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .await;
+            apply_interaction_intents(&mut step);
             assert!(
                 !step.tool_pending(),
                 "Backend tool 'read_file' should not be pending"
@@ -4477,7 +4523,10 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c3", "copyToClipboard", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .await;
+            apply_interaction_intents(&mut step);
             assert!(
                 step.tool_pending(),
                 "Frontend tool 'copyToClipboard' should be pending"
@@ -4489,7 +4538,10 @@ mod tests {
             let mut step = StepContext::new(&thread, vec![]);
             let call = ToolCall::new("c4", "showNotification", json!({}));
             step.tool = Some(ToolContext::new(&call));
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .await;
+            apply_interaction_intents(&mut step);
             assert!(
                 step.tool_pending(),
                 "Frontend tool 'showNotification' should be pending"
@@ -4520,7 +4572,10 @@ mod tests {
         step.block("Tool denied by permission");
 
         // FrontendToolPlugin should not create pending for blocked tool
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked(), "Tool should remain blocked");
         assert!(
@@ -4559,6 +4614,7 @@ mod tests {
         permission_plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
             .await;
+        apply_interaction_intents(&mut step);
         assert!(
             step.tool_blocked(),
             "PermissionPlugin should block denied tool"
@@ -4568,6 +4624,7 @@ mod tests {
         frontend_plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
             .await;
+        apply_interaction_intents(&mut step);
         assert!(step.tool_blocked(), "Tool should still be blocked");
         assert!(
             !step.tool_pending(),
@@ -4646,7 +4703,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should block the tool
         assert!(step.tool_blocked());
@@ -4678,7 +4738,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should NOT block or set pending
         assert!(!step.tool_blocked());
@@ -4709,7 +4772,10 @@ mod tests {
         step.tool = Some(ToolContext::new(&call));
 
         // Execute plugin
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Should NOT block (approved by matching call ID)
         assert!(!step.tool_blocked());
@@ -4736,7 +4802,10 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Plugin should have done nothing — tool is neither confirmed nor blocked.
         assert!(!step.tool_blocked());
@@ -4767,7 +4836,10 @@ mod tests {
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         // Plugin should have done nothing — IDs don't match.
         assert!(!step.tool_blocked());
@@ -4807,13 +4879,13 @@ mod tests {
     }
 
     // ========================================================================
-    // AgUiInteractionPlugin Tests
+    // InteractionPlugin Tests
     // ========================================================================
 
     #[test]
-    fn test_agui_interaction_plugin_activity_flags() {
+    fn test_interaction_plugin_activity_flags() {
         let none_request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
-        let none_plugin = AgUiInteractionPlugin::new(
+        let none_plugin = InteractionPlugin::new(
             none_request
                 .frontend_tools()
                 .iter()
@@ -4827,7 +4899,7 @@ mod tests {
 
         let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_message(AGUIMessage::tool("true", "permission_write"));
-        let response_plugin = AgUiInteractionPlugin::new(
+        let response_plugin = InteractionPlugin::new(
             response_request
                 .frontend_tools()
                 .iter()
@@ -4841,7 +4913,7 @@ mod tests {
 
         let frontend_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
             .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"));
-        let frontend_plugin = AgUiInteractionPlugin::new(
+        let frontend_plugin = InteractionPlugin::new(
             frontend_request
                 .frontend_tools()
                 .iter()
@@ -4855,10 +4927,10 @@ mod tests {
     }
 
     #[test]
-    fn test_agui_interaction_plugin_frontend_constructor_and_query() {
+    fn test_interaction_plugin_frontend_constructor_and_query() {
         use std::iter::FromIterator;
 
-        let plugin = AgUiInteractionPlugin::with_frontend_tools(HashSet::from_iter([
+        let plugin = InteractionPlugin::with_frontend_tools(HashSet::from_iter([
             "copyToClipboard".to_string(),
             "showNotification".to_string(),
         ]));
@@ -4871,8 +4943,8 @@ mod tests {
     }
 
     #[test]
-    fn test_agui_interaction_plugin_response_constructor_and_query() {
-        let plugin = AgUiInteractionPlugin::with_responses(
+    fn test_interaction_plugin_response_constructor_and_query() {
+        let plugin = InteractionPlugin::with_responses(
             vec!["permission_read".to_string(), "call_frontend_1".to_string()],
             vec!["permission_write".to_string()],
         );
@@ -4887,7 +4959,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agui_interaction_plugin_denied_frontend_call_stays_blocked() {
+    async fn test_interaction_plugin_denied_frontend_call_stays_blocked() {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -4895,7 +4967,7 @@ mod tests {
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("dangerousAction", "Dangerous action"))
             .with_message(AGUIMessage::tool("false", "call_danger"));
-        let plugin = AgUiInteractionPlugin::new(
+        let plugin = InteractionPlugin::new(
             request
                 .frontend_tools()
                 .iter()
@@ -4912,14 +4984,17 @@ mod tests {
         let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
         assert!(!step.tool_pending());
     }
 
     #[tokio::test]
-    async fn test_agui_interaction_plugin_frontend_tool_sets_pending() {
+    async fn test_interaction_plugin_frontend_tool_sets_pending() {
         use crate::phase::ToolContext;
         use crate::thread::Thread;
         use crate::types::ToolCall;
@@ -4929,7 +5004,7 @@ mod tests {
 
         let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
             .with_tool(AGUIToolDef::frontend("showNotification", "Show"));
-        let plugin = AgUiInteractionPlugin::new(
+        let plugin = InteractionPlugin::new(
             request
                 .frontend_tools()
                 .iter()
@@ -4943,7 +5018,10 @@ mod tests {
         let call = ToolCall::new("call_1", "showNotification", json!({"text": "hello"}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
         assert!(!step.tool_blocked());
@@ -6147,14 +6225,18 @@ mod tests {
         let mut all = Vec::new();
 
         // Step 1
-        all.extend(ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() }));
+        all.extend(ctx.on_agent_event(&AgentEvent::StepStart {
+            message_id: String::new(),
+        }));
         all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 1".into(),
         }));
         all.extend(ctx.on_agent_event(&AgentEvent::StepEnd));
 
         // Step 2
-        all.extend(ctx.on_agent_event(&AgentEvent::StepStart { message_id: String::new() }));
+        all.extend(ctx.on_agent_event(&AgentEvent::StepStart {
+            message_id: String::new(),
+        }));
         all.extend(ctx.on_agent_event(&AgentEvent::TextDelta {
             delta: "Step 2".into(),
         }));
@@ -7060,7 +7142,6 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("[C]: val_c")));
     }
 
-
     // ========================================================================
     // AgentEvent → AG-UI Conversion Edge Case Tests
     // ========================================================================
@@ -7070,18 +7151,16 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let text_events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta {
-                delta: "thinking...".into(),
-            });
+        let text_events = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta {
+            delta: "thinking...".into(),
+        });
         assert_eq!(text_events.len(), 2); // TEXT_MESSAGE_START + TEXT_MESSAGE_CONTENT
 
         // Tool call should end text first
-        let tool_events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallStart {
-                id: "tc-1".into(),
-                name: "search".into(),
-            });
+        let tool_events = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallStart {
+            id: "tc-1".into(),
+            name: "search".into(),
+        });
         assert_eq!(tool_events.len(), 2); // TEXT_MESSAGE_END + TOOL_CALL_START
         assert!(matches!(tool_events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(tool_events[1], AGUIEvent::ToolCallStart { .. }));
@@ -7091,11 +7170,10 @@ mod tests {
     fn test_agui_tool_without_prior_text_no_text_end() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallStart {
-                id: "tc-1".into(),
-                name: "search".into(),
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallStart {
+            id: "tc-1".into(),
+            name: "search".into(),
+        });
         // No text was started, so just TOOL_CALL_START
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], AGUIEvent::ToolCallStart { .. }));
@@ -7105,19 +7183,13 @@ mod tests {
     fn test_agui_multiple_text_deltas_only_one_start() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let e1 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta { delta: "a".into() },
-        );
+        let e1 = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "a".into() });
         assert_eq!(e1.len(), 2); // START + CONTENT
 
-        let e2 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta { delta: "b".into() },
-        );
+        let e2 = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "b".into() });
         assert_eq!(e2.len(), 1); // Just CONTENT, no duplicate START
 
-        let e3 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta { delta: "c".into() },
-        );
+        let e3 = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "c".into() });
         assert_eq!(e3.len(), 1);
     }
 
@@ -7126,18 +7198,15 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text stream
-        let _ = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
-        );
+        let _ = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() });
 
         // RunFinish should end text then emit RUN_FINISHED
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::RunFinish {
-                thread_id: "th".into(),
-                run_id: "run".into(),
-                result: None,
-                stop_reason: None,
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::RunFinish {
+            thread_id: "th".into(),
+            run_id: "run".into(),
+            result: None,
+            stop_reason: None,
+        });
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], AGUIEvent::TextMessageEnd { .. }));
         assert!(matches!(events[1], AGUIEvent::RunFinished { .. }));
@@ -7161,11 +7230,10 @@ mod tests {
     #[test]
     fn test_agui_tool_call_delta_produces_tool_call_args() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallDelta {
-                id: "tc-1".into(),
-                args_delta: r#"{"q":"#.into(),
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallDelta {
+            id: "tc-1".into(),
+            args_delta: r#"{"q":"#.into(),
+        });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallArgs {
             tool_call_id,
@@ -7196,13 +7264,12 @@ mod tests {
     #[test]
     fn test_agui_tool_call_done_produces_tool_call_result() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallDone {
-                id: "tc-1".into(),
-                result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
-                patch: None,
-                message_id: "pre-generated-tool-msg-id".into(),
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallDone {
+            id: "tc-1".into(),
+            result: crate::traits::tool::ToolResult::success("test", "found 42 results"),
+            patch: None,
+            message_id: "pre-generated-tool-msg-id".into(),
+        });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::ToolCallResult {
             tool_call_id,
@@ -7222,10 +7289,9 @@ mod tests {
     #[test]
     fn test_agui_error_produces_run_error() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::Error {
-                message: "LLM timeout".into(),
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::Error {
+            message: "LLM timeout".into(),
+        });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "LLM timeout");
@@ -7238,10 +7304,9 @@ mod tests {
     #[test]
     fn test_agui_aborted_produces_run_error_with_code() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::Aborted {
-                reason: "cancelled by user".into(),
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::Aborted {
+            reason: "cancelled by user".into(),
+        });
         assert_eq!(events.len(), 1);
         if let AGUIEvent::RunError { message, code, .. } = &events[0] {
             assert_eq!(message, "cancelled by user");
@@ -7254,12 +7319,11 @@ mod tests {
     #[test]
     fn test_agui_inference_complete_ignored() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::InferenceComplete {
-                model: "gpt-4".into(),
-                usage: None,
-                duration_ms: 1234,
-            });
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::InferenceComplete {
+            model: "gpt-4".into(),
+            usage: None,
+            duration_ms: 1234,
+        });
         assert!(events.is_empty());
     }
 
@@ -7269,9 +7333,7 @@ mod tests {
         let interaction =
             Interaction::new("int-1", "tool:addTask").with_parameters(json!({"title": "New task"}));
 
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::Pending { interaction },
-        );
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::Pending { interaction });
         // Pending events are skipped by AGUIContext
         assert!(events.is_empty());
     }
@@ -7281,15 +7343,11 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Start text
-        let _ = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta { delta: "hi".into() },
-        );
+        let _ = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta { delta: "hi".into() });
 
         // Pending should close text but skip tool call conversion
         let interaction = Interaction::new("int-1", "tool:x");
-        let events = ctx.on_agent_event(
-            &crate::stream::AgentEvent::Pending { interaction },
-        );
+        let events = ctx.on_agent_event(&crate::stream::AgentEvent::Pending { interaction });
 
         // Only TEXT_MESSAGE_END (no tool call events)
         assert_eq!(events.len(), 1);
@@ -7300,10 +7358,10 @@ mod tests {
     fn test_agui_step_events_produce_correct_names() {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
-        let start1 =
-            ctx.on_agent_event(&crate::stream::AgentEvent::StepStart { message_id: String::new() });
-        let end1 =
-            ctx.on_agent_event(&crate::stream::AgentEvent::StepEnd);
+        let start1 = ctx.on_agent_event(&crate::stream::AgentEvent::StepStart {
+            message_id: String::new(),
+        });
+        let end1 = ctx.on_agent_event(&crate::stream::AgentEvent::StepEnd);
 
         if let AGUIEvent::StepStarted { step_name, .. } = &start1[0] {
             assert_eq!(step_name, "step_1");
@@ -7313,8 +7371,9 @@ mod tests {
         }
 
         // Second step
-        let start2 =
-            ctx.on_agent_event(&crate::stream::AgentEvent::StepStart { message_id: String::new() });
+        let start2 = ctx.on_agent_event(&crate::stream::AgentEvent::StepStart {
+            message_id: String::new(),
+        });
         if let AGUIEvent::StepStarted { step_name, .. } = &start2[0] {
             assert_eq!(step_name, "step_2");
         }
@@ -7325,18 +7384,16 @@ mod tests {
         let mut ctx = AGUIContext::new("th".into(), "run".into());
 
         // Text phase 1
-        let e1 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta {
-                delta: "Let me search".into(),
-            });
+        let e1 = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta {
+            delta: "Let me search".into(),
+        });
         assert_eq!(e1.len(), 2); // START + CONTENT
 
         // Tool call
-        let e2 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallStart {
-                id: "tc".into(),
-                name: "search".into(),
-            });
+        let e2 = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallStart {
+            id: "tc".into(),
+            name: "search".into(),
+        });
         assert_eq!(e2.len(), 2); // END text + TOOL_CALL_START
 
         let ev3 = crate::stream::AgentEvent::ToolCallReady {
@@ -7347,20 +7404,18 @@ mod tests {
         let e3 = ctx.on_agent_event(&ev3);
         assert_eq!(e3.len(), 1); // TOOL_CALL_END
 
-        let e4 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::ToolCallDone {
-                id: "tc".into(),
-                result: crate::traits::tool::ToolResult::success("test", "results"),
-                patch: None,
-                message_id: String::new(),
-            });
+        let e4 = ctx.on_agent_event(&crate::stream::AgentEvent::ToolCallDone {
+            id: "tc".into(),
+            result: crate::traits::tool::ToolResult::success("test", "results"),
+            patch: None,
+            message_id: String::new(),
+        });
         assert_eq!(e4.len(), 1); // TOOL_CALL_RESULT
 
         // Text phase 2 — should get a new TEXT_MESSAGE_START with a different message_id
-        let e5 = ctx.on_agent_event(
-            &crate::stream::AgentEvent::TextDelta {
-                delta: "Found it!".into(),
-            });
+        let e5 = ctx.on_agent_event(&crate::stream::AgentEvent::TextDelta {
+            delta: "Found it!".into(),
+        });
         assert_eq!(e5.len(), 2); // START + CONTENT (text was ended by tool call)
         assert!(matches!(e5[0], AGUIEvent::TextMessageStart { .. }));
 
@@ -7535,7 +7590,7 @@ mod tests {
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
         assert_eq!(
             plugin_ids,
-            vec!["agui_interaction"],
+            vec!["interaction"],
             "AG-UI request wiring should install a single combined interaction plugin"
         );
     }
@@ -7563,14 +7618,14 @@ mod tests {
                 name: "responses_only",
                 request: RunAgentRequest::new("t1", "r1")
                     .with_messages(vec![AGUIMessage::tool("true", "permission_write")]),
-                expected_plugins: vec!["agui_interaction"],
+                expected_plugins: vec!["interaction"],
                 expect_frontend_stub: false,
             },
             Case {
                 name: "frontend_only",
                 request: RunAgentRequest::new("t1", "r1")
                     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
-                expected_plugins: vec!["agui_interaction"],
+                expected_plugins: vec!["interaction"],
                 expect_frontend_stub: true,
             },
             Case {
@@ -7578,7 +7633,7 @@ mod tests {
                 request: RunAgentRequest::new("t1", "r1")
                     .with_messages(vec![AGUIMessage::tool("true", "permission_write")])
                     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy")),
-                expected_plugins: vec!["agui_interaction"],
+                expected_plugins: vec!["interaction"],
                 expect_frontend_stub: true,
             },
         ];
@@ -7620,7 +7675,7 @@ mod tests {
         let (config, _thread, _tools) =
             super::prepare_request_runtime(config, thread, tools, &request);
         let plugin_ids: Vec<&str> = config.plugins.iter().map(|p| p.id()).collect();
-        assert_eq!(plugin_ids, vec!["permission", "agui_interaction"]);
+        assert_eq!(plugin_ids, vec!["permission", "interaction"]);
     }
 
     // ========================================================================
@@ -7833,7 +7888,6 @@ mod tests {
         let deserialized: AGUIEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event, deserialized);
     }
-
 
     // ========================================================================
     // RunAgentRequest Deserialization & Edge Case Tests

@@ -334,6 +334,13 @@ pub enum AgentEvent {
     // ========================================================================
     // Interaction Events
     // ========================================================================
+    /// Interaction request created (before entering pending).
+    InteractionRequested { interaction: Interaction },
+    /// Interaction resolution received from client (approved/denied/payload).
+    InteractionResolved {
+        interaction_id: String,
+        result: Value,
+    },
     /// Pending interaction request (client action required).
     Pending { interaction: Interaction },
 
@@ -1093,7 +1100,9 @@ mod tests {
 
     #[test]
     fn test_agent_event_step_start() {
-        let event = AgentEvent::StepStart { message_id: String::new() };
+        let event = AgentEvent::StepStart {
+            message_id: String::new(),
+        };
         assert!(matches!(event, AgentEvent::StepStart { .. }));
     }
 
@@ -1124,7 +1133,9 @@ mod tests {
         assert!(json.contains("text_delta"));
         assert!(json.contains("Hello"));
 
-        let event = AgentEvent::StepStart { message_id: String::new() };
+        let event = AgentEvent::StepStart {
+            message_id: String::new(),
+        };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("step_start"));
 
