@@ -4,8 +4,7 @@
 //! creating subagents, and managing background agent tasks.
 
 use crate::r#loop::{
-    run_loop_stream, run_loop_stream_with_checkpoints, AgentDefinition, AgentLoopError,
-    RunContext,
+    run_loop_stream, AgentDefinition, AgentLoopError, ChannelStateCommitter, RunContext,
 };
 use crate::storage::{StorageError, ThreadStore};
 use crate::stream::AgentEvent;
@@ -178,15 +177,10 @@ impl Agent {
         let storage = self.storage.clone();
 
         let join = tokio::spawn(async move {
-            let stream_with_checkpoints = run_loop_stream_with_checkpoints(
-                client,
-                definition,
-                thread.clone(),
-                filtered,
-                RunContext::default(),
-            );
-            let mut stream = stream_with_checkpoints.events;
-            let mut checkpoints = stream_with_checkpoints.checkpoints;
+            let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
+            let run_ctx = RunContext::default()
+                .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
+            let mut stream = run_loop_stream(client, definition, thread.clone(), filtered, run_ctx);
             let mut last_response = String::new();
             let mut final_thread = thread.clone();
             let mut checkpoints_open = true;

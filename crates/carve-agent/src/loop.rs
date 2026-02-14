@@ -231,12 +231,47 @@ fn take_step_side_effects(
     pending
 }
 
-fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
-    if pending.is_empty() {
-        thread
-    } else {
-        thread.with_patches(pending)
+#[derive(Default)]
+struct ThreadMutationBatch {
+    messages: Vec<Message>,
+    patches: Vec<TrackedPatch>,
+}
+
+impl ThreadMutationBatch {
+    fn with_message(mut self, message: Message) -> Self {
+        self.messages.push(message);
+        self
     }
+
+    fn with_messages(mut self, messages: impl IntoIterator<Item = Message>) -> Self {
+        self.messages.extend(messages);
+        self
+    }
+
+    fn with_patch(mut self, patch: TrackedPatch) -> Self {
+        self.patches.push(patch);
+        self
+    }
+
+    fn with_patches(mut self, patches: impl IntoIterator<Item = TrackedPatch>) -> Self {
+        self.patches.extend(patches);
+        self
+    }
+}
+
+fn reduce_thread_mutations(thread: Thread, batch: ThreadMutationBatch) -> Thread {
+    let mut thread = thread;
+    if !batch.patches.is_empty() {
+        thread = thread.with_patches(batch.patches);
+    }
+    if !batch.messages.is_empty() {
+        thread = thread.with_messages(batch.messages);
+    }
+    thread
+}
+
+fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
+    reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patches(pending))
 }
 
 async fn run_phase_block<R, Setup, Extract>(
@@ -624,16 +659,16 @@ fn apply_tool_results_impl(
     }
 
     // Collect patches from completed tools and plugin pending patches.
-    let mut patches: Vec<TrackedPatch> = collect_patches(
+    let mut mutations = ThreadMutationBatch::default().with_patches(collect_patches(
         &results
             .iter()
             .map(|r| r.execution.clone())
             .collect::<Vec<_>>(),
-    );
+    ));
     for r in results {
-        patches.extend(r.pending_patches.iter().cloned());
+        mutations = mutations.with_patches(r.pending_patches.iter().cloned());
     }
-    let mut state_changed = !patches.is_empty();
+    let mut state_changed = !mutations.patches.is_empty();
 
     // Add tool result messages for all executions.
     // Pending tools get a placeholder result so the message sequence stays valid
@@ -677,7 +712,8 @@ fn apply_tool_results_impl(
         })
         .collect();
 
-    let mut thread = thread.with_patches(patches).with_messages(tool_messages);
+    mutations = mutations.with_messages(tool_messages);
+    let mut thread = reduce_thread_mutations(thread, mutations);
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = thread
@@ -686,7 +722,7 @@ fn apply_tool_results_impl(
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread = thread.with_patch(patch);
+            thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
         }
         let state_snapshot = if state_changed {
             Some(
@@ -717,7 +753,7 @@ fn apply_tool_results_impl(
         let patch = clear_agent_pending_interaction(&state);
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread = thread.with_patch(patch);
+            thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
         }
     }
 
@@ -1654,19 +1690,19 @@ pub async fn run_loop(
         // Add assistant message
         let assistant_msg_id = gen_message_id();
         let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
-        thread = if result.tool_calls.is_empty() {
-            thread.with_message(
-                assistant_message(&result.text)
-                    .with_id(assistant_msg_id.clone())
-                    .with_metadata(step_meta.clone()),
-            )
+        let assistant_msg = if result.tool_calls.is_empty() {
+            assistant_message(&result.text)
+                .with_id(assistant_msg_id.clone())
+                .with_metadata(step_meta.clone())
         } else {
-            thread.with_message(
-                assistant_tool_calls(&result.text, result.tool_calls.clone())
-                    .with_id(assistant_msg_id.clone())
-                    .with_metadata(step_meta.clone()),
-            )
+            assistant_tool_calls(&result.text, result.tool_calls.clone())
+                .with_id(assistant_msg_id.clone())
+                .with_metadata(step_meta.clone())
         };
+        thread = reduce_thread_mutations(
+            thread,
+            ThreadMutationBatch::default().with_message(assistant_msg),
+        );
 
         // Phase: StepEnd
         match emit_phase_block(
@@ -1840,39 +1876,6 @@ pub fn run_loop_stream(
     run_loop_stream_impl_with_provider(Arc::new(client), config, thread, tools, run_ctx)
 }
 
-/// A streaming agent run with access to intermediate session checkpoints.
-///
-/// Intended for persistence layers to save at durable boundaries while streaming.
-/// The `checkpoints` channel carries `ThreadDelta` values directly — each delta
-/// contains only the new messages and patches since the last checkpoint.
-pub struct StreamWithCheckpoints {
-    pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadDelta>,
-}
-
-/// Run the agent loop and return a stream of `AgentEvent`s plus session checkpoints.
-pub fn run_loop_stream_with_checkpoints(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
-) -> StreamWithCheckpoints {
-    let (checkpoint_tx, checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
-    let run_ctx = run_ctx.with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
-    let events = run_loop_stream_impl_with_provider(
-        Arc::new(client),
-        config,
-        thread,
-        tools,
-        run_ctx,
-    );
-    StreamWithCheckpoints {
-        events,
-        checkpoints: checkpoint_rx,
-    }
-}
-
 fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
@@ -1921,6 +1924,26 @@ fn run_loop_stream_impl_with_provider(
                 .await
                 {
                     tracing::warn!(error = %e, "failed to commit run-finished delta");
+                }
+            };
+        }
+
+        macro_rules! ensure_run_finished_delta_or_error {
+            () => {
+                if let Err(e) = commit_pending_delta(
+                    &mut thread,
+                    CheckpointReason::RunFinished,
+                    true,
+                    &run_id,
+                    parent_run_id.as_deref(),
+                    state_committer.as_ref(),
+                )
+                .await
+                {
+                    yield AgentEvent::Error {
+                        message: e.to_string(),
+                    };
+                    return;
                 }
             };
         }
@@ -2047,10 +2070,10 @@ fn run_loop_stream_impl_with_provider(
 
                 // Append real replay tool result as a new tool message (append-only log).
                 let replay_msg_id = gen_message_id();
-                let real_msg =
+                let mut replay_mutations = ThreadMutationBatch::default().with_message(
                     tool_response(&tool_call.id, &replay_result.execution.result)
-                        .with_id(replay_msg_id.clone());
-                thread = thread.with_message(real_msg);
+                        .with_id(replay_msg_id.clone()),
+                );
 
                 // Preserve reminder emission semantics for replayed tool calls.
                 if !replay_result.reminders.is_empty() {
@@ -2060,17 +2083,19 @@ fn run_loop_stream_impl_with_provider(
                             reminder
                         ))
                     });
-                    thread = thread.with_messages(msgs);
+                    replay_mutations = replay_mutations.with_messages(msgs);
                 }
 
                 if let Some(patch) = replay_result.execution.patch.clone() {
                     replay_state_changed = true;
-                    thread = thread.with_patch(patch);
+                    replay_mutations = replay_mutations.with_patch(patch);
                 }
                 if !replay_result.pending_patches.is_empty() {
                     replay_state_changed = true;
-                    thread = thread.with_patches(replay_result.pending_patches.clone());
+                    replay_mutations =
+                        replay_mutations.with_patches(replay_result.pending_patches.clone());
                 }
+                thread = reduce_thread_mutations(thread, replay_mutations);
 
                 yield AgentEvent::ToolCallDone {
                     id: tool_call.id.clone(),
@@ -2088,11 +2113,14 @@ fn run_loop_stream_impl_with_provider(
                 }
             };
 
-            let clear_patch = clear_agent_pending_interaction(&state);
-            if !clear_patch.patch().is_empty() {
-                replay_state_changed = true;
-                thread = thread.with_patch(clear_patch);
-            }
+                let clear_patch = clear_agent_pending_interaction(&state);
+                if !clear_patch.patch().is_empty() {
+                    replay_state_changed = true;
+                    thread = reduce_thread_mutations(
+                        thread,
+                        ThreadMutationBatch::default().with_patch(clear_patch),
+                    );
+                }
 
             if replay_state_changed {
                 let snapshot = match thread.rebuild_state() {
@@ -2126,7 +2154,7 @@ fn run_loop_stream_impl_with_provider(
             if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
                     thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                    emit_run_finished_delta!();
+                    ensure_run_finished_delta_or_error!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
                         run_id: run_id.clone(),
@@ -2175,7 +2203,7 @@ fn run_loop_stream_impl_with_provider(
                     yield AgentEvent::Pending { interaction };
                 }
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                emit_run_finished_delta!();
+                ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
@@ -2241,7 +2269,7 @@ fn run_loop_stream_impl_with_provider(
                     tokio::select! {
                         _ = token.cancelled() => {
                             thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                            emit_run_finished_delta!();
+                            ensure_run_finished_delta_or_error!();
                             yield AgentEvent::RunFinish {
                                 thread_id: thread.id.clone(),
                                 run_id: run_id.clone(),
@@ -2333,11 +2361,19 @@ fn run_loop_stream_impl_with_provider(
 
             // Add assistant message with run/step metadata.
             let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
-            thread = if result.tool_calls.is_empty() {
-                thread.with_message(assistant_message(&result.text).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
+            let assistant_msg = if result.tool_calls.is_empty() {
+                assistant_message(&result.text)
+                    .with_id(assistant_msg_id.clone())
+                    .with_metadata(step_meta.clone())
             } else {
-                thread.with_message(assistant_tool_calls(&result.text, result.tool_calls.clone()).with_id(assistant_msg_id.clone()).with_metadata(step_meta.clone()))
+                assistant_tool_calls(&result.text, result.tool_calls.clone())
+                    .with_id(assistant_msg_id.clone())
+                    .with_metadata(step_meta.clone())
             };
+            thread = reduce_thread_mutations(
+                thread,
+                ThreadMutationBatch::default().with_message(assistant_msg),
+            );
 
             // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
             match emit_phase_block(
@@ -2382,7 +2418,7 @@ fn run_loop_stream_impl_with_provider(
                     Some(serde_json::json!({"response": result.text}))
                 };
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                emit_run_finished_delta!();
+                ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
@@ -2454,7 +2490,7 @@ fn run_loop_stream_impl_with_provider(
                         }
                     } => {
                         thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                        emit_run_finished_delta!();
+                        ensure_run_finished_delta_or_error!();
                         yield AgentEvent::RunFinish {
                             thread_id: thread.id.clone(),
                             run_id: run_id.clone(),
@@ -2574,7 +2610,7 @@ fn run_loop_stream_impl_with_provider(
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                emit_run_finished_delta!();
+                ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
@@ -2596,7 +2632,7 @@ fn run_loop_stream_impl_with_provider(
             let stop_ctx = loop_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
                 thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
-                emit_run_finished_delta!();
+                ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),

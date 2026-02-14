@@ -101,7 +101,7 @@ async fn test_run_agent_events_with_request_sets_runtime_identity() {
     request.parent_run_id = Some("parent_123".to_string());
 
     let mut run = run_agent_events_with_request(client, config, thread, tools, request);
-    let first = run.events.next().await.expect("first event");
+    let first = run.next().await.expect("first event");
     match first {
         crate::stream::AgentEvent::RunStart {
             run_id,
@@ -110,34 +110,6 @@ async fn test_run_agent_events_with_request_sets_runtime_identity() {
         } => {
             assert_eq!(run_id, "run_1");
             assert_eq!(parent_run_id.as_deref(), Some("parent_123"));
-        }
-        other => panic!("expected RunStart, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn test_run_agent_events_with_request_checkpoints_sets_runtime_identity() {
-    use futures::StreamExt;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    let client = Client::default();
-    let config = AgentConfig::default();
-    let thread = Thread::new("test-thread");
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let mut request = RunAgentRequest::new("thread_1", "run_2");
-    request.parent_run_id = Some("parent_456".to_string());
-
-    let mut run = run_agent_events_with_request_checkpoints(client, config, thread, tools, request);
-    let first = run.events.next().await.expect("first event");
-    match first {
-        crate::stream::AgentEvent::RunStart {
-            run_id,
-            parent_run_id,
-            ..
-        } => {
-            assert_eq!(run_id, "run_2");
-            assert_eq!(parent_run_id.as_deref(), Some("parent_456"));
         }
         other => panic!("expected RunStart, got {other:?}"),
     }

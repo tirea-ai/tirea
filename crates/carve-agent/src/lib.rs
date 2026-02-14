@@ -159,9 +159,9 @@ pub use protocol::{
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    run_agent_events_with_request, run_agent_events_with_request_checkpoints, run_agent_stream,
-    run_agent_stream_with_parent, AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage,
-    AGUIToolDef, RequestError, RunAgentRequest, ToolExecutionLocation,
+    run_agent_events_with_request, run_agent_stream, run_agent_stream_with_parent, AGUIContext,
+    AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest,
+    ToolExecutionLocation,
 };
 
 // Execute exports
@@ -192,9 +192,9 @@ pub use agent_os::{
 // Loop exports
 pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_round, run_step, tool_map,
-    tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError, RoundResult, RunContext,
-    ScratchpadMergePolicy, StreamWithCheckpoints,
+    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
+    AgentDefinition, AgentLoopError, ChannelStateCommitter, RoundResult, RunContext,
+    ScratchpadMergePolicy, StateCommitError, StateCommitter,
 };
 
 // Stop condition exports

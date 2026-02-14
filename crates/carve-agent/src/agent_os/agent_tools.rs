@@ -4,7 +4,7 @@ use crate::plugin::AgentPlugin;
 use crate::plugins::PermissionContextExt;
 pub(crate) use crate::r#loop::TOOL_RUNTIME_CALLER_AGENT_ID_KEY as RUNTIME_CALLER_AGENT_ID_KEY;
 use crate::r#loop::{
-    RunCancellationToken, RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
+    ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };
 use crate::state_types::{
@@ -297,11 +297,13 @@ async fn execute_target_agent(
     thread: crate::Thread,
     cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
+    let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
     let run_ctx = RunContext {
         cancellation_token,
         ..RunContext::default()
-    };
-    let stream = match os.run_stream_with_session(&target_agent_id, thread.clone(), run_ctx) {
+    }
+    .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
+    let mut events = match os.run_stream_with_context(&target_agent_id, thread.clone(), run_ctx) {
         Ok(stream) => stream,
         Err(e) => {
             return AgentRunCompletion {
@@ -315,8 +317,6 @@ async fn execute_target_agent(
 
     let mut saw_error: Option<String> = None;
     let mut stop_reason: Option<StopReason> = None;
-    let mut events = stream.events;
-    let mut checkpoints = stream.checkpoints;
     let mut final_thread = thread.clone();
     let mut checkpoints_open = true;
 

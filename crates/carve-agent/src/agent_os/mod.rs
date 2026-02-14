@@ -2,15 +2,12 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use async_stream::stream;
 use futures::Stream;
-use futures::StreamExt;
 use genai::Client;
 
 use crate::plugin::AgentPlugin;
 use crate::r#loop::{
-    run_loop, run_loop_stream, run_loop_stream_with_checkpoints, RunContext,
-    StreamWithCheckpoints,
+    run_loop, run_loop_stream, RunContext, StateCommitError, StateCommitter,
 };
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -38,6 +35,28 @@ pub use registry::{
 };
 
 type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
+
+#[derive(Clone)]
+struct StorageStateCommitter {
+    storage: Arc<dyn ThreadStore>,
+}
+
+impl StorageStateCommitter {
+    fn new(storage: Arc<dyn ThreadStore>) -> Self {
+        Self { storage }
+    }
+}
+
+#[async_trait::async_trait]
+impl StateCommitter for StorageStateCommitter {
+    async fn commit(&self, thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError> {
+        self.storage
+            .append(thread_id, &delta)
+            .await
+            .map(|_| ())
+            .map_err(|e| StateCommitError::new(format!("checkpoint append failed: {e}")))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillsMode {
@@ -993,63 +1012,16 @@ impl AgentOs {
             let _ = storage.append(&thread_id, &delta).await?;
         }
 
-        // 7. Resolve agent wiring and run
+        // 7. Resolve agent wiring and run with storage-backed state committer.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-
-        let swc =
-            run_loop_stream_with_checkpoints(client, cfg, thread, tools, RunContext::default());
-
-        // 8. Persist checkpoints synchronously in stream order (strong consistency).
-        let storage_for_stream = storage.clone();
-        let thread_id_for_stream = thread_id.clone();
-        let run_id_for_stream = run_id.clone();
-        let mut events = swc.events;
-        let mut checkpoints = swc.checkpoints;
-        let persisted_events = Box::pin(stream! {
-            loop {
-                let next_event = events.next().await;
-
-                while let Ok(delta) = checkpoints.try_recv() {
-                    match storage_for_stream.append(&thread_id_for_stream, &delta).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            yield AgentEvent::Error {
-                                message: format!("checkpoint append failed: {e}"),
-                            };
-                            return;
-                        }
-                    }
-                }
-
-                match next_event {
-                    Some(ev) => yield ev,
-                    None => break,
-                }
-            }
-
-            while let Some(delta) = checkpoints.recv().await {
-                match storage_for_stream.append(&thread_id_for_stream, &delta).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        yield AgentEvent::Error {
-                            message: format!("checkpoint append failed: {e}"),
-                        };
-                        yield AgentEvent::RunFinish {
-                            thread_id: thread_id_for_stream.clone(),
-                            run_id: run_id_for_stream.clone(),
-                            result: None,
-                            stop_reason: None,
-                        };
-                        return;
-                    }
-                }
-            }
-        });
+        let run_ctx = RunContext::default()
+            .with_state_committer(Arc::new(StorageStateCommitter::new(storage.clone())));
+        let events = run_loop_stream(client, cfg, thread, tools, run_ctx);
 
         Ok(RunStream {
             thread_id,
             run_id,
-            events: persisted_events,
+            events,
         })
     }
 
@@ -1127,26 +1099,6 @@ impl AgentOs {
         Ok(run_loop_stream(client, cfg, thread, tools, run_ctx))
     }
 
-    pub fn run_stream_with_session(
-        &self,
-        agent_id: &str,
-        thread: Thread,
-        run_ctx: RunContext,
-    ) -> Result<StreamWithCheckpoints, AgentOsResolveError> {
-        self.run_stream_with_checkpoints(agent_id, thread, run_ctx)
-    }
-
-    pub fn run_stream_with_checkpoints(
-        &self,
-        agent_id: &str,
-        thread: Thread,
-        run_ctx: RunContext,
-    ) -> Result<StreamWithCheckpoints, AgentOsResolveError> {
-        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
-        Ok(run_loop_stream_with_checkpoints(
-            client, cfg, thread, tools, run_ctx,
-        ))
-    }
 }
 
 #[cfg(test)]

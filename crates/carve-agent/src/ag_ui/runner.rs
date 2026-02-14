@@ -1,8 +1,7 @@
 use crate::ag_ui::context::AGUIContext;
 use crate::ag_ui::protocol::AGUIEvent;
 use crate::ag_ui::request::{prepare_request_runtime, set_run_identity, RunAgentRequest};
-use crate::r#loop::run_loop_stream_with_checkpoints;
-use crate::r#loop::{run_loop_stream, AgentConfig, RunContext, StreamWithCheckpoints};
+use crate::r#loop::{run_loop_stream, AgentConfig, RunContext};
 use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use async_stream::stream;
@@ -143,25 +142,14 @@ pub fn run_agent_stream_with_request(
     )
 }
 
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus checkpoints.
+/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s.
 pub fn run_agent_events_with_request(
     client: Client,
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     request: RunAgentRequest,
-) -> StreamWithCheckpoints {
-    run_agent_events_with_request_checkpoints(client, config, thread, tools, request)
-}
-
-/// Run the agent loop with an AG-UI request and return internal `AgentEvent`s plus session checkpoints.
-pub fn run_agent_events_with_request_checkpoints(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    request: RunAgentRequest,
-) -> StreamWithCheckpoints {
+) -> Pin<Box<dyn Stream<Item = crate::stream::AgentEvent> + Send>> {
     let (config, mut thread, tools) = prepare_request_runtime(config, thread, tools, &request);
     set_run_identity(
         &mut thread,
@@ -174,5 +162,5 @@ pub fn run_agent_events_with_request_checkpoints(
         ..RunContext::default()
     };
 
-    run_loop_stream_with_checkpoints(client, config, thread, tools, run_ctx)
+    run_loop_stream(client, config, thread, tools, run_ctx)
 }
