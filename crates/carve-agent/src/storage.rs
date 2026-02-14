@@ -2601,4 +2601,342 @@ mod tests {
         let err = store.create(&Thread::new("t1")).await.unwrap_err();
         assert!(matches!(err, StorageError::AlreadyExists));
     }
+
+    // ========================================================================
+    // End-to-end: PendingDelta → ThreadDelta → append (full agent flow)
+    // ========================================================================
+
+    /// Simulates a complete agent run: create → user message → assistant turn →
+    /// tool results → run finished, all via append().
+    #[tokio::test]
+    async fn test_full_agent_run_via_append() {
+        let store = MemoryStorage::new();
+
+        // 1. Create thread
+        let thread = Thread::new("t1");
+        let committed = store.create(&thread).await.unwrap();
+        assert_eq!(committed.version, 0);
+
+        // 2. User message delta (simulates http handler)
+        let mut thread = thread.with_message(Message::user("What is 2+2?"));
+        let pending = thread.take_pending();
+        assert_eq!(pending.messages.len(), 1);
+        assert!(pending.patches.is_empty());
+
+        let user_delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::UserMessage,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+        let committed = store.append("t1", 0, &user_delta).await.unwrap();
+        assert_eq!(committed.version, 1);
+
+        // 3. Assistant turn committed (LLM inference)
+        thread = thread.with_message(Message::assistant("2+2 = 4"));
+        let pending = thread.take_pending();
+        assert_eq!(pending.messages.len(), 1);
+
+        let assistant_delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+        let committed = store.append("t1", 1, &assistant_delta).await.unwrap();
+        assert_eq!(committed.version, 2);
+
+        // 4. Tool results committed (with patches)
+        let patch = TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("result"), json!(4))),
+        );
+        thread = thread
+            .with_message(Message::tool("call-1", "4"))
+            .with_patch(patch);
+        let pending = thread.take_pending();
+        assert_eq!(pending.messages.len(), 1);
+        assert_eq!(pending.patches.len(), 1);
+
+        let tool_delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::ToolResultsCommitted,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+        let committed = store.append("t1", 2, &tool_delta).await.unwrap();
+        assert_eq!(committed.version, 3);
+
+        // 5. Run finished (final assistant message)
+        thread = thread.with_message(Message::assistant("The answer is 4."));
+        let pending = thread.take_pending();
+
+        let finished_delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::RunFinished,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+        let committed = store.append("t1", 3, &finished_delta).await.unwrap();
+        assert_eq!(committed.version, 4);
+
+        // 6. Verify final state
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 4);
+        assert_eq!(head.thread.message_count(), 4); // user + assistant + tool + assistant
+        assert_eq!(head.thread.patch_count(), 1);
+
+        let state = head.thread.rebuild_state().unwrap();
+        assert_eq!(state["result"], 4);
+    }
+
+    /// Verify ThreadSync::load_deltas can replay the full run history.
+    #[tokio::test]
+    async fn test_delta_replay_reconstructs_thread() {
+        let store = MemoryStorage::new();
+        let thread = Thread::with_initial_state("t1", json!({"count": 0}));
+        store.create(&thread).await.unwrap();
+
+        // Simulate 3 rounds of append
+        let deltas: Vec<ThreadDelta> = vec![
+            ThreadDelta {
+                run_id: "run-1".to_string(),
+                parent_run_id: None,
+                reason: CheckpointReason::UserMessage,
+                messages: vec![Arc::new(Message::user("inc"))],
+                patches: vec![TrackedPatch::new(
+                    Patch::new().with_op(Op::increment(path!("count"), 1)),
+                )],
+                snapshot: None,
+            },
+            ThreadDelta {
+                run_id: "run-1".to_string(),
+                parent_run_id: None,
+                reason: CheckpointReason::AssistantTurnCommitted,
+                messages: vec![Arc::new(Message::assistant("done"))],
+                patches: vec![TrackedPatch::new(
+                    Patch::new().with_op(Op::increment(path!("count"), 1)),
+                )],
+                snapshot: None,
+            },
+            ThreadDelta {
+                run_id: "run-1".to_string(),
+                parent_run_id: None,
+                reason: CheckpointReason::RunFinished,
+                messages: vec![],
+                patches: vec![],
+                snapshot: None,
+            },
+        ];
+
+        for (i, delta) in deltas.iter().enumerate() {
+            store.append("t1", i as u64, delta).await.unwrap();
+        }
+
+        // Replay from scratch
+        let all_deltas = store.load_deltas("t1", 0).await.unwrap();
+        assert_eq!(all_deltas.len(), 3);
+
+        // Reconstruct thread from empty + deltas
+        let mut reconstructed = Thread::with_initial_state("t1", json!({"count": 0}));
+        for d in &all_deltas {
+            for m in &d.messages {
+                reconstructed.messages.push(m.clone());
+            }
+            reconstructed.patches.extend(d.patches.iter().cloned());
+        }
+
+        let loaded = store.load_thread("t1").await.unwrap().unwrap();
+        assert_eq!(reconstructed.message_count(), loaded.message_count());
+        assert_eq!(reconstructed.patch_count(), loaded.patch_count());
+
+        let state = loaded.rebuild_state().unwrap();
+        assert_eq!(state["count"], 2);
+    }
+
+    /// Verify partial replay: load_deltas(after_version=1) skips early deltas.
+    #[tokio::test]
+    async fn test_partial_delta_replay() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        for i in 0..5u64 {
+            let delta = ThreadDelta {
+                run_id: "run-1".to_string(),
+                parent_run_id: None,
+                reason: CheckpointReason::AssistantTurnCommitted,
+                messages: vec![Arc::new(Message::assistant(format!("msg-{i}")))],
+                patches: vec![],
+                snapshot: None,
+            };
+            store.append("t1", i, &delta).await.unwrap();
+        }
+
+        // Only deltas after version 3 (should be versions 4 and 5)
+        let deltas = store.load_deltas("t1", 3).await.unwrap();
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(deltas[0].messages[0].content, "msg-3");
+        assert_eq!(deltas[1].messages[0].content, "msg-4");
+    }
+
+    /// PendingDelta → ThreadDelta → append preserves patch content and source.
+    #[tokio::test]
+    async fn test_append_preserves_patch_provenance() {
+        let store = MemoryStorage::new();
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let patch = TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("key"), json!("value"))),
+        )
+        .with_source("tool:weather")
+        .with_description("Set weather data");
+
+        let mut thread = Thread::new("t1").with_patch(patch);
+        let pending = thread.take_pending();
+
+        let delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::ToolResultsCommitted,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+        store.append("t1", 0, &delta).await.unwrap();
+
+        // Verify provenance survived
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.thread.patches.len(), 1);
+        assert_eq!(
+            head.thread.patches[0].source.as_deref(),
+            Some("tool:weather")
+        );
+        assert_eq!(
+            head.thread.patches[0].description.as_deref(),
+            Some("Set weather data")
+        );
+
+        // Also via ThreadSync
+        let deltas = store.load_deltas("t1", 0).await.unwrap();
+        assert_eq!(
+            deltas[0].patches[0].source.as_deref(),
+            Some("tool:weather")
+        );
+    }
+
+    /// Verify parent_run_id is preserved through delta storage.
+    #[tokio::test]
+    async fn test_append_preserves_parent_run_id() {
+        let store = MemoryStorage::new();
+        store
+            .create(&Thread::new("child").with_parent_thread_id("parent"))
+            .await
+            .unwrap();
+
+        let delta = ThreadDelta {
+            run_id: "child-run-1".to_string(),
+            parent_run_id: Some("parent-run-1".to_string()),
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![Arc::new(Message::assistant("sub-agent reply"))],
+            patches: vec![],
+            snapshot: None,
+        };
+        store.append("child", 0, &delta).await.unwrap();
+
+        let deltas = store.load_deltas("child", 0).await.unwrap();
+        assert_eq!(deltas[0].run_id, "child-run-1");
+        assert_eq!(
+            deltas[0].parent_run_id.as_deref(),
+            Some("parent-run-1")
+        );
+
+        let head = ThreadStore::load(&store, "child").await.unwrap().unwrap();
+        assert_eq!(head.thread.parent_thread_id.as_deref(), Some("parent"));
+    }
+
+    /// FileStorage: multi-round append with version tracking persisted to disk.
+    #[tokio::test]
+    async fn test_file_multi_round_append() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStorage::new(temp_dir.path());
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        // Round 1: user message
+        let d1 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::UserMessage,
+            messages: vec![Arc::new(Message::user("hello"))],
+            patches: vec![],
+            snapshot: None,
+        };
+        let c1 = store.append("t1", 0, &d1).await.unwrap();
+        assert_eq!(c1.version, 1);
+
+        // Round 2: assistant response + patch
+        let d2 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![Arc::new(Message::assistant("hi"))],
+            patches: vec![TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("greeted"), json!(true))),
+            )],
+            snapshot: None,
+        };
+        let c2 = store.append("t1", 1, &d2).await.unwrap();
+        assert_eq!(c2.version, 2);
+
+        // Round 3: run finished with snapshot
+        let d3 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::RunFinished,
+            messages: vec![],
+            patches: vec![],
+            snapshot: Some(json!({"greeted": true})),
+        };
+        let c3 = store.append("t1", 2, &d3).await.unwrap();
+        assert_eq!(c3.version, 3);
+
+        // Re-create store from same path (simulates restart)
+        let store2 = FileStorage::new(temp_dir.path());
+        let head = ThreadStore::load(&store2, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 3);
+        assert_eq!(head.thread.message_count(), 2);
+        assert!(head.thread.patches.is_empty()); // snapshot cleared patches
+        assert_eq!(head.thread.state, json!({"greeted": true}));
+    }
+
+    /// Empty delta produces no change but still increments version.
+    #[tokio::test]
+    async fn test_append_empty_delta() {
+        let store = MemoryStorage::new();
+        store
+            .create(&Thread::new("t1").with_message(Message::user("hi")))
+            .await
+            .unwrap();
+
+        let empty = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::RunFinished,
+            messages: vec![],
+            patches: vec![],
+            snapshot: None,
+        };
+        let committed = store.append("t1", 0, &empty).await.unwrap();
+        assert_eq!(committed.version, 1);
+
+        let head = ThreadStore::load(&store, "t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 1);
+        assert_eq!(head.thread.message_count(), 1); // unchanged
+    }
 }

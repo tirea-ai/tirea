@@ -780,13 +780,16 @@ fn replace_placeholder_tool_message(thread: &mut Thread, tool_call_id: &str, rea
             && m.tool_call_id.as_deref() == Some(tool_call_id)
             && m.content.contains("awaiting approval")
     }) {
-        // Replace the Arc with a new one containing the updated message
+        // Replace the Arc with a new one containing the updated message.
+        // This is an in-place swap, not a new item — no pending tracking needed.
         thread.messages[index] = std::sync::Arc::new(real_msg);
         return;
     }
 
-    // No placeholder found, append as new message
-    thread.messages.push(std::sync::Arc::new(real_msg));
+    // No placeholder found, append as new message and track in pending buffer.
+    let arc = std::sync::Arc::new(real_msg);
+    thread.pending.messages.push(arc.clone());
+    thread.messages.push(arc);
 }
 
 struct AppliedToolResults {
@@ -2161,20 +2164,14 @@ pub struct StreamWithThread {
     pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
-#[derive(Debug, Clone)]
-pub struct ThreadCheckpoint {
-    pub reason: CheckpointReason,
-    pub thread: Thread,
-    /// Delta since the last checkpoint (new messages and patches only).
-    pub delta: crate::storage::ThreadDelta,
-}
-
 /// A streaming agent run with access to intermediate session checkpoints.
 ///
 /// Intended for persistence layers to save at durable boundaries while streaming.
+/// The `checkpoints` channel carries `ThreadDelta` values directly — each delta
+/// contains only the new messages and patches since the last checkpoint.
 pub struct StreamWithCheckpoints {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
-    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadCheckpoint>,
+    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadDelta>,
     pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
@@ -2239,7 +2236,7 @@ fn run_loop_stream_impl_with_provider(
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
     mut final_thread_tx: Option<tokio::sync::oneshot::Sender<Thread>>,
-    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadCheckpoint>>,
+    checkpoint_tx: Option<tokio::sync::mpsc::UnboundedSender<ThreadDelta>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut thread = thread;
@@ -2268,9 +2265,22 @@ fn run_loop_stream_impl_with_provider(
         let parent_run_id = thread.runtime.value("parent_run_id")
             .and_then(|v| v.as_str().map(String::from));
 
-        // Watermarks for computing deltas at checkpoint boundaries.
-        let mut msg_watermark = thread.messages.len();
-        let mut patch_watermark = thread.patches.len();
+        macro_rules! emit_run_finished_delta {
+            () => {
+                if let Some(tx) = checkpoint_tx.as_ref() {
+                    let pending = thread.take_pending();
+                    let delta = ThreadDelta {
+                        run_id: run_id.clone(),
+                        parent_run_id: parent_run_id.clone(),
+                        reason: CheckpointReason::RunFinished,
+                        messages: pending.messages,
+                        patches: pending.patches,
+                        snapshot: None,
+                    };
+                    let _ = tx.send(delta);
+                }
+            };
+        }
 
         macro_rules! terminate_stream_error {
             ($message:expr) => {{
@@ -2286,6 +2296,7 @@ fn run_loop_stream_impl_with_provider(
                 thread = finalized;
                 yield error;
                 yield finish;
+                emit_run_finished_delta!();
                 if let Some(tx) = final_thread_tx.take() {
                     let _ = tx.send(thread);
                 }
@@ -2449,6 +2460,7 @@ fn run_loop_stream_impl_with_provider(
                         result: None,
                         stop_reason: Some(StopReason::Cancelled),
                     };
+                    emit_run_finished_delta!();
                     if let Some(tx) = final_thread_tx.take() {
                         let _ = tx.send(thread);
                     }
@@ -2507,6 +2519,7 @@ fn run_loop_stream_impl_with_provider(
                         Some(StopReason::PluginRequested)
                     },
                 };
+                emit_run_finished_delta!();
                 if let Some(tx) = final_thread_tx.take() {
                     let _ = tx.send(thread);
                 }
@@ -2575,6 +2588,7 @@ fn run_loop_stream_impl_with_provider(
                                 result: None,
                                 stop_reason: Some(StopReason::Cancelled),
                             };
+                            emit_run_finished_delta!();
                             if let Some(tx) = final_thread_tx.take() {
                                 let _ = tx.send(thread);
                             }
@@ -2692,21 +2706,18 @@ fn run_loop_stream_impl_with_provider(
             }
 
             if let Some(tx) = checkpoint_tx.as_ref() {
-                let delta = ThreadDelta {
-                    run_id: run_id.clone(),
-                    parent_run_id: parent_run_id.clone(),
-                    reason: CheckpointReason::AssistantTurnCommitted,
-                    messages: thread.messages[msg_watermark..].to_vec(),
-                    patches: thread.patches[patch_watermark..].to_vec(),
-                    snapshot: None,
-                };
-                msg_watermark = thread.messages.len();
-                patch_watermark = thread.patches.len();
-                let _ = tx.send(ThreadCheckpoint {
-                    reason: CheckpointReason::AssistantTurnCommitted,
-                    thread: thread.clone(),
-                    delta,
-                });
+                let pending = thread.take_pending();
+                if !pending.is_empty() {
+                    let delta = ThreadDelta {
+                        run_id: run_id.clone(),
+                        parent_run_id: parent_run_id.clone(),
+                        reason: CheckpointReason::AssistantTurnCommitted,
+                        messages: pending.messages,
+                        patches: pending.patches,
+                        snapshot: None,
+                    };
+                    let _ = tx.send(delta);
+                }
             }
 
             // Step boundary: finished LLM call
@@ -2727,6 +2738,7 @@ fn run_loop_stream_impl_with_provider(
                     result: result_value,
                     stop_reason: Some(StopReason::NaturalEnd),
                 };
+                emit_run_finished_delta!();
                 if let Some(tx) = final_thread_tx.take() {
                     let _ = tx.send(thread);
                 }
@@ -2801,6 +2813,7 @@ fn run_loop_stream_impl_with_provider(
                             result: None,
                             stop_reason: Some(StopReason::Cancelled),
                         };
+                        emit_run_finished_delta!();
                         if let Some(tx) = final_thread_tx.take() {
                             let _ = tx.send(thread);
                         }
@@ -2872,21 +2885,18 @@ fn run_loop_stream_impl_with_provider(
             thread = applied.thread;
 
             if let Some(tx) = checkpoint_tx.as_ref() {
-                let delta = ThreadDelta {
-                    run_id: run_id.clone(),
-                    parent_run_id: parent_run_id.clone(),
-                    reason: CheckpointReason::ToolResultsCommitted,
-                    messages: thread.messages[msg_watermark..].to_vec(),
-                    patches: thread.patches[patch_watermark..].to_vec(),
-                    snapshot: None,
-                };
-                msg_watermark = thread.messages.len();
-                patch_watermark = thread.patches.len();
-                let _ = tx.send(ThreadCheckpoint {
-                    reason: CheckpointReason::ToolResultsCommitted,
-                    thread: thread.clone(),
-                    delta,
-                });
+                let pending = thread.take_pending();
+                if !pending.is_empty() {
+                    let delta = ThreadDelta {
+                        run_id: run_id.clone(),
+                        parent_run_id: parent_run_id.clone(),
+                        reason: CheckpointReason::ToolResultsCommitted,
+                        messages: pending.messages,
+                        patches: pending.patches,
+                        snapshot: None,
+                    };
+                    let _ = tx.send(delta);
+                }
             }
 
             // Emit non-pending tool results (pending ones pause the run).
@@ -2915,6 +2925,7 @@ fn run_loop_stream_impl_with_provider(
                     result: None,
                     stop_reason: None, // Pause, not a stop
                 };
+                emit_run_finished_delta!();
                 if let Some(tx) = final_thread_tx.take() {
                     let _ = tx.send(thread);
                 }
@@ -2939,6 +2950,7 @@ fn run_loop_stream_impl_with_provider(
                     result: None,
                     stop_reason: Some(reason),
                 };
+                emit_run_finished_delta!();
                 if let Some(tx) = final_thread_tx.take() {
                     let _ = tx.send(thread);
                 }

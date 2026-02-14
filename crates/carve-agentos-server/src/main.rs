@@ -41,8 +41,12 @@ struct AgentConfigFile {
     parallel_tools: Option<bool>,
 }
 
-fn build_os(cfg: Option<Config>, tensorzero_url: Option<String>) -> AgentOs {
-    let mut builder = AgentOsBuilder::new();
+fn build_os(
+    cfg: Option<Config>,
+    tensorzero_url: Option<String>,
+    storage: Arc<carve_agent::FileStorage>,
+) -> AgentOs {
+    let mut builder = AgentOsBuilder::new().with_storage(storage);
 
     let agents = match cfg {
         Some(c) => c.agents,
@@ -138,8 +142,8 @@ async fn main() {
         None => None,
     };
 
-    let os = Arc::new(build_os(cfg, args.tensorzero_url));
-    let storage = Arc::new(FileStorage::new(args.storage_dir));
+    let storage: Arc<carve_agent::FileStorage> = Arc::new(FileStorage::new(args.storage_dir));
+    let os = Arc::new(build_os(cfg, args.tensorzero_url, storage.clone()));
 
     let app = http::router(AppState {
         os: os.clone(),
@@ -148,10 +152,9 @@ async fn main() {
 
     if let Some(nats_url) = args.nats_url.clone() {
         let os = os.clone();
-        let storage = storage.clone();
         tokio::spawn(async move {
             let gateway = match carve_agentos_server::nats::NatsGateway::connect(
-                os, storage, &nats_url,
+                os, &nats_url,
             )
             .await
             {

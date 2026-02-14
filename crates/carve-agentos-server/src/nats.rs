@@ -1,15 +1,12 @@
-use carve_agent::ag_ui::AGUIEvent;
+use carve_agent::ag_ui::{AGUIEvent, MessageRole, RunAgentRequest};
 use carve_agent::ui_stream::UIStreamEvent;
-use carve_agent::{
-    apply_agui_request_to_thread, AgentOs, Message, RunAgentRequest, RunContext, Thread,
-    ThreadQuery, AGUI_REQUEST_APPLIED_RUNTIME_KEY,
-};
+use carve_agent::{AgentOs, Message, Role, RunRequest, Visibility};
 use futures::StreamExt;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing;
 
-use crate::ids::generate_run_id;
 use crate::protocol::{AgUiEncoder, AiSdkEncoder};
 use async_nats::ConnectErrorKind;
 
@@ -29,27 +26,24 @@ pub enum NatsGatewayError {
 
     #[error("bad request: {0}")]
     BadRequest(String),
+
+    #[error("run error: {0}")]
+    Run(String),
 }
 
 #[derive(Clone)]
 pub struct NatsGateway {
     os: Arc<AgentOs>,
-    storage: Arc<dyn ThreadQuery>,
     client: async_nats::Client,
 }
 
 impl NatsGateway {
     pub async fn connect(
         os: Arc<AgentOs>,
-        storage: Arc<dyn ThreadQuery>,
         nats_url: &str,
     ) -> Result<Self, NatsGatewayError> {
         let client = async_nats::connect(nats_url).await?;
-        Ok(Self {
-            os,
-            storage,
-            client,
-        })
+        Ok(Self { os, client })
     }
 
     pub async fn serve(self) -> Result<(), NatsGatewayError> {
@@ -107,44 +101,29 @@ impl NatsGateway {
             ));
         };
 
-        let thread = self
-            .storage
-            .load_thread(&req.request.thread_id)
-            .await
-            .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
-            .unwrap_or_else(|| {
-                if let Some(state) = req.request.state.clone() {
-                    Thread::with_initial_state(req.request.thread_id.clone(), state)
-                } else {
-                    Thread::new(req.request.thread_id.clone())
-                }
-            });
-        if thread.id != req.request.thread_id {
-            return Err(NatsGatewayError::BadRequest(
-                "stored thread id does not match threadId".to_string(),
-            ));
+        // Convert AG-UI protocol → internal RunRequest
+        let mut runtime = HashMap::new();
+        if let Some(ref parent_run_id) = req.request.parent_run_id {
+            runtime.insert(
+                "parent_run_id".to_string(),
+                serde_json::Value::String(parent_run_id.clone()),
+            );
         }
 
-        // Industry-common: persist inbound messages/tool responses before running.
-        let before_messages = thread.messages.len();
-        let before_patches = thread.patches.len();
-        let before_state = thread.state.clone();
-        let mut thread = apply_agui_request_to_thread(thread, &req.request);
-        if thread.messages.len() != before_messages
-            || thread.patches.len() != before_patches
-            || thread.state != before_state
-        {
-            self.storage
-                .save(&thread)
-                .await
-                .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
-        }
-        let _ = thread
-            .runtime
-            .set(AGUI_REQUEST_APPLIED_RUNTIME_KEY, req.request.run_id.clone());
+        let messages = convert_agui_messages(&req.request.messages);
 
-        let (client, cfg, tools, thread) = match self.os.resolve(&req.agent_id, thread) {
-            Ok(w) => w,
+        let run_request = RunRequest {
+            agent_id: req.agent_id,
+            thread_id: Some(req.request.thread_id.clone()),
+            run_id: Some(req.request.run_id.clone()),
+            resource_id: None,
+            initial_state: req.request.state.clone(),
+            messages,
+            runtime,
+        };
+
+        let run = match self.os.run_stream(run_request).await {
+            Ok(r) => r,
             Err(e) => {
                 let err = AGUIEvent::run_error(e.to_string(), None);
                 let _ = self
@@ -155,36 +134,10 @@ impl NatsGateway {
             }
         };
 
-        let stream_with_checkpoints = carve_agent::run_agent_events_with_request_checkpoints(
-            client,
-            cfg,
-            thread,
-            tools,
-            req.request.clone(),
-        );
+        let mut events = run.events;
+        let mut enc = AgUiEncoder::new(run.thread_id.clone(), run.run_id.clone());
 
-        let mut inner = stream_with_checkpoints.events;
-        let mut enc = AgUiEncoder::new(req.request.thread_id.clone(), req.request.run_id.clone());
-
-        {
-            let mut checkpoints = stream_with_checkpoints.checkpoints;
-            let final_thread = stream_with_checkpoints.final_thread;
-            let storage = self.storage.clone();
-            tokio::spawn(async move {
-                while let Some(cp) = checkpoints.recv().await {
-                    if let Err(e) = storage.save(&cp.thread).await {
-                        tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
-                    }
-                }
-                if let Ok(final_thread) = final_thread.await {
-                    if let Err(e) = storage.save(&final_thread).await {
-                        tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
-                    }
-                }
-            });
-        }
-
-        while let Some(ev) = inner.next().await {
+        while let Some(ev) = events.next().await {
             for ag in enc.on_agent_event(&ev) {
                 let _ = self
                     .client
@@ -196,7 +149,7 @@ impl NatsGateway {
             }
         }
 
-        for fallback in enc.fallback_finished(&req.request.thread_id, &req.request.run_id) {
+        for fallback in enc.fallback_finished(&run.thread_id, &run.run_id) {
             let _ = self
                 .client
                 .publish(
@@ -228,9 +181,9 @@ impl NatsGateway {
 
         let req: Req = serde_json::from_slice(&msg.payload)
             .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
-        if req.thread_id.trim().is_empty() || req.input.trim().is_empty() {
+        if req.input.trim().is_empty() {
             return Err(NatsGatewayError::BadRequest(
-                "sessionId/input cannot be empty".to_string(),
+                "input cannot be empty".to_string(),
             ));
         }
 
@@ -241,73 +194,35 @@ impl NatsGateway {
             ));
         };
 
-        // Validate agent exists before mutating session state.
-        if let Err(e) = self.os.validate_agent(&req.agent_id) {
-            let err = UIStreamEvent::error(e.to_string());
-            let _ = self
-                .client
-                .publish(
-                    reply.clone(),
-                    serde_json::to_vec(&err).unwrap_or_default().into(),
-                )
-                .await;
-            return Ok(());
-        }
-
-        let mut thread = self
-            .storage
-            .load_thread(&req.thread_id)
-            .await
-            .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?
-            .unwrap_or_else(|| Thread::new(req.thread_id.clone()));
-        thread = thread.with_message(Message::user(req.input));
-
-        // Industry-common: persist the user message immediately.
-        self.storage
-            .save(&thread)
-            .await
-            .map_err(|e| NatsGatewayError::BadRequest(e.to_string()))?;
-
-        // Set run_id on the session runtime if provided; otherwise it will be auto-generated by the loop
-        let run_id = if let Some(run_id) = req.run_id.clone() {
-            let _ = thread.runtime.set("run_id", run_id.clone());
-            run_id
-        } else {
-            // Generate a run_id for the encoder, but don't set it on runtime - let the loop auto-generate
-            generate_run_id()
-        };
-
-        let run_ctx = RunContext {
-            cancellation_token: None,
-        };
-
-        let stream_with_checkpoints =
-            match self
-                .os
-                .run_stream_with_checkpoints(&req.agent_id, thread, run_ctx)
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    let err = UIStreamEvent::error(e.to_string());
-                    let _ = self
-                        .client
-                        .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
-                        .await;
-                    return Ok(());
-                }
-            };
-
-        // Wait for the first event to extract the actual run_id from RunStart
-        let mut events = stream_with_checkpoints.events;
-        let first_event = events.next().await;
-        let actual_run_id =
-            if let Some(carve_agent::AgentEvent::RunStart { run_id: id, .. }) = &first_event {
-                id.clone()
+        let run_request = RunRequest {
+            agent_id: req.agent_id,
+            thread_id: if req.thread_id.trim().is_empty() {
+                None
             } else {
-                run_id.clone() // Fallback to the provided/generated run_id
-            };
+                Some(req.thread_id)
+            },
+            run_id: req.run_id,
+            resource_id: None,
+            initial_state: None,
+            messages: vec![Message::user(req.input)],
+            runtime: HashMap::new(),
+        };
 
-        let mut enc = AiSdkEncoder::new(actual_run_id.clone());
+        let run = match self.os.run_stream(run_request).await {
+            Ok(r) => r,
+            Err(e) => {
+                let err = UIStreamEvent::error(e.to_string());
+                let _ = self
+                    .client
+                    .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
+                    .await;
+                return Ok(());
+            }
+        };
+
+        let mut events = run.events;
+        let mut enc = AiSdkEncoder::new(run.run_id.clone());
+
         for e in enc.prologue() {
             let _ = self
                 .client
@@ -316,37 +231,6 @@ impl NatsGateway {
                     serde_json::to_vec(&e).unwrap_or_default().into(),
                 )
                 .await;
-        }
-
-        {
-            let mut checkpoints = stream_with_checkpoints.checkpoints;
-            let final_thread = stream_with_checkpoints.final_thread;
-            let storage = self.storage.clone();
-            tokio::spawn(async move {
-                while let Some(cp) = checkpoints.recv().await {
-                    if let Err(e) = storage.save(&cp.thread).await {
-                        tracing::error!(thread_id = %cp.thread.id, error = %e, "failed to save checkpoint");
-                    }
-                }
-                if let Ok(final_thread) = final_thread.await {
-                    if let Err(e) = storage.save(&final_thread).await {
-                        tracing::error!(thread_id = %final_thread.id, error = %e, "failed to save final thread");
-                    }
-                }
-            });
-        }
-
-        // Process the first event if we got one
-        if let Some(ev) = first_event {
-            for ui in enc.on_agent_event(&ev) {
-                let _ = self
-                    .client
-                    .publish(
-                        reply.clone(),
-                        serde_json::to_vec(&ui).unwrap_or_default().into(),
-                    )
-                    .await;
-            }
         }
 
         while let Some(ev) = events.next().await {
@@ -363,4 +247,29 @@ impl NatsGateway {
 
         Ok(())
     }
+}
+
+/// Convert AG-UI messages to internal format, filtering out assistant messages.
+fn convert_agui_messages(messages: &[carve_agent::ag_ui::AGUIMessage]) -> Vec<Message> {
+    messages
+        .iter()
+        .filter(|m| m.role != MessageRole::Assistant)
+        .map(|m| {
+            let role = match m.role {
+                MessageRole::System | MessageRole::Developer => Role::System,
+                MessageRole::User => Role::User,
+                MessageRole::Assistant => Role::Assistant,
+                MessageRole::Tool => Role::Tool,
+            };
+            Message {
+                id: m.id.clone(),
+                role,
+                content: m.content.clone(),
+                tool_calls: None,
+                tool_call_id: m.tool_call_id.clone(),
+                visibility: Visibility::default(),
+                metadata: None,
+            }
+        })
+        .collect()
 }

@@ -26,10 +26,8 @@ use std::sync::Arc;
 
 use futures::{Stream, StreamExt};
 
-use crate::r#loop::{
-    run_loop_stream_with_checkpoints, AgentConfig, RunContext, StreamWithCheckpoints,
-    ThreadCheckpoint,
-};
+use crate::r#loop::{run_loop_stream_with_checkpoints, AgentConfig, RunContext, StreamWithCheckpoints};
+use crate::storage::ThreadDelta;
 use crate::thread::Thread;
 use crate::traits::tool::Tool;
 use crate::ui_stream::{AiSdkAdapter, AiSdkEncoder};
@@ -43,8 +41,8 @@ pub struct AiSdkSseStream {
     /// text content, and the framework-emitted `finish`.
     pub events: Pin<Box<dyn Stream<Item = String> + Send>>,
 
-    /// Intermediate session checkpoints for crash-recovery persistence.
-    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadCheckpoint>,
+    /// Intermediate session checkpoints (deltas) for crash-recovery persistence.
+    pub checkpoints: tokio::sync::mpsc::UnboundedReceiver<ThreadDelta>,
 
     /// Resolves to the final [`Thread`] when the stream completes.
     pub final_thread: tokio::sync::oneshot::Receiver<Thread>,

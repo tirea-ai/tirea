@@ -1153,6 +1153,74 @@ async fn test_session_incremental_checkpoints() {
 }
 
 #[tokio::test]
+async fn test_incremental_checkpoints_via_append() {
+    use carve_agent::{
+        CheckpointReason, ThreadDelta, ThreadStore, ThreadSync,
+    };
+
+    let storage = MemoryStorage::new();
+
+    // Create thread
+    let mut thread = Thread::with_initial_state("append-test", json!({"progress": 0}));
+    let committed = storage.create(&thread).await.unwrap();
+    let mut version = committed.version;
+
+    // Simulate 5 checkpoints via append (not save)
+    for checkpoint in 1..=5u64 {
+        for _ in 0..10 {
+            thread = thread.with_message(Message::user(format!(
+                "Work item at checkpoint {}",
+                checkpoint
+            )));
+        }
+        thread = thread.with_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("progress"), json!(checkpoint * 10))),
+        ));
+
+        let pending = thread.take_pending();
+        let delta = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: if checkpoint == 5 {
+                CheckpointReason::RunFinished
+            } else {
+                CheckpointReason::ToolResultsCommitted
+            },
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        };
+
+        let committed = storage.append("append-test", version, &delta).await.unwrap();
+        version = committed.version;
+    }
+
+    assert_eq!(version, 5);
+
+    // Verify final state matches
+    let head = ThreadStore::load(&storage, "append-test")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.version, 5);
+    assert_eq!(head.thread.message_count(), 50);
+    let state = head.thread.rebuild_state().unwrap();
+    assert_eq!(state["progress"], 50);
+
+    // Verify delta replay
+    let all_deltas = storage.load_deltas("append-test", 0).await.unwrap();
+    assert_eq!(all_deltas.len(), 5);
+
+    // Partial replay: only last 2
+    let tail = storage.load_deltas("append-test", 3).await.unwrap();
+    assert_eq!(tail.len(), 2);
+
+    // Total messages across all deltas = 50
+    let total_msgs: usize = all_deltas.iter().map(|d| d.messages.len()).sum();
+    assert_eq!(total_msgs, 50);
+}
+
+#[tokio::test]
 async fn test_session_recovery_with_snapshot() {
     let storage = MemoryStorage::new();
 

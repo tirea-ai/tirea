@@ -5,7 +5,8 @@ use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
     AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStorage, StepContext, StorageError,
-    Thread, ThreadHead, ThreadListPage, ThreadListQuery, ThreadQuery, ThreadStore, Version,
+    Thread, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadQuery, ThreadStore,
+    Version,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -31,6 +32,10 @@ impl AgentPlugin for SkipInferencePlugin {
 }
 
 fn make_os() -> AgentOs {
+    make_os_with_storage(Arc::new(MemoryStorage::new()))
+}
+
+fn make_os_with_storage(storage: Arc<dyn ThreadStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -39,6 +44,7 @@ fn make_os() -> AgentOs {
 
     AgentOsBuilder::new()
         .with_agent("test", def)
+        .with_storage(storage)
         .build()
         .unwrap()
 }
@@ -52,12 +58,12 @@ struct RecordingStorage {
 
 impl RecordingStorage {
     async fn wait_saves(&self, n: usize) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
         while self.saves.load(Ordering::SeqCst) < n {
-            if std::time::Instant::now() > deadline {
-                break;
+            tokio::select! {
+                _ = self.notify.notified() => {}
+                _ = tokio::time::sleep_until(deadline) => break,
             }
-            self.notify.notified().await;
         }
     }
 }
@@ -70,15 +76,26 @@ impl ThreadStore for RecordingStorage {
             return Err(StorageError::AlreadyExists);
         }
         threads.insert(thread.id.clone(), thread.clone());
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
         Ok(Committed { version: 0 })
     }
 
     async fn append(
         &self,
-        _id: &str,
+        id: &str,
         _base_version: Version,
-        _delta: &carve_agent::ThreadDelta,
+        delta: &ThreadDelta,
     ) -> Result<Committed, StorageError> {
+        let mut threads = self.threads.write().await;
+        if let Some(thread) = threads.get_mut(id) {
+            for msg in &delta.messages {
+                thread.messages.push(msg.clone());
+            }
+        }
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        drop(threads);
+        self.notify.notify_waiters();
         Ok(Committed { version: 0 })
     }
 
@@ -173,8 +190,8 @@ async fn test_sessions_query_endpoints() {
 
 #[tokio::test]
 async fn test_ai_sdk_sse_and_persists_session() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os: os.clone(),
         storage: storage.clone(),
@@ -225,8 +242,8 @@ async fn test_ai_sdk_sse_and_persists_session() {
 
 #[tokio::test]
 async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os: os.clone(),
         storage: storage.clone(),
@@ -281,8 +298,8 @@ async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
 
 #[tokio::test]
 async fn test_agui_sse_and_persists_session() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os: os.clone(),
         storage: storage.clone(),
@@ -329,8 +346,8 @@ async fn test_agui_sse_and_persists_session() {
 
 #[tokio::test]
 async fn test_industry_common_persistence_saves_user_message_before_run_completes_ai_sdk() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(RecordingStorage::default());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -371,8 +388,8 @@ async fn test_industry_common_persistence_saves_user_message_before_run_complete
 
 #[tokio::test]
 async fn test_industry_common_persistence_saves_inbound_request_messages_agui() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(RecordingStorage::default());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os,
         storage: storage.clone(),
@@ -416,8 +433,8 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
 
 #[tokio::test]
 async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() {
-    let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
     let app = router(AppState {
         os: os.clone(),
         storage: storage.clone(),
@@ -816,7 +833,7 @@ async fn test_get_session_storage_error() {
 
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_load_error() {
-    let os = Arc::new(make_os());
+    let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
     let storage: Arc<dyn ThreadQuery> = Arc::new(FailingStorage);
     let app = make_app(os, storage);
 
@@ -831,7 +848,7 @@ async fn test_ai_sdk_sse_storage_load_error() {
 
 #[tokio::test]
 async fn test_agui_sse_storage_load_error() {
-    let os = Arc::new(make_os());
+    let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
     let storage: Arc<dyn ThreadQuery> = Arc::new(FailingStorage);
     let app = make_app(os, storage);
 
@@ -901,7 +918,7 @@ impl ThreadQuery for SaveFailStorage {
 
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_save_error() {
-    let os = Arc::new(make_os());
+    let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
     let storage: Arc<dyn ThreadQuery> = Arc::new(SaveFailStorage);
     let app = make_app(os, storage);
 
@@ -916,7 +933,7 @@ async fn test_ai_sdk_sse_storage_save_error() {
 
 #[tokio::test]
 async fn test_agui_sse_storage_save_error() {
-    let os = Arc::new(make_os());
+    let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
     let storage: Arc<dyn ThreadQuery> = Arc::new(SaveFailStorage);
     let app = make_app(os, storage);
 

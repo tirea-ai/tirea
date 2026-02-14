@@ -64,7 +64,7 @@ Do not skip tool calls.",
     let thread = Thread::new("real-multi-subagent-smoke")
         .with_message(Message::user("按流程执行，最后给我结果。"));
 
-    let stream = os.run_stream("orchestrator", thread).unwrap();
+    let stream = os.run_stream_raw("orchestrator", thread).unwrap();
     tokio::pin!(stream);
 
     let mut called_agents: HashSet<String> = HashSet::new();

@@ -1,13 +1,21 @@
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use futures::Stream;
+use genai::Client;
+
 use crate::plugin::AgentPlugin;
 use crate::r#loop::{
     run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_thread,
     RunContext, StreamWithCheckpoints, StreamWithThread,
 };
-pub(crate) mod agent_tools;
-mod registry;
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
+};
+use crate::storage::{
+    CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadStore,
 };
 use crate::tool_filter::{
     set_runtime_filter_if_absent, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_ALLOWED_SKILLS_KEY,
@@ -15,12 +23,16 @@ use crate::tool_filter::{
     RUNTIME_EXCLUDED_TOOLS_KEY,
 };
 use crate::traits::tool::Tool;
+use crate::types::Message;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Thread};
+
+pub(crate) mod agent_tools;
+mod registry;
+
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     RUNTIME_CALLER_AGENT_ID_KEY,
 };
-use genai::Client;
 pub use registry::{
     AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
     CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
@@ -28,8 +40,6 @@ pub use registry::{
     InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
     PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 
 type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
 
@@ -171,6 +181,48 @@ pub enum AgentOsRunError {
 
     #[error(transparent)]
     Loop(#[from] AgentLoopError),
+
+    #[error("storage error: {0}")]
+    Storage(#[from] StorageError),
+
+    #[error("storage not configured")]
+    StorageNotConfigured,
+}
+
+/// Request to run an agent. This is the unified entry point for all protocols
+/// (AI SDK, AG-UI, etc.) — the transport layer converts protocol-specific
+/// requests into this internal format.
+#[derive(Debug, Clone)]
+pub struct RunRequest {
+    pub agent_id: String,
+    /// Thread (conversation) ID. `None` → auto-generate (new conversation).
+    pub thread_id: Option<String>,
+    /// Run ID. `None` → auto-generate.
+    pub run_id: Option<String>,
+    /// Resource this thread belongs to (for listing/querying).
+    pub resource_id: Option<String>,
+    /// Initial state for a new thread. Ignored if the thread already exists.
+    pub initial_state: Option<serde_json::Value>,
+    /// Messages to append before running (already converted to internal format).
+    /// Duplicates (by message ID / tool_call_id) are automatically skipped.
+    pub messages: Vec<Message>,
+    /// Request-scoped runtime context (user_id, token, parent_run_id, etc.).
+    pub runtime: HashMap<String, serde_json::Value>,
+}
+
+/// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
+///
+/// Checkpoint persistence is handled internally — callers only consume the
+/// event stream and use the IDs for protocol encoding.
+pub struct RunStream {
+    /// Resolved thread ID (may have been auto-generated).
+    pub thread_id: String,
+    /// Resolved run ID (may have been auto-generated).
+    pub run_id: String,
+    /// The agent event stream.
+    pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
+    /// Final in-memory thread (for sub-agent response extraction).
+    pub final_thread: tokio::sync::oneshot::Receiver<Thread>,
 }
 
 #[derive(Clone)]
@@ -185,6 +237,7 @@ pub struct AgentOs {
     skills: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
+    storage: Option<Arc<dyn ThreadStore>>,
 }
 
 #[derive(Clone)]
@@ -203,6 +256,7 @@ pub struct AgentOsBuilder {
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
     agent_tools: AgentToolsConfig,
+    storage: Option<Arc<dyn ThreadStore>>,
 }
 
 impl std::fmt::Debug for AgentOs {
@@ -217,6 +271,7 @@ impl std::fmt::Debug for AgentOs {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
+            .field("storage", &self.storage.is_some())
             .finish()
     }
 }
@@ -233,6 +288,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
+            .field("storage", &self.storage.is_some())
             .finish()
     }
 }
@@ -254,6 +310,7 @@ impl AgentOsBuilder {
             skills_registry: None,
             skills: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
+            storage: None,
         }
     }
 
@@ -340,6 +397,11 @@ impl AgentOsBuilder {
         self
     }
 
+    pub fn with_storage(mut self, storage: Arc<dyn ThreadStore>) -> Self {
+        self.storage = Some(storage);
+        self
+    }
+
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
         let AgentOsBuilder {
             client,
@@ -356,6 +418,7 @@ impl AgentOsBuilder {
             skills_registry,
             skills,
             agent_tools,
+            storage,
         } = self;
 
         if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
@@ -517,6 +580,7 @@ impl AgentOsBuilder {
             skills,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,
+            storage,
         })
     }
 }
@@ -857,7 +921,177 @@ impl AgentOs {
         Ok((client, cfg, tools, thread))
     }
 
-    pub async fn run(
+    pub fn storage(&self) -> Option<&Arc<dyn ThreadStore>> {
+        self.storage.as_ref()
+    }
+
+    fn require_storage(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
+        self.storage
+            .as_ref()
+            .ok_or(AgentOsRunError::StorageNotConfigured)
+    }
+
+    fn generate_id() -> String {
+        uuid::Uuid::now_v7().simple().to_string()
+    }
+
+    /// Load a thread from storage. Returns the thread and its version.
+    /// If the thread does not exist, returns `None`.
+    pub async fn load_thread(&self, id: &str) -> Result<Option<ThreadHead>, AgentOsRunError> {
+        let storage = self.require_storage()?;
+        Ok(storage.load(id).await?)
+    }
+
+    /// Run an agent from a [`RunRequest`].
+    ///
+    /// This is the primary entry point for all protocols. It handles:
+    /// 1. Thread loading/creation from storage
+    /// 2. Message deduplication and appending
+    /// 3. Persisting pre-run state
+    /// 4. Agent resolution and execution
+    /// 5. Background checkpoint persistence
+    pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
+        let storage = self.require_storage()?;
+
+        // 0. Validate agent exists (fail fast before creating thread)
+        self.validate_agent(&request.agent_id)?;
+
+        let thread_id = request.thread_id.unwrap_or_else(Self::generate_id);
+        let run_id = request.run_id.unwrap_or_else(Self::generate_id);
+
+        // 1. Load or create thread
+        let (mut thread, mut version) = match storage.load(&thread_id).await? {
+            Some(head) => (head.thread, head.version),
+            None => {
+                let thread = if let Some(state) = request.initial_state {
+                    Thread::with_initial_state(thread_id.clone(), state)
+                } else {
+                    Thread::new(thread_id.clone())
+                };
+                let committed = storage.create(&thread).await?;
+                (thread, committed.version)
+            }
+        };
+
+        // 2. Set resource_id on thread if provided
+        if let Some(ref resource_id) = request.resource_id {
+            thread.resource_id = Some(resource_id.clone());
+        }
+
+        // 3. Apply request-scoped runtime context
+        for (key, value) in &request.runtime {
+            let _ = thread.runtime.set(key, value.clone());
+        }
+
+        // 4. Set run_id on thread runtime
+        let _ = thread.runtime.set("run_id", run_id.clone());
+
+        // 5. Deduplicate and append inbound messages
+        let deduped = Self::dedup_messages(&thread, request.messages);
+        if !deduped.is_empty() {
+            thread = thread.with_messages(deduped);
+        }
+
+        // 6. Persist pending changes (user messages, etc.)
+        let pending = thread.take_pending();
+        if !pending.is_empty() {
+            let delta = ThreadDelta {
+                run_id: run_id.clone(),
+                parent_run_id: request
+                    .runtime
+                    .get("parent_run_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                reason: CheckpointReason::UserMessage,
+                messages: pending.messages,
+                patches: pending.patches,
+                snapshot: None,
+            };
+            let committed = storage.append(&thread_id, version, &delta).await?;
+            version = committed.version;
+        }
+
+        // 7. Resolve agent wiring and run
+        let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
+
+        let swc = run_loop_stream_with_checkpoints(
+            client,
+            cfg,
+            thread,
+            tools,
+            RunContext::default(),
+        );
+
+        // 8. Spawn background checkpoint persistence
+        {
+            let storage = storage.clone();
+            let thread_id = thread_id.clone();
+            let mut checkpoints = swc.checkpoints;
+            tokio::spawn(async move {
+                let mut ver = version;
+                while let Some(delta) = checkpoints.recv().await {
+                    match storage.append(&thread_id, ver, &delta).await {
+                        Ok(committed) => ver = committed.version,
+                        Err(e) => {
+                            tracing::error!(
+                                thread_id = %thread_id,
+                                error = %e,
+                                "failed to persist checkpoint"
+                            );
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(RunStream {
+            thread_id,
+            run_id,
+            events: swc.events,
+            final_thread: swc.final_thread,
+        })
+    }
+
+    /// Deduplicate incoming messages against existing thread messages.
+    ///
+    /// Skips messages whose ID or tool_call_id already exists in the thread.
+    fn dedup_messages(thread: &Thread, incoming: Vec<Message>) -> Vec<Message> {
+        use std::collections::HashSet;
+
+        let existing_ids: HashSet<&str> = thread
+            .messages
+            .iter()
+            .filter_map(|m| m.id.as_deref())
+            .collect();
+        let existing_tool_call_ids: HashSet<&str> = thread
+            .messages
+            .iter()
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+
+        incoming
+            .into_iter()
+            .filter(|m| {
+                // Dedup tool messages by tool_call_id
+                if let Some(ref tc_id) = m.tool_call_id {
+                    if existing_tool_call_ids.contains(tc_id.as_str()) {
+                        return false;
+                    }
+                }
+                // Dedup by message id
+                if let Some(ref id) = m.id {
+                    if existing_ids.contains(id.as_str()) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
+    // --- Legacy methods (used by SubAgentTool and tests) ---
+
+    pub async fn run_blocking(
         &self,
         agent_id: &str,
         thread: Thread,
@@ -867,7 +1101,7 @@ impl AgentOs {
         Ok((thread, text))
     }
 
-    pub fn run_stream(
+    pub fn run_stream_raw(
         &self,
         agent_id: &str,
         thread: Thread,
@@ -1275,11 +1509,11 @@ mod tests {
         let os = AgentOs::builder().with_agent("a1", def).build().unwrap();
 
         let thread = Thread::with_initial_state("s", json!({}));
-        let (_thread, text) = os.run("a1", thread).await.unwrap();
+        let (_thread, text) = os.run_blocking("a1", thread).await.unwrap();
         assert_eq!(text, "");
 
         let thread = Thread::with_initial_state("s2", json!({}));
-        let mut stream = os.run_stream("a1", thread).unwrap();
+        let mut stream = os.run_stream_raw("a1", thread).unwrap();
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
         assert!(matches!(ev, AgentEvent::RunStart { .. }));
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();

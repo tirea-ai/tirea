@@ -12,7 +12,7 @@
 use async_trait::async_trait;
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
-use carve_agent::{AgentDefinition, AgentOsBuilder, MemoryStorage, StepContext, ThreadQuery};
+use carve_agent::{AgentDefinition, AgentOsBuilder, MemoryStorage, StepContext, ThreadStore};
 use carve_agentos_server::nats::NatsGateway;
 use futures::StreamExt;
 use serde_json::json;
@@ -35,7 +35,7 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
-fn make_os() -> carve_agent::AgentOs {
+fn make_os(storage: Arc<dyn carve_agent::ThreadStore>) -> carve_agent::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -44,6 +44,7 @@ fn make_os() -> carve_agent::AgentOs {
 
     AgentOsBuilder::new()
         .with_agent("test", def)
+        .with_storage(storage)
         .build()
         .unwrap()
 }
@@ -63,11 +64,11 @@ async fn start_nats() -> (testcontainers::ContainerAsync<Nats>, String) {
 }
 
 /// Spawn the gateway and return the NATS client for publishing test requests.
-async fn setup_gateway(nats_url: &str) -> (Arc<dyn ThreadQuery>, async_nats::Client) {
-    let os = Arc::new(make_os());
-    let storage: Arc<dyn ThreadQuery> = Arc::new(MemoryStorage::new());
+async fn setup_gateway(nats_url: &str) -> (Arc<MemoryStorage>, async_nats::Client) {
+    let storage = Arc::new(MemoryStorage::new());
+    let os = Arc::new(make_os(storage.clone()));
 
-    let gateway = NatsGateway::connect(os, storage.clone(), nats_url)
+    let gateway = NatsGateway::connect(os, nats_url)
         .await
         .expect("failed to connect gateway to NATS");
 

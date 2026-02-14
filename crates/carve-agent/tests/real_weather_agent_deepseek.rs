@@ -200,7 +200,7 @@ Rules:\n\
         "What's the current weather in San Francisco? Use the tool.",
     ));
 
-    let stream = os.run_stream("weather", thread).unwrap();
+    let stream = os.run_stream_raw("weather", thread).unwrap();
     tokio::pin!(stream);
 
     let mut saw_weather_ready = false;

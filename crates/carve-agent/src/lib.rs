@@ -118,7 +118,7 @@ pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 pub use types::{Message, MessageMetadata, Role, ToolCall, Visibility};
 
 // Thread exports
-pub use thread::{Thread, ThreadMetadata};
+pub use thread::{PendingDelta, Thread, ThreadMetadata};
 
 // Storage exports
 #[cfg(feature = "postgres")]
@@ -184,7 +184,8 @@ pub use agent_os::{
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
     InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
     ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
-    ProviderRegistryError, SkillsConfig, SkillsMode, ToolRegistry, ToolRegistryError,
+    ProviderRegistryError, RunRequest, RunStream, SkillsConfig, SkillsMode, ToolRegistry,
+    ToolRegistryError,
 };
 
 // Loop exports
@@ -193,7 +194,6 @@ pub use r#loop::{
     run_loop, run_loop_stream, run_loop_stream_with_checkpoints, run_loop_stream_with_thread,
     run_round, run_step, tool_map, tool_map_from_arc, AgentConfig, AgentDefinition, AgentLoopError,
     RoundResult, RunContext, ScratchpadMergePolicy, StreamWithCheckpoints, StreamWithThread,
-    ThreadCheckpoint,
 };
 
 // Stop condition exports
