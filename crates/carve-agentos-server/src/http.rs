@@ -10,13 +10,13 @@ use carve_agent::{
     AgentOs, AgentOsRunError, MessagePage, MessageQuery, SortOrder, Thread, ThreadListPage,
     ThreadListQuery, ThreadQuery, Visibility,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
 
 use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, ProtocolInputAdapter, AI_SDK_VERSION,
+    AiSdkV6RunRequest, ProtocolHistoryEncoder, ProtocolInputAdapter, AI_SDK_VERSION,
 };
 use crate::transport::pump_encoded_stream;
 
@@ -72,6 +72,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/threads", get(list_threads))
         .route("/v1/threads/:id", get(get_thread))
         .route("/v1/threads/:id/messages", get(get_thread_messages))
+        .route("/v1/threads/:id/messages/ag-ui", get(get_thread_messages_agui))
+        .route("/v1/threads/:id/messages/ai-sdk", get(get_thread_messages_ai_sdk))
         .route("/v1/agents/:agent_id/runs/ai-sdk/sse", post(run_ai_sdk_sse))
         .route("/v1/agents/:agent_id/runs/ag-ui/sse", post(run_ag_ui_sse))
         .with_state(state)
@@ -154,25 +156,7 @@ async fn get_thread_messages(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<MessagePage>, ApiError> {
-    let limit = params.limit.clamp(1, 200);
-    let order = match params.order.as_deref() {
-        Some("desc") => SortOrder::Desc,
-        _ => SortOrder::Asc,
-    };
-    let visibility = match params.visibility.as_deref() {
-        Some("internal") => Some(Visibility::Internal),
-        Some("none") => None,
-        // Default: only user-visible messages
-        _ => Some(Visibility::All),
-    };
-    let query = MessageQuery {
-        after: params.after,
-        before: params.before,
-        limit,
-        order,
-        visibility,
-        run_id: params.run_id,
-    };
+    let query = parse_message_query(&params);
     st.storage
         .load_messages(&id, &query)
         .await
@@ -181,6 +165,94 @@ async fn get_thread_messages(
             carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
             other => ApiError::Internal(other.to_string()),
         })
+}
+
+/// Response type for protocol-encoded message pages.
+#[derive(Debug, Serialize)]
+struct EncodedMessagePage<M: Serialize> {
+    messages: Vec<M>,
+    has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prev_cursor: Option<i64>,
+}
+
+fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
+    let limit = params.limit.clamp(1, 200);
+    let order = match params.order.as_deref() {
+        Some("desc") => SortOrder::Desc,
+        _ => SortOrder::Asc,
+    };
+    let visibility = match params.visibility.as_deref() {
+        Some("internal") => Some(Visibility::Internal),
+        Some("none") => None,
+        _ => Some(Visibility::All),
+    };
+    MessageQuery {
+        after: params.after,
+        before: params.before,
+        limit,
+        order,
+        visibility,
+        run_id: params.run_id.clone(),
+    }
+}
+
+async fn get_thread_messages_agui(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MessageQueryParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = parse_message_query(&params);
+    let page = st
+        .storage
+        .load_messages(&id, &query)
+        .await
+        .map_err(|e| match e {
+            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
+            other => ApiError::Internal(other.to_string()),
+        })?;
+
+    let encoded = EncodedMessagePage {
+        messages: page
+            .messages
+            .iter()
+            .map(|m| AgUiInputAdapter::encode_message(&m.message))
+            .collect(),
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        prev_cursor: page.prev_cursor,
+    };
+    Ok(Json(encoded))
+}
+
+async fn get_thread_messages_ai_sdk(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<MessageQueryParams>,
+) -> Result<impl IntoResponse, ApiError> {
+    let query = parse_message_query(&params);
+    let page = st
+        .storage
+        .load_messages(&id, &query)
+        .await
+        .map_err(|e| match e {
+            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
+            other => ApiError::Internal(other.to_string()),
+        })?;
+
+    let encoded = EncodedMessagePage {
+        messages: page
+            .messages
+            .iter()
+            .map(|m| AiSdkV6InputAdapter::encode_message(&m.message))
+            .collect(),
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        prev_cursor: page.prev_cursor,
+    };
+    Ok(Json(encoded))
 }
 
 async fn run_ai_sdk_sse(

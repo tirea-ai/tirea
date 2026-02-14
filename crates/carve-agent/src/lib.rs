@@ -155,7 +155,8 @@ pub use ui_stream::{
 // Protocol adapters/encoders
 pub use protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, ProtocolInputAdapter, ProtocolOutputEncoder, AI_SDK_VERSION,
+    AiSdkV6RunRequest, ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder,
+    AI_SDK_VERSION,
 };
 
 // AG-UI exports (CopilotKit compatible)
