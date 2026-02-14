@@ -156,11 +156,10 @@ pub use ai_sdk_sse::{run_ai_sdk_sse, run_ai_sdk_sse_with_hook, AiSdkSseStream, E
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    apply_agui_request_to_thread, run_agent_events_with_request,
-    run_agent_events_with_request_checkpoints, run_agent_stream, run_agent_stream_sse,
-    run_agent_stream_sse_with_parent, run_agent_stream_with_parent, AGUIContext, AGUIContextEntry,
-    AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest,
-    ToolExecutionLocation, AGUI_REQUEST_APPLIED_RUNTIME_KEY,
+    run_agent_events_with_request, run_agent_events_with_request_checkpoints, run_agent_stream,
+    run_agent_stream_sse, run_agent_stream_sse_with_parent, run_agent_stream_with_parent,
+    AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError,
+    RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

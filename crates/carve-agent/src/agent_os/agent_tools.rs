@@ -140,38 +140,6 @@ impl AgentRunManager {
         Some(rec.thread.clone())
     }
 
-    pub async fn stop_owned(
-        &self,
-        owner_thread_id: &str,
-        run_id: &str,
-    ) -> Result<AgentRunSummary, String> {
-        let mut runs = self.runs.lock().await;
-        let Some(rec) = runs.get_mut(run_id) else {
-            return Err(format!("Unknown run_id: {run_id}"));
-        };
-        if rec.owner_thread_id != owner_thread_id {
-            return Err(format!("Unknown run_id: {run_id}"));
-        }
-        if rec.status != AgentRunStatus::Running {
-            return Err(format!(
-                "Run '{run_id}' is not running (current status: {})",
-                rec.status.as_str()
-            ));
-        }
-        rec.run_cancellation_requested = true;
-        rec.status = AgentRunStatus::Stopped;
-        if let Some(token) = rec.cancellation_token.take() {
-            token.cancel();
-        }
-        Ok(AgentRunSummary {
-            run_id: run_id.to_string(),
-            target_agent_id: rec.target_agent_id.clone(),
-            status: rec.status,
-            assistant: rec.assistant.clone(),
-            error: rec.error.clone(),
-        })
-    }
-
     pub async fn stop_owned_tree(
         &self,
         owner_thread_id: &str,

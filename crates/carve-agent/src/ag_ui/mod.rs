@@ -1342,7 +1342,7 @@ fn session_has_tool_call_id(thread: &Thread, tool_call_id: &str) -> bool {
 ///   - tool role messages with `toolCallId`
 ///   - any message with a stable `id`
 ///   - id-less non-tool messages are appended as-is (same-run duplicates are valid user input)
-pub fn apply_agui_request_to_thread(thread: Thread, request: &RunAgentRequest) -> Thread {
+pub(crate) fn apply_agui_request_to_thread(thread: Thread, request: &RunAgentRequest) -> Thread {
     if should_seed_session_from_request(&thread, request) {
         return seed_session_from_request(thread, request);
     }
@@ -1395,7 +1395,7 @@ pub fn apply_agui_request_to_thread(thread: Thread, request: &RunAgentRequest) -
 
 /// Runtime key used to mark that a specific AG-UI request has already been
 /// applied to a thread, preventing duplicate ingress on re-entry.
-pub const AGUI_REQUEST_APPLIED_RUNTIME_KEY: &str = "__agui_request_applied";
+pub(crate) const AGUI_REQUEST_APPLIED_RUNTIME_KEY: &str = "__agui_request_applied";
 
 fn ensure_agui_request_applied(mut thread: Thread, request: &RunAgentRequest) -> Thread {
     let already_applied = thread
