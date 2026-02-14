@@ -6794,4 +6794,337 @@ mod tests {
             }
         });
     }
+
+    // ========================================================================
+    // Message ID alignment integration tests
+    // ========================================================================
+    //
+    // These tests verify that pre-generated message IDs flow correctly through
+    // the entire pipeline: streaming AgentEvents → stored Thread messages →
+    // AG-UI protocol events → AI SDK protocol events.
+
+    /// Verify that `StepStart.message_id` matches the stored assistant `Message.id`.
+    #[tokio::test]
+    async fn test_message_id_stepstart_matches_stored_assistant_message() {
+        let responses = vec![MockResponse::text("Hello world")];
+        let config = AgentConfig::new("mock");
+        let thread = Thread::new("test").with_message(Message::user("hi"));
+
+        let (events, final_thread) = run_mock_stream_with_final_thread(
+            MockStreamProvider::new(responses),
+            config,
+            thread,
+            HashMap::new(),
+        )
+        .await;
+
+        // Extract message_id from StepStart event.
+        let step_msg_id = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::StepStart { message_id } => Some(message_id.clone()),
+                _ => None,
+            })
+            .expect("stream must contain a StepStart event");
+
+        // The pre-generated ID must be a valid UUID v7.
+        assert_eq!(step_msg_id.len(), 36, "message_id should be a UUID");
+        assert_eq!(&step_msg_id[14..15], "7", "message_id should be UUID v7");
+
+        // Find the assistant message stored in the final thread.
+        let assistant_msg = final_thread
+            .messages
+            .iter()
+            .find(|m| m.role == crate::Role::Assistant)
+            .expect("final thread must contain an assistant message");
+
+        assert_eq!(
+            assistant_msg.id.as_deref(),
+            Some(step_msg_id.as_str()),
+            "StepStart.message_id must equal stored assistant Message.id"
+        );
+    }
+
+    /// Verify that `ToolCallDone.message_id` matches the stored tool `Message.id`.
+    #[tokio::test]
+    async fn test_message_id_toolcalldone_matches_stored_tool_message() {
+        // Two responses: first triggers a tool call, second is the final answer.
+        let responses = vec![
+            MockResponse::text("let me search").with_tool_call(
+                "call_1",
+                "echo",
+                json!({"message": "test"}),
+            ),
+            MockResponse::text("found it"),
+        ];
+        let config = AgentConfig::new("mock");
+        let thread = Thread::new("test").with_message(Message::user("search"));
+        let tools = tool_map([EchoTool]);
+
+        let (events, final_thread) = run_mock_stream_with_final_thread(
+            MockStreamProvider::new(responses),
+            config,
+            thread,
+            tools,
+        )
+        .await;
+
+        // Extract message_id from the ToolCallDone event.
+        let tool_done_msg_id = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolCallDone { message_id, .. } => Some(message_id.clone()),
+                _ => None,
+            })
+            .expect("stream must contain a ToolCallDone event");
+
+        assert_eq!(tool_done_msg_id.len(), 36, "tool message_id should be a UUID");
+
+        // Find the tool result message in the final thread.
+        let tool_msg = final_thread
+            .messages
+            .iter()
+            .find(|m| m.role == crate::Role::Tool)
+            .expect("final thread must contain a tool message");
+
+        assert_eq!(
+            tool_msg.id.as_deref(),
+            Some(tool_done_msg_id.as_str()),
+            "ToolCallDone.message_id must equal stored tool Message.id"
+        );
+    }
+
+    /// Verify that AG-UI `TextMessageStart.message_id` matches `StepStart.message_id`
+    /// and hence the stored assistant message.
+    #[tokio::test]
+    async fn test_message_id_agui_text_message_carries_step_id() {
+        use crate::ag_ui::{AGUIContext, AGUIEvent};
+        use crate::stream::agent_event_to_agui;
+
+        let step_msg_id = "pre-gen-assistant-uuid".to_string();
+
+        let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
+
+        // Simulate: StepStart → TextDelta
+        let step_events = agent_event_to_agui(
+            &AgentEvent::StepStart {
+                message_id: step_msg_id.clone(),
+            },
+            &mut ctx,
+        );
+        assert!(!step_events.is_empty());
+
+        let text_events = agent_event_to_agui(
+            &AgentEvent::TextDelta {
+                delta: "Hello".to_string(),
+            },
+            &mut ctx,
+        );
+
+        // The first AG-UI event on text should be TextMessageStart carrying
+        // the same message_id we set via StepStart → reset_for_step.
+        let text_start = text_events
+            .iter()
+            .find(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
+            .expect("AG-UI should emit TextMessageStart on first TextDelta");
+
+        if let AGUIEvent::TextMessageStart { message_id, .. } = text_start {
+            assert_eq!(
+                message_id, &step_msg_id,
+                "AG-UI TextMessageStart.message_id must equal StepStart.message_id"
+            );
+        }
+    }
+
+    /// Verify that AG-UI `ToolCallResult.message_id` matches `ToolCallDone.message_id`
+    /// and hence the stored tool message.
+    #[tokio::test]
+    async fn test_message_id_agui_tool_result_carries_tool_id() {
+        use crate::ag_ui::{AGUIContext, AGUIEvent};
+        use crate::stream::agent_event_to_agui;
+
+        let tool_msg_id = "pre-gen-tool-uuid".to_string();
+
+        let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
+
+        let result_events = agent_event_to_agui(
+            &AgentEvent::ToolCallDone {
+                id: "call_1".into(),
+                result: ToolResult::success("echo", json!({"echoed": "test"})),
+                patch: None,
+                message_id: tool_msg_id.clone(),
+            },
+            &mut ctx,
+        );
+
+        let tool_result = result_events
+            .iter()
+            .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
+            .expect("AG-UI should emit ToolCallResult");
+
+        if let AGUIEvent::ToolCallResult { message_id, .. } = tool_result {
+            assert_eq!(
+                message_id, &tool_msg_id,
+                "AG-UI ToolCallResult.message_id must equal ToolCallDone.message_id"
+            );
+        }
+    }
+
+    /// Verify that the AI SDK encoder picks up `StepStart.message_id` for the
+    /// entire stream, overriding its default run-derived ID.
+    #[tokio::test]
+    async fn test_message_id_ai_sdk_encoder_uses_step_id() {
+        use crate::ui_stream::AiSdkEncoder;
+
+        let step_msg_id = "pre-gen-assistant-uuid".to_string();
+        let mut enc = AiSdkEncoder::new("run_12345678".to_string());
+
+        // Default message_id is run-derived.
+        assert_eq!(enc.message_id(), "msg_run_1234");
+
+        // After processing StepStart, the encoder should adopt the pre-generated ID.
+        let _ = enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: step_msg_id.clone(),
+        });
+        assert_eq!(
+            enc.message_id(),
+            step_msg_id.as_str(),
+            "AiSdkEncoder must adopt StepStart.message_id"
+        );
+
+        // Subsequent StepStart events should NOT override (first wins).
+        let _ = enc.on_agent_event(&AgentEvent::StepStart {
+            message_id: "second-step-id".to_string(),
+        });
+        assert_eq!(
+            enc.message_id(),
+            step_msg_id.as_str(),
+            "AiSdkEncoder must keep the first StepStart.message_id"
+        );
+    }
+
+    /// End-to-end: run a multi-step stream with tool calls and verify all message IDs
+    /// are consistent across events, stored messages, and protocol conversions.
+    #[tokio::test]
+    async fn test_message_id_end_to_end_multi_step() {
+        use crate::ag_ui::{AGUIContext, AGUIEvent};
+        use crate::stream::agent_event_to_agui;
+
+        // Step 1: tool call round. Step 2: final text answer.
+        let responses = vec![
+            MockResponse::text("searching").with_tool_call(
+                "c1",
+                "echo",
+                json!({"message": "query"}),
+            ),
+            MockResponse::text("final answer"),
+        ];
+        let config = AgentConfig::new("mock");
+        let thread = Thread::new("test").with_message(Message::user("go"));
+        let tools = tool_map([EchoTool]);
+
+        let (events, final_thread) = run_mock_stream_with_final_thread(
+            MockStreamProvider::new(responses),
+            config,
+            thread,
+            tools,
+        )
+        .await;
+
+        // Collect all StepStart message_ids and ToolCallDone message_ids.
+        let step_ids: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::StepStart { message_id } => Some(message_id.clone()),
+                _ => None,
+            })
+            .collect();
+        let tool_ids: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolCallDone { id, message_id, .. } => {
+                    Some((id.clone(), message_id.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(step_ids.len(), 2, "two steps expected (tool round + final)");
+        assert_eq!(tool_ids.len(), 1, "one tool call done expected");
+
+        // All IDs must be distinct.
+        let all_ids: Vec<&str> = step_ids
+            .iter()
+            .map(|s| s.as_str())
+            .chain(tool_ids.iter().map(|(_, mid)| mid.as_str()))
+            .collect();
+        let unique: std::collections::HashSet<&str> = all_ids.iter().copied().collect();
+        assert_eq!(
+            all_ids.len(),
+            unique.len(),
+            "all pre-generated IDs must be unique"
+        );
+
+        // Verify stored assistant messages match step IDs.
+        let assistant_msgs: Vec<&Arc<Message>> = final_thread
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::Role::Assistant)
+            .collect();
+        assert_eq!(assistant_msgs.len(), 2);
+        assert_eq!(assistant_msgs[0].id.as_deref(), Some(step_ids[0].as_str()));
+        assert_eq!(assistant_msgs[1].id.as_deref(), Some(step_ids[1].as_str()));
+
+        // Verify stored tool message matches ToolCallDone ID.
+        let tool_msgs: Vec<&Arc<Message>> = final_thread
+            .messages
+            .iter()
+            .filter(|m| m.role == crate::Role::Tool)
+            .collect();
+        assert_eq!(tool_msgs.len(), 1);
+        assert_eq!(
+            tool_msgs[0].id.as_deref(),
+            Some(tool_ids[0].1.as_str()),
+            "stored tool Message.id must match ToolCallDone.message_id"
+        );
+
+        // Replay events through AG-UI converter and verify protocol message IDs.
+        let mut ctx = AGUIContext::new("test".into(), "run".into());
+        let mut agui_text_msg_ids: Vec<String> = Vec::new();
+        let mut agui_tool_result_ids: Vec<String> = Vec::new();
+
+        for ev in &events {
+            let agui_events = agent_event_to_agui(ev, &mut ctx);
+            for ae in &agui_events {
+                match ae {
+                    AGUIEvent::TextMessageStart { message_id, .. } => {
+                        agui_text_msg_ids.push(message_id.clone());
+                    }
+                    AGUIEvent::ToolCallResult { message_id, .. } => {
+                        agui_tool_result_ids.push(message_id.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // AG-UI text messages: the first TextMessageStart in each step should carry
+        // the step's pre-generated ID (set via reset_for_step).
+        assert!(
+            !agui_text_msg_ids.is_empty(),
+            "AG-UI must produce at least one TextMessageStart"
+        );
+        // First text message should use step 1's ID.
+        assert_eq!(
+            agui_text_msg_ids[0], step_ids[0],
+            "first AG-UI TextMessageStart must use step 1 message_id"
+        );
+
+        // AG-UI tool result should carry the pre-generated tool message ID.
+        assert_eq!(agui_tool_result_ids.len(), 1);
+        assert_eq!(
+            agui_tool_result_ids[0], tool_ids[0].1,
+            "AG-UI ToolCallResult must carry the pre-generated tool message_id"
+        );
+    }
 }
