@@ -84,7 +84,6 @@ pub mod activity;
 pub mod ag_ui;
 pub mod agent;
 pub mod agent_os;
-pub mod ai_sdk_sse;
 pub mod convert;
 pub mod execute;
 pub mod r#loop;
@@ -158,15 +157,11 @@ pub use protocol::{
     ProtocolInputAdapter, ProtocolOutputEncoder,
 };
 
-// AI SDK SSE exports
-pub use ai_sdk_sse::{run_ai_sdk_sse, run_ai_sdk_sse_with_hook, AiSdkSseStream, EventHook};
-
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
     run_agent_events_with_request, run_agent_events_with_request_checkpoints, run_agent_stream,
-    run_agent_stream_sse, run_agent_stream_sse_with_parent, run_agent_stream_with_parent,
-    AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, AgUiAdapter, RequestError,
-    RunAgentRequest, ToolExecutionLocation,
+    run_agent_stream_with_parent, AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage,
+    AGUIToolDef, AgUiAdapter, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

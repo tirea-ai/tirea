@@ -834,10 +834,10 @@ impl AGUIContext {
 ///
 /// let mut adapter = AgUiAdapter::new("thread_1".to_string(), "run_123".to_string());
 ///
-/// // Convert event to SSE format
+/// // Convert event to protocol events
 /// let event = AgentEvent::TextDelta { delta: "Hello".to_string() };
-/// let sse_lines = adapter.to_sse(&event);
-/// assert!(sse_lines[0].contains("TEXT_MESSAGE"));
+/// let events = adapter.convert(&event);
+/// assert_eq!(events[0].event_type(), "TEXT_MESSAGE_START");
 /// ```
 #[derive(Debug, Clone)]
 pub struct AgUiAdapter {
@@ -883,26 +883,6 @@ impl AgUiAdapter {
         self.convert(event)
             .into_iter()
             .filter_map(|e| serde_json::to_string(&e).ok())
-            .collect()
-    }
-
-    /// Convert an AgentEvent to SSE (Server-Sent Events) format.
-    ///
-    /// Returns lines in the format: `data: {json}\n\n`
-    pub fn to_sse(&mut self, event: &crate::stream::AgentEvent) -> Vec<String> {
-        self.to_json(event)
-            .into_iter()
-            .map(|json| format!("data: {}\n\n", json))
-            .collect()
-    }
-
-    /// Convert an AgentEvent to newline-delimited JSON (NDJSON) format.
-    ///
-    /// Returns lines in the format: `{json}\n`
-    pub fn to_ndjson(&mut self, event: &crate::stream::AgentEvent) -> Vec<String> {
-        self.to_json(event)
-            .into_iter()
-            .map(|json| format!("{}\n", json))
             .collect()
     }
 
@@ -1730,54 +1710,6 @@ pub fn run_agent_stream_with_parent(
     })
 }
 
-/// Run the agent loop and return a stream of SSE-formatted strings.
-///
-/// This is a convenience function that wraps `run_agent_stream` and formats
-/// each event as Server-Sent Events (SSE) for direct HTTP streaming.
-/// Layered servers may prefer protocol-output encoding plus transport framing
-/// in a gateway crate.
-///
-/// # Returns
-///
-/// A stream of strings in SSE format: `data: {json}\n\n`
-pub fn run_agent_stream_sse(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    thread_id: String,
-    run_id: String,
-) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    run_agent_stream_sse_with_parent(client, config, thread, tools, thread_id, run_id, None)
-}
-
-/// Run the agent loop and return SSE strings with an explicit parent run ID.
-pub fn run_agent_stream_sse_with_parent(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    thread_id: String,
-    run_id: String,
-    parent_run_id: Option<String>,
-) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    Box::pin(stream! {
-        let mut inner = run_agent_stream_with_parent(
-            client,
-            config,
-            thread,
-            tools,
-            thread_id,
-            run_id,
-            parent_run_id,
-        );
-        while let Some(event) = inner.next().await {
-            if let Ok(json) = serde_json::to_string(&event) {
-                yield format!("data: {}\n\n", json);
-            }
-        }
-    })
-}
 
 /// Run the agent loop with an AG-UI request, handling frontend tools automatically.
 ///
@@ -1878,27 +1810,6 @@ pub fn run_agent_events_with_request_checkpoints(
     };
 
     run_loop_stream_with_checkpoints(client, config, thread, tools, run_ctx)
-}
-
-/// Run the agent loop with an AG-UI request, returning SSE-formatted strings.
-///
-/// This is a convenience function that wraps `run_agent_stream_with_request`
-/// and formats each event as Server-Sent Events (SSE).
-pub fn run_agent_stream_with_request_sse(
-    client: Client,
-    config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
-    request: RunAgentRequest,
-) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    Box::pin(stream! {
-        let mut inner = run_agent_stream_with_request(client, config, thread, tools, request);
-        while let Some(event) = inner.next().await {
-            if let Ok(json) = serde_json::to_string(&event) {
-                yield format!("data: {}\n\n", json);
-            }
-        }
-    })
 }
 
 #[cfg(test)]
