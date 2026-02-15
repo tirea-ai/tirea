@@ -37,6 +37,7 @@ mcp = ["dep:mcp"]
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
 carve-protocol-ai-sdk-v6 = { path = "../carve-protocol-ai-sdk-v6" }
+trybuild.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }

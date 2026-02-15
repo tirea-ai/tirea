@@ -1,0 +1,20 @@
+error[E0432]: unresolved import `carve_agent::ag_ui`
+ --> tests/ui/no_agui_reexports.rs:1:18
+  |
+1 | use carve_agent::ag_ui::AGUIContext;
+  |                  ^^^^^ could not find `ag_ui` in `carve_agent`
+
+error[E0432]: unresolved imports `carve_agent::AGUIEvent`, `carve_agent::RunAgentRequest`
+ --> tests/ui/no_agui_reexports.rs:2:19
+  |
+2 | use carve_agent::{AGUIEvent, RunAgentRequest};
+  |                   ^^^^^^^^^  ^^^^^^^^^^^^^^^
+  |                   |          |
+  |                   |          no `RunAgentRequest` in the root
+  |                   |          help: a similar name exists in the module: `SubAgentResult`
+  |                   no `AGUIEvent` in the root
+  |
+  = help: consider importing this enum instead:
+          carve_protocol_ag_ui::AGUIEvent
+  = help: consider importing this struct instead:
+          carve_protocol_ag_ui::RunAgentRequest
