@@ -81,13 +81,6 @@
 //! storage.save(&thread).await?;
 //! ```
 
-#[cfg(feature = "postgres")]
-compile_error!(
-    "feature `postgres` has been removed from `carve-agent`; \
-     use `carve-thread-store-adapters` with feature `postgres` and import \
-     `carve_thread_store_adapters::PostgresStore`"
-);
-
 pub mod activity;
 pub mod ag_ui;
 pub mod agent;

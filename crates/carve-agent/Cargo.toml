@@ -29,10 +29,6 @@ mcp = { package = "model-context-protocol", version = "0.2", default-features = 
 [features]
 default = []
 mcp = ["dep:mcp"]
-# Deprecated compatibility shim after moving PostgresStore implementation to
-# `carve-thread-store-adapters`. Enabling this feature now triggers a compile
-# error with migration instructions.
-postgres = []
 
 [dev-dependencies]
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
