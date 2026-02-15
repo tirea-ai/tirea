@@ -1,5 +1,5 @@
 use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent};
-use carve_agent_runtime_contract::AgentEvent;
+use carve_agent_contract::AgentEvent;
 use serde_json::Value;
 use std::collections::HashMap;
 use tracing::warn;

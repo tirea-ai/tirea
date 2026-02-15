@@ -238,7 +238,7 @@ pub enum AgentOsRunError {
     ThreadStoreNotConfigured,
 }
 
-pub use carve_agent_runtime_contract::RunRequest;
+pub use carve_agent_contract::RunRequest;
 
 /// Run-scoped runtime extensions injected for a single run.
 ///

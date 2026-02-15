@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::{AgentEvent, StopReason};
+use carve_agent_contract::{AgentEvent, StopReason};
 use carve_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
 use carve_protocol_contract::ProtocolOutputEncoder;
 

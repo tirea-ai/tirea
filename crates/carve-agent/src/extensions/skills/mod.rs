@@ -6,7 +6,6 @@
 //! - `SkillRuntimePlugin`: inject activated skill context before inference
 
 mod combined_plugin;
-mod composite_registry;
 mod discovery_plugin;
 mod embedded_registry;
 mod in_memory_registry;
@@ -18,15 +17,16 @@ pub mod state;
 mod subsystem;
 mod tools;
 
+pub use carve_agent_contract::skills::{
+    CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset, LoadedReference,
+    ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
+    SkillResource, SkillResourceKind,
+};
 pub use combined_plugin::SkillPlugin;
-pub use composite_registry::{CompositeSkillRegistry, CompositeSkillRegistryError};
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillRegistry};
 pub use in_memory_registry::InMemorySkillRegistry;
-pub use registry::{
-    FsSkillRegistry, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
-    SkillResource, SkillResourceKind,
-};
+pub use registry::FsSkillRegistry;
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};

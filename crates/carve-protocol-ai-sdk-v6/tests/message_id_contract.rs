@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::AgentEvent;
+use carve_agent_contract::AgentEvent;
 use carve_protocol_ai_sdk_v6::AiSdkEncoder;
 
 #[test]

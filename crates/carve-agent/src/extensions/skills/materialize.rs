@@ -1,5 +1,6 @@
 use crate::extensions::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use carve_agent_contract::skills::SkillMaterializeError;
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -14,24 +15,6 @@ const MAX_SCRIPT_ARGS: usize = 64;
 const MAX_SCRIPT_ARG_BYTES: usize = 8 * 1024;
 const MAX_SCRIPT_ARGS_TOTAL_BYTES: usize = 64 * 1024;
 const SCRIPT_TIMEOUT_SECS: u64 = 60;
-
-#[derive(Debug, thiserror::Error)]
-pub enum SkillMaterializeError {
-    #[error("invalid relative path: {0}")]
-    InvalidPath(String),
-    #[error("path is outside skill root")]
-    PathEscapesRoot,
-    #[error("unsupported path (expected under {0})")]
-    UnsupportedPath(String),
-    #[error("io error: {0}")]
-    Io(String),
-    #[error("script runtime not supported for: {0}")]
-    UnsupportedRuntime(String),
-    #[error("script timed out after {0}s")]
-    Timeout(u64),
-    #[error("invalid script arguments: {0}")]
-    InvalidScriptArgs(String),
-}
 
 pub(crate) fn load_reference_material(
     skill_id: &str,

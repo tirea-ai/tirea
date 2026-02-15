@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "AG-UI protocol types and adapters for carve-agent"
 
 [dependencies]
-carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
+carve-agent-contract = { path = "../carve-agent-contract" }
 carve-protocol-contract = { path = "../carve-protocol-contract" }
 carve-thread-model = { path = "../carve-thread-model" }
 serde = { workspace = true, features = ["derive"] }

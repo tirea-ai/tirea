@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "crates/carve-state",
     "crates/carve-state-derive",
-    "crates/carve-agent-runtime-contract",
+    "crates/carve-agent-contract",
     "crates/carve-protocol-contract",
     "crates/carve-protocol-ag-ui",
     "crates/carve-protocol-ag-ui-runtime",
@@ -26,7 +26,7 @@ repository = "https://github.com/user/uncarve"
 # Internal crates
 carve-state = { path = "crates/carve-state" }
 carve-state-derive = { path = "crates/carve-state-derive" }
-carve-agent-runtime-contract = { path = "crates/carve-agent-runtime-contract" }
+carve-agent-contract = { path = "crates/carve-agent-contract" }
 carve-protocol-contract = { path = "crates/carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "crates/carve-protocol-ag-ui" }
 carve-protocol-ag-ui-runtime = { path = "crates/carve-protocol-ag-ui-runtime" }

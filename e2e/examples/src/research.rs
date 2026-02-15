@@ -1,4 +1,5 @@
-use carve_agent::{AgentDefinition, AgentPlugin, PermissionPlugin, Tool};
+use carve_agent::prelude::{AgentPlugin, PermissionPlugin, Tool};
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use clap::Parser;
 use std::sync::Arc;
 use uncarve_examples::research::tools::*;

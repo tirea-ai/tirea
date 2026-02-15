@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
-carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
+carve-agent-contract = { path = "../carve-agent-contract" }
 carve-thread-model = { path = "../carve-thread-model" }
 carve-thread-store-contract = { path = "../carve-thread-store-contract" }
 serde = { version = "1", features = ["derive"] }

@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::Interaction;
+use carve_agent_contract::Interaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;

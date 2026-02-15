@@ -1,5 +1,5 @@
 use super::UIStreamEvent;
-use carve_agent_runtime_contract::{AgentEvent, StopReason};
+use carve_agent_contract::{AgentEvent, StopReason};
 use tracing::warn;
 
 /// Data event name for a full state snapshot payload.

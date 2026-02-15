@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::{AgentEvent, Interaction};
+use carve_agent_contract::{AgentEvent, Interaction};
 use carve_protocol_ag_ui::{
     AGUIContext, AGUIEvent, AGUIMessage, AgUiInputAdapter, RunAgentRequest,
 };

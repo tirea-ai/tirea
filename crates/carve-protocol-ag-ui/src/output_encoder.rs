@@ -1,5 +1,5 @@
 use super::{AGUIContext, AGUIEvent};
-use carve_agent_runtime_contract::AgentEvent;
+use carve_agent_contract::AgentEvent;
 use carve_protocol_contract::ProtocolOutputEncoder;
 
 pub struct AgUiProtocolEncoder {

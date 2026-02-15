@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use carve_agent::{Context, Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::prelude::{Context, Tool, ToolDescriptor, ToolError, ToolResult};
 use serde_json::{json, Value};
 
 use super::state::{LogEntry, ResearchState, Resource};

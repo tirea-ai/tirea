@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::{AgentEvent, ToolResult};
+use carve_agent_contract::{AgentEvent, ToolResult};
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 

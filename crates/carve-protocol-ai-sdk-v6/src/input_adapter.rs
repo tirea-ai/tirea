@@ -1,4 +1,4 @@
-use carve_agent_runtime_contract::RunRequest;
+use carve_agent_contract::RunRequest;
 use carve_protocol_contract::ProtocolInputAdapter;
 use carve_thread_model::Message;
 

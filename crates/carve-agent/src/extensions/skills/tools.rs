@@ -4,12 +4,12 @@ use crate::engine::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::permission::PermissionContextExt;
-use crate::extensions::skills::materialize::SkillMaterializeError;
 use crate::extensions::skills::registry::{
     SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
 };
 use crate::extensions::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::extensions::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
+use carve_agent_contract::skills::SkillMaterializeError;
 use carve_state::Context;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

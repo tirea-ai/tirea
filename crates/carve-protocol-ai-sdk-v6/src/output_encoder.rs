@@ -1,5 +1,5 @@
 use super::{AiSdkEncoder, UIStreamEvent, AI_SDK_VERSION};
-use carve_agent_runtime_contract::AgentEvent;
+use carve_agent_contract::AgentEvent;
 use carve_protocol_contract::ProtocolOutputEncoder;
 use serde_json::json;
 

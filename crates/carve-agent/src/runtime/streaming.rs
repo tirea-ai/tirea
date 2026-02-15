@@ -201,25 +201,9 @@ pub enum StreamOutput {
     ToolCallDelta { id: String, args_delta: String },
 }
 
-/// Result of stream collection.
-#[derive(Debug, Clone)]
-pub struct StreamResult {
-    /// Accumulated text content.
-    pub text: String,
-    /// Collected tool calls.
-    pub tool_calls: Vec<ToolCall>,
-    /// Token usage from the LLM response.
-    pub usage: Option<Usage>,
-}
+pub use carve_agent_contract::StreamResult;
 
-impl StreamResult {
-    /// Check if tool execution is needed.
-    pub fn needs_tools(&self) -> bool {
-        !self.tool_calls.is_empty()
-    }
-}
-
-pub use carve_agent_runtime_contract::AgentEvent;
+pub use carve_agent_contract::AgentEvent;
 
 #[cfg(test)]
 mod tests {

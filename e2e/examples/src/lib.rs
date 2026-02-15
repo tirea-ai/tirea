@@ -8,9 +8,11 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agent::{
-    tool_map_from_arc, AgentOsBuilder, ModelDefinition, ThreadReader, ThreadStore, Tool,
-};
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
+use carve_agent::prelude::Tool;
+use carve_agent::runtime::loop_runner::{tool_map_from_arc, AgentDefinition};
+use carve_agent::thread_store::{ThreadReader, ThreadStore};
 use carve_agentos_server::http::{self, AppState};
 use carve_thread_store_adapters::FileStore;
 use clap::Parser;
@@ -35,9 +37,9 @@ pub struct Args {
 /// Build an AgentOs and start the HTTP server.
 pub async fn serve(
     args: Args,
-    agent_def: carve_agent::AgentDefinition,
+    agent_def: AgentDefinition,
     tools: Vec<Arc<dyn Tool>>,
-    plugins: Vec<(String, Arc<dyn carve_agent::AgentPlugin>)>,
+    plugins: Vec<(String, Arc<dyn AgentPlugin>)>,
 ) {
     let agent_id = agent_def.id.clone();
     let model_id = agent_def.model.clone();

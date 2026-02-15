@@ -1,6 +1,13 @@
-//! Registry contracts re-exported from `carve-agent-contract`.
+//! Agent composition contracts: registries and bundles.
 
-pub use carve_agent_contract::composition::{
+mod bundle;
+mod registry;
+
+pub use bundle::{
+    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
+    RegistryBundle, RegistrySet, ToolPluginBundle,
+};
+pub use registry::{
     AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
     CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
     InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,

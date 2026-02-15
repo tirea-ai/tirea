@@ -1,56 +1,17 @@
 use crate::extensions::skills::materialize::{
-    load_asset_material, load_reference_material, run_script_material, SkillMaterializeError,
+    load_asset_material, load_reference_material, run_script_material,
 };
 use crate::extensions::skills::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
-use crate::extensions::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+pub use carve_agent_contract::skills::{
+    ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
+    SkillResource, SkillResourceKind,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillMeta {
-    /// Stable skill identifier (derived from the relative directory path).
-    pub id: String,
-    /// Skill name (spec): directory name and frontmatter `name`.
-    pub name: String,
-    /// Human-facing description (from frontmatter `description`, required by spec).
-    pub description: String,
-    /// Tools suggested/allowed by this skill (optional).
-    pub allowed_tools: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillRegistryWarning {
-    pub path: PathBuf,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SkillResourceKind {
-    Reference,
-    Asset,
-}
-
-impl SkillResourceKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            SkillResourceKind::Reference => "reference",
-            SkillResourceKind::Asset => "asset",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "resource", rename_all = "snake_case")]
-pub enum SkillResource {
-    Reference(LoadedReference),
-    Asset(LoadedAsset),
-}
 
 type DiscoveryResult = (
     Vec<SkillMeta>,
@@ -58,58 +19,6 @@ type DiscoveryResult = (
     HashMap<String, PathBuf>,
     Vec<SkillRegistryWarning>,
 );
-
-#[derive(Debug, thiserror::Error)]
-pub enum SkillRegistryError {
-    #[error("unknown skill: {0}")]
-    UnknownSkill(String),
-
-    #[error("invalid SKILL.md: {0}")]
-    InvalidSkillMd(String),
-
-    #[error("materialize error: {0}")]
-    Materialize(#[from] SkillMaterializeError),
-
-    #[error("io error: {0}")]
-    Io(String),
-
-    #[error("duplicate skill id: {0}")]
-    DuplicateSkillId(String),
-
-    #[error("unsupported operation: {0}")]
-    Unsupported(String),
-}
-
-#[async_trait]
-pub trait SkillRegistry: Send + Sync + std::fmt::Debug {
-    fn list(&self) -> Vec<SkillMeta>;
-
-    fn warnings(&self) -> Vec<SkillRegistryWarning> {
-        Vec::new()
-    }
-
-    fn get(&self, skill_id: &str) -> Option<SkillMeta>;
-
-    fn resolve(&self, key: &str) -> Option<SkillMeta> {
-        self.get(key.trim())
-    }
-
-    async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError>;
-
-    async fn load_resource(
-        &self,
-        skill_id: &str,
-        kind: SkillResourceKind,
-        path: &str,
-    ) -> Result<SkillResource, SkillRegistryError>;
-
-    async fn run_script(
-        &self,
-        skill_id: &str,
-        script: &str,
-        args: &[String],
-    ) -> Result<ScriptResult, SkillRegistryError>;
-}
 
 #[derive(Debug, Clone, Default)]
 struct FsIndex {

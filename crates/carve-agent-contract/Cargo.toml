@@ -1,0 +1,26 @@
+[package]
+name = "carve-agent-contract"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Shared agent contracts: runtime, extension SPI, and composition registries"
+
+[dependencies]
+carve-state = { path = "../carve-state" }
+carve-state-derive = { path = "../carve-state-derive" }
+carve-thread-model = { path = "../carve-thread-model" }
+carve-thread-store-contract = { path = "../carve-thread-store-contract" }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+genai = "0.5"
+tracing = "0.1"
+tokio-util = "0.7"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

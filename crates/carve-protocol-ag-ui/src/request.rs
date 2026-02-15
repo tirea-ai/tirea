@@ -1,5 +1,5 @@
 use crate::protocol::MessageRole;
-use carve_agent_runtime_contract::InteractionResponse;
+use carve_agent_contract::InteractionResponse;
 use carve_thread_model::{gen_message_id, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
