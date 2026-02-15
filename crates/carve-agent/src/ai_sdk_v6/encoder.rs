@@ -1,4 +1,5 @@
 use super::UIStreamEvent;
+use tracing::warn;
 
 /// Data event name for a full state snapshot payload.
 pub const DATA_EVENT_STATE_SNAPSHOT: &str = "state-snapshot";
@@ -220,15 +221,32 @@ impl AiSdkEncoder {
                 vec![UIStreamEvent::data(DATA_EVENT_ACTIVITY_DELTA, payload)]
             }
             AgentEvent::Pending { interaction } => {
-                vec![UIStreamEvent::data(
-                    DATA_EVENT_INTERACTION,
-                    serde_json::to_value(interaction).unwrap_or_default(),
-                )]
+                let payload = match serde_json::to_value(interaction) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        warn!(error = %err, interaction_id = %interaction.id, "failed to serialize pending interaction for AI SDK");
+                        serde_json::json!({
+                            "id": interaction.id,
+                            "error": "failed to serialize interaction",
+                        })
+                    }
+                };
+                vec![UIStreamEvent::data(DATA_EVENT_INTERACTION, payload)]
             }
             AgentEvent::InteractionRequested { interaction } => {
+                let payload = match serde_json::to_value(interaction) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        warn!(error = %err, interaction_id = %interaction.id, "failed to serialize interaction-requested event for AI SDK");
+                        serde_json::json!({
+                            "id": interaction.id,
+                            "error": "failed to serialize interaction",
+                        })
+                    }
+                };
                 vec![UIStreamEvent::data(
                     DATA_EVENT_INTERACTION_REQUESTED,
-                    serde_json::to_value(interaction).unwrap_or_default(),
+                    payload,
                 )]
             }
             AgentEvent::InteractionResolved {

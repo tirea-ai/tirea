@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 fn frontend_tool_specs_from_request(request: &RunAgentRequest) -> Vec<FrontendToolSpec> {
     request
@@ -458,18 +459,32 @@ pub(crate) fn interaction_runtime_values(request: &RunAgentRequest) -> HashMap<S
         .map(|tool| tool.name.clone())
         .collect();
     if !frontend_tools.is_empty() {
-        runtime.insert(
-            crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY.to_string(),
-            serde_json::to_value(frontend_tools).unwrap_or_default(),
-        );
+        match serde_json::to_value(frontend_tools) {
+            Ok(value) => {
+                runtime.insert(
+                    crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY.to_string(),
+                    value,
+                );
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to serialize frontend tools into runtime");
+            }
+        }
     }
 
     let responses = request.interaction_responses();
     if !responses.is_empty() {
-        runtime.insert(
-            crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY.to_string(),
-            serde_json::to_value(responses).unwrap_or_default(),
-        );
+        match serde_json::to_value(responses) {
+            Ok(value) => {
+                runtime.insert(
+                    crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY.to_string(),
+                    value,
+                );
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to serialize interaction responses into runtime");
+            }
+        }
     }
 
     runtime
@@ -722,7 +737,17 @@ pub(super) fn build_context_addendum(request: &RunAgentRequest) -> Option<String
     for entry in &request.context {
         let value_str = match &entry.value {
             Value::String(s) => s.clone(),
-            other => serde_json::to_string(other).unwrap_or_default(),
+            other => match serde_json::to_string(other) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        description = %entry.description,
+                        "failed to stringify AG-UI context value"
+                    );
+                    "<unserializable-context-value>".to_string()
+                }
+            },
         };
         parts.push(format!("[{}]: {}", entry.description, value_str));
     }

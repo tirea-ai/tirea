@@ -2,6 +2,7 @@ use crate::state_types::Interaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use tracing::warn;
 
 // Base Event Fields
 // ============================================================================
@@ -631,7 +632,20 @@ impl Interaction {
 
         vec![
             AGUIEvent::tool_call_start(&self.id, &self.action, None),
-            AGUIEvent::tool_call_args(&self.id, serde_json::to_string(&args).unwrap_or_default()),
+            AGUIEvent::tool_call_args(
+                &self.id,
+                match serde_json::to_string(&args) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            interaction_id = %self.id,
+                            "failed to serialize interaction arguments for AG-UI"
+                        );
+                        "{}".to_string()
+                    }
+                },
+            ),
             AGUIEvent::tool_call_end(&self.id),
         ]
     }

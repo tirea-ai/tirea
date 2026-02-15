@@ -1,6 +1,7 @@
 use crate::ag_ui::protocol::AGUIEvent;
 use serde_json::Value;
 use std::collections::HashMap;
+use tracing::warn;
 use uuid::Uuid;
 
 // AG-UI Context
@@ -209,7 +210,13 @@ impl AGUIContext {
                 message_id,
                 ..
             } => {
-                let content = serde_json::to_string(&result.to_json()).unwrap_or_default();
+                let content = match serde_json::to_string(&result.to_json()) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        warn!(error = %err, tool_call_id = %id, "failed to serialize tool result for AG-UI");
+                        r#"{"error":"failed to serialize tool result"}"#.to_string()
+                    }
+                };
                 let msg_id = if message_id.is_empty() {
                     format!("result_{id}")
                 } else {
