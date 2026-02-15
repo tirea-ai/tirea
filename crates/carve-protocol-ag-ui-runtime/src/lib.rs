@@ -166,8 +166,6 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
-        assert!(extensions.tools.is_empty());
-        assert!(extensions.plugins.is_empty());
         assert_eq!(extensions.bundles.len(), 1);
     }
 
@@ -190,8 +188,6 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
-        assert!(extensions.tools.is_empty());
-        assert!(extensions.plugins.is_empty());
         assert_eq!(extensions.bundles.len(), 1);
     }
 
