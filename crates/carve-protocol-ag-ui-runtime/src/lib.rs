@@ -5,7 +5,7 @@
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agent::interaction::InteractionPlugin;
+use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::{
     AgentPlugin, Context, Interaction, Phase, RunExtensions, StepContext, Tool, ToolDescriptor,
     ToolError, ToolPluginBundle, ToolResult,
@@ -130,7 +130,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent::phase::{Phase, ToolContext};
+    use carve_agent::contracts::phase::{Phase, ToolContext};
     use carve_agent::thread::Thread;
     use carve_agent::types::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};

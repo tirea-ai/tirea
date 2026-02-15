@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::phase::Phase;
-use carve_agent::plugin::AgentPlugin;
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::phase::Phase;
 use carve_agent::{
     AgentDefinition, AgentOs, AgentOsBuilder, Committed, StepContext, Thread, ThreadDelta,
     ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,

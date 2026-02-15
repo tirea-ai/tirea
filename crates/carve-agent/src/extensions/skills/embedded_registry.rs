@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use carve_agent::skills::{EmbeddedSkill, EmbeddedSkillRegistry, SkillSubsystem};
+//! use carve_agent::extensions::skills::{EmbeddedSkill, EmbeddedSkillRegistry, SkillSubsystem};
 //!
 //! static SKILLS: &[EmbeddedSkill] = &[
 //!     EmbeddedSkill {

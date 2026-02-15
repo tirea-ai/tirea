@@ -1688,8 +1688,8 @@ impl AgentPlugin for AgentToolsPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_os::InMemoryAgentRegistry;
     use crate::contracts::traits::tool::ToolStatus;
+    use crate::orchestrator::InMemoryAgentRegistry;
     use crate::runtime::loop_runner::{
         TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
         TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,

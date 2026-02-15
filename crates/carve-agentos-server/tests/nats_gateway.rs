@@ -10,8 +10,8 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::phase::Phase;
-use carve_agent::plugin::AgentPlugin;
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::phase::Phase;
 use carve_agent::{AgentDefinition, AgentOsBuilder, StepContext, ThreadReader, ThreadStore};
 use carve_agentos_server::nats::NatsGateway;
 use carve_thread_store_adapters::MemoryStore;

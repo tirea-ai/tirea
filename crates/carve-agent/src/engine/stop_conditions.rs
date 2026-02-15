@@ -18,7 +18,7 @@
 //! Implement the [`StopCondition`] trait for custom logic:
 //!
 //! ```ignore
-//! use carve_agent::stop::{StopCondition, StopCheckContext, StopReason};
+//! use carve_agent::engine::stop_conditions::{StopCondition, StopCheckContext, StopReason};
 //!
 //! struct CostLimit { max_cents: usize }
 //!
@@ -265,7 +265,7 @@ impl StopCondition for LoopDetection {
 /// resolve to `Arc<dyn StopCondition>` at runtime via [`into_condition`].
 ///
 /// ```
-/// use carve_agent::stop::StopConditionSpec;
+/// use carve_agent::engine::stop_conditions::StopConditionSpec;
 ///
 /// let spec = StopConditionSpec::MaxRounds { rounds: 5 };
 /// let json = serde_json::to_string(&spec).unwrap();

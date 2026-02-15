@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use carve_agent::phase::Phase;
-use carve_agent::plugin::AgentPlugin;
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::phase::Phase;
 use carve_agent::{AgentDefinition, AgentEvent, AgentOs, AgentOsBuilder, RunRequest, StepContext};
 use carve_protocol_ag_ui::{AGUIMessage, AgUiInputAdapter, RunAgentRequest};
 use carve_protocol_ag_ui_runtime::build_agui_extensions;

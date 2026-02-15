@@ -99,27 +99,10 @@ pub mod extensions;
 pub mod orchestrator;
 pub mod runtime;
 
-pub mod activity;
-pub mod agent_os;
-pub mod convert;
-pub mod execute;
-pub mod interaction;
-pub mod r#loop;
-pub mod phase;
-pub mod plugin;
-pub mod plugins;
 pub mod prelude;
-pub mod skills;
-pub mod state_types;
-pub mod stop;
-pub mod stream;
 pub mod thread;
 pub mod thread_store;
-pub mod traits;
 pub mod types;
-
-#[cfg(feature = "mcp")]
-pub mod mcp_registry;
 
 // Re-export from carve-state for convenience
 pub use carve_state::{Context, StateManager, TrackedPatch};

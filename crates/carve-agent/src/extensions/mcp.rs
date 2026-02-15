@@ -1,5 +1,5 @@
-use crate::agent_os::ToolRegistry;
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use crate::orchestrator::ToolRegistry;
 use async_trait::async_trait;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::transport_factory::TransportFactory;

@@ -4,7 +4,7 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agent::interaction::InteractionPlugin;
+use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::{
     ActivityHub, AgentLoopError, Context, ContextCategory, ContextProvider, InteractionResponse,
     StateManager, SystemReminder, Tool, ToolDescriptor, ToolError, ToolResult,
@@ -4390,7 +4390,7 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
-use carve_agent::stream::AgentEvent;
+use carve_agent::runtime::streaming::AgentEvent;
 use carve_agent::Interaction;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
@@ -4589,8 +4589,8 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use carve_agent::phase::{Phase, StepContext, ToolContext};
-use carve_agent::plugin::AgentPlugin;
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
 use carve_agent::types::ToolCall;
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
 use std::collections::HashSet;
@@ -5165,7 +5165,7 @@ fn test_scenario_empty_request() {
 // Permission Resume Flow Scenario Tests
 // ============================================================================
 
-use carve_agent::plugins::PermissionPlugin;
+use carve_agent::extensions::permission::PermissionPlugin;
 use carve_protocol_ag_ui::AGUIMessage;
 
 /// Test scenario: Complete permission approval flow
@@ -11860,7 +11860,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text_emits_tool_calls() {
-    use carve_agent::state_types::Interaction;
+    use carve_agent::contracts::state_types::Interaction;
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
@@ -12043,7 +12043,7 @@ fn test_tool_call_start_includes_parent_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_to_ag_ui_events() {
-    use carve_agent::state_types::Interaction;
+    use carve_agent::contracts::state_types::Interaction;
 
     let interaction = Interaction::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));
