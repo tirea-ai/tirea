@@ -8,6 +8,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
+carve-thread-model = { path = "../carve-thread-model" }
+carve-thread-store-contract = { path = "../carve-thread-store-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"

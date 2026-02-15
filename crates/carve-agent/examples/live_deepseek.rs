@@ -12,7 +12,7 @@ use carve_agent::{
     Message, RunContext, Thread, ThreadWriter, Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_state_derive::State;
-use carve_thread_store_adapters::FileStore;
+use carve_thread_store_adapters::{FileStore, MemoryStore};
 use futures::StreamExt;
 use genai::Client;
 use serde::{Deserialize, Serialize};
@@ -1129,7 +1129,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     }
 
     // Test session serialization performance with large history
-    let storage = carve_agent::MemoryStore::new();
+    let storage = MemoryStore::new();
     let save_start = std::time::Instant::now();
     storage.save(&thread).await?;
     let save_time = save_start.elapsed();

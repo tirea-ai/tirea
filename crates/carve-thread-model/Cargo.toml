@@ -1,0 +1,15 @@
+[package]
+name = "carve-thread-model"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Thread conversation domain model for carve"
+
+[dependencies]
+carve-state = { path = "../carve-state" }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+uuid = { version = "1", features = ["v4", "v7"] }
+
+[lints]
+workspace = true

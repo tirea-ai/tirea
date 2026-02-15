@@ -681,7 +681,8 @@ mod tests {
 
     #[test]
     fn test_agent_with_storage() {
-        let thread_store: Arc<dyn ThreadStore> = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store: Arc<dyn ThreadStore> =
+            Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let agent = Agent::new(AgentDefinition::default(), Client::default())
             .with_thread_store(thread_store);
         assert!(agent.thread_store.is_some());
@@ -733,7 +734,8 @@ mod tests {
 
     #[test]
     fn test_subagent_inherits_storage() {
-        let thread_store: Arc<dyn ThreadStore> = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store: Arc<dyn ThreadStore> =
+            Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let def = AgentDefinition::default();
         let agent = Agent::new(def, Client::default()).with_thread_store(thread_store.clone());
 
@@ -944,7 +946,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_with_nonexistent_session() {
-        let thread_store: Arc<dyn ThreadStore> = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store: Arc<dyn ThreadStore> =
+            Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let agent = Agent::new(AgentDefinition::default(), Client::default())
             .with_thread_store(thread_store);
         match agent.resume("nonexistent", "continue").await {
@@ -958,7 +961,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_with_existing_session() {
-        let thread_store = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let thread = Thread::new("saved-thread")
             .with_message(crate::types::Message::user("original prompt"));
         thread_store.save(&thread).await.unwrap();
@@ -1362,7 +1365,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subagent_tool_execute_with_resume_thread_found() {
-        let thread_store = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let saved_thread = Thread::new("old-thread")
             .with_message(crate::types::Message::user("first question"))
             .with_message(crate::types::Message::assistant("first answer"));
@@ -1394,7 +1397,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_saves_session_to_storage() {
-        let thread_store = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let def = AgentDefinition::with_id("saver", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default())
@@ -1420,7 +1423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_returns_and_persists_final_thread_state() {
-        let thread_store = Arc::new(crate::thread_store::MemoryStore::new());
+        let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new());
         let def = AgentDefinition::with_id("spawn-final-state", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
             .with_plugin(Arc::new(ThreadEndStatePatchPlugin) as Arc<dyn AgentPlugin>);

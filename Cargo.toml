@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/carve-state",
     "crates/carve-state-derive",
+    "crates/carve-thread-model",
+    "crates/carve-thread-store-contract",
     "crates/carve-agent",
     "crates/carve-thread-store-adapters",
     "crates/carve-agentos-server",
@@ -19,6 +21,8 @@ repository = "https://github.com/user/uncarve"
 # Internal crates
 carve-state = { path = "crates/carve-state" }
 carve-state-derive = { path = "crates/carve-state-derive" }
+carve-thread-model = { path = "crates/carve-thread-model" }
+carve-thread-store-contract = { path = "crates/carve-thread-store-contract" }
 carve-thread-store-adapters = { path = "crates/carve-thread-store-adapters" }
 
 # Serialization

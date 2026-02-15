@@ -1,0 +1,17 @@
+[package]
+name = "carve-thread-store-contract"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Thread store traits and shared persistence contract"
+
+[dependencies]
+carve-thread-model = { path = "../carve-thread-model" }
+carve-state = { path = "../carve-state" }
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json = { workspace = true }
+async-trait = "0.1"
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

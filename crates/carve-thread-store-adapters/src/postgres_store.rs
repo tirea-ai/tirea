@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use carve_agent::thread_store::{
+use carve_thread_model::{Message, Thread};
+use carve_thread_store_contract::{
     Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadDelta, ThreadHead,
     ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
 };
-use carve_agent::{Message, Thread};
 use std::collections::HashSet;
 
 pub struct PostgresStore {

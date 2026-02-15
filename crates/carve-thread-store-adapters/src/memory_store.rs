@@ -1,4 +1,9 @@
-use super::*;
+use async_trait::async_trait;
+use carve_thread_model::Thread;
+use carve_thread_store_contract::{
+    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStoreError, ThreadSync, ThreadWriter, Version,
+};
 
 struct MemoryEntry {
     thread: Thread,
@@ -6,7 +11,7 @@ struct MemoryEntry {
     deltas: Vec<ThreadDelta>,
 }
 
-/// In-memory storage for testing.
+/// In-memory storage for testing and local development.
 #[derive(Default)]
 pub struct MemoryStore {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,

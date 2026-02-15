@@ -1,7 +1,11 @@
 use super::*;
+use crate::Thread;
 use crate::types::Message;
+use crate::Visibility;
 use carve_state::{path, Op, Patch, TrackedPatch};
+use carve_thread_store_adapters::MemoryStore;
 use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_memory_storage_save_load() {

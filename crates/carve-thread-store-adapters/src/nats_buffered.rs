@@ -21,10 +21,10 @@
 
 use async_nats::jetstream;
 use async_trait::async_trait;
-use carve_agent::thread_store::{
+use carve_thread_model::Thread;
+use carve_thread_store_contract::{
     Committed, ThreadDelta, ThreadHead, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
 };
-use carve_agent::Thread;
 use std::sync::Arc;
 
 /// NATS JetStream stream name for thread deltas.
@@ -243,8 +243,8 @@ impl ThreadReader for NatsBufferedThreadWriter {
 
     async fn list_threads(
         &self,
-        query: &carve_agent::ThreadListQuery,
-    ) -> Result<carve_agent::ThreadListPage, ThreadStoreError> {
+        query: &carve_thread_store_contract::ThreadListQuery,
+    ) -> Result<carve_thread_store_contract::ThreadListPage, ThreadStoreError> {
         self.inner.list_threads(query).await
     }
 }

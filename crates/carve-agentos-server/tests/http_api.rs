@@ -4,11 +4,12 @@ use axum::http::{Request, StatusCode};
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStore, StepContext, Thread,
-    ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
-    ThreadStoreError, ThreadWriter,
+    AgentDefinition, AgentOs, AgentOsBuilder, Committed, StepContext, Thread, ThreadDelta,
+    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,
+    ThreadWriter,
 };
 use carve_agentos_server::http::{router, AppState};
+use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

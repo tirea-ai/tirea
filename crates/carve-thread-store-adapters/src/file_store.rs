@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use carve_agent::thread_store::{
+use carve_thread_model::Thread;
+use carve_thread_store_contract::{
     Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
     ThreadStoreError, ThreadWriter, Version,
 };
-use carve_agent::Thread;
 use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
@@ -251,9 +251,9 @@ struct VersionedThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent::thread_store::{CheckpointReason, MessageQuery, ThreadReader, ThreadWriter};
-    use carve_agent::types::Message;
     use carve_state::{path, Op, Patch, TrackedPatch};
+    use carve_thread_model::Message;
+    use carve_thread_store_contract::{CheckpointReason, MessageQuery, ThreadReader, ThreadWriter};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;

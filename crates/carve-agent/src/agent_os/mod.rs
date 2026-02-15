@@ -1132,7 +1132,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FailOnNthAppendStorage {
-        inner: Arc<crate::thread_store::MemoryStore>,
+        inner: Arc<carve_thread_store_adapters::MemoryStore>,
         fail_on_nth_append: usize,
         append_calls: Arc<AtomicUsize>,
     }
@@ -1140,7 +1140,7 @@ mod tests {
     impl FailOnNthAppendStorage {
         fn new(fail_on_nth_append: usize) -> Self {
             Self {
-                inner: Arc::new(crate::thread_store::MemoryStore::new()),
+                inner: Arc::new(carve_thread_store_adapters::MemoryStore::new()),
                 fail_on_nth_append,
                 append_calls: Arc::new(AtomicUsize::new(0)),
             }
@@ -1158,7 +1158,7 @@ mod tests {
             thread_id: &str,
         ) -> Result<Option<crate::thread_store::ThreadHead>, crate::thread_store::ThreadStoreError>
         {
-            <crate::thread_store::MemoryStore as crate::thread_store::ThreadReader>::load(
+            <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadReader>::load(
                 self.inner.as_ref(),
                 thread_id,
             )
@@ -1170,7 +1170,7 @@ mod tests {
             query: &crate::thread_store::ThreadListQuery,
         ) -> Result<crate::thread_store::ThreadListPage, crate::thread_store::ThreadStoreError>
         {
-            <crate::thread_store::MemoryStore as crate::thread_store::ThreadReader>::list_threads(
+            <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadReader>::list_threads(
                 self.inner.as_ref(),
                 query,
             )
@@ -1184,7 +1184,7 @@ mod tests {
             &self,
             thread: &Thread,
         ) -> Result<crate::thread_store::Committed, crate::thread_store::ThreadStoreError> {
-            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::create(
+            <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::create(
                 self.inner.as_ref(),
                 thread,
             )
@@ -1202,7 +1202,7 @@ mod tests {
                     format!("injected append failure on call {append_idx}"),
                 ));
             }
-            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::append(
+            <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::append(
                 self.inner.as_ref(),
                 thread_id,
                 delta,
@@ -1214,7 +1214,7 @@ mod tests {
             &self,
             thread_id: &str,
         ) -> Result<(), crate::thread_store::ThreadStoreError> {
-            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::delete(
+            <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::delete(
                 self.inner.as_ref(),
                 thread_id,
             )
@@ -2063,7 +2063,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_applies_frontend_state_to_existing_thread() {
-        use crate::thread_store::MemoryStore;
+        use carve_thread_store_adapters::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2122,7 +2122,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_uses_state_as_initial_for_new_thread() {
-        use crate::thread_store::MemoryStore;
+        use carve_thread_store_adapters::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2172,7 +2172,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_preserves_state_when_no_frontend_state() {
-        use crate::thread_store::MemoryStore;
+        use carve_thread_store_adapters::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2381,7 +2381,7 @@ mod tests {
 
     #[test]
     fn builder_with_thread_store_exposes_thread_store_accessor() {
-        let thread_store = Arc::new(crate::thread_store::MemoryStore::new())
+        let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new())
             as Arc<dyn crate::thread_store::ThreadStore>;
         let os = AgentOs::builder()
             .with_thread_store(thread_store)
