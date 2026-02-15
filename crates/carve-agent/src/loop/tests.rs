@@ -105,23 +105,15 @@ impl Tool for ActivityGateTool {
     }
 }
 
-fn scratchpad_map(entries: Vec<(&str, Value)>) -> HashMap<String, Value> {
-    entries
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect()
-}
-
-fn scratchpad_result(call_id: &str, scratchpad: HashMap<String, Value>) -> ToolExecutionResult {
+fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExecutionResult {
     ToolExecutionResult {
         execution: crate::execute::ToolExecution {
             call: crate::types::ToolCall::new(call_id, "test_tool", json!({})),
             result: ToolResult::success("test_tool", json!({"ok": true})),
-            patch: None,
+            patch,
         },
         reminders: Vec::new(),
         pending_interaction: None,
-        scratchpad,
         pending_patches: Vec::new(),
     }
 }
@@ -132,19 +124,14 @@ fn skill_activation_result(
     instruction: Option<&str>,
 ) -> ToolExecutionResult {
     let patch = instruction.map(|text| {
-        carve_state::TrackedPatch::new(carve_state::Patch::new().with_op(carve_state::Op::set(
-            carve_state::path!("skills", "instructions", skill_id),
-            json!(text),
-        )))
+        let base = json!({});
+        let ctx = carve_state::Context::new(&base, call_id, "skill_test");
+        let agent =
+            ctx.state::<crate::state_types::AgentState>(crate::state_types::AGENT_STATE_PATH);
+        agent.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
+        ctx.take_patch()
     });
-    let mut result =
-        ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
-    if let Some(text) = instruction {
-        result = result.with_metadata(
-            crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
-            json!([text]),
-        );
-    }
+    let result = ToolResult::success("skill", json!({ "activated": true, "skill_id": skill_id }));
 
     ToolExecutionResult {
         execution: crate::execute::ToolExecution {
@@ -154,7 +141,6 @@ fn skill_activation_result(
         },
         reminders: Vec::new(),
         pending_interaction: None,
-        scratchpad: HashMap::new(),
         pending_patches: Vec::new(),
     }
 }
@@ -164,10 +150,6 @@ fn test_agent_config_default() {
     let config = AgentConfig::default();
     assert_eq!(config.max_rounds, 10);
     assert!(config.parallel_tools);
-    assert_eq!(
-        config.scratchpad_merge_policy,
-        ScratchpadMergePolicy::DeterministicLww
-    );
     assert!(config.system_prompt.is_empty());
 }
 
@@ -176,16 +158,11 @@ fn test_agent_config_builder() {
     let config = AgentConfig::new("gpt-4")
         .with_max_rounds(5)
         .with_parallel_tools(false)
-        .with_scratchpad_merge_policy(ScratchpadMergePolicy::Strict)
         .with_system_prompt("You are helpful.");
 
     assert_eq!(config.model, "gpt-4");
     assert_eq!(config.max_rounds, 5);
     assert!(!config.parallel_tools);
-    assert_eq!(
-        config.scratchpad_merge_policy,
-        ScratchpadMergePolicy::Strict
-    );
     assert_eq!(config.system_prompt, "You are helpful.");
 }
 
@@ -316,7 +293,6 @@ async fn test_activity_event_emitted_before_tool_completion() {
         &state,
         &descriptors,
         &plugins,
-        HashMap::new(),
         Some(activity_manager),
         None,
         "test",
@@ -395,7 +371,6 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             &state_for_task,
             &tool_descriptors_for_task,
             &plugins_for_task,
-            HashMap::new(),
             Some(activity_manager),
             None,
             "test",
@@ -805,36 +780,8 @@ fn test_tool_filtering_via_plugin() {
     });
 }
 
-#[test]
-fn test_scratchpad_initialization() {
-    struct DataPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for DataPlugin {
-        fn id(&self) -> &str {
-            "data"
-        }
-
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {}
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("plugin_config", json!({"enabled": true})))
-        }
-    }
-
-    let thread = Thread::new("test");
-    let mut step = StepContext::new(&thread, vec![]);
-    let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DataPlugin)];
-    let runtime_data = ScratchpadRuntimeData::new(&plugins);
-    step.set_scratchpad_map(runtime_data.data);
-
-    let config: Option<serde_json::Map<String, Value>> = step.scratchpad_get("plugin_config");
-    assert!(config.is_some());
-    assert_eq!(config.unwrap()["enabled"], true);
-}
-
 #[tokio::test]
-async fn test_plugin_initial_data_available_in_before_tool_execute() {
+async fn test_plugin_state_channel_available_in_before_tool_execute() {
     struct GuardedPlugin;
 
     #[async_trait]
@@ -843,22 +790,32 @@ async fn test_plugin_initial_data_available_in_before_tool_execute() {
             "guarded"
         }
 
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("allow_exec", json!(true)))
-        }
-
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
-            if phase == Phase::BeforeToolExecute
-                && step.scratchpad_get::<bool>("allow_exec") != Some(true)
-            {
-                step.block("missing plugin initial data");
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+
+            let allow_exec = step
+                .thread
+                .rebuild_state()
+                .ok()
+                .and_then(|state| {
+                    state
+                        .get("plugin")
+                        .and_then(|p| p.get("allow_exec"))
+                        .and_then(|v| v.as_bool())
+                })
+                .unwrap_or(false);
+
+            if !allow_exec {
+                step.block("missing plugin.allow_exec in state");
             }
         }
     }
 
     let tool = EchoTool;
     let call = crate::types::ToolCall::new("call_1", "echo", json!({ "message": "hello" }));
-    let state = json!({});
+    let state = json!({ "plugin": { "allow_exec": true } });
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
 
@@ -868,53 +825,6 @@ async fn test_plugin_initial_data_available_in_before_tool_execute() {
         &state,
         &tool_descriptors,
         &plugins,
-        initial_scratchpad(&plugins),
-        None,
-        None,
-        "test",
-    )
-    .await
-    .expect("tool execution should succeed");
-
-    assert!(result.execution.result.is_success());
-}
-
-#[tokio::test]
-async fn test_plugin_initial_scratchpad_available_in_before_tool_execute() {
-    struct GuardedScratchpadPlugin;
-
-    #[async_trait]
-    impl AgentPlugin for GuardedScratchpadPlugin {
-        fn id(&self) -> &str {
-            "guarded_scratchpad"
-        }
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("allow_exec_v2", json!(true)))
-        }
-
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
-            if phase == Phase::BeforeToolExecute
-                && step.scratchpad_get::<bool>("allow_exec_v2") != Some(true)
-            {
-                step.block("missing plugin initial scratchpad");
-            }
-        }
-    }
-
-    let tool = EchoTool;
-    let call = crate::types::ToolCall::new("call_1", "echo", json!({ "message": "hello" }));
-    let state = json!({});
-    let tool_descriptors = vec![tool.descriptor()];
-    let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedScratchpadPlugin)];
-
-    let result = execute_single_tool_with_phases(
-        Some(&tool),
-        &call,
-        &state,
-        &tool_descriptors,
-        &plugins,
-        initial_scratchpad(&plugins),
         None,
         None,
         "test",
@@ -965,7 +875,6 @@ async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
         &state,
         &tool_descriptors,
         &plugins,
-        HashMap::new(),
         None,
         Some(&rt),
         "real-thread-42",
@@ -978,29 +887,44 @@ async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
 }
 
 #[tokio::test]
-async fn test_scratchpad_persists_across_phase_contexts() {
-    struct LifecyclePlugin;
+async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
+    struct StateChannelPlugin;
 
     #[async_trait]
-    impl AgentPlugin for LifecyclePlugin {
+    impl AgentPlugin for StateChannelPlugin {
         fn id(&self) -> &str {
-            "lifecycle"
-        }
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("seed", json!(1)))
+            "state_channel"
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             match phase {
-                Phase::SessionStart => {
-                    step.scratchpad_set("seed", 2);
+                Phase::BeforeToolExecute => {
+                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                        carve_state::path!("debug", "seen_tool_execute"),
+                        json!(true),
+                    )))
+                    .with_source("test:state_channel");
+                    step.pending_patches.push(patch);
                 }
-                Phase::StepStart => {
-                    if step.scratchpad_get::<i64>("seed") == Some(2) {
-                        step.system("seed_visible");
-                    } else {
-                        step.system("seed_missing");
+                Phase::BeforeInference => {
+                    let seen_tool_execute = step
+                        .thread
+                        .rebuild_state()
+                        .ok()
+                        .and_then(|state| {
+                            state
+                                .get("debug")
+                                .and_then(|d| d.get("seen_tool_execute"))
+                                .and_then(|v| v.as_bool())
+                        })
+                        .unwrap_or(false);
+                    if seen_tool_execute {
+                        let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                            carve_state::path!("debug", "before_inference_observed"),
+                            json!(true),
+                        )))
+                        .with_source("test:state_channel");
+                        step.pending_patches.push(patch);
                     }
                 }
                 _ => {}
@@ -1008,26 +932,27 @@ async fn test_scratchpad_persists_across_phase_contexts() {
         }
     }
 
-    let thread = Thread::new("test");
-    let tools = vec![];
-    let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(LifecyclePlugin)];
-    let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
+    let responses = vec![
+        MockResponse::text("run tools").with_tool_call("call_1", "echo", json!({"message": "a"})),
+        MockResponse::text("done"),
+    ];
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(StateChannelPlugin) as Arc<dyn AgentPlugin>)
+        .with_parallel_tools(true);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = tool_map([EchoTool]);
 
-    let doc = serde_json::json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let (_events, final_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(responses),
+        config,
+        thread,
+        tools,
+    )
+    .await;
 
-    let mut session_step = scratchpad.new_step_context(&thread, tools.clone());
-    emit_phase_checked(Phase::SessionStart, &mut session_step, &ctx, &plugins)
-        .await
-        .expect("SessionStart should not fail");
-    scratchpad.sync_from_step(&session_step);
-
-    let mut step = scratchpad.new_step_context(&thread, tools);
-    emit_phase_checked(Phase::StepStart, &mut step, &ctx, &plugins)
-        .await
-        .expect("StepStart should not fail");
-
-    assert_eq!(step.system_context, vec!["seed_visible".to_string()]);
+    let state = final_thread.rebuild_state().expect("state rebuild");
+    assert_eq!(state["debug"]["seen_tool_execute"], true);
+    assert_eq!(state["debug"]["before_inference_observed"], true);
 }
 
 #[tokio::test]
@@ -1047,7 +972,6 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_side_e
             match phase {
                 Phase::StepStart => {
                     step.system("from_step_start");
-                    step.scratchpad_set("phase_block_seen", true);
                 }
                 Phase::BeforeInference => {
                     step.skip_inference = true;
@@ -1069,22 +993,13 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_side_e
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PhaseBlockPlugin {
         phases: phases.clone(),
     })];
-    let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
-
     let (extracted, pending) = run_phase_block(
         &thread,
-        &mut scratchpad,
         &tool_descriptors,
         &plugins,
         &[Phase::StepStart, Phase::BeforeInference],
         |_| {},
-        |step| {
-            (
-                step.system_context.clone(),
-                step.skip_inference,
-                step.scratchpad_get::<bool>("phase_block_seen"),
-            )
-        },
+        |step| (step.system_context.clone(), step.skip_inference),
     )
     .await
     .expect("phase block should succeed");
@@ -1095,7 +1010,6 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_side_e
     );
     assert_eq!(extracted.0, vec!["from_step_start".to_string()]);
     assert!(extracted.1);
-    assert_eq!(extracted.2, Some(true));
     assert_eq!(pending.len(), 1);
 
     let updated = apply_pending_patches(thread, pending);
@@ -1117,11 +1031,16 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let err = step.scratchpad_get::<serde_json::Value>("llmmetry.inference_error");
+                    let agent = ctx.state::<crate::state_types::AgentState>(AGENT_STATE_PATH);
+                    let err = agent
+                        .inference_error()
+                        .ok()
+                        .flatten()
+                        .map(|v| json!({"type": v.error_type, "message": v.message}));
                     assert_eq!(
                         err.as_ref()
                             .and_then(|v| v.get("type"))
@@ -1148,11 +1067,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(CleanupPlugin {
         phases: phases.clone(),
     })];
-    let mut scratchpad = ScratchpadRuntimeData::new(&plugins);
-
     let updated = emit_cleanup_phases_and_apply(
         thread,
-        &mut scratchpad,
         &tool_descriptors,
         &plugins,
         "llm_stream_start_error",
@@ -1172,24 +1088,43 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
 }
 
 #[tokio::test]
-async fn test_scratchpad_is_run_scoped_and_writable() {
-    struct RunScopedScratchpadPlugin;
+async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
+    struct RunScopedStatePlugin;
 
     #[async_trait]
-    impl AgentPlugin for RunScopedScratchpadPlugin {
+    impl AgentPlugin for RunScopedStatePlugin {
         fn id(&self) -> &str {
-            "run_scoped_scratchpad"
-        }
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("counter", json!(0)))
+            "run_scoped_state"
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             match phase {
-                Phase::SessionStart | Phase::StepStart => {
-                    let next = step.scratchpad_get::<i64>("counter").unwrap_or(0) + 1;
-                    step.scratchpad_set("counter", next);
+                Phase::SessionStart => {
+                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                        carve_state::path!("debug", "temp_counter"),
+                        json!(1),
+                    )))
+                    .with_source("test:run_scoped_state");
+                    step.pending_patches.push(patch);
+                }
+                Phase::StepStart => {
+                    let current = step
+                        .thread
+                        .rebuild_state()
+                        .ok()
+                        .and_then(|state| {
+                            state
+                                .get("debug")
+                                .and_then(|a| a.get("temp_counter"))
+                                .and_then(|v| v.as_i64())
+                        })
+                        .unwrap_or(0);
+                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
+                        carve_state::path!("debug", "temp_counter"),
+                        json!(current + 1),
+                    )))
+                    .with_source("test:run_scoped_state");
+                    step.pending_patches.push(patch);
                 }
                 Phase::SessionEnd => {
                     let Ok(state) = step.thread.rebuild_state() else {
@@ -1201,20 +1136,28 @@ async fn test_scratchpad_is_run_scoped_and_writable() {
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0)
                         + 1;
-                    let counter = step.scratchpad_get::<i64>("counter").unwrap_or(-1);
-                    let patch = TrackedPatch::new(
-                        Patch::new()
-                            .with_op(Op::set(
-                                carve_state::path!("debug", "run_count"),
-                                json!(run_count),
-                            ))
-                            .with_op(Op::set(
-                                carve_state::path!("debug", "last_scratchpad_counter"),
-                                json!(counter),
-                            )),
-                    )
-                    .with_source("test:run_scoped_scratchpad");
-                    step.pending_patches.push(patch);
+                    let counter = state
+                        .get("debug")
+                        .and_then(|a| a.get("temp_counter"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(-1);
+
+                    let patch = Patch::new()
+                        .with_op(Op::set(
+                            carve_state::path!("debug", "run_count"),
+                            json!(run_count),
+                        ))
+                        .with_op(Op::set(
+                            carve_state::path!("debug", "last_temp_counter"),
+                            json!(counter),
+                        ))
+                        .with_op(Op::set(
+                            carve_state::path!("debug", "temp_counter"),
+                            Value::Null,
+                        ));
+
+                    step.pending_patches
+                        .push(TrackedPatch::new(patch).with_source("test:run_scoped_state"));
                 }
                 _ => {}
             }
@@ -1222,7 +1165,7 @@ async fn test_scratchpad_is_run_scoped_and_writable() {
     }
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(RunScopedScratchpadPlugin) as Arc<dyn AgentPlugin>);
+        .with_plugin(Arc::new(RunScopedStatePlugin) as Arc<dyn AgentPlugin>);
     let tools = HashMap::new();
     let thread = Thread::with_initial_state("test", json!({}));
 
@@ -1235,8 +1178,8 @@ async fn test_scratchpad_is_run_scoped_and_writable() {
     .await;
     let first_state = first_thread.rebuild_state().unwrap();
     assert_eq!(first_state["debug"]["run_count"], 1);
-    assert_eq!(first_state["debug"]["last_scratchpad_counter"], 2);
-    assert!(first_state.get("counter").is_none());
+    assert_eq!(first_state["debug"]["last_temp_counter"], 2);
+    assert_eq!(first_state["debug"]["temp_counter"], Value::Null);
 
     let (_, second_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(vec![MockResponse::text("done")]),
@@ -1248,10 +1191,10 @@ async fn test_scratchpad_is_run_scoped_and_writable() {
     let second_state = second_thread.rebuild_state().unwrap();
     assert_eq!(second_state["debug"]["run_count"], 2);
     assert_eq!(
-        second_state["debug"]["last_scratchpad_counter"], 2,
-        "scratchpad must reset on each run instead of accumulating"
+        second_state["debug"]["last_temp_counter"], 2,
+        "run-local state should be recreated each run and cleaned on SessionEnd"
     );
-    assert!(second_state.get("counter").is_none());
+    assert_eq!(second_state["debug"]["temp_counter"], Value::Null);
 }
 
 // ============================================================================
@@ -1356,11 +1299,11 @@ fn test_execute_tools_with_pending_phase_plugin() {
 fn test_apply_tool_results_rejects_multiple_pending_interactions() {
     let thread = Thread::new("test");
 
-    let mut first = scratchpad_result("call_1", scratchpad_map(vec![]));
+    let mut first = tool_execution_result("call_1", None);
     first.pending_interaction =
         Some(Interaction::new("confirm_1", "confirm").with_message("approve first tool"));
 
-    let mut second = scratchpad_result("call_2", scratchpad_map(vec![]));
+    let mut second = tool_execution_result("call_2", None);
     second.pending_interaction =
         Some(Interaction::new("confirm_2", "confirm").with_message("approve second tool"));
 
@@ -1416,20 +1359,24 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 }
 
 #[test]
-fn test_apply_tool_results_appends_user_messages_from_tool_result_metadata() {
+fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = Thread::with_initial_state("test", json!({}));
+    let state = json!({});
+    let ctx = Context::new(&state, "call_1", "test");
+    let agent = ctx.state::<crate::state_types::AgentState>(crate::state_types::AGENT_STATE_PATH);
+    agent.append_user_messages_insert(
+        "call_1".to_string(),
+        vec!["first".to_string(), "second".to_string()],
+    );
+    let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::execute::ToolExecution {
             call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
-            result: ToolResult::success("any_tool", json!({"ok": true})).with_metadata(
-                crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
-                json!(["first", "second"]),
-            ),
-            patch: None,
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: Some(outbox_patch),
         },
         reminders: Vec::new(),
         pending_interaction: None,
-        scratchpad: HashMap::new(),
         pending_patches: Vec::new(),
     };
 
@@ -1445,20 +1392,24 @@ fn test_apply_tool_results_appends_user_messages_from_tool_result_metadata() {
 }
 
 #[test]
-fn test_apply_tool_results_ignores_invalid_append_user_messages_metadata() {
+fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
+    let state = json!({});
+    let ctx = Context::new(&state, "call_1", "test");
+    let agent = ctx.state::<crate::state_types::AgentState>(crate::state_types::AGENT_STATE_PATH);
+    agent.append_user_messages_insert(
+        "call_1".to_string(),
+        vec!["".to_string(), "   ".to_string()],
+    );
+    let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::execute::ToolExecution {
             call: crate::types::ToolCall::new("call_1", "any_tool", json!({})),
-            result: ToolResult::success("any_tool", json!({"ok": true})).with_metadata(
-                crate::skills::APPEND_USER_MESSAGES_METADATA_KEY,
-                json!({"unexpected": true}),
-            ),
-            patch: None,
+            result: ToolResult::success("any_tool", json!({"ok": true})),
+            patch: Some(outbox_patch),
         },
         reminders: Vec::new(),
         pending_interaction: None,
-        scratchpad: HashMap::new(),
         pending_patches: Vec::new(),
     };
 
@@ -1482,10 +1433,10 @@ fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0].role, crate::types::Role::Tool);
     assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
-    assert_eq!(messages[1].role, crate::types::Role::User);
-    assert_eq!(messages[1].content, "Instruction B");
-    assert_eq!(messages[2].role, crate::types::Role::Tool);
-    assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(messages[1].role, crate::types::Role::Tool);
+    assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(messages[2].role, crate::types::Role::User);
+    assert_eq!(messages[2].content, "Instruction B");
     assert_eq!(messages[3].role, crate::types::Role::User);
     assert_eq!(messages[3].content, "Instruction A");
 }
@@ -2779,7 +2730,13 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::SessionStart {
-                step.scratchpad_set("__replay_tool_calls", json!({"bad": "payload"}));
+                step.pending_patches.push(
+                    carve_state::TrackedPatch::new(Patch::new().with_op(Op::set(
+                        carve_state::path!("agent", "replay_tool_calls"),
+                        json!({"bad": "payload"}),
+                    )))
+                    .with_source("test:invalid_replay_payload"),
+                );
             }
         }
     }
@@ -2801,7 +2758,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
         events.iter().any(|e| matches!(
             e,
             AgentEvent::Error { message }
-            if message.contains("__replay_tool_calls")
+            if message.contains("agent.replay_tool_calls")
         )),
         "expected replay payload parse error, got events: {events:?}"
     );
@@ -2834,16 +2791,15 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             "replay_state_failure"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &Context<'_>) {
             if phase == Phase::SessionStart {
-                step.scratchpad_set(
-                    "__replay_tool_calls",
-                    vec![crate::types::ToolCall::new(
-                        "replay_call_1",
-                        "echo",
-                        json!({"message": "resume"}),
-                    )],
-                );
+                let agent = ctx
+                    .state::<crate::state_types::AgentState>(crate::state_types::AGENT_STATE_PATH);
+                agent.replay_tool_calls_push(crate::types::ToolCall::new(
+                    "replay_call_1",
+                    "echo",
+                    json!({"message": "resume"}),
+                ));
             }
         }
     }
@@ -2896,17 +2852,17 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             "replay_blocking"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
             match phase {
                 Phase::SessionStart => {
-                    step.scratchpad_set(
-                        "__replay_tool_calls",
-                        vec![crate::types::ToolCall::new(
-                            "replay_call_1",
-                            "echo",
-                            json!({"message": "resume"}),
-                        )],
+                    let agent = ctx.state::<crate::state_types::AgentState>(
+                        crate::state_types::AGENT_STATE_PATH,
                     );
+                    agent.replay_tool_calls_push(crate::types::ToolCall::new(
+                        "replay_call_1",
+                        "echo",
+                        json!({"message": "resume"}),
+                    ));
                 }
                 Phase::BeforeToolExecute if step.tool_call_id() == Some("replay_call_1") => {
                     BEFORE_TOOL_EXECUTED.store(true, Ordering::SeqCst);
@@ -2964,16 +2920,15 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             "replay_without_placeholder"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &Context<'_>) {
             if phase == Phase::SessionStart {
-                step.scratchpad_set(
-                    "__replay_tool_calls",
-                    vec![crate::types::ToolCall::new(
-                        "replay_call_1",
-                        "echo",
-                        json!({"message": "resume"}),
-                    )],
-                );
+                let agent = ctx
+                    .state::<crate::state_types::AgentState>(crate::state_types::AGENT_STATE_PATH);
+                agent.replay_tool_calls_push(crate::types::ToolCall::new(
+                    "replay_call_1",
+                    "echo",
+                    json!({"message": "resume"}),
+                ));
             }
         }
     }
@@ -3107,242 +3062,62 @@ async fn test_stop_natural_end_no_tools() {
     assert_eq!(extract_stop_reason(&events), Some(StopReason::NaturalEnd));
 }
 
-#[tokio::test]
-async fn test_parallel_tool_scratchpad_merges_across_calls() {
-    struct ParallelScratchpadRecorder;
-
-    #[async_trait]
-    impl AgentPlugin for ParallelScratchpadRecorder {
-        fn id(&self) -> &str {
-            "parallel_scratchpad_recorder"
-        }
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("seed", json!(true)))
-        }
-
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
-            match phase {
-                Phase::BeforeToolExecute => {
-                    if let Some(call_id) = step.tool_call_id() {
-                        step.scratchpad_set(&format!("seen_{call_id}"), true);
-                    }
-                }
-                Phase::BeforeInference => {
-                    let seen_count = step
-                        .scratchpad_snapshot()
-                        .keys()
-                        .filter(|k| k.starts_with("seen_"))
-                        .count();
-
-                    let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
-                        carve_state::path!("debug", "seen_parallel_count"),
-                        json!(seen_count),
-                    )))
-                    .with_source("test:parallel_scratchpad");
-                    step.pending_patches.push(patch);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let responses = vec![
-        MockResponse::text("run tools")
-            .with_tool_call("call_a", "echo", json!({"message": "a"}))
-            .with_tool_call("call_b", "counter", json!({"amount": 1})),
-        MockResponse::text("done"),
-    ];
-
-    let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(ParallelScratchpadRecorder) as Arc<dyn AgentPlugin>)
-        .with_parallel_tools(true);
-    let thread = Thread::new("test").with_message(Message::user("go"));
-
-    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    tools.insert("echo".to_string(), Arc::new(EchoTool));
-    tools.insert("counter".to_string(), Arc::new(CounterTool));
-
-    let (_events, final_thread) = run_mock_stream_with_final_thread(
-        MockStreamProvider::new(responses),
-        config,
-        thread,
-        tools,
-    )
-    .await;
-
-    let state = final_thread.rebuild_state().unwrap();
-    assert_eq!(state["debug"]["seen_parallel_count"], 2);
-}
-
 #[test]
-fn test_merge_parallel_scratchpad_strict_rejects_conflicts() {
-    let base = scratchpad_map(vec![("shared", json!(0)), ("stable", json!(true))]);
-    let results = vec![
-        scratchpad_result(
-            "call_a",
-            scratchpad_map(vec![("shared", json!(1)), ("stable", json!(true))]),
-        ),
-        scratchpad_result(
-            "call_b",
-            scratchpad_map(vec![("shared", json!(2)), ("stable", json!(true))]),
-        ),
-    ];
+fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let left = tool_execution_result(
+        "call_a",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("debug", "shared"),
+            json!(1),
+        )))),
+    );
+    let right = tool_execution_result(
+        "call_b",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("debug", "shared"),
+            json!(2),
+        )))),
+    );
 
-    let err = merge_parallel_scratchpad(&base, &results, ScratchpadMergePolicy::Strict)
-        .expect_err("strict policy should fail on conflicting key updates");
-
+    let err = match apply_tool_results_to_session(thread, &[left, right], None, true) {
+        Ok(_) => panic!("parallel conflicting patches should be rejected"),
+        Err(err) => err,
+    };
     match err {
         AgentLoopError::StateError(message) => {
-            assert!(message.contains("shared"), "unexpected message: {message}");
+            assert!(
+                message.contains("conflicting parallel state patches"),
+                "unexpected message: {message}"
+            );
         }
         other => panic!("expected state error, got: {other:?}"),
     }
 }
 
 #[test]
-fn test_merge_parallel_scratchpad_deterministic_lww_uses_tool_call_order() {
-    let base = scratchpad_map(vec![("shared", json!(0)), ("stable", json!(true))]);
-    let results = vec![
-        scratchpad_result(
-            "call_a",
-            scratchpad_map(vec![("shared", json!(1)), ("stable", json!(true))]),
-        ),
-        scratchpad_result(
-            "call_b",
-            scratchpad_map(vec![("shared", json!(2)), ("stable", json!(true))]),
-        ),
-    ];
+fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
+    let thread = Thread::with_initial_state("test", json!({}));
+    let left = tool_execution_result(
+        "call_a",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("debug", "alpha"),
+            json!(1),
+        )))),
+    );
+    let right = tool_execution_result(
+        "call_b",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("debug", "beta"),
+            json!(2),
+        )))),
+    );
 
-    let merged =
-        merge_parallel_scratchpad(&base, &results, ScratchpadMergePolicy::DeterministicLww)
-            .expect("deterministic lww should resolve conflicts");
-    assert_eq!(merged.get("shared"), Some(&json!(2)));
-}
-
-#[test]
-fn test_merge_parallel_scratchpad_deterministic_lww_disjoint_commutative() {
-    let permutations = [
-        [0usize, 1, 2],
-        [0usize, 2, 1],
-        [1usize, 0, 2],
-        [1usize, 2, 0],
-        [2usize, 0, 1],
-        [2usize, 1, 0],
-    ];
-
-    for alpha in [1_i64, 7_i64] {
-        for beta in ["x", "y"] {
-            for gamma in [true, false] {
-                let base = scratchpad_map(vec![("shared.root", json!("root"))]);
-                let build_result = |idx: usize| match idx {
-                    0 => scratchpad_result(
-                        "call_a",
-                        scratchpad_map(vec![
-                            ("shared.root", json!("root")),
-                            ("ns.alpha", json!(alpha)),
-                        ]),
-                    ),
-                    1 => scratchpad_result(
-                        "call_b",
-                        scratchpad_map(vec![
-                            ("shared.root", json!("root")),
-                            ("ns.beta", json!(beta)),
-                        ]),
-                    ),
-                    2 => scratchpad_result(
-                        "call_c",
-                        scratchpad_map(vec![
-                            ("shared.root", json!("root")),
-                            ("ns.gamma", json!(gamma)),
-                        ]),
-                    ),
-                    _ => panic!("invalid index"),
-                };
-
-                let first_order: Vec<ToolExecutionResult> = permutations[0]
-                    .iter()
-                    .map(|idx| build_result(*idx))
-                    .collect();
-                let expected = merge_parallel_scratchpad(
-                    &base,
-                    &first_order,
-                    ScratchpadMergePolicy::DeterministicLww,
-                )
-                .expect("base merge should succeed");
-
-                for order in permutations.iter().skip(1) {
-                    let ordered: Vec<ToolExecutionResult> =
-                        order.iter().map(|idx| build_result(*idx)).collect();
-                    let merged = merge_parallel_scratchpad(
-                        &base,
-                        &ordered,
-                        ScratchpadMergePolicy::DeterministicLww,
-                    )
-                    .expect("merge should succeed for disjoint keys");
-                    assert_eq!(merged, expected);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_merge_parallel_scratchpad_deterministic_lww_deterministic_and_idempotent() {
-    let base = scratchpad_map(vec![("seed", json!(true)), ("shared", json!(0))]);
-
-    let build_results = || {
-        vec![
-            scratchpad_result(
-                "call_1",
-                scratchpad_map(vec![
-                    ("seed", json!(true)),
-                    ("shared", json!(1)),
-                    ("ns.alpha", json!("a")),
-                ]),
-            ),
-            scratchpad_result(
-                "call_2",
-                scratchpad_map(vec![
-                    ("seed", json!(true)),
-                    ("shared", json!(2)),
-                    ("ns.beta", json!("b")),
-                ]),
-            ),
-            scratchpad_result(
-                "call_3",
-                scratchpad_map(vec![
-                    ("seed", json!(true)),
-                    ("shared", json!(3)),
-                    ("ns.gamma", json!("c")),
-                ]),
-            ),
-        ]
-    };
-
-    let expected = merge_parallel_scratchpad(
-        &base,
-        &build_results(),
-        ScratchpadMergePolicy::DeterministicLww,
-    )
-    .expect("merge should succeed");
-
-    for _ in 0..8 {
-        let merged = merge_parallel_scratchpad(
-            &base,
-            &build_results(),
-            ScratchpadMergePolicy::DeterministicLww,
-        )
-        .expect("repeated merge should succeed");
-        assert_eq!(merged, expected);
-    }
-
-    let mut repeated = build_results();
-    repeated.extend(build_results());
-    let idempotent =
-        merge_parallel_scratchpad(&base, &repeated, ScratchpadMergePolicy::DeterministicLww)
-            .expect("merge should stay stable when the same result set is replayed");
-    assert_eq!(idempotent, expected);
+    let applied = apply_tool_results_to_session(thread, &[left, right], None, true)
+        .expect("parallel disjoint patches should succeed");
+    let state = applied.thread.rebuild_state().expect("state rebuild");
+    assert_eq!(state["debug"]["alpha"], 1);
+    assert_eq!(state["debug"]["beta"], 2);
 }
 
 #[tokio::test]

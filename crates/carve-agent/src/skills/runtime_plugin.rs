@@ -7,7 +7,6 @@ use crate::tool_filter::{
 };
 use async_trait::async_trait;
 use carve_state::Context;
-use serde_json::Value;
 
 /// Injects activated skills (instructions + loaded materials) into the LLM context.
 ///
@@ -144,12 +143,6 @@ impl AgentPlugin for SkillRuntimePlugin {
 
         // Treat skills as system-level instructions by default.
         step.system(rendered);
-    }
-
-    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        // This initializes runtime scratchpad only; persisted skill state lives in session state.
-        // Keeping this empty avoids duplicating two sources of truth.
-        None
     }
 }
 

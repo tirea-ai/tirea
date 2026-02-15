@@ -5,6 +5,7 @@ use crate::skills::registry::{
 };
 use crate::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
+use crate::state_types::{AgentState, AGENT_STATE_PATH};
 use crate::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
@@ -15,13 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
-
-/// ToolResult metadata key: list of user messages to append to session history.
-///
-/// Value shape:
-/// - JSON array of strings (preferred)
-/// - non-string entries are ignored by the loop
-pub const APPEND_USER_MESSAGES_METADATA_KEY: &str = "append_user_messages";
 
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {
@@ -152,7 +146,17 @@ impl Tool for SkillActivateTool {
             );
         }
 
-        let mut result = ToolResult::success(
+        if !instruction_for_message.trim().is_empty() {
+            // Route follow-up user messages through AgentState so the runtime can
+            // append them deterministically after tool execution.
+            let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+            agent.append_user_messages_insert(
+                ctx.call_id().to_string(),
+                vec![instruction_for_message.clone()],
+            );
+        }
+
+        let result = ToolResult::success(
             "skill",
             json!({
                 "activated": true,
@@ -163,13 +167,6 @@ impl Tool for SkillActivateTool {
                 "allowed_tools_skipped": skipped_tokens,
             }),
         );
-
-        if !instruction_for_message.trim().is_empty() {
-            result = result.with_metadata(
-                APPEND_USER_MESSAGES_METADATA_KEY,
-                json!([instruction_for_message]),
-            );
-        }
 
         Ok(result)
     }

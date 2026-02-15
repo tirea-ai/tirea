@@ -39,14 +39,16 @@
 //! ```
 
 mod config;
+mod core;
 mod outcome;
+mod plugin_runtime;
 
 use crate::activity::ActivityHub;
-use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
+use crate::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
 use crate::plugin::AgentPlugin;
-use crate::state_types::{AgentState, Interaction, AGENT_STATE_PATH};
+use crate::state_types::{Interaction, AGENT_STATE_PATH};
 use crate::stop::{check_stop_conditions, StopCheckContext, StopCondition, StopReason};
 use crate::stream::{AgentEvent, StreamCollector, StreamResult};
 use crate::thread::Thread;
@@ -60,7 +62,7 @@ use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -69,14 +71,26 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 pub use config::{
-    AgentConfig, AgentDefinition, RunCancellationToken, RunContext, ScratchpadMergePolicy,
-    StateCommitError, StateCommitter,
+    AgentConfig, AgentDefinition, RunCancellationToken, RunContext, StateCommitError,
+    StateCommitter,
 };
 pub(crate) use config::{
     TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };
+#[cfg(test)]
+use core::build_messages;
+use core::{
+    apply_pending_patches, build_request_for_filtered_tools, clear_agent_pending_interaction,
+    drain_agent_append_user_messages, drain_agent_outbox, inference_inputs_from_step,
+    reduce_thread_mutations, set_agent_pending_interaction, tool_descriptors_for_config,
+    ThreadMutationBatch,
+};
 pub use outcome::{run_round, tool_map, tool_map_from_arc, AgentLoopError, RoundResult};
+use plugin_runtime::{
+    emit_cleanup_phases_and_apply, emit_phase_block, emit_phase_checked, emit_session_end,
+    prepare_stream_error_termination, run_phase_block,
+};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 
@@ -111,34 +125,6 @@ impl ChatStreamProvider for Client {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PhaseMutationSnapshot {
-    skip_inference: bool,
-    tool_ids: Vec<String>,
-    tool_call_id: Option<String>,
-    tool_name: Option<String>,
-    tool_blocked: bool,
-    tool_pending: bool,
-    tool_pending_interaction_id: Option<String>,
-    tool_has_result: bool,
-}
-
-fn phase_mutation_snapshot(step: &StepContext<'_>) -> PhaseMutationSnapshot {
-    PhaseMutationSnapshot {
-        skip_inference: step.skip_inference,
-        tool_ids: step.tools.iter().map(|t| t.id.clone()).collect(),
-        tool_call_id: step.tool.as_ref().map(|t| t.id.clone()),
-        tool_name: step.tool.as_ref().map(|t| t.name.clone()),
-        tool_blocked: step.tool_blocked(),
-        tool_pending: step.tool_pending(),
-        tool_pending_interaction_id: step
-            .tool
-            .as_ref()
-            .and_then(|t| t.pending_interaction.as_ref().map(|i| i.id.clone())),
-        tool_has_result: step.tool.as_ref().and_then(|t| t.result.as_ref()).is_some(),
-    }
-}
-
 #[derive(Clone)]
 pub struct ChannelStateCommitter {
     tx: tokio::sync::mpsc::UnboundedSender<ThreadDelta>,
@@ -157,267 +143,6 @@ impl StateCommitter for ChannelStateCommitter {
             .send(delta)
             .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))
     }
-}
-
-fn validate_phase_mutation(
-    phase: Phase,
-    plugin_id: &str,
-    before: &PhaseMutationSnapshot,
-    after: &PhaseMutationSnapshot,
-) -> Result<(), AgentLoopError> {
-    // Tool list (filtering) is only valid in BeforeInference.
-    if before.tool_ids != after.tool_ids && phase != Phase::BeforeInference {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated tool filtering outside BeforeInference ({phase})",
-            plugin_id
-        )));
-    }
-
-    // Skip inference signal must be set only in BeforeInference.
-    if before.skip_inference != after.skip_inference && phase != Phase::BeforeInference {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
-            plugin_id
-        )));
-    }
-
-    // Plugins must not rewrite tool identity.
-    if before.tool_call_id != after.tool_call_id || before.tool_name != after.tool_name {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated tool identity in phase {phase}",
-            plugin_id
-        )));
-    }
-
-    // Tool gate (block/pending/interaction) is only valid in BeforeToolExecute.
-    let tool_gate_changed = before.tool_blocked != after.tool_blocked
-        || before.tool_pending != after.tool_pending
-        || before.tool_pending_interaction_id != after.tool_pending_interaction_id;
-    if tool_gate_changed && phase != Phase::BeforeToolExecute {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated tool gate outside BeforeToolExecute ({phase})",
-            plugin_id
-        )));
-    }
-
-    // Tool result is produced by loop/tool execution, not by plugins.
-    if before.tool_has_result != after.tool_has_result {
-        return Err(AgentLoopError::StateError(format!(
-            "plugin '{}' mutated tool result in phase {phase}",
-            plugin_id
-        )));
-    }
-
-    Ok(())
-}
-
-async fn emit_phase_checked(
-    phase: Phase,
-    step: &mut StepContext<'_>,
-    ctx: &Context<'_>,
-    plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<(), AgentLoopError> {
-    for plugin in plugins {
-        let before = phase_mutation_snapshot(step);
-        plugin.on_phase(phase, step, ctx).await;
-        let after = phase_mutation_snapshot(step);
-        validate_phase_mutation(phase, plugin.id(), &before, &after)?;
-    }
-    Ok(())
-}
-
-fn take_step_side_effects(
-    scratchpad: &mut ScratchpadRuntimeData,
-    step: &mut StepContext<'_>,
-) -> Vec<TrackedPatch> {
-    let pending = std::mem::take(&mut step.pending_patches);
-    scratchpad.sync_from_step(step);
-    pending
-}
-
-#[derive(Default)]
-struct ThreadMutationBatch {
-    messages: Vec<Message>,
-    patches: Vec<TrackedPatch>,
-}
-
-impl ThreadMutationBatch {
-    fn with_message(mut self, message: Message) -> Self {
-        self.messages.push(message);
-        self
-    }
-
-    fn with_messages(mut self, messages: impl IntoIterator<Item = Message>) -> Self {
-        self.messages.extend(messages);
-        self
-    }
-
-    fn with_patch(mut self, patch: TrackedPatch) -> Self {
-        self.patches.push(patch);
-        self
-    }
-
-    fn with_patches(mut self, patches: impl IntoIterator<Item = TrackedPatch>) -> Self {
-        self.patches.extend(patches);
-        self
-    }
-}
-
-fn reduce_thread_mutations(thread: Thread, batch: ThreadMutationBatch) -> Thread {
-    let mut thread = thread;
-    if !batch.patches.is_empty() {
-        thread = thread.with_patches(batch.patches);
-    }
-    if !batch.messages.is_empty() {
-        thread = thread.with_messages(batch.messages);
-    }
-    thread
-}
-
-fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
-    reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patches(pending))
-}
-
-async fn run_phase_block<R, Setup, Extract>(
-    thread: &Thread,
-    scratchpad: &mut ScratchpadRuntimeData,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    phases: &[Phase],
-    setup: Setup,
-    extract: Extract,
-) -> Result<(R, Vec<TrackedPatch>), AgentLoopError>
-where
-    Setup: FnOnce(&mut StepContext<'_>),
-    Extract: FnOnce(&mut StepContext<'_>) -> R,
-{
-    let current_state = thread
-        .rebuild_state()
-        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let ctx =
-        Context::new(&current_state, "phase", "plugin:phase").with_runtime(Some(&thread.runtime));
-    let mut step = scratchpad.new_step_context(thread, tool_descriptors.to_vec());
-    setup(&mut step);
-    for phase in phases {
-        emit_phase_checked(*phase, &mut step, &ctx, plugins).await?;
-    }
-    // Flush plugin state ops into pending patches
-    let plugin_patch = ctx.take_patch();
-    if !plugin_patch.patch().is_empty() {
-        step.pending_patches.push(plugin_patch);
-    }
-    let output = extract(&mut step);
-    let pending = take_step_side_effects(scratchpad, &mut step);
-    Ok((output, pending))
-}
-
-async fn emit_phase_block<Setup>(
-    phase: Phase,
-    thread: &Thread,
-    scratchpad: &mut ScratchpadRuntimeData,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    setup: Setup,
-) -> Result<Vec<TrackedPatch>, AgentLoopError>
-where
-    Setup: FnOnce(&mut StepContext<'_>),
-{
-    let (_, pending) = run_phase_block(
-        thread,
-        scratchpad,
-        tool_descriptors,
-        plugins,
-        &[phase],
-        setup,
-        |_| (),
-    )
-    .await?;
-    Ok(pending)
-}
-
-async fn emit_cleanup_phases_and_apply(
-    thread: Thread,
-    scratchpad: &mut ScratchpadRuntimeData,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    error_type: &'static str,
-    message: String,
-) -> Result<Thread, AgentLoopError> {
-    let pending = emit_phase_block(
-        Phase::AfterInference,
-        &thread,
-        scratchpad,
-        tool_descriptors,
-        plugins,
-        |step| {
-            step.scratchpad_set(
-                "llmmetry.inference_error",
-                serde_json::json!({ "type": error_type, "message": message }),
-            );
-        },
-    )
-    .await?;
-    let thread = apply_pending_patches(thread, pending);
-    let pending = emit_phase_block(
-        Phase::StepEnd,
-        &thread,
-        scratchpad,
-        tool_descriptors,
-        plugins,
-        |_| {},
-    )
-    .await?;
-    Ok(apply_pending_patches(thread, pending))
-}
-
-/// Emit SessionEnd phase and apply any resulting patches to the session.
-async fn emit_session_end(
-    thread: Thread,
-    scratchpad: &mut ScratchpadRuntimeData,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-) -> Thread {
-    let pending = {
-        let current_state = match thread.rebuild_state() {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "SessionEnd: failed to rebuild state");
-                return thread;
-            }
-        };
-        let ctx = Context::new(&current_state, "phase", "plugin:session_end")
-            .with_runtime(Some(&thread.runtime));
-        let mut step = scratchpad.new_step_context(&thread, tool_descriptors.to_vec());
-        if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, &ctx, plugins).await {
-            tracing::warn!(error = %e, "SessionEnd plugin phase validation failed");
-        }
-        let plugin_patch = ctx.take_patch();
-        if !plugin_patch.patch().is_empty() {
-            step.pending_patches.push(plugin_patch);
-        }
-        take_step_side_effects(scratchpad, &mut step)
-    };
-    apply_pending_patches(thread, pending)
-}
-
-/// Build terminal error events after running SessionEnd cleanup.
-async fn prepare_stream_error_termination(
-    thread: Thread,
-    scratchpad: &mut ScratchpadRuntimeData,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    run_id: &str,
-    message: String,
-) -> (Thread, AgentEvent, AgentEvent) {
-    let thread = emit_session_end(thread, scratchpad, tool_descriptors, plugins).await;
-    let error = AgentEvent::Error { message };
-    let finish = AgentEvent::RunFinish {
-        thread_id: thread.id.clone(),
-        run_id: run_id.to_string(),
-        result: None,
-        stop_reason: None,
-    };
-    (thread, error, finish)
 }
 
 async fn commit_pending_delta(
@@ -449,131 +174,6 @@ async fn commit_pending_delta(
         .commit(&thread.id, delta)
         .await
         .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))
-}
-
-/// Build initial scratchpad map.
-fn initial_scratchpad(plugins: &[Arc<dyn AgentPlugin>]) -> HashMap<String, Value> {
-    let mut data = HashMap::new();
-    for plugin in plugins {
-        if let Some((key, value)) = plugin.initial_scratchpad() {
-            data.insert(key.to_string(), value);
-        }
-    }
-    data
-}
-
-/// Runtime scratchpad shared across phase contexts.
-#[derive(Debug, Clone, Default)]
-struct ScratchpadRuntimeData {
-    data: HashMap<String, Value>,
-}
-
-impl ScratchpadRuntimeData {
-    fn new(plugins: &[Arc<dyn AgentPlugin>]) -> Self {
-        Self {
-            data: initial_scratchpad(plugins),
-        }
-    }
-
-    fn new_step_context<'a>(
-        &self,
-        thread: &'a Thread,
-        tools: Vec<ToolDescriptor>,
-    ) -> StepContext<'a> {
-        let mut step = StepContext::new(thread, tools);
-        step.set_scratchpad_map(self.data.clone());
-        step
-    }
-
-    fn sync_from_step(&mut self, step: &StepContext<'_>) {
-        self.data = step.scratchpad_snapshot();
-    }
-}
-
-fn tool_descriptors_for_config(
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &AgentConfig,
-) -> Vec<ToolDescriptor> {
-    tools
-        .values()
-        .map(|t| t.descriptor().clone())
-        .filter(|td| {
-            crate::tool_filter::is_tool_allowed(
-                &td.id,
-                config.allowed_tools.as_deref(),
-                config.excluded_tools.as_deref(),
-            )
-        })
-        .collect()
-}
-
-/// Build the message list for an LLM request from step context.
-fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
-    let mut messages = Vec::new();
-
-    // [1] System Prompt + Context
-    let system = if step.system_context.is_empty() {
-        system_prompt.to_string()
-    } else {
-        format!("{}\n\n{}", system_prompt, step.system_context.join("\n"))
-    };
-
-    if !system.is_empty() {
-        messages.push(Message::system(system));
-    }
-
-    // [2] Thread Context
-    for ctx in &step.session_context {
-        messages.push(Message::system(ctx.clone()));
-    }
-
-    // [3+] History from session (Arc messages, cheap to clone)
-    for msg in &step.thread.messages {
-        messages.push((**msg).clone());
-    }
-
-    messages
-}
-
-type InferenceInputs = (Vec<Message>, Vec<String>, bool, Option<tracing::Span>);
-
-fn inference_inputs_from_step(step: &mut StepContext<'_>, system_prompt: &str) -> InferenceInputs {
-    let messages = build_messages(step, system_prompt);
-    let filtered_tools = step
-        .tools
-        .iter()
-        .map(|td| td.id.clone())
-        .collect::<Vec<_>>();
-    let skip_inference = step.skip_inference;
-    let tracing_span = step.tracing_span.take();
-    (messages, filtered_tools, skip_inference, tracing_span)
-}
-
-fn build_request_for_filtered_tools(
-    messages: &[Message],
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    filtered_tools: &[String],
-) -> genai::chat::ChatRequest {
-    let filtered_tool_refs: Vec<&dyn Tool> = tools
-        .values()
-        .filter(|t| filtered_tools.contains(&t.descriptor().id))
-        .map(|t| t.as_ref())
-        .collect();
-    build_request(messages, &filtered_tool_refs)
-}
-
-fn set_agent_pending_interaction(state: &Value, interaction: Interaction) -> TrackedPatch {
-    let ctx = Context::new(state, "agent_pending", "agent_loop");
-    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-    agent.set_pending_interaction(Some(interaction));
-    ctx.take_patch()
-}
-
-fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
-    let ctx = Context::new(state, "agent_pending_clear", "agent_loop");
-    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
-    agent.pending_interaction_none();
-    ctx.take_patch()
 }
 
 struct AppliedToolResults {
@@ -703,9 +303,6 @@ fn apply_tool_results_impl(
                     reminder
                 )));
             }
-            for text in appended_user_messages_from_tool_result(&r.execution.result) {
-                msgs.push(Message::user(text));
-            }
             // Attach run/step metadata to each message.
             if let Some(ref meta) = metadata {
                 for msg in &mut msgs {
@@ -718,6 +315,12 @@ fn apply_tool_results_impl(
 
     mutations = mutations.with_messages(tool_messages);
     let mut thread = reduce_thread_mutations(thread, mutations);
+    let (next_thread, appended_count) =
+        drain_agent_append_user_messages(thread, results, metadata.as_ref())?;
+    thread = next_thread;
+    if appended_count > 0 {
+        state_changed = true;
+    }
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = thread
@@ -780,34 +383,6 @@ fn apply_tool_results_impl(
     })
 }
 
-fn appended_user_messages_from_tool_result(result: &ToolResult) -> Vec<String> {
-    let Some(raw) = result
-        .metadata
-        .get(crate::skills::APPEND_USER_MESSAGES_METADATA_KEY)
-    else {
-        return Vec::new();
-    };
-
-    match raw {
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect(),
-        Value::String(s) => {
-            let s = s.trim();
-            if s.is_empty() {
-                Vec::new()
-            } else {
-                vec![s.to_string()]
-            }
-        }
-        _ => Vec::new(),
-    }
-}
-
 fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
     let run_id = thread
         .runtime
@@ -867,11 +442,9 @@ pub async fn run_step(
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Thread, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
-    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
     let phase_block = run_phase_block(
         &thread,
-        &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         &[Phase::StepStart, Phase::BeforeInference],
@@ -912,7 +485,6 @@ pub async fn run_step(
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
             let _session = emit_cleanup_phases_and_apply(
                 thread,
-                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
                 "llm_exec_error",
@@ -946,7 +518,6 @@ pub async fn run_step(
     let pending = emit_phase_block(
         Phase::AfterInference,
         &thread,
-        &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         |step| {
@@ -976,7 +547,6 @@ pub async fn run_step(
     let pending = emit_phase_block(
         Phase::StepEnd,
         &thread,
-        &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         |_| {},
@@ -1062,7 +632,6 @@ pub async fn execute_tools_with_plugins(
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let scratchpad = initial_scratchpad(plugins);
     let rt_for_tools = runtime_with_tool_caller_context(&thread, &state, None)?;
 
     let results = if parallel {
@@ -1072,7 +641,6 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            scratchpad,
             None,
             Some(&rt_for_tools),
             &thread.id,
@@ -1085,7 +653,6 @@ pub async fn execute_tools_with_plugins(
             &state,
             &tool_descriptors,
             plugins,
-            scratchpad,
             None,
             Some(&rt_for_tools),
             &thread.id,
@@ -1111,7 +678,6 @@ async fn execute_tools_parallel_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     thread_id: &str,
@@ -1128,7 +694,6 @@ async fn execute_tools_parallel_with_phases(
         let call = call.clone();
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
-        let scratchpad = scratchpad.clone();
         let activity_manager = activity_manager.clone();
         let rt = runtime_owned.clone();
         let sid = thread_id.clone();
@@ -1140,7 +705,6 @@ async fn execute_tools_parallel_with_phases(
                 &state,
                 &tool_descriptors,
                 &plugins,
-                scratchpad,
                 activity_manager,
                 rt.as_ref(),
                 &sid,
@@ -1160,7 +724,6 @@ async fn execute_tools_sequential_with_phases(
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    mut scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     thread_id: &str,
@@ -1178,7 +741,6 @@ async fn execute_tools_sequential_with_phases(
             &state,
             tool_descriptors,
             plugins,
-            scratchpad.clone(),
             activity_manager.clone(),
             runtime,
             thread_id,
@@ -1204,7 +766,6 @@ async fn execute_tools_sequential_with_phases(
             })?;
         }
 
-        scratchpad = result.scratchpad.clone();
         results.push(result);
 
         // Best-effort flow control: in sequential mode, stop at the first pending interaction.
@@ -1221,79 +782,6 @@ async fn execute_tools_sequential_with_phases(
     Ok(results)
 }
 
-fn scratchpad_deltas_from_base(
-    base: &HashMap<String, Value>,
-    snapshot: &HashMap<String, Value>,
-) -> Vec<(String, Option<Value>)> {
-    let mut keys: BTreeSet<String> = BTreeSet::new();
-    keys.extend(base.keys().cloned());
-    keys.extend(snapshot.keys().cloned());
-
-    let mut deltas = Vec::new();
-    for key in keys {
-        let before = base.get(&key);
-        let after = snapshot.get(&key);
-        if before != after {
-            deltas.push((key, after.cloned()));
-        }
-    }
-    deltas
-}
-
-fn apply_scratchpad_changes(
-    base: &HashMap<String, Value>,
-    changes: HashMap<String, Option<Value>>,
-) -> HashMap<String, Value> {
-    let mut merged = base.clone();
-    for (key, value) in changes {
-        if let Some(v) = value {
-            merged.insert(key, v);
-        } else {
-            merged.remove(&key);
-        }
-    }
-    merged
-}
-
-fn merge_parallel_scratchpad(
-    base: &HashMap<String, Value>,
-    results: &[ToolExecutionResult],
-    policy: ScratchpadMergePolicy,
-) -> Result<HashMap<String, Value>, AgentLoopError> {
-    match policy {
-        ScratchpadMergePolicy::Strict => {
-            let mut changes: HashMap<String, Option<Value>> = HashMap::new();
-
-            for result in results {
-                for (key, proposed) in scratchpad_deltas_from_base(base, &result.scratchpad) {
-                    if let Some(existing) = changes.get(&key) {
-                        if existing != &proposed {
-                            return Err(AgentLoopError::StateError(format!(
-                                "conflicting parallel scratchpad updates for key '{}'",
-                                key
-                            )));
-                        }
-                    } else {
-                        changes.insert(key, proposed);
-                    }
-                }
-            }
-            Ok(apply_scratchpad_changes(base, changes))
-        }
-        ScratchpadMergePolicy::DeterministicLww => {
-            let mut changes: HashMap<String, Option<Value>> = HashMap::new();
-
-            // `results` are in tool-call order, so overriding here is deterministic.
-            for result in results {
-                for (key, proposed) in scratchpad_deltas_from_base(base, &result.scratchpad) {
-                    changes.insert(key, proposed);
-                }
-            }
-            Ok(apply_scratchpad_changes(base, changes))
-        }
-    }
-}
-
 /// Result of tool execution with phase hooks.
 pub struct ToolExecutionResult {
     /// The tool execution result.
@@ -1302,8 +790,6 @@ pub struct ToolExecutionResult {
     pub reminders: Vec<String>,
     /// Pending interaction if tool is waiting for user action.
     pub pending_interaction: Option<crate::state_types::Interaction>,
-    /// Plugin data snapshot after this tool execution.
-    pub scratchpad: HashMap<String, Value>,
     /// Pending patches from plugins during tool phases.
     pub pending_patches: Vec<TrackedPatch>,
 }
@@ -1315,7 +801,6 @@ async fn execute_single_tool_with_phases(
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-    scratchpad: HashMap<String, Value>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
     runtime: Option<&carve_state::Runtime>,
     thread_id: &str,
@@ -1331,7 +816,6 @@ async fn execute_single_tool_with_phases(
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
-    step.set_scratchpad_map(scratchpad);
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
@@ -1449,7 +933,6 @@ async fn execute_single_tool_with_phases(
         execution,
         reminders: step.system_reminders.clone(),
         pending_interaction,
-        scratchpad: step.scratchpad_snapshot(),
         pending_patches,
     })
 }
@@ -1549,7 +1032,6 @@ pub async fn run_loop(
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(config);
     let mut last_text = String::new();
-    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
     let run_id = thread
         .runtime
         .value("run_id")
@@ -1566,7 +1048,6 @@ pub async fn run_loop(
     let pending = emit_phase_block(
         Phase::SessionStart,
         &thread,
-        &mut scratchpad,
         &tool_descriptors,
         &config.plugins,
         |_| {},
@@ -1578,7 +1059,6 @@ pub async fn run_loop(
         // Phase: StepStart and BeforeInference
         let step_prepare = run_phase_block(
             &thread,
-            &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
             &[Phase::StepStart, Phase::BeforeInference],
@@ -1590,9 +1070,7 @@ pub async fn run_loop(
         {
             Ok(v) => v,
             Err(e) => {
-                let _finalized =
-                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                        .await;
+                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
@@ -1620,7 +1098,6 @@ pub async fn run_loop(
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 thread = match emit_cleanup_phases_and_apply(
                     thread.clone(),
-                    &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                     "llm_exec_error",
@@ -1630,19 +1107,12 @@ pub async fn run_loop(
                 {
                     Ok(s) => s,
                     Err(phase_error) => {
-                        let _finalized = emit_session_end(
-                            thread,
-                            &mut scratchpad,
-                            &tool_descriptors,
-                            &config.plugins,
-                        )
-                        .await;
+                        let _finalized =
+                            emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                         return Err(phase_error);
                     }
                 };
-                let _finalized =
-                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                        .await;
+                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::LlmError(e.to_string()));
             }
         };
@@ -1673,7 +1143,6 @@ pub async fn run_loop(
         match emit_phase_block(
             Phase::AfterInference,
             &thread,
-            &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
             |step| {
@@ -1686,9 +1155,7 @@ pub async fn run_loop(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized =
-                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                        .await;
+                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         }
@@ -1714,7 +1181,6 @@ pub async fn run_loop(
         match emit_phase_block(
             Phase::StepEnd,
             &thread,
-            &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
             |_| {},
@@ -1725,9 +1191,7 @@ pub async fn run_loop(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized =
-                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                        .await;
+                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         }
@@ -1740,14 +1204,14 @@ pub async fn run_loop(
         let state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
         let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
@@ -1759,7 +1223,6 @@ pub async fn run_loop(
                 &state,
                 &tool_descriptors,
                 &config.plugins,
-                scratchpad.data.clone(),
                 None,
                 Some(&rt_for_tools),
                 &thread.id,
@@ -1772,7 +1235,6 @@ pub async fn run_loop(
                 &state,
                 &tool_descriptors,
                 &config.plugins,
-                scratchpad.data.clone(),
                 None,
                 Some(&rt_for_tools),
                 &thread.id,
@@ -1783,34 +1245,10 @@ pub async fn run_loop(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                let _finalized =
-                    emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins)
-                        .await;
+                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
-
-        if config.parallel_tools {
-            scratchpad.data = match merge_parallel_scratchpad(
-                &scratchpad.data,
-                &results,
-                config.scratchpad_merge_policy,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    let _finalized = emit_session_end(
-                        thread,
-                        &mut scratchpad,
-                        &tool_descriptors,
-                        &config.plugins,
-                    )
-                    .await;
-                    return Err(e);
-                }
-            };
-        } else if let Some(last) = results.last() {
-            scratchpad.data = last.scratchpad.clone();
-        }
 
         let session_before_apply = thread.clone();
         let applied = match apply_tool_results_to_session(
@@ -1821,13 +1259,9 @@ pub async fn run_loop(
         ) {
             Ok(a) => a,
             Err(e) => {
-                let _finalized = emit_session_end(
-                    session_before_apply,
-                    &mut scratchpad,
-                    &tool_descriptors,
-                    &config.plugins,
-                )
-                .await;
+                let _finalized =
+                    emit_session_end(session_before_apply, &tool_descriptors, &config.plugins)
+                        .await;
                 return Err(e);
             }
         };
@@ -1835,8 +1269,7 @@ pub async fn run_loop(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            thread =
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::PendingInteraction {
                 thread: Box::new(thread),
                 interaction: Box::new(interaction),
@@ -1854,8 +1287,7 @@ pub async fn run_loop(
         // Check stop conditions.
         let stop_ctx = loop_state.to_check_context(&result, &thread);
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-            thread =
-                emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::Stopped {
                 thread: Box::new(thread),
                 reason,
@@ -1864,7 +1296,7 @@ pub async fn run_loop(
     }
 
     // Phase: SessionEnd
-    thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
 
     Ok((thread, last_text))
 }
@@ -1899,7 +1331,6 @@ fn run_loop_stream_impl_with_provider(
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
     let tool_descriptors = tool_descriptors_for_config(&tools, &config);
-    let mut scratchpad = ScratchpadRuntimeData::new(&config.plugins);
 
         // Resolve run_id: from runtime if pre-set, otherwise generate.
         // NOTE: runtime is mutated in-place here. This is intentional —
@@ -1958,7 +1389,6 @@ fn run_loop_stream_impl_with_provider(
             ($message:expr) => {{
                 let (finalized, error, finish) = prepare_stream_error_termination(
                     thread,
-                    &mut scratchpad,
                     &tool_descriptors,
                     &config.plugins,
                     &run_id,
@@ -1977,7 +1407,6 @@ fn run_loop_stream_impl_with_provider(
         match emit_phase_block(
             Phase::SessionStart,
             &thread,
-            &mut scratchpad,
             &tool_descriptors,
             &config.plugins,
             |_| {},
@@ -1998,35 +1427,27 @@ fn run_loop_stream_impl_with_provider(
             parent_run_id: parent_run_id.clone(),
         };
 
-        if let Some(raw) = scratchpad
-            .data
-            .remove(crate::interaction::INTERACTION_RESOLUTIONS_KEY)
+        let (next_thread, outbox) =
+            match drain_agent_outbox(thread.clone(), "agent_outbox_session_start")
         {
-            let resolutions: Vec<crate::interaction::InteractionResolution> =
-                serde_json::from_value(raw).unwrap_or_default();
-            for resolution in resolutions {
-                yield AgentEvent::InteractionResolved {
-                    interaction_id: resolution.interaction_id,
-                    result: resolution.result,
-                };
+            Ok(v) => v,
+            Err(e) => {
+                terminate_stream_error!(e.to_string());
             }
+        };
+        thread = next_thread;
+        for resolution in outbox.interaction_resolutions {
+            yield AgentEvent::InteractionResolved {
+                interaction_id: resolution.interaction_id,
+                result: resolution.result,
+            };
         }
 
         // Resume pending tool execution via plugin mechanism.
-        // Plugins can request tool replay during SessionStart by populating
-        // `replay_tool_calls` in the step context. The loop handles actual execution
-        // since only it has access to the tools map.
-        let replay_calls = match scratchpad.data.get("__replay_tool_calls") {
-            Some(raw) => match serde_json::from_value::<Vec<crate::types::ToolCall>>(raw.clone()) {
-                Ok(calls) => calls,
-                Err(e) => {
-                    terminate_stream_error!(format!("failed to parse __replay_tool_calls: {e}"));
-                }
-            },
-            None => Vec::new(),
-        };
+        // Plugins request replay by writing AgentState.replay_tool_calls.
+        // The loop executes those calls at session start.
+        let replay_calls = outbox.replay_tool_calls;
         if !replay_calls.is_empty() {
-            scratchpad.data.remove("__replay_tool_calls");
             let mut replay_state_changed = false;
             for tool_call in &replay_calls {
                 let state = match thread.rebuild_state() {
@@ -2053,7 +1474,6 @@ fn run_loop_stream_impl_with_provider(
                     &state,
                     &tool_descriptors,
                     &config.plugins,
-                    scratchpad.data.clone(),
                     None,
                     Some(&rt_for_replay),
                     &thread.id,
@@ -2065,7 +1485,6 @@ fn run_loop_stream_impl_with_provider(
                         terminate_stream_error!(e.to_string());
                     }
                 };
-                scratchpad.data = replay_result.scratchpad.clone();
 
                 if replay_result.pending_interaction.is_some() {
                     terminate_stream_error!(format!(
@@ -2142,24 +1561,31 @@ fn run_loop_stream_impl_with_provider(
         }
 
         loop {
-            if let Some(raw) = scratchpad
-                .data
-                .remove(crate::interaction::INTERACTION_RESOLUTIONS_KEY)
+            let (next_thread, outbox) =
+                match drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick")
             {
-                let resolutions: Vec<crate::interaction::InteractionResolution> =
-                    serde_json::from_value(raw).unwrap_or_default();
-                for resolution in resolutions {
-                    yield AgentEvent::InteractionResolved {
-                        interaction_id: resolution.interaction_id,
-                        result: resolution.result,
-                    };
+                Ok(v) => v,
+                Err(e) => {
+                    terminate_stream_error!(e.to_string());
                 }
+            };
+            thread = next_thread;
+            for resolution in outbox.interaction_resolutions {
+                yield AgentEvent::InteractionResolved {
+                    interaction_id: resolution.interaction_id,
+                    result: resolution.result,
+                };
+            }
+            if !outbox.replay_tool_calls.is_empty() {
+                terminate_stream_error!(
+                    "unexpected replay_tool_calls outside session start".to_string()
+                );
             }
 
             // Check cancellation at the top of each iteration.
             if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
-                    thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                     ensure_run_finished_delta_or_error!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
@@ -2174,7 +1600,6 @@ fn run_loop_stream_impl_with_provider(
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
             let step_prepare = run_phase_block(
                 &thread,
-                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
                 &[Phase::StepStart, Phase::BeforeInference],
@@ -2208,7 +1633,7 @@ fn run_loop_stream_impl_with_provider(
                     };
                     yield AgentEvent::Pending { interaction };
                 }
-                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -2246,7 +1671,6 @@ fn run_loop_stream_impl_with_provider(
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                     match emit_cleanup_phases_and_apply(
                         thread.clone(),
-                        &mut scratchpad,
                         &tool_descriptors,
                         &config.plugins,
                         "llm_stream_start_error",
@@ -2274,7 +1698,7 @@ fn run_loop_stream_impl_with_provider(
                 let next_event = if let Some(ref token) = run_cancellation_token {
                     tokio::select! {
                         _ = token.cancelled() => {
-                            thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                             ensure_run_finished_delta_or_error!();
                             yield AgentEvent::RunFinish {
                                 thread_id: thread.id.clone(),
@@ -2314,7 +1738,6 @@ fn run_loop_stream_impl_with_provider(
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match emit_cleanup_phases_and_apply(
                             thread.clone(),
-                            &mut scratchpad,
                             &tool_descriptors,
                             &config.plugins,
                             "llm_stream_event_error",
@@ -2348,7 +1771,6 @@ fn run_loop_stream_impl_with_provider(
             match emit_phase_block(
                 Phase::AfterInference,
                 &thread,
-                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
                 |step| {
@@ -2385,7 +1807,6 @@ fn run_loop_stream_impl_with_provider(
             match emit_phase_block(
                 Phase::StepEnd,
                 &thread,
-                &mut scratchpad,
                 &tool_descriptors,
                 &config.plugins,
                 |_| {},
@@ -2423,7 +1844,7 @@ fn run_loop_stream_impl_with_provider(
                 } else {
                     Some(serde_json::json!({"response": result.text}))
                 };
-                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -2467,7 +1888,6 @@ fn run_loop_stream_impl_with_provider(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
-                        scratchpad.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
                         &sid_for_tools,
@@ -2479,7 +1899,6 @@ fn run_loop_stream_impl_with_provider(
                         &state,
                         &tool_descriptors,
                         &config.plugins,
-                        scratchpad.data.clone(),
                         Some(activity_manager.clone()),
                         Some(&rt_for_tools),
                         &sid_for_tools,
@@ -2495,7 +1914,7 @@ fn run_loop_stream_impl_with_provider(
                             futures::future::pending::<()>().await;
                         }
                     } => {
-                        thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                        thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                         ensure_run_finished_delta_or_error!();
                         yield AgentEvent::RunFinish {
                             thread_id: thread.id.clone(),
@@ -2531,21 +1950,6 @@ fn run_loop_stream_impl_with_provider(
                     terminate_stream_error!(e.to_string());
                 }
             };
-
-            if config.parallel_tools {
-                scratchpad.data = match merge_parallel_scratchpad(
-                    &scratchpad.data,
-                    &results,
-                    config.scratchpad_merge_policy,
-                ) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        terminate_stream_error!(e.to_string());
-                    }
-                };
-            } else if let Some(last) = results.last() {
-                scratchpad.data = last.scratchpad.clone();
-            }
 
             // Emit pending interaction event(s) first.
             for exec_result in &results {
@@ -2615,7 +2019,7 @@ fn run_loop_stream_impl_with_provider(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
-                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -2637,7 +2041,7 @@ fn run_loop_stream_impl_with_provider(
             // Check stop conditions.
             let stop_ctx = loop_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                thread = emit_session_end(thread, &mut scratchpad, &tool_descriptors, &config.plugins).await;
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),

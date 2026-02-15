@@ -617,6 +617,15 @@ fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
         .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
 }
 
+fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall> {
+    state
+        .get(AGENT_STATE_PATH)
+        .and_then(|a| a.get("replay_tool_calls"))
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
+        .unwrap_or_default()
+}
+
 fn set_pending_interaction_patch(
     state: &Value,
     interaction: Interaction,
@@ -633,10 +642,24 @@ fn set_pending_interaction_patch(
     }
 }
 
-fn schedule_recovery_replay(step: &mut StepContext<'_>, run_id: &str) {
-    let mut replay_calls = step
-        .scratchpad_get::<Vec<ToolCall>>("__replay_tool_calls")
-        .unwrap_or_default();
+fn set_replay_tool_calls_patch(
+    state: &Value,
+    replay_calls: Vec<ToolCall>,
+    call_id: &str,
+) -> Option<carve_state::TrackedPatch> {
+    let ctx = Context::new(state, call_id, "agent_recovery");
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.set_replay_tool_calls(replay_calls);
+    let patch = ctx.take_patch();
+    if patch.patch().is_empty() {
+        None
+    } else {
+        Some(patch)
+    }
+}
+
+fn schedule_recovery_replay(state: &Value, step: &mut StepContext<'_>, run_id: &str) {
+    let mut replay_calls = parse_replay_tool_calls_from_state(state);
 
     let exists = replay_calls.iter().any(|call| {
         call.name == "agent_run"
@@ -658,7 +681,13 @@ fn schedule_recovery_replay(step: &mut StepContext<'_>, run_id: &str) {
             "background": false
         }),
     ));
-    let _ = step.scratchpad_set("__replay_tool_calls", replay_calls);
+    if let Some(patch) = set_replay_tool_calls_patch(
+        state,
+        replay_calls,
+        &format!("agent_recovery_replay_{run_id}"),
+    ) {
+        step.pending_patches.push(patch);
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1456,7 +1485,7 @@ impl AgentRecoveryPlugin {
         let behavior = ctx.get_permission(AGENT_RECOVERY_INTERACTION_ACTION);
         match behavior {
             ToolPermissionBehavior::Allow => {
-                schedule_recovery_replay(step, &run_id);
+                schedule_recovery_replay(&state, step, &run_id);
             }
             ToolPermissionBehavior::Deny => {}
             ToolPermissionBehavior::Ask => {
@@ -1653,10 +1682,6 @@ impl AgentPlugin for AgentToolsPlugin {
             }
             _ => {}
         }
-    }
-
-    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        None
     }
 }
 
@@ -2546,18 +2571,19 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert_eq!(replay_calls.len(), 1);
-        assert_eq!(replay_calls[0].name, "agent_run");
-        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
-
         let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
             .unwrap();
+        let replay_calls: Vec<ToolCall> = updated["agent"]
+            .get("replay_tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
         assert_eq!(
             updated["agent"]["agent_runs"]["run-1"]["status"],
             json!("stopped")
@@ -2599,16 +2625,17 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert!(replay_calls.is_empty());
-
         let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
             .unwrap();
+        let replay_calls: Vec<ToolCall> = updated["agent"]
+            .get("replay_tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        assert!(replay_calls.is_empty());
         assert_eq!(
             updated["agent"]["agent_runs"]["run-1"]["status"],
             json!("stopped")
@@ -2648,18 +2675,19 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert_eq!(replay_calls.len(), 1);
-        assert_eq!(replay_calls[0].name, "agent_run");
-        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
-
         let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
             .unwrap();
+        let replay_calls: Vec<ToolCall> = updated["agent"]
+            .get("replay_tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        assert_eq!(replay_calls.len(), 1);
+        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
         assert!(
             updated["agent"].get("pending_interaction").is_none()
                 || updated["agent"]["pending_interaction"].is_null()
@@ -2695,19 +2723,20 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert!(
-            replay_calls.is_empty(),
-            "deny should not schedule recovery replay"
-        );
-
         let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
             .unwrap();
+        let replay_calls: Vec<ToolCall> = updated["agent"]
+            .get("replay_tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        assert!(
+            replay_calls.is_empty(),
+            "deny should not schedule recovery replay"
+        );
         assert!(
             updated["agent"].get("pending_interaction").is_none()
                 || updated["agent"]["pending_interaction"].is_null()
@@ -2745,19 +2774,20 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert!(
-            replay_calls.is_empty(),
-            "tool-level ask should override default allow"
-        );
-
         let updated = thread
             .clone()
             .with_patches(step.pending_patches)
             .rebuild_state()
             .unwrap();
+        let replay_calls: Vec<ToolCall> = updated["agent"]
+            .get("replay_tool_calls")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        assert!(
+            replay_calls.is_empty(),
+            "tool-level ask should override default allow"
+        );
         assert_eq!(
             updated["agent"]["pending_interaction"]["action"],
             json!(AGENT_RECOVERY_INTERACTION_ACTION)

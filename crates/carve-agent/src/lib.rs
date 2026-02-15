@@ -136,7 +136,7 @@ pub use skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, FsSkillRegistry, InMemorySkillRegistry,
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillRuntimePlugin,
-    SkillScriptTool, SkillSubsystem, SkillSubsystemError, APPEND_USER_MESSAGES_METADATA_KEY,
+    SkillScriptTool, SkillSubsystem, SkillSubsystemError,
 };
 
 // Execute exports
@@ -167,7 +167,7 @@ pub use r#loop::{
     execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
     AgentDefinition, AgentLoopError, ChannelStateCommitter, RoundResult, RunContext,
-    ScratchpadMergePolicy, StateCommitError, StateCommitter,
+    StateCommitError, StateCommitter,
 };
 
 // Stop condition exports

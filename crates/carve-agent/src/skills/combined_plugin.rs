@@ -3,7 +3,6 @@ use crate::plugin::AgentPlugin;
 use crate::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin};
 use async_trait::async_trait;
 use carve_state::Context;
-use serde_json::Value;
 use std::sync::Arc;
 
 /// Single plugin wrapper that injects both:
@@ -45,10 +44,6 @@ impl AgentPlugin for SkillPlugin {
         // Keep ordering stable: catalog first (enables selection), then active skill content.
         self.discovery.on_phase(phase, step, ctx).await;
         self.runtime.on_phase(phase, step, ctx).await;
-    }
-
-    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        None
     }
 }
 

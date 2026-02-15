@@ -5,6 +5,7 @@
 
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
+use crate::state_types::{AgentInferenceError, AgentState, AGENT_STATE_PATH};
 use async_trait::async_trait;
 use carve_state::Context;
 use genai::chat::Usage;
@@ -321,13 +322,6 @@ pub struct LLMMetryPlugin {
     tool_tracing_span: Mutex<HashMap<String, tracing::Span>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct InferenceError {
-    #[serde(rename = "type")]
-    error_type: String,
-    message: String,
-}
-
 impl LLMMetryPlugin {
     pub fn new(sink: impl MetricsSink + 'static) -> Self {
         Self {
@@ -361,7 +355,7 @@ impl AgentPlugin for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         match phase {
             Phase::SessionStart => {
                 *lock_unpoison(&self.session_start) = Some(Instant::now());
@@ -408,8 +402,7 @@ impl AgentPlugin for LLMMetryPlugin {
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
                 let (cache_read_input_tokens, cache_creation_input_tokens) =
                     extract_cache_tokens(usage);
-                let error: Option<InferenceError> = step.scratchpad_get("llmmetry.inference_error");
-                step.scratchpad_remove("llmmetry.inference_error");
+                let error = inference_error_from_state(ctx);
 
                 let model = lock_unpoison(&self.model).clone();
                 let provider = lock_unpoison(&self.provider).clone();
@@ -592,6 +585,11 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
         Some(d) => (d.cached_tokens, d.cache_creation_tokens),
         None => (None, None),
     }
+}
+
+fn inference_error_from_state(ctx: &Context<'_>) -> Option<AgentInferenceError> {
+    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+    agent.inference_error().ok().flatten()
 }
 
 // =============================================================================
@@ -959,7 +957,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
-        let doc = json!({});
+        let doc = json!({
+            "agent": {
+                "inference_error": {
+                    "type": "rate_limited",
+                    "message": "429"
+                }
+            }
+        });
         let ctx = Context::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
@@ -972,10 +977,6 @@ mod tests {
         plugin
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;
-        step.scratchpad_set(
-            "llmmetry.inference_error",
-            serde_json::json!({ "type": "rate_limited", "message": "429" }),
-        );
         plugin
             .on_phase(Phase::AfterInference, &mut step, &ctx)
             .await;
@@ -1502,7 +1503,14 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
-            let doc = json!({});
+            let doc = json!({
+                "agent": {
+                    "inference_error": {
+                        "type": "rate_limited",
+                        "message": "429"
+                    }
+                }
+            });
             let ctx = Context::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
@@ -1519,10 +1527,6 @@ mod tests {
             plugin
                 .on_phase(Phase::BeforeInference, &mut step, &ctx)
                 .await;
-            step.scratchpad_set(
-                "llmmetry.inference_error",
-                serde_json::json!({ "type": "rate_limited", "message": "429" }),
-            );
             plugin
                 .on_phase(Phase::AfterInference, &mut step, &ctx)
                 .await;

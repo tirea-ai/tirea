@@ -238,12 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn test_reminder_plugin_no_initial_data() {
-        let plugin = ReminderPlugin::new();
-        assert!(plugin.initial_scratchpad().is_none());
-    }
-
-    #[test]
     fn test_reminder_plugin_builder() {
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         assert!(!plugin.clear_after_llm_request);

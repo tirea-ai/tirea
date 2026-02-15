@@ -22,12 +22,6 @@ pub struct AgentDefinition {
     pub max_rounds: usize,
     /// Whether to execute tools in parallel.
     pub parallel_tools: bool,
-    /// Merge policy for scratchpad updates produced by parallel tool execution.
-    ///
-    /// Scratchpad keys are intentionally developer-defined. Components may share
-    /// namespaces/keys by convention; this policy controls how same-key updates are
-    /// resolved when multiple parallel tool calls update scratchpad in one round.
-    pub scratchpad_merge_policy: ScratchpadMergePolicy,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Plugins to run during the agent loop.
@@ -65,21 +59,6 @@ pub struct AgentDefinition {
     ///
     /// Specs are appended after explicit `stop_conditions` in evaluation order.
     pub stop_condition_specs: Vec<StopConditionSpec>,
-}
-
-/// Conflict resolution policy for scratchpad updates from parallel tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScratchpadMergePolicy {
-    /// Fail the run when parallel tool executions propose different values for the same key.
-    Strict,
-    /// Resolve conflicts by deterministic last-writer-wins in tool-call order.
-    DeterministicLww,
-}
-
-impl Default for ScratchpadMergePolicy {
-    fn default() -> Self {
-        Self::DeterministicLww
-    }
 }
 
 /// Backwards-compatible alias.
@@ -173,7 +152,6 @@ impl Default for AgentDefinition {
             system_prompt: String::new(),
             max_rounds: 10,
             parallel_tools: true,
-            scratchpad_merge_policy: ScratchpadMergePolicy::default(),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -205,7 +183,6 @@ impl std::fmt::Debug for AgentDefinition {
             )
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
-            .field("scratchpad_merge_policy", &self.scratchpad_merge_policy)
             .field("chat_options", &self.chat_options)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
@@ -261,13 +238,6 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
         self.parallel_tools = parallel;
-        self
-    }
-
-    /// Set scratchpad merge policy for parallel tool execution.
-    #[must_use]
-    pub fn with_scratchpad_merge_policy(mut self, policy: ScratchpadMergePolicy) -> Self {
-        self.scratchpad_merge_policy = policy;
         self
     }
 

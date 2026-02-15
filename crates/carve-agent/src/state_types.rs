@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::Thread;
+use crate::ToolCall;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -79,6 +80,16 @@ pub struct AgentRunState {
     pub thread: Option<Thread>,
 }
 
+/// Inference error emitted by the loop and consumed by telemetry plugins.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentInferenceError {
+    /// Stable error class used for metrics/telemetry dimensions.
+    #[serde(rename = "type")]
+    pub error_type: String,
+    /// Human-readable error message.
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 pub struct AgentState {
     /// Pending interaction that must be resolved by the client before the run can continue.
@@ -87,6 +98,22 @@ pub struct AgentState {
     /// Persisted sub-agent runs keyed by `run_id`.
     #[carve(default = "HashMap::new()")]
     pub agent_runs: HashMap<String, AgentRunState>,
+    /// Replay queue for tool calls that should run at session start.
+    #[carve(default = "Vec::new()")]
+    pub replay_tool_calls: Vec<ToolCall>,
+    /// Interaction responses that should be emitted as runtime events.
+    ///
+    /// These are produced by interaction-handling plugins and drained by the runtime.
+    #[carve(default = "Vec::new()")]
+    pub interaction_resolutions: Vec<InteractionResponse>,
+    /// User messages requested by tools, keyed by tool call id.
+    ///
+    /// The runtime appends these messages in tool-call order after tool execution.
+    #[carve(default = "HashMap::new()")]
+    pub append_user_messages: HashMap<String, Vec<String>>,
+    /// Inference error envelope for AfterInference cleanup flow.
+    #[carve(default = "None")]
+    pub inference_error: Option<AgentInferenceError>,
 }
 
 #[cfg(test)]
@@ -246,6 +273,10 @@ mod tests {
         let state = AgentState::default();
         assert!(state.pending_interaction.is_none());
         assert!(state.agent_runs.is_empty());
+        assert!(state.replay_tool_calls.is_empty());
+        assert!(state.interaction_resolutions.is_empty());
+        assert!(state.append_user_messages.is_empty());
+        assert!(state.inference_error.is_none());
     }
 
     #[test]

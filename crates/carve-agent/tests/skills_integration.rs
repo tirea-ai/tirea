@@ -2,7 +2,6 @@ use carve_agent::{
     execute_single_tool, execute_single_tool_with_runtime, AgentPlugin, FsSkillRegistry,
     LoadSkillResourceTool, Message, Phase, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
     SkillScriptTool, StepContext, Thread, ToolCall, ToolDescriptor, ToolResult,
-    APPEND_USER_MESSAGES_METADATA_KEY,
 };
 use carve_state::Context;
 use serde_json::json;
@@ -420,12 +419,12 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_emits_append_user_messages_metadata() {
+async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (_thread, result) = apply_tool(
+    let (thread, result) = apply_tool(
         thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
@@ -433,12 +432,11 @@ async fn test_skill_activation_emits_append_user_messages_metadata() {
     .await;
     assert!(result.is_success());
 
-    let appended = result
-        .metadata
-        .get(APPEND_USER_MESSAGES_METADATA_KEY)
+    let state = thread.rebuild_state().unwrap();
+    let items = state["agent"]["append_user_messages"]["call_1"]
+        .as_array()
         .cloned()
         .unwrap_or_default();
-    let items = appended.as_array().cloned().unwrap_or_default();
     assert_eq!(items.len(), 1);
     let text = items[0].as_str().unwrap_or("");
     assert!(text.contains("# DOCX Processing"));

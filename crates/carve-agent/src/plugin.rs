@@ -43,7 +43,6 @@
 use crate::phase::{Phase, StepContext};
 use async_trait::async_trait;
 use carve_state::Context;
-use serde_json::Value;
 
 /// Plugin trait for extending agent behavior.
 ///
@@ -77,7 +76,7 @@ use serde_json::Value;
 /// - **Inject context**: `step.system()`, `step.session()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
 /// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
-/// - **Use scratchpad**: `step.scratchpad_set()`, `step.scratchpad_get()`
+/// - **Mutate state**: enqueue `step.pending_patches` or write through `ctx.state(...)`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
@@ -94,22 +93,6 @@ pub trait AgentPlugin: Send + Sync {
     /// - `step`: Mutable context for the current step
     /// - `ctx`: State context for typed state access (read/write ops auto-collected)
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>);
-
-    /// Provide initial scratchpad data for this plugin.
-    ///
-    /// Returns a tuple of (key, initial_value) that will be stored
-    /// in step scratchpad at session start.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-    ///     Some(("reminders", json!([])))
-    /// }
-    /// ```
-    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        None
-    }
 }
 
 #[cfg(test)]
@@ -152,10 +135,6 @@ mod tests {
                 }
                 _ => {}
             }
-        }
-
-        fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-            Some(("test_data", json!({ "initialized": true })))
         }
     }
 
@@ -287,23 +266,6 @@ mod tests {
     fn test_plugin_id() {
         let plugin = TestPlugin::new("test");
         assert_eq!(plugin.id(), "test");
-    }
-
-    #[test]
-    fn test_plugin_initial_scratchpad() {
-        let plugin = TestPlugin::new("test");
-        let data = plugin.initial_scratchpad();
-
-        assert!(data.is_some());
-        let (key, value) = data.unwrap();
-        assert_eq!(key, "test_data");
-        assert_eq!(value["initialized"], true);
-    }
-
-    #[test]
-    fn test_noop_plugin_no_initial_scratchpad() {
-        let plugin = NoOpPlugin;
-        assert!(plugin.initial_scratchpad().is_none());
     }
 
     fn test_ctx(doc: &serde_json::Value) -> Context<'_> {

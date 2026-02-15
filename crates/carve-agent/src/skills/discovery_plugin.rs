@@ -7,7 +7,6 @@ use crate::tool_filter::{
 };
 use async_trait::async_trait;
 use carve_state::Context;
-use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -146,10 +145,6 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 
         // Treat the catalog as system-level guidance so the model can select skills.
         step.system(rendered);
-    }
-
-    fn initial_scratchpad(&self) -> Option<(&'static str, Value)> {
-        None
     }
 }
 

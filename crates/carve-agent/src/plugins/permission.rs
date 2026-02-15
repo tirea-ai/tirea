@@ -21,7 +21,6 @@
 //! }
 //! ```
 
-use crate::interaction::set_pending_and_push_intent;
 use crate::plugin::AgentPlugin;
 use crate::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
@@ -113,11 +112,10 @@ impl PermissionContextExt for Context<'_> {
 
 /// Permission strategy plugin.
 ///
-/// This plugin checks permissions in `before_tool_execute` and emits
-/// interaction intents consumed by [`crate::interaction::InteractionPlugin`].
-/// - `Allow`: no intent
-/// - `Deny`: block intent
-/// - `Ask`: pending interaction intent
+/// This plugin checks permissions in `before_tool_execute`.
+/// - `Allow`: no-op
+/// - `Deny`: block tool
+/// - `Ask`: set tool pending interaction directly
 pub struct PermissionPlugin;
 
 #[async_trait]
@@ -184,15 +182,9 @@ impl AgentPlugin for PermissionPlugin {
                             "id": origin_call_id,
                             "name": tool_id,
                             "arguments": origin_args
-                        },
-                        // legacy key kept for compatibility with existing replay path
-                        "tool_call": {
-                            "id": origin_call_id,
-                            "name": tool_id,
-                            "arguments": origin_args
                         }
                     }));
-                set_pending_and_push_intent(step, interaction);
+                step.pending(interaction);
             }
         }
     }
@@ -201,17 +193,11 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interaction::{take_intents, InteractionIntent};
     use carve_state::Context;
     use serde_json::json;
 
-    fn apply_interaction_intents(step: &mut crate::phase::StepContext<'_>) {
-        let intents = take_intents(step);
-        if let Some(interaction) = intents.into_iter().find_map(|intent| match intent {
-            InteractionIntent::Pending { interaction } => Some(interaction),
-        }) {
-            step.pending(interaction);
-        }
+    fn apply_interaction_intents(_step: &mut crate::phase::StepContext<'_>) {
+        // No-op: permission plugin now sets pending interaction directly.
     }
 
     #[test]
@@ -384,12 +370,6 @@ mod tests {
     fn test_permission_plugin_id() {
         let plugin = PermissionPlugin;
         assert_eq!(plugin.id(), "permission");
-    }
-
-    #[test]
-    fn test_permission_plugin_no_initial_data() {
-        let plugin = PermissionPlugin;
-        assert!(plugin.initial_scratchpad().is_none());
     }
 
     #[tokio::test]

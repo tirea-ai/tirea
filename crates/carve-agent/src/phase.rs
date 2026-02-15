@@ -11,10 +11,7 @@ use crate::thread::Thread;
 use crate::traits::tool::{ToolDescriptor, ToolResult};
 use crate::types::ToolCall;
 use carve_state::TrackedPatch;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,10 +146,6 @@ pub struct StepContext<'a> {
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
-
-    // === Scratchpad ===
-    /// Run-scoped, non-persistent scratchpad storage for phase communication.
-    scratchpad: HashMap<String, Value>,
 }
 
 impl<'a> StepContext<'a> {
@@ -169,7 +162,6 @@ impl<'a> StepContext<'a> {
             skip_inference: false,
             tracing_span: None,
             pending_patches: Vec::new(),
-            scratchpad: HashMap::new(),
         }
     }
 
@@ -309,58 +301,6 @@ impl<'a> StepContext<'a> {
     }
 
     // =========================================================================
-    // Scratchpad
-    // =========================================================================
-
-    /// Set a scratchpad value.
-    ///
-    /// Returns `true` when serialization succeeds and value is stored.
-    /// Returns `false` when the value cannot be serialized.
-    pub fn scratchpad_set<T: Serialize>(&mut self, key: &str, value: T) -> bool {
-        match serde_json::to_value(value) {
-            Ok(v) => {
-                self.scratchpad.insert(key.to_string(), v);
-                true
-            }
-            Err(err) => {
-                tracing::warn!(
-                    key,
-                    error = %err,
-                    "failed to serialize scratchpad value"
-                );
-                false
-            }
-        }
-    }
-
-    /// Get a scratchpad value.
-    pub fn scratchpad_get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.scratchpad
-            .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-    }
-
-    /// Check if a scratchpad key exists.
-    pub fn scratchpad_has(&self, key: &str) -> bool {
-        self.scratchpad.contains_key(key)
-    }
-
-    /// Remove a scratchpad value.
-    pub fn scratchpad_remove(&mut self, key: &str) -> Option<Value> {
-        self.scratchpad.remove(key)
-    }
-
-    /// Replace all scratchpad data with the provided map.
-    pub fn set_scratchpad_map(&mut self, scratchpad: HashMap<String, Value>) {
-        self.scratchpad = scratchpad;
-    }
-
-    /// Clone all scratchpad data.
-    pub fn scratchpad_snapshot(&self) -> HashMap<String, Value> {
-        self.scratchpad.clone()
-    }
-
-    // =========================================================================
     // Step Outcome
     // =========================================================================
 
@@ -389,7 +329,6 @@ impl<'a> StepContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     fn mock_thread() -> Thread {
@@ -665,109 +604,6 @@ mod tests {
 
         assert!(ctx.tool_result().is_some());
         assert!(ctx.tool_result().unwrap().is_success());
-    }
-
-    // =========================================================================
-    // Scratchpad tests
-    // =========================================================================
-
-    #[test]
-    fn test_set_get_data() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        assert!(ctx.scratchpad_set("counter", 42i32));
-        let value: Option<i32> = ctx.scratchpad_get("counter");
-
-        assert_eq!(value, Some(42));
-    }
-
-    #[test]
-    fn test_scratchpad_named_api_roundtrip() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        assert!(ctx.scratchpad_set("counter", 42i32));
-        assert!(ctx.scratchpad_has("counter"));
-        let value: Option<i32> = ctx.scratchpad_get("counter");
-        assert_eq!(value, Some(42));
-
-        let removed = ctx.scratchpad_remove("counter");
-        assert_eq!(removed, Some(json!(42)));
-        assert!(!ctx.scratchpad_has("counter"));
-    }
-
-    #[test]
-    fn test_set_data_returns_false_when_serialize_fails() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        struct FailingSerialize;
-        impl Serialize for FailingSerialize {
-            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                Err(serde::ser::Error::custom("expected test failure"))
-            }
-        }
-
-        let ok = ctx.scratchpad_set("bad_value", FailingSerialize);
-        assert!(!ok);
-        assert!(!ctx.scratchpad_has("bad_value"));
-    }
-
-    #[test]
-    fn test_get_nonexistent_data() {
-        let thread = mock_thread();
-        let ctx = StepContext::new(&thread, vec![]);
-
-        let value: Option<i32> = ctx.scratchpad_get("nonexistent");
-        assert!(value.is_none());
-    }
-
-    #[test]
-    fn test_has_data() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        assert!(!ctx.scratchpad_has("key"));
-        ctx.scratchpad_set("key", "value");
-        assert!(ctx.scratchpad_has("key"));
-    }
-
-    #[test]
-    fn test_remove_data() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        ctx.scratchpad_set("key", "value");
-        let removed = ctx.scratchpad_remove("key");
-
-        assert!(removed.is_some());
-        assert!(!ctx.scratchpad_has("key"));
-    }
-
-    #[test]
-    fn test_complex_data_types() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        #[derive(Serialize, Deserialize, PartialEq, Debug)]
-        struct Config {
-            enabled: bool,
-            items: Vec<String>,
-        }
-
-        let config = Config {
-            enabled: true,
-            items: vec!["a".to_string(), "b".to_string()],
-        };
-
-        ctx.scratchpad_set("config", &config);
-        let retrieved: Option<Config> = ctx.scratchpad_get("config");
-
-        assert_eq!(retrieved, Some(config));
     }
 
     // =========================================================================
@@ -1063,27 +899,6 @@ mod tests {
 
         // Empty text, no tool calls -> Continue (not Complete)
         assert_eq!(ctx.result(), StepOutcome::Continue);
-    }
-
-    #[test]
-    fn test_data_overwrite() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        ctx.scratchpad_set("key", 1i32);
-        assert_eq!(ctx.scratchpad_get::<i32>("key"), Some(1));
-
-        ctx.scratchpad_set("key", 2i32);
-        assert_eq!(ctx.scratchpad_get::<i32>("key"), Some(2));
-    }
-
-    #[test]
-    fn test_remove_nonexistent_key() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
-
-        let removed = ctx.scratchpad_remove("nonexistent");
-        assert!(removed.is_none());
     }
 
     #[test]

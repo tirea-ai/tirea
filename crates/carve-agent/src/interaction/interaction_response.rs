@@ -5,22 +5,13 @@
 use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use crate::state_types::{
-    Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION,
+    AgentState, Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use async_trait::async_trait;
 use carve_state::Context;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-
-pub(crate) const INTERACTION_RESOLUTIONS_KEY: &str = "__interaction_resolutions";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct InteractionResolution {
-    pub(crate) interaction_id: String,
-    pub(crate) result: serde_json::Value,
-}
 
 /// Plugin that handles interaction responses from client.
 ///
@@ -119,7 +110,6 @@ impl InteractionResponsePlugin {
         ctx: &Context<'_>,
     ) -> Option<Interaction> {
         Self::pending_interaction_from_step_thread(step).or_else(|| {
-            use crate::state_types::AgentState;
             ctx.state::<AgentState>(AGENT_STATE_PATH)
                 .pending_interaction()
                 .ok()
@@ -127,24 +117,19 @@ impl InteractionResponsePlugin {
         })
     }
 
-    fn push_resolution(
-        step: &mut StepContext<'_>,
-        interaction_id: String,
-        result: serde_json::Value,
-    ) {
-        let mut entries: Vec<InteractionResolution> = step
-            .scratchpad_get(INTERACTION_RESOLUTIONS_KEY)
-            .unwrap_or_default();
-        entries.push(InteractionResolution {
-            interaction_id,
-            result,
-        });
-        let _ = step.scratchpad_set(INTERACTION_RESOLUTIONS_KEY, entries);
+    fn push_resolution(ctx: &Context<'_>, interaction_id: String, result: serde_json::Value) {
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+        agent.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
+    }
+
+    fn queue_replay_call(ctx: &Context<'_>, call: crate::types::ToolCall) {
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+        agent.replay_tool_calls_push(call);
     }
 
     /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
     fn on_session_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
-        let agent = ctx.state::<crate::state_types::AgentState>(AGENT_STATE_PATH);
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
         let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
         };
@@ -154,7 +139,7 @@ impl InteractionResponsePlugin {
         if self.is_denied(pending_id) {
             agent.pending_interaction_none();
             Self::push_resolution(
-                step,
+                ctx,
                 pending_id_owned.clone(),
                 self.result_for(pending_id)
                     .cloned()
@@ -169,7 +154,7 @@ impl InteractionResponsePlugin {
             return;
         }
         Self::push_resolution(
-            step,
+            ctx,
             pending_id_owned.clone(),
             self.result_for(pending_id)
                 .cloned()
@@ -200,7 +185,7 @@ impl InteractionResponsePlugin {
                     "background": false
                 }),
             );
-            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+            Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
@@ -210,7 +195,7 @@ impl InteractionResponsePlugin {
             .cloned()
             .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
         {
-            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+            Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
@@ -220,7 +205,7 @@ impl InteractionResponsePlugin {
             .cloned()
             .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
         {
-            step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+            Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
@@ -231,7 +216,7 @@ impl InteractionResponsePlugin {
                     tool_name,
                     pending.parameters.clone(),
                 );
-                step.scratchpad_set("__replay_tool_calls", vec![replay_call]);
+                Self::queue_replay_call(ctx, replay_call);
                 return;
             }
         }
@@ -264,11 +249,7 @@ impl InteractionResponsePlugin {
             });
 
         if let Some(call) = tool_call {
-            // Schedule the tool call for replay by the loop.
-            step.scratchpad_set(
-                "__replay_tool_calls",
-                serde_json::to_value(vec![call]).unwrap_or_default(),
-            );
+            Self::queue_replay_call(ctx, call);
         }
     }
 }
@@ -318,7 +299,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let agent = ctx.state::<crate::state_types::AgentState>(AGENT_STATE_PATH);
+        let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
         let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
 
         let id_matches = persisted_id
@@ -337,14 +318,14 @@ impl AgentPlugin for InteractionResponsePlugin {
             step.block("User denied the action".to_string());
             agent.pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
-            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false));
+            Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(false));
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
             // This allows the tool to execute normally.
             step.confirm();
             agent.pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
-            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true));
+            Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(true));
         }
     }
 }
@@ -356,6 +337,27 @@ mod tests {
     use crate::types::{Message, ToolCall};
     use carve_state::{apply_patches, Context};
     use serde_json::json;
+
+    fn apply_ctx_patch(thread: &Thread, ctx: &Context<'_>) -> serde_json::Value {
+        if !ctx.has_changes() {
+            return thread.rebuild_state().unwrap();
+        }
+        let patch = ctx.take_patch();
+        apply_patches(
+            &thread.rebuild_state().unwrap(),
+            std::iter::once(patch.patch()),
+        )
+        .expect("ctx patch should apply")
+    }
+
+    fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
+        state
+            .get("agent")
+            .and_then(|agent| agent.get("replay_tool_calls"))
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
+            .unwrap_or_default()
+    }
 
     #[tokio::test]
     async fn session_start_replays_tool_matching_pending_interaction() {
@@ -393,16 +395,15 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_calls = replay_calls_from_state(&updated);
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].id, "call_write");
         assert_eq!(replay_calls[0].name, "write_file");
     }
 
     #[tokio::test]
-    async fn session_start_replay_does_not_require_prior_intent_scratchpad() {
+    async fn session_start_replay_does_not_require_prior_intent_channel() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -435,32 +436,18 @@ mod tests {
             )],
         ));
 
-        // Simulate a brand-new run: no previous run scratchpad keys.
         let mut step = StepContext::new(&thread, vec![]);
-        let intents: Vec<serde_json::Value> = step
-            .scratchpad_get("__interaction_intents")
-            .unwrap_or_default();
-        assert!(
-            intents.is_empty(),
-            "new run should not carry previous run intent scratchpad"
-        );
-        let replay_before: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert!(replay_before.is_empty());
-
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_after: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
         assert_eq!(replay_after[0].name, "write_file");
     }
 
     #[tokio::test]
-    async fn session_start_frontend_interaction_replay_works_without_prior_scratchpad() {
+    async fn session_start_frontend_interaction_replay_works_without_prior_channel() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -492,16 +479,10 @@ mod tests {
         ));
 
         let mut step = StepContext::new(&thread, vec![]);
-        let replay_before: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
-        assert!(replay_before.is_empty());
-
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_after: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_copy_1");
         assert_eq!(replay_after[0].name, "copyToClipboard");
@@ -525,9 +506,8 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_after: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_copy_1");
         assert_eq!(replay_after[0].name, "copyToClipboard");
@@ -561,9 +541,8 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_after: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
         assert_eq!(replay_after[0].name, "write_file");
@@ -597,9 +576,8 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_after: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
         assert_eq!(replay_after[0].name, "write_file");
@@ -641,9 +619,8 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![]);
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
-        let replay_calls: Vec<ToolCall> = step
-            .scratchpad_get("__replay_tool_calls")
-            .unwrap_or_default();
+        let updated = apply_ctx_patch(&thread, &ctx);
+        let replay_calls = replay_calls_from_state(&updated);
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].name, "agent_run");
         assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
