@@ -2750,13 +2750,8 @@ async fn run_mock_stream_with_final_thread(
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let run_ctx = RunContext::default()
         .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
-    let stream = run_loop_stream_impl_with_provider(
-        Arc::new(provider),
-        config,
-        thread,
-        tools,
-        run_ctx,
-    );
+    let stream =
+        run_loop_stream_impl_with_provider(Arc::new(provider), config, thread, tools, run_ctx);
     let events = collect_stream_events(stream).await;
     while let Some(delta) = checkpoint_rx.recv().await {
         delta.apply_to(&mut final_thread);
@@ -4190,7 +4185,7 @@ async fn test_message_id_agui_tool_result_carries_tool_id() {
 /// entire stream, overriding its default run-derived ID.
 #[tokio::test]
 async fn test_message_id_ai_sdk_encoder_uses_step_id() {
-    use crate::ui_stream::AiSdkEncoder;
+    use crate::ai_sdk_v6::AiSdkEncoder;
 
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
     let mut enc = AiSdkEncoder::new("run_12345678".to_string());

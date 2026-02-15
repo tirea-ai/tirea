@@ -1,34 +1,37 @@
 //! AG-UI protocol support and request/runtime adapters.
 
+pub(crate) mod adapter;
 mod context;
 mod protocol;
 mod request;
 mod runner;
 
 pub use crate::interaction::AgUiInteractionPlugin;
-pub use request::InteractionPlugin;
+pub use adapter::{AgUiInputAdapter, AgUiProtocolEncoder};
+#[cfg(test)]
 pub(crate) use request::core_message_from_ag_ui;
+pub use request::InteractionPlugin;
 
 pub use context::AGUIContext;
 pub use protocol::{AGUIEvent, BaseEventFields, MessageRole};
 pub use request::{
-    AGUIContextEntry, AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest, ToolExecutionLocation,
+    AGUIContextEntry, AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest,
+    ToolExecutionLocation,
 };
 pub use runner::{
-    run_agent_events_with_request, run_agent_stream,
-    run_agent_stream_with_parent, run_agent_stream_with_request,
+    run_agent_events_with_request, run_agent_stream, run_agent_stream_with_parent,
+    run_agent_stream_with_request,
 };
 
 #[cfg(test)]
-use request::{
-    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
-    apply_agui_request_to_thread, build_context_addendum,
-    ensure_agui_request_applied, merge_frontend_tools, prepare_request_runtime,
-    seed_session_from_request, session_has_message_id, session_has_tool_call_id,
-    should_seed_session_from_request,
-};
-#[cfg(test)]
 use context::value_to_map;
+#[cfg(test)]
+use request::{
+    apply_agui_request_to_thread, build_context_addendum, ensure_agui_request_applied,
+    merge_frontend_tools, prepare_request_runtime, seed_session_from_request,
+    session_has_message_id, session_has_tool_call_id, should_seed_session_from_request,
+    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
+};
 
 #[cfg(test)]
 use crate::r#loop::AgentConfig;
@@ -48,9 +51,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
-use crate::interaction::{FrontendToolPlugin, InteractionResponsePlugin};
-#[cfg(test)]
 use crate::interaction::FrontendToolStub;
+#[cfg(test)]
+use crate::interaction::{FrontendToolPlugin, InteractionResponsePlugin};
 
 #[cfg(test)]
 mod tests;

@@ -1,17 +1,17 @@
 use carve_agent::ag_ui::{AGUIEvent, RunAgentRequest};
-use carve_agent::ui_stream::UIStreamEvent;
+use carve_agent::ai_sdk_v6::UIStreamEvent;
 use carve_agent::AgentOs;
 use futures::StreamExt;
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing;
 
+use crate::transport::pump_encoded_stream;
+use async_nats::ConnectErrorKind;
 use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
     AiSdkV6RunRequest, ProtocolInputAdapter,
 };
-use async_nats::ConnectErrorKind;
-use crate::transport::pump_encoded_stream;
 
 const SUBJECT_RUN_AGUI: &str = "agentos.run.agui";
 const SUBJECT_RUN_AISDK: &str = "agentos.run.aisdk";
@@ -41,10 +41,7 @@ pub struct NatsGateway {
 }
 
 impl NatsGateway {
-    pub async fn connect(
-        os: Arc<AgentOs>,
-        nats_url: &str,
-    ) -> Result<Self, NatsGatewayError> {
+    pub async fn connect(os: Arc<AgentOs>, nats_url: &str) -> Result<Self, NatsGatewayError> {
         let client = async_nats::connect(nats_url).await?;
         Ok(Self { os, client })
     }

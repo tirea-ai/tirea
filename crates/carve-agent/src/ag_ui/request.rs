@@ -441,6 +441,51 @@ pub(crate) fn core_message_from_ag_ui(msg: &AGUIMessage) -> crate::types::Messag
     }
 }
 
+pub(crate) fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<crate::types::Message> {
+    messages
+        .iter()
+        .filter(|m| m.role != MessageRole::Assistant)
+        .map(core_message_from_ag_ui)
+        .collect()
+}
+
+pub(crate) fn interaction_runtime_values(request: &RunAgentRequest) -> HashMap<String, Value> {
+    let mut runtime = HashMap::new();
+
+    let frontend_tools: Vec<String> = request
+        .frontend_tools()
+        .into_iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    if !frontend_tools.is_empty() {
+        runtime.insert(
+            crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY.to_string(),
+            serde_json::to_value(frontend_tools).unwrap_or_default(),
+        );
+    }
+
+    let responses = request.interaction_responses();
+    if !responses.is_empty() {
+        runtime.insert(
+            crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY.to_string(),
+            serde_json::to_value(responses).unwrap_or_default(),
+        );
+    }
+
+    runtime
+}
+
+pub(crate) fn request_runtime_values(request: &RunAgentRequest) -> HashMap<String, Value> {
+    let mut runtime = interaction_runtime_values(request);
+    if let Some(parent_run_id) = request.parent_run_id.clone() {
+        runtime.insert(
+            "parent_run_id".to_string(),
+            serde_json::Value::String(parent_run_id),
+        );
+    }
+    runtime
+}
+
 pub(super) fn should_seed_session_from_request(thread: &Thread, request: &RunAgentRequest) -> bool {
     let session_state_is_empty_object = thread.state.as_object().is_some_and(|m| m.is_empty());
 
@@ -741,24 +786,18 @@ pub(super) fn set_run_identity(thread: &mut Thread, run_id: &str, parent_run_id:
 }
 
 fn set_interaction_request_context(thread: &mut Thread, request: &RunAgentRequest) {
-    let frontend_tools: Vec<String> = request
-        .frontend_tools()
-        .into_iter()
-        .map(|tool| tool.name.clone())
-        .collect();
-    if !frontend_tools.is_empty() {
-        let _ = thread.runtime.set(
-            crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY,
-            frontend_tools,
-        );
-    }
-
-    let responses = request.interaction_responses();
-    if !responses.is_empty() {
-        let _ = thread.runtime.set(
-            crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY,
-            responses,
-        );
+    for (key, value) in interaction_runtime_values(request) {
+        if key == crate::interaction::RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY {
+            if let Ok(frontend_tools) = serde_json::from_value::<Vec<String>>(value) {
+                let _ = thread.runtime.set(key, frontend_tools);
+            }
+        } else if key == crate::interaction::RUNTIME_INTERACTION_RESPONSES_KEY {
+            if let Ok(responses) = serde_json::from_value::<Vec<InteractionResponse>>(value) {
+                let _ = thread.runtime.set(key, responses);
+            }
+        } else {
+            let _ = thread.runtime.set(key, value);
+        }
     }
 }
 
