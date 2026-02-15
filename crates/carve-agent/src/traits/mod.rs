@@ -1,4 +1,4 @@
-//! Trait definitions for agent components.
+//! Backward-compatible wrapper for trait contracts.
 
 pub mod provider;
 pub mod reminder;

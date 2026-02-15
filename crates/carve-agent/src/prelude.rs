@@ -37,29 +37,29 @@ pub use serde_json::{json, Value};
 pub use carve_state::Context;
 
 // Tool trait and types
-pub use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Message types
 pub use crate::types::{Message, Role, ToolCall};
 
 // Plugin trait
-pub use crate::plugin::AgentPlugin;
+pub use crate::contracts::agent_plugin::AgentPlugin;
 
 // Phase types for plugins
-pub use crate::phase::{Phase, StepContext, StepOutcome, ToolContext};
+pub use crate::contracts::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
-pub use crate::state_types::{
+pub use crate::contracts::state_types::{
     AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
     ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };
 
 // Extension traits - these add methods to Context
-pub use crate::plugins::{PermissionContextExt, ReminderContextExt};
+pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};
 
 // State types (for advanced usage)
-pub use crate::plugins::{PermissionState, ReminderState};
+pub use crate::extensions::{permission::PermissionState, reminder::ReminderState};
 
 // Built-in plugins
-pub use crate::plugins::{PermissionPlugin, ReminderPlugin};
+pub use crate::extensions::{permission::PermissionPlugin, reminder::ReminderPlugin};

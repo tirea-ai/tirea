@@ -8,24 +8,36 @@
 //!
 //! # Architecture
 //!
-//! The framework is designed around pure functions and minimal abstractions:
+//! The crate is organized into five explicit layers:
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────┐
-//! │  Application Layer                                   │
-//! │  - Register tools, run agent loop, persist sessions  │
+//! │ orchestrator                                          │
+//! │ - AgentOS, registries, bundle composition, wiring     │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //!                          ▼
 //! ┌─────────────────────────────────────────────────────┐
-//! │  Pure Functions                                      │
-//! │  - build_request, StreamCollector, Thread::with_*  │
+//! │ runtime                                               │
+//! │ - loop runners, streaming, state commit adapters      │
 //! └─────────────────────────────────────────────────────┘
 //!                          │
 //!                          ▼
 //! ┌─────────────────────────────────────────────────────┐
-//! │  Tool Layer                                          │
-//! │  - Tool trait, Context, automatic patch collection   │
+//! │ engine                                                │
+//! │ - pure conversion, tool execution, stop conditions    │
+//! └─────────────────────────────────────────────────────┘
+//!                          │
+//!                          ▼
+//! ┌─────────────────────────────────────────────────────┐
+//! │ extensions                                            │
+//! │ - skills / interaction / permission / reminder / obs  │
+//! └─────────────────────────────────────────────────────┘
+//!                          │
+//!                          ▼
+//! ┌─────────────────────────────────────────────────────┐
+//! │ contracts                                             │
+//! │ - tool/thread/state/plugin contracts                  │
 //! └─────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -81,6 +93,12 @@
 //! storage.save(&thread).await?;
 //! ```
 
+pub mod contracts;
+pub mod engine;
+pub mod extensions;
+pub mod orchestrator;
+pub mod runtime;
+
 pub mod activity;
 pub mod agent_os;
 pub mod convert;
@@ -97,7 +115,6 @@ pub mod stop;
 pub mod stream;
 pub mod thread;
 pub mod thread_store;
-mod tool_filter;
 pub mod traits;
 pub mod types;
 
@@ -107,51 +124,70 @@ pub mod mcp_registry;
 // Re-export from carve-state for convenience
 pub use carve_state::{Context, StateManager, TrackedPatch};
 
-// Trait exports
-pub use traits::provider::{ContextCategory, ContextProvider};
-pub use traits::reminder::SystemReminder;
-pub use traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-
-// Type exports
-pub use types::{gen_message_id, Message, MessageMetadata, Role, ToolCall, Visibility};
-
-// Thread exports
-pub use thread::{PendingDelta, Thread, ThreadMetadata};
-
-// Storage exports
-pub use thread_store::{
+// Contracts exports
+pub use contracts::conversation::{
+    gen_message_id, Message, MessageMetadata, PendingDelta, Role, Thread, ThreadMetadata, ToolCall,
+    Visibility,
+};
+pub use contracts::plugin::{
+    AgentPlugin, ContextCategory, ContextProvider, Phase, StepContext, StepOutcome, SystemReminder,
+    ToolContext,
+};
+pub use contracts::state::{
+    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
+    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
+};
+pub use contracts::storage::{
     CheckpointReason, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
     ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
     ThreadStoreError, ThreadSync, ThreadWriter, Version,
 };
+pub use contracts::tools::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
-// Stream exports
-pub use stream::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
+// Runtime exports
+pub use runtime::activity::ActivityHub;
+pub use runtime::loop_runner::{
+    execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
+    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
+    AgentDefinition, AgentLoopError, ChannelStateCommitter, RoundResult, RunContext,
+    StateCommitError, StateCommitter,
+};
+pub use runtime::streaming::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
 
-// Activity exports
-pub use activity::ActivityHub;
-
-// Skills exports
-pub use skills::{
+// Extensions exports
+pub use extensions::skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, FsSkillRegistry, InMemorySkillRegistry,
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillRuntimePlugin,
     SkillScriptTool, SkillSubsystem, SkillSubsystemError,
 };
+pub use extensions::{
+    observability::{
+        AgentMetrics, GenAISpan, InMemorySink, LLMMetryPlugin, MetricsSink, ModelStats, ToolSpan,
+        ToolStats,
+    },
+    permission::{PermissionContextExt, PermissionPlugin, PermissionState},
+    reminder::{ReminderContextExt, ReminderPlugin, ReminderState},
+};
 
-// Execute exports
-pub use execute::{
+// Engine exports
+pub use engine::convert::{
+    assistant_message, assistant_tool_calls, build_request, to_chat_message, to_genai_tool,
+    tool_response, user_message,
+};
+pub use engine::stop_conditions::{
+    check_stop_conditions, ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds,
+    StopCheckContext, StopCondition, StopConditionSpec, StopOnTool, StopReason, Timeout,
+    TokenBudget,
+};
+pub use engine::tool_execution::{
     collect_patches, execute_single_tool, execute_single_tool_with_runtime, execute_tools_parallel,
     execute_tools_sequential, ToolExecution,
 };
 
-// Convert exports (pure functions)
-pub use convert::{
-    assistant_message, assistant_tool_calls, build_request, to_chat_message, to_genai_tool,
-    tool_response, user_message,
-};
-
-pub use agent_os::{
+// Orchestrator exports
+pub use orchestrator::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
     AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig, BundleComposeError,
     BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
@@ -161,53 +197,4 @@ pub use agent_os::{
     ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
     ProviderRegistryError, RegistryBundle, RegistrySet, RunExtensions, RunRequest, RunStream,
     SkillsConfig, SkillsMode, ToolPluginBundle, ToolRegistry, ToolRegistryError,
-};
-
-// Loop exports
-pub use r#loop::{
-    execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
-    AgentDefinition, AgentLoopError, ChannelStateCommitter, RoundResult, RunContext,
-    StateCommitError, StateCommitter,
-};
-
-// Stop condition exports
-pub use stop::{
-    check_stop_conditions, ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds,
-    StopCheckContext, StopCondition, StopConditionSpec, StopOnTool, StopReason, Timeout,
-    TokenBudget,
-};
-
-// Plugin exports
-pub use plugin::AgentPlugin;
-
-// Phase exports
-pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
-
-// State types exports
-pub use state_types::{
-    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
-    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_STATE_PATH,
-};
-
-// Plugins and extension traits
-pub use plugins::{
-    // Built-in plugins
-    AgentMetrics,
-    GenAISpan,
-    InMemorySink,
-    LLMMetryPlugin,
-    MetricsSink,
-    ModelStats,
-    // Extension traits
-    PermissionContextExt,
-    PermissionPlugin,
-    // State types
-    PermissionState,
-    ReminderContextExt,
-    ReminderPlugin,
-    ReminderState,
-    ToolSpan,
-    ToolStats,
 };

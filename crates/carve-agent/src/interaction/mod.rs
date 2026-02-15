@@ -1,8 +1,3 @@
-//! Core interaction plugins.
-//!
-//! This module is protocol-agnostic and operates on runtime interaction data.
+//! Backward-compatible wrapper for interaction extensions.
 
-mod interaction_plugin;
-mod interaction_response;
-
-pub use interaction_plugin::InteractionPlugin;
+pub use crate::extensions::interaction::*;
