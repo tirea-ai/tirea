@@ -278,7 +278,9 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});
         let ctx = Context::new(&doc, "test", "test");
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert_eq!(step.system_context.len(), 2);
         assert!(step.system_context[0].contains("<available_skills>"));

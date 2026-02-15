@@ -1,6 +1,6 @@
 use crate::plugin::AgentPlugin;
-use crate::storage::ThreadDelta;
 use crate::stop::{StopCondition, StopConditionSpec};
+use crate::storage::ThreadDelta;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
 use std::sync::Arc;
@@ -133,7 +133,10 @@ impl std::fmt::Debug for RunContext {
                 "cancellation_token",
                 &self.cancellation_token.as_ref().map(|_| "<set>"),
             )
-            .field("state_committer", &self.state_committer.as_ref().map(|_| "<set>"))
+            .field(
+                "state_committer",
+                &self.state_committer.as_ref().map(|_| "<set>"),
+            )
             .finish()
     }
 }

@@ -6,9 +6,7 @@ use futures::Stream;
 use genai::Client;
 
 use crate::plugin::AgentPlugin;
-use crate::r#loop::{
-    run_loop, run_loop_stream, RunContext, StateCommitError, StateCommitter,
-};
+use crate::r#loop::{run_loop, run_loop_stream, RunContext, StateCommitError, StateCommitter};
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
@@ -1098,7 +1096,6 @@ impl AgentOs {
         let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
         Ok(run_loop_stream(client, cfg, thread, tools, run_ctx))
     }
-
 }
 
 #[cfg(test)]
@@ -1216,12 +1213,9 @@ mod tests {
                 step.skip_inference = true;
             }
             if phase == Phase::SessionEnd {
-                let patch = carve_state::TrackedPatch::new(
-                    carve_state::Patch::new().with_op(carve_state::Op::set(
-                        carve_state::path!("session_end_marker"),
-                        json!(true),
-                    )),
-                )
+                let patch = carve_state::TrackedPatch::new(carve_state::Patch::new().with_op(
+                    carve_state::Op::set(carve_state::path!("session_end_marker"), json!(true)),
+                ))
                 .with_source("test:session_end_marker");
                 step.pending_patches.push(patch);
             }
@@ -2251,7 +2245,9 @@ mod tests {
             "unexpected error message: {err_msg}"
         );
         assert!(
-            !events.iter().any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+            !events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
             "RunFinish must not be emitted after checkpoint append failure: {events:?}"
         );
 
@@ -2269,10 +2265,7 @@ mod tests {
         );
         assert_eq!(head.thread.messages[0].role, crate::Role::User);
         assert_eq!(
-            head.thread
-                .messages[0]
-                .content
-                .as_str(),
+            head.thread.messages[0].content.as_str(),
             "hello",
             "unexpected persisted user message content"
         );
@@ -2326,7 +2319,9 @@ mod tests {
             "checkpoint failure must emit AgentEvent::Error: {events:?}"
         );
         assert!(
-            !events.iter().any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+            !events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
             "RunFinish must not be emitted after checkpoint append failure: {events:?}"
         );
 
@@ -2338,10 +2333,7 @@ mod tests {
             "existing state must stay unchanged when first checkpoint append fails"
         );
         assert!(
-            head.thread
-                .state
-                .get("session_end_marker")
-                .is_none(),
+            head.thread.state.get("session_end_marker").is_none(),
             "failed checkpoint must not persist SessionEnd patch"
         );
         assert_eq!(head.version, 0, "failed append must not advance version");

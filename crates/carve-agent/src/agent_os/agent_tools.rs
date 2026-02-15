@@ -1722,7 +1722,9 @@ mod tests {
 
         let owner = Thread::new("owner-1");
         let mut step = StepContext::new(&owner, vec![]);
-        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .await;
         let reminder = step
             .system_reminders
             .first()
@@ -1731,7 +1733,9 @@ mod tests {
 
         manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
         let mut step2 = StepContext::new(&owner, vec![]);
-        plugin.on_phase(Phase::AfterToolExecute, &mut step2, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step2, &ctx)
+            .await;
         let reminder2 = step2
             .system_reminders
             .first()
@@ -2457,7 +2461,9 @@ mod tests {
 
         let updated_thread = thread.clone().with_patches(step.pending_patches);
         let mut before = StepContext::new(&updated_thread, vec![]);
-        plugin.on_phase(Phase::BeforeInference, &mut before, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut before, &ctx)
+            .await;
         assert!(
             before.skip_inference,
             "recovery confirmation should pause inference"

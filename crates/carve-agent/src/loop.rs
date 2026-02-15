@@ -722,7 +722,8 @@ fn apply_tool_results_impl(
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
+            thread =
+                reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
         }
         let state_snapshot = if state_changed {
             Some(
@@ -753,7 +754,8 @@ fn apply_tool_results_impl(
         let patch = clear_agent_pending_interaction(&state);
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
+            thread =
+                reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
         }
     }
 

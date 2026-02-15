@@ -332,7 +332,9 @@ mod tests {
         let doc = json!({});
         let ctx = test_ctx(&doc);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert_eq!(step.session_context.len(), 1);
         assert_eq!(step.session_context[0], "Test thread context");
@@ -352,14 +354,18 @@ mod tests {
         assert_eq!(step.system_context[0], "Current time: 2024-01-01");
 
         // BeforeInference - adds session context and filters tools
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
         assert_eq!(step.session_context[0], "Remember to be helpful.");
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .await;
         assert_eq!(step.system_reminders[0], "Check for sensitive data.");
     }
 
@@ -374,7 +380,9 @@ mod tests {
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(step.tool_blocked());
     }
@@ -390,7 +398,9 @@ mod tests {
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(!step.tool_blocked());
     }
@@ -406,7 +416,9 @@ mod tests {
         let call = ToolCall::new("call_1", "write_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(step.tool_pending());
     }
@@ -422,7 +434,9 @@ mod tests {
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(!step.tool_pending());
     }
@@ -448,7 +462,9 @@ mod tests {
 
         // Run all plugins for BeforeInference
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .await;
         }
         assert!(!step.session_context.is_empty());
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
@@ -457,7 +473,9 @@ mod tests {
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
         step.tool = Some(crate::phase::ToolContext::new(&call));
         for plugin in &plugins {
-            plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+            plugin
+                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .await;
         }
         assert!(step.tool_blocked());
     }
@@ -473,10 +491,18 @@ mod tests {
         // All phases should be callable without panic or side effects
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
         plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
-        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
-        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
+        plugin
+            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .await;
         plugin.on_phase(Phase::StepEnd, &mut step, &ctx).await;
         plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
 

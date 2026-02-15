@@ -298,20 +298,21 @@ mod tests {
 
     #[test]
     fn test_pending_delta_not_serialized() {
-        let thread = Thread::new("t-1")
-            .with_message(Message::user("Hello"));
+        let thread = Thread::new("t-1").with_message(Message::user("Hello"));
         assert_eq!(thread.pending.messages.len(), 1);
 
         let json_str = serde_json::to_string(&thread).unwrap();
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
-        assert!(restored.pending.is_empty(), "pending should not survive serialization");
+        assert!(
+            restored.pending.is_empty(),
+            "pending should not survive serialization"
+        );
         assert_eq!(restored.messages.len(), 1);
     }
 
     #[test]
     fn test_pending_clone_is_independent() {
-        let thread = Thread::new("t-1")
-            .with_message(Message::user("first"));
+        let thread = Thread::new("t-1").with_message(Message::user("first"));
         assert_eq!(thread.pending.messages.len(), 1);
 
         // Clone carries the same pending state

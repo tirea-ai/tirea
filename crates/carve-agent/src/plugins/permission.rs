@@ -157,41 +157,41 @@ impl AgentPlugin for PermissionPlugin {
                 let question = format!("Allow tool '{}' to execute?", tool_id);
                 // Create a pending interaction for confirmation
                 let interaction = Interaction::new(format!("permission_{}", tool_id), "confirm")
-                .with_message(question.clone())
-                .with_parameters(json!({
-                    "questions": [
-                        {
-                            "question": question,
-                            "header": "Permission",
-                            "options": [
-                                {
-                                    "label": "Allow",
-                                    "description": format!("Allow '{}' to run.", tool_id)
-                                },
-                                {
-                                    "label": "Deny",
-                                    "description": format!("Deny '{}' from running.", tool_id)
-                                }
-                            ],
-                            "multiSelect": false
+                    .with_message(question.clone())
+                    .with_parameters(json!({
+                        "questions": [
+                            {
+                                "question": question,
+                                "header": "Permission",
+                                "options": [
+                                    {
+                                        "label": "Allow",
+                                        "description": format!("Allow '{}' to run.", tool_id)
+                                    },
+                                    {
+                                        "label": "Deny",
+                                        "description": format!("Deny '{}' from running.", tool_id)
+                                    }
+                                ],
+                                "multiSelect": false
+                            }
+                        ],
+                        "ask_call_id": format!("permission_{}", tool_id),
+                        "ask_user_tool": ASK_USER_TOOL_NAME,
+                        "origin_call_id": origin_call_id,
+                        "origin_call_name": tool_id,
+                        "origin_tool_call": {
+                            "id": origin_call_id,
+                            "name": tool_id,
+                            "arguments": origin_args
+                        },
+                        // legacy key kept for compatibility with existing replay path
+                        "tool_call": {
+                            "id": origin_call_id,
+                            "name": tool_id,
+                            "arguments": origin_args
                         }
-                    ],
-                    "ask_call_id": format!("permission_{}", tool_id),
-                    "ask_user_tool": ASK_USER_TOOL_NAME,
-                    "origin_call_id": origin_call_id,
-                    "origin_call_name": tool_id,
-                    "origin_tool_call": {
-                        "id": origin_call_id,
-                        "name": tool_id,
-                        "arguments": origin_args
-                    },
-                    // legacy key kept for compatibility with existing replay path
-                    "tool_call": {
-                        "id": origin_call_id,
-                        "name": tool_id,
-                        "arguments": origin_args
-                    }
-                }));
+                    }));
                 set_pending_and_push_intent(step, interaction);
             }
         }

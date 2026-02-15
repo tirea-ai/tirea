@@ -123,7 +123,12 @@ impl AgentPlugin for ReminderPlugin {
         "reminder"
     }
 
-    async fn on_phase(&self, phase: crate::phase::Phase, step: &mut crate::phase::StepContext<'_>, ctx: &carve_state::Context<'_>) {
+    async fn on_phase(
+        &self,
+        phase: crate::phase::Phase,
+        step: &mut crate::phase::StepContext<'_>,
+        ctx: &carve_state::Context<'_>,
+    ) {
         use crate::phase::Phase;
 
         if phase != Phase::BeforeInference {
@@ -147,8 +152,8 @@ impl AgentPlugin for ReminderPlugin {
 
 #[cfg(test)]
 mod tests {
-    use carve_state::Context;
     use super::*;
+    use carve_state::Context;
     use serde_json::json;
 
     #[test]
@@ -258,7 +263,9 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert!(!step.session_context.is_empty());
         assert!(step.session_context[0].contains("Test reminder"));
@@ -278,7 +285,9 @@ mod tests {
         );
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         // Should have injected reminders as session context
         assert_eq!(step.session_context.len(), 2);
@@ -303,7 +312,9 @@ mod tests {
             Thread::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert!(!step.session_context.is_empty());
         // No pending patches when clearing is disabled
@@ -321,7 +332,9 @@ mod tests {
         let thread = Thread::with_initial_state("test", json!({ "reminders": { "items": [] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());
@@ -338,7 +351,9 @@ mod tests {
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());
