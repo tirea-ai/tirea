@@ -1,5 +1,6 @@
 use carve_agent::{AgentEvent, AgentOs, RunExtensions, RunRequest};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
+use carve_protocol_ag_ui_runtime::build_agui_extensions;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
@@ -10,7 +11,6 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing;
 
-use crate::agui_runtime::build_agui_extensions;
 use crate::transport::pump_encoded_stream;
 use async_nats::ConnectErrorKind;
 

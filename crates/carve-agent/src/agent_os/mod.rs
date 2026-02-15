@@ -6,7 +6,7 @@ use futures::Stream;
 use genai::Client;
 
 use crate::plugin::AgentPlugin;
-use crate::r#loop::{run_loop, run_loop_stream, RunContext, StateCommitError, StateCommitter};
+use crate::r#loop::{run_loop_stream, RunContext, StateCommitError, StateCommitter};
 use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
@@ -1159,34 +1159,9 @@ impl AgentOs {
             .collect()
     }
 
-    // --- Legacy low-level helpers (used by agent tools and tests) ---
+    // --- Internal low-level helper (used by agent tools) ---
 
-    pub async fn run_blocking(
-        &self,
-        agent_id: &str,
-        thread: Thread,
-    ) -> Result<(Thread, String), AgentOsRunError> {
-        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
-        let (thread, text) = run_loop(&client, &cfg, thread, &tools).await?;
-        Ok((thread, text))
-    }
-
-    pub fn run_stream_raw(
-        &self,
-        agent_id: &str,
-        thread: Thread,
-    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
-        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
-        Ok(run_loop_stream(
-            client,
-            cfg,
-            thread,
-            tools,
-            RunContext::default(),
-        ))
-    }
-
-    pub fn run_stream_with_context(
+    pub(crate) fn run_stream_with_context(
         &self,
         agent_id: &str,
         thread: Thread,
@@ -1686,14 +1661,25 @@ mod tests {
         }
 
         let def = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipInferencePlugin));
-        let os = AgentOs::builder().with_agent("a1", def).build().unwrap();
+        let os = AgentOs::builder()
+            .with_agent("a1", def)
+            .with_thread_store(Arc::new(carve_thread_store_adapters::MemoryStore::new()))
+            .build()
+            .unwrap();
 
-        let thread = Thread::with_initial_state("s", json!({}));
-        let (_thread, text) = os.run_blocking("a1", thread).await.unwrap();
-        assert_eq!(text, "");
-
-        let thread = Thread::with_initial_state("s2", json!({}));
-        let mut stream = os.run_stream_raw("a1", thread).unwrap();
+        let run = os
+            .run_stream(RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("s2".to_string()),
+                run_id: None,
+                parent_run_id: None,
+                resource_id: None,
+                state: Some(json!({})),
+                messages: vec![],
+            })
+            .await
+            .unwrap();
+        let mut stream = run.events;
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();
         assert!(matches!(ev, AgentEvent::RunStart { .. }));
         let ev = futures::StreamExt::next(&mut stream).await.unwrap();

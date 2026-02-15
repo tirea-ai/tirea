@@ -6,6 +6,7 @@ members = [
     "crates/carve-agent-runtime-contract",
     "crates/carve-protocol-contract",
     "crates/carve-protocol-ag-ui",
+    "crates/carve-protocol-ag-ui-runtime",
     "crates/carve-protocol-ai-sdk-v6",
     "crates/carve-thread-model",
     "crates/carve-thread-store-contract",
@@ -28,6 +29,7 @@ carve-state-derive = { path = "crates/carve-state-derive" }
 carve-agent-runtime-contract = { path = "crates/carve-agent-runtime-contract" }
 carve-protocol-contract = { path = "crates/carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "crates/carve-protocol-ag-ui" }
+carve-protocol-ag-ui-runtime = { path = "crates/carve-protocol-ag-ui-runtime" }
 carve-protocol-ai-sdk-v6 = { path = "crates/carve-protocol-ai-sdk-v6" }
 carve-thread-model = { path = "crates/carve-thread-model" }
 carve-thread-store-contract = { path = "crates/carve-thread-store-contract" }

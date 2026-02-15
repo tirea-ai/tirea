@@ -4116,110 +4116,10 @@ async fn test_message_id_toolcalldone_matches_stored_tool_message() {
     );
 }
 
-/// Verify that AG-UI `TextMessageStart.message_id` matches `StepStart.message_id`
-/// and hence the stored assistant message.
-#[tokio::test]
-async fn test_message_id_agui_text_message_carries_step_id() {
-    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
-
-    let step_msg_id = "pre-gen-assistant-uuid".to_string();
-
-    let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
-
-    // Simulate: StepStart → TextDelta
-    let step_events = ctx.on_agent_event(&AgentEvent::StepStart {
-        message_id: step_msg_id.clone(),
-    });
-    assert!(!step_events.is_empty());
-
-    let text_events = ctx.on_agent_event(&AgentEvent::TextDelta {
-        delta: "Hello".to_string(),
-    });
-
-    // The first AG-UI event on text should be TextMessageStart carrying
-    // the same message_id we set via StepStart → reset_for_step.
-    let text_start = text_events
-        .iter()
-        .find(|e| matches!(e, AGUIEvent::TextMessageStart { .. }))
-        .expect("AG-UI should emit TextMessageStart on first TextDelta");
-
-    if let AGUIEvent::TextMessageStart { message_id, .. } = text_start {
-        assert_eq!(
-            message_id, &step_msg_id,
-            "AG-UI TextMessageStart.message_id must equal StepStart.message_id"
-        );
-    }
-}
-
-/// Verify that AG-UI `ToolCallResult.message_id` matches `ToolCallDone.message_id`
-/// and hence the stored tool message.
-#[tokio::test]
-async fn test_message_id_agui_tool_result_carries_tool_id() {
-    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
-
-    let tool_msg_id = "pre-gen-tool-uuid".to_string();
-
-    let mut ctx = AGUIContext::new("thread1".into(), "run1".into());
-
-    let result_events = ctx.on_agent_event(&AgentEvent::ToolCallDone {
-        id: "call_1".into(),
-        result: ToolResult::success("echo", json!({"echoed": "test"})),
-        patch: None,
-        message_id: tool_msg_id.clone(),
-    });
-
-    let tool_result = result_events
-        .iter()
-        .find(|e| matches!(e, AGUIEvent::ToolCallResult { .. }))
-        .expect("AG-UI should emit ToolCallResult");
-
-    if let AGUIEvent::ToolCallResult { message_id, .. } = tool_result {
-        assert_eq!(
-            message_id, &tool_msg_id,
-            "AG-UI ToolCallResult.message_id must equal ToolCallDone.message_id"
-        );
-    }
-}
-
-/// Verify that the AI SDK encoder picks up `StepStart.message_id` for the
-/// entire stream, overriding its default run-derived ID.
-#[tokio::test]
-async fn test_message_id_ai_sdk_encoder_uses_step_id() {
-    use carve_protocol_ai_sdk_v6::AiSdkEncoder;
-
-    let step_msg_id = "pre-gen-assistant-uuid".to_string();
-    let mut enc = AiSdkEncoder::new("run_12345678".to_string());
-
-    // Default message_id is run-derived.
-    assert_eq!(enc.message_id(), "msg_run_1234");
-
-    // After processing StepStart, the encoder should adopt the pre-generated ID.
-    let _ = enc.on_agent_event(&AgentEvent::StepStart {
-        message_id: step_msg_id.clone(),
-    });
-    assert_eq!(
-        enc.message_id(),
-        step_msg_id.as_str(),
-        "AiSdkEncoder must adopt StepStart.message_id"
-    );
-
-    // Subsequent StepStart events should NOT override (first wins).
-    let _ = enc.on_agent_event(&AgentEvent::StepStart {
-        message_id: "second-step-id".to_string(),
-    });
-    assert_eq!(
-        enc.message_id(),
-        step_msg_id.as_str(),
-        "AiSdkEncoder must keep the first StepStart.message_id"
-    );
-}
-
 /// End-to-end: run a multi-step stream with tool calls and verify all message IDs
-/// are consistent across events, stored messages, and protocol conversions.
+/// are consistent across runtime events and stored messages.
 #[tokio::test]
 async fn test_message_id_end_to_end_multi_step() {
-    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
-
     // Step 1: tool call round. Step 2: final text answer.
     let responses = vec![
         MockResponse::text("searching").with_tool_call("c1", "echo", json!({"message": "query"})),
@@ -4292,44 +4192,5 @@ async fn test_message_id_end_to_end_multi_step() {
         tool_msgs[0].id.as_deref(),
         Some(tool_ids[0].1.as_str()),
         "stored tool Message.id must match ToolCallDone.message_id"
-    );
-
-    // Replay events through AG-UI converter and verify protocol message IDs.
-    let mut ctx = AGUIContext::new("test".into(), "run".into());
-    let mut agui_text_msg_ids: Vec<String> = Vec::new();
-    let mut agui_tool_result_ids: Vec<String> = Vec::new();
-
-    for ev in &events {
-        let agui_events = ctx.on_agent_event(ev);
-        for ae in &agui_events {
-            match ae {
-                AGUIEvent::TextMessageStart { message_id, .. } => {
-                    agui_text_msg_ids.push(message_id.clone());
-                }
-                AGUIEvent::ToolCallResult { message_id, .. } => {
-                    agui_tool_result_ids.push(message_id.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    // AG-UI text messages: the first TextMessageStart in each step should carry
-    // the step's pre-generated ID (set via reset_for_step).
-    assert!(
-        !agui_text_msg_ids.is_empty(),
-        "AG-UI must produce at least one TextMessageStart"
-    );
-    // First text message should use step 1's ID.
-    assert_eq!(
-        agui_text_msg_ids[0], step_ids[0],
-        "first AG-UI TextMessageStart must use step 1 message_id"
-    );
-
-    // AG-UI tool result should carry the pre-generated tool message ID.
-    assert_eq!(agui_tool_result_ids.len(), 1);
-    assert_eq!(
-        agui_tool_result_ids[0], tool_ids[0].1,
-        "AG-UI ToolCallResult must carry the pre-generated tool message_id"
     );
 }

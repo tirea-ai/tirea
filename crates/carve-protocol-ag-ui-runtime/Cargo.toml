@@ -1,0 +1,18 @@
+[package]
+name = "carve-protocol-ag-ui-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "AG-UI runtime wiring for carve-agent AgentOs"
+
+[dependencies]
+carve-agent = { path = "../carve-agent" }
+carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
+async-trait = "0.1"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

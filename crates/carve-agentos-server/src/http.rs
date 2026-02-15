@@ -12,6 +12,7 @@ use carve_agent::{
 use carve_protocol_ag_ui::{
     AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
 };
+use carve_protocol_ag_ui_runtime::build_agui_extensions;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,
@@ -24,7 +25,6 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tracing::warn;
 
-use crate::agui_runtime::build_agui_extensions;
 use crate::transport::pump_encoded_stream;
 
 #[derive(Clone)]

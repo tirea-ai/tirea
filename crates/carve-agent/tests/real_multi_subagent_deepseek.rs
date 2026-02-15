@@ -1,4 +1,4 @@
-use carve_agent::{AgentDefinition, AgentEvent, AgentOs, Message, Thread};
+use carve_agent::{AgentDefinition, AgentEvent, AgentOs, Message, RunRequest};
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -61,10 +61,19 @@ Do not skip tool calls.",
         .build()
         .unwrap();
 
-    let thread = Thread::new("real-multi-subagent-smoke")
-        .with_message(Message::user("按流程执行，最后给我结果。"));
-
-    let stream = os.run_stream_raw("orchestrator", thread).unwrap();
+    let run = os
+        .run_stream(RunRequest {
+            agent_id: "orchestrator".to_string(),
+            thread_id: Some("real-multi-subagent-smoke".to_string()),
+            run_id: None,
+            parent_run_id: None,
+            resource_id: None,
+            state: None,
+            messages: vec![Message::user("按流程执行，最后给我结果。")],
+        })
+        .await
+        .map_err(|e| format!("run start failed: {e}"))?;
+    let stream = run.events;
     tokio::pin!(stream);
 
     let mut called_agents: HashSet<String> = HashSet::new();

@@ -1,3 +1,9 @@
+//! Runtime wiring for AG-UI requests.
+//!
+//! This crate builds run-scoped [`carve_agent::RunExtensions`] for AG-UI:
+//! frontend tool descriptor stubs, frontend pending interaction strategy,
+//! and interaction-response replay plugin wiring.
+
 use async_trait::async_trait;
 use carve_agent::interaction::InteractionPlugin;
 use carve_agent::{
@@ -43,8 +49,8 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
 
 /// Runtime-only frontend tool descriptor stub.
 ///
-/// The interaction plugin intercepts configured frontend tools before backend
-/// execution. This stub exists only to expose tool descriptors to the model.
+/// The frontend pending plugin intercepts configured frontend tools before
+/// backend execution. This stub exists only to expose tool descriptors to the model.
 struct FrontendToolStub {
     descriptor: ToolDescriptor,
 }
@@ -73,6 +79,7 @@ impl Tool for FrontendToolStub {
     }
 }
 
+/// Run-scoped frontend interaction strategy for AG-UI.
 struct FrontendToolPendingPlugin {
     frontend_tools: HashSet<String>,
 }
@@ -115,6 +122,9 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use carve_agent::phase::{Phase, ToolContext};
+    use carve_agent::thread::Thread;
+    use carve_agent::types::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 
@@ -208,5 +218,30 @@ mod tests {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         let extensions = build_agui_extensions(&request);
         assert!(extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
+        let plugin =
+            FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
+        let state = json!({});
+        let ctx = Context::new(&state, "test", "test");
+        let thread = Thread::new("t1");
+        let mut step = StepContext::new(&thread, vec![]);
+        let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
+        step.tool = Some(ToolContext::new(&call));
+
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
+
+        assert!(step.tool_pending());
+        let pending = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.as_ref())
+            .expect("pending interaction should exist");
+        assert_eq!(pending.id, "call_1");
+        assert_eq!(pending.action, "tool:copyToClipboard");
     }
 }

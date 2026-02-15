@@ -13,8 +13,3 @@ error[E0432]: unresolved imports `carve_agent::AGUIEvent`, `carve_agent::RunAgen
   |                   |          no `RunAgentRequest` in the root
   |                   |          help: a similar name exists in the module: `RunRequest`
   |                   no `AGUIEvent` in the root
-  |
-  = help: consider importing this enum instead:
-          carve_protocol_ag_ui::AGUIEvent
-  = help: consider importing this struct instead:
-          carve_protocol_ag_ui::RunAgentRequest
