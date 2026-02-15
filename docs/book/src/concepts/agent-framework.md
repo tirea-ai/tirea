@@ -125,13 +125,15 @@ Control when the agent loop terminates:
 
 Use `AgentOsBuilder` to configure and build an `AgentOs` instance.
 
-## Storage
+## Thread Store
 
-The `Storage` trait provides session persistence:
+Thread persistence is modeled with:
 
-- `FileStorage` — JSON files on disk
-- `MemoryStorage` — In-memory (for testing)
-- `PostgresStorage` — PostgreSQL (with `postgres` feature)
+- `ThreadReader` / `ThreadWriter` traits
+- `ThreadStore` (combined read+write trait)
+- `FileStore` — JSON files on disk
+- `MemoryStore` — In-memory (for testing)
+- `PostgresStore` — PostgreSQL (with `postgres` feature)
 
 ## Streaming
 

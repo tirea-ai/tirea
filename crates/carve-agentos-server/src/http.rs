@@ -15,7 +15,7 @@ use carve_agent::ai_sdk_v6::{
 use carve_agent::protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use carve_agent::{
     AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
-    ThreadListPage, ThreadListQuery, ThreadReadStore, Visibility,
+    ThreadListPage, ThreadListQuery, ThreadReader, Visibility,
 };
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -27,7 +27,7 @@ use crate::transport::pump_encoded_stream;
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
-    pub read_store: Arc<dyn ThreadReadStore>,
+    pub read_store: Arc<dyn ThreadReader>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -172,7 +172,7 @@ async fn get_thread_messages(
         .await
         .map(Json)
         .map_err(|e| match e {
-            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
+            carve_agent::ThreadStoreError::NotFound(_) => ApiError::ThreadNotFound(id),
             other => ApiError::Internal(other.to_string()),
         })
 }
@@ -210,7 +210,7 @@ fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
 }
 
 async fn load_message_page(
-    read_store: &Arc<dyn ThreadReadStore>,
+    read_store: &Arc<dyn ThreadReader>,
     thread_id: &str,
     params: &MessageQueryParams,
 ) -> Result<MessagePage, ApiError> {
@@ -219,7 +219,7 @@ async fn load_message_page(
         .load_messages(thread_id, &query)
         .await
         .map_err(|e| match e {
-            carve_agent::StorageError::NotFound(_) => {
+            carve_agent::ThreadStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(thread_id.to_string())
             }
             other => ApiError::Internal(other.to_string()),

@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStore, ModelDefinition, ThreadReadStore,
-    ThreadWriteStore, Tool, ToolDescriptor, ToolError, ToolResult,
+    AgentDefinition, AgentOsBuilder, MemoryStore, ModelDefinition, ThreadReader, ThreadStore, Tool,
+    ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -66,7 +66,7 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -86,7 +86,7 @@ fn make_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs {
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
         .with_agent("deepseek", def)
-        .with_storage(write_store)
+        .with_thread_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero")
 }
@@ -421,7 +421,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),
@@ -446,7 +446,7 @@ fn make_tool_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs 
         )
         .with_tools(tools)
         .with_agent("calc", def)
-        .with_storage(write_store)
+        .with_thread_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero + calculator")
 }
@@ -728,7 +728,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
-            .with_storage(storage.clone())
+            .with_thread_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );
@@ -962,7 +962,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
-            .with_storage(storage.clone())
+            .with_thread_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );

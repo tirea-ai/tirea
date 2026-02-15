@@ -35,7 +35,7 @@ For microservice deployments, `carve-agentos-server` can also listen on NATS sub
 The server requires:
 
 - An `AgentOs` instance (with agents, tools, models registered)
-- A `Storage` implementation for session persistence
+- A thread store implementation for thread persistence
 - Network binding configuration (host, port)
 
 ```rust,ignore
@@ -43,6 +43,6 @@ use carve_agentos_server::http::AppState;
 
 let state = AppState {
     os: Arc::new(agent_os),
-    storage: Arc::new(storage),
+    read_store: thread_store.clone(),
 };
 ```

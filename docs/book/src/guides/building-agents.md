@@ -9,7 +9,7 @@ An agent requires:
 1. **Tools** — Functions the LLM can call
 2. **Agent definition** — Model, system prompt, tools, stop conditions
 3. **AgentOs** — Wiring layer that connects everything
-4. **Storage** — Session persistence
+4. **Thread store** — Thread persistence
 
 ## Step 1: Define Tools
 
@@ -46,7 +46,7 @@ impl Tool for SearchTool {
 ```rust,ignore
 use carve_agent::{
     AgentOs, AgentOsBuilder, AgentDefinition, AgentConfig,
-    MemoryStorage, MaxRounds, StopConditionSpec,
+    MemoryStore, MaxRounds, StopConditionSpec,
 };
 use std::sync::Arc;
 
@@ -99,18 +99,18 @@ while let Some(event) = stream.next().await {
 }
 ```
 
-## Step 4: Persist Sessions
+## Step 4: Persist Threads
 
 ```rust,ignore
-use carve_agent::{FileStorage, ThreadStore};
+use carve_agent::{FileStore, ThreadReader, ThreadWriter};
 
-let storage = FileStorage::new("./sessions");
+let thread_store = FileStore::new("./threads");
 
 // Save
-storage.save(&session).await?;
+thread_store.save(&thread).await?;
 
 // Load
-let loaded = storage.load("session-1").await?;
+let loaded = thread_store.load_thread("thread-1").await?;
 ```
 
 ## Plugins

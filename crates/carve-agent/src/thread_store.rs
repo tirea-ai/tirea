@@ -24,10 +24,10 @@ pub use file_store::FileStore;
 pub use memory_store::MemoryStore;
 #[cfg(feature = "postgres")]
 pub use postgres_store::PostgresStore;
-pub use traits::{ThreadReadStore, ThreadSync, ThreadWriteStore};
+pub use traits::{ThreadReader, ThreadStore, ThreadSync, ThreadWriter};
 pub use types::{
     paginate_in_memory, CheckpointReason, Committed, MessagePage, MessageQuery, MessageWithCursor,
-    SortOrder, StorageError, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, Version,
+    SortOrder, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadStoreError, Version,
 };
 
 #[cfg(test)]

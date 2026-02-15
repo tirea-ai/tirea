@@ -34,7 +34,7 @@ impl PostgresStore {
     }
 
     /// Ensure the storage tables exist (idempotent).
-    pub async fn ensure_table(&self) -> Result<(), StorageError> {
+    pub async fn ensure_table(&self) -> Result<(), ThreadStoreError> {
         let sql = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {threads} (
@@ -64,21 +64,21 @@ impl PostgresStore {
         sqlx::query(&sql)
             .execute(&self.pool)
             .await
-            .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
 
-    fn sql_err(e: sqlx::Error) -> StorageError {
-        StorageError::Io(std::io::Error::other(e.to_string()))
+    fn sql_err(e: sqlx::Error) -> ThreadStoreError {
+        ThreadStoreError::Io(std::io::Error::other(e.to_string()))
     }
 }
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadWriteStore for PostgresStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
-        let mut v =
-            serde_json::to_value(thread).map_err(|e| StorageError::Serialization(e.to_string()))?;
+impl ThreadWriter for PostgresStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        let mut v = serde_json::to_value(thread)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
             obj.insert("_version".to_string(), serde_json::Value::Number(0.into()));
@@ -97,7 +97,7 @@ impl ThreadWriteStore for PostgresStore {
                 if e.to_string().contains("duplicate key")
                     || e.to_string().contains("unique constraint")
                 {
-                    StorageError::AlreadyExists
+                    ThreadStoreError::AlreadyExists
                 } else {
                     Self::sql_err(e)
                 }
@@ -110,7 +110,7 @@ impl ThreadWriteStore for PostgresStore {
         );
         for msg in &thread.messages {
             let data = serde_json::to_value(msg.as_ref())
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
             let message_id = msg.id.as_deref();
             let (run_id, step_index) = msg
                 .metadata
@@ -135,7 +135,7 @@ impl ThreadWriteStore for PostgresStore {
         &self,
         thread_id: &str,
         delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Lock the row for atomic read-modify-write.
@@ -147,7 +147,7 @@ impl ThreadWriteStore for PostgresStore {
             .map_err(Self::sql_err)?;
 
         let Some((mut v,)) = row else {
-            return Err(StorageError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -206,7 +206,7 @@ impl ThreadWriteStore for PostgresStore {
             );
             for msg in &delta.messages {
                 let data = serde_json::to_value(msg.as_ref())
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                    .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
                 let message_id = msg.id.as_deref();
                 let (run_id, step_index) = msg
                     .metadata
@@ -231,7 +231,7 @@ impl ThreadWriteStore for PostgresStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
@@ -242,10 +242,10 @@ impl ThreadWriteStore for PostgresStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         // Serialize session skeleton (without messages).
-        let mut v =
-            serde_json::to_value(thread).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let mut v = serde_json::to_value(thread)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
         }
@@ -295,7 +295,7 @@ impl ThreadWriteStore for PostgresStore {
         );
         for msg in &new_messages {
             let data = serde_json::to_value(msg)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
+                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
             let message_id = msg.id.as_deref();
             let (run_id, step_index) = msg
                 .metadata
@@ -321,8 +321,8 @@ impl ThreadWriteStore for PostgresStore {
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadReadStore for PostgresStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+impl ThreadReader for PostgresStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(thread_id)
@@ -352,8 +352,8 @@ impl ThreadReadStore for PostgresStore {
             obj.remove("_version");
         }
 
-        let thread: Thread =
-            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let thread: Thread = serde_json::from_value(v)
+            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         Ok(Some(ThreadHead { thread, version }))
     }
 
@@ -361,7 +361,7 @@ impl ThreadReadStore for PostgresStore {
         &self,
         thread_id: &str,
         query: &MessageQuery,
-    ) -> Result<MessagePage, StorageError> {
+    ) -> Result<MessagePage, ThreadStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -370,7 +370,7 @@ impl ThreadReadStore for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         }
 
         let limit = query.limit.min(200).max(1);
@@ -476,7 +476,7 @@ impl ThreadReadStore for PostgresStore {
         })
     }
 
-    async fn message_count(&self, thread_id: &str) -> Result<usize, StorageError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, ThreadStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -485,7 +485,7 @@ impl ThreadReadStore for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(StorageError::NotFound(thread_id.to_string()));
+            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
         }
 
         let sql = format!(
@@ -500,7 +500,10 @@ impl ThreadReadStore for PostgresStore {
         Ok(row.0 as usize)
     }
 
-    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         // Enhanced with parent_thread_id filter via JSONB.
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;

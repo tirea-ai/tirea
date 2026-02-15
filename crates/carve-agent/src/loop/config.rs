@@ -1,6 +1,6 @@
 use crate::plugin::AgentPlugin;
 use crate::stop::{StopCondition, StopConditionSpec};
-use crate::storage::ThreadDelta;
+use crate::thread_store::ThreadDelta;
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
 use std::sync::Arc;

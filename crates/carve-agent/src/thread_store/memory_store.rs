@@ -20,11 +20,11 @@ impl MemoryStore {
 }
 
 #[async_trait]
-impl ThreadWriteStore for MemoryStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
+impl ThreadWriter for MemoryStore {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
-            return Err(StorageError::AlreadyExists);
+            return Err(ThreadStoreError::AlreadyExists);
         }
         entries.insert(
             thread.id.clone(),
@@ -41,11 +41,11 @@ impl ThreadWriteStore for MemoryStore {
         &self,
         thread_id: &str,
         delta: &ThreadDelta,
-    ) -> Result<Committed, StorageError> {
+    ) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let entry = entries
             .get_mut(thread_id)
-            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
 
         delta.apply_to(&mut entry.thread);
         entry.version += 1;
@@ -55,13 +55,13 @@ impl ThreadWriteStore for MemoryStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
         let mut entries = self.entries.write().await;
         entries.remove(thread_id);
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
         entries.insert(
@@ -77,8 +77,8 @@ impl ThreadWriteStore for MemoryStore {
 }
 
 #[async_trait]
-impl ThreadReadStore for MemoryStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+impl ThreadReader for MemoryStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let entries = self.entries.read().await;
         Ok(entries.get(thread_id).map(|e| ThreadHead {
             thread: e.thread.clone(),
@@ -86,7 +86,10 @@ impl ThreadReadStore for MemoryStore {
         }))
     }
 
-    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         let entries = self.entries.read().await;
         let mut ids: Vec<String> = entries
             .iter()
@@ -128,11 +131,11 @@ impl ThreadSync for MemoryStore {
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<ThreadDelta>, StorageError> {
+    ) -> Result<Vec<ThreadDelta>, ThreadStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(thread_id)
-            .ok_or_else(|| StorageError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
         // Deltas are 1-indexed: delta[0] produced version 1, delta[1] produced version 2, etc.
         let skip = after_version as usize;
         Ok(entry.deltas[skip..].to_vec())

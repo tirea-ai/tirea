@@ -67,5 +67,5 @@ let contextualized = err.with_prefix(&path!("address"));
 
 - **`ToolError`** — Errors from tool execution
 - **`AgentLoopError`** — Errors in the agent loop (LLM failures, tool errors)
-- **`StorageError`** — Session persistence failures
+- **`ThreadStoreError`** — Thread persistence failures
 - **`AgentOsBuildError`** / **`AgentOsWiringError`** — Configuration errors

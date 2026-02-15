@@ -4,9 +4,9 @@ use axum::http::{Request, StatusCode};
 use carve_agent::phase::Phase;
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStore, StepContext, StorageError,
-    Thread, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReadStore,
-    ThreadWriteStore,
+    AgentDefinition, AgentOs, AgentOsBuilder, Committed, MemoryStore, StepContext, Thread,
+    ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadWriter,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -40,7 +40,7 @@ fn make_os() -> AgentOs {
     make_os_with_storage(Arc::new(MemoryStore::new()))
 }
 
-fn make_os_with_storage(write_store: Arc<dyn ThreadWriteStore>) -> AgentOs {
+fn make_os_with_storage(write_store: Arc<dyn ThreadStore>) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -49,7 +49,7 @@ fn make_os_with_storage(write_store: Arc<dyn ThreadWriteStore>) -> AgentOs {
 
     AgentOsBuilder::new()
         .with_agent("test", def)
-        .with_storage(write_store)
+        .with_thread_store(write_store)
         .build()
         .unwrap()
 }
@@ -74,11 +74,11 @@ impl RecordingStorage {
 }
 
 #[async_trait]
-impl ThreadWriteStore for RecordingStorage {
-    async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
+impl ThreadWriter for RecordingStorage {
+    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if threads.contains_key(&thread.id) {
-            return Err(StorageError::AlreadyExists);
+            return Err(ThreadStoreError::AlreadyExists);
         }
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -86,7 +86,7 @@ impl ThreadWriteStore for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, StorageError> {
+    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
             for msg in &delta.messages {
@@ -99,13 +99,13 @@ impl ThreadWriteStore for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, id: &str) -> Result<(), ThreadStoreError> {
         let mut threads = self.threads.write().await;
         threads.remove(id);
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), StorageError> {
+    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
         let mut threads = self.threads.write().await;
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -115,8 +115,8 @@ impl ThreadWriteStore for RecordingStorage {
 }
 
 #[async_trait]
-impl ThreadReadStore for RecordingStorage {
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, StorageError> {
+impl ThreadReader for RecordingStorage {
+    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         let threads = self.threads.read().await;
         Ok(threads.get(id).map(|t| ThreadHead {
             thread: t.clone(),
@@ -124,7 +124,10 @@ impl ThreadReadStore for RecordingStorage {
         }))
     }
 
-    async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(
+        &self,
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         let threads = self.threads.read().await;
         let mut ids: Vec<String> = threads.keys().cloned().collect();
         ids.sort();
@@ -521,7 +524,7 @@ async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     (status, json)
 }
 
-fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReadStore>) -> axum::Router {
+fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReader>) -> axum::Router {
     router(AppState { os, read_store })
 }
 
@@ -532,7 +535,7 @@ fn make_app(os: Arc<AgentOs>, read_store: Arc<dyn ThreadReadStore>) -> axum::Rou
 #[tokio::test]
 async fn test_health_returns_200() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -554,7 +557,7 @@ async fn test_health_returns_200() {
 #[tokio::test]
 async fn test_get_session_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent").await;
@@ -572,7 +575,7 @@ async fn test_get_session_not_found() {
 #[tokio::test]
 async fn test_get_session_messages_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent/messages").await;
@@ -590,7 +593,7 @@ async fn test_get_session_messages_not_found() {
 #[tokio::test]
 async fn test_ai_sdk_sse_empty_thread_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "  ", "input": "hi" });
@@ -605,7 +608,7 @@ async fn test_ai_sdk_sse_empty_thread_id() {
 #[tokio::test]
 async fn test_ai_sdk_sse_empty_input() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "  " });
@@ -620,7 +623,7 @@ async fn test_ai_sdk_sse_empty_input() {
 #[tokio::test]
 async fn test_ai_sdk_sse_agent_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
@@ -635,7 +638,7 @@ async fn test_ai_sdk_sse_agent_not_found() {
 #[tokio::test]
 async fn test_ai_sdk_sse_malformed_json() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -660,7 +663,7 @@ async fn test_ai_sdk_sse_malformed_json() {
 #[tokio::test]
 async fn test_agui_sse_agent_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -679,7 +682,7 @@ async fn test_agui_sse_agent_not_found() {
 #[tokio::test]
 async fn test_agui_sse_empty_thread_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -697,7 +700,7 @@ async fn test_agui_sse_empty_thread_id() {
 #[tokio::test]
 async fn test_agui_sse_empty_run_id() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -715,7 +718,7 @@ async fn test_agui_sse_empty_run_id() {
 #[tokio::test]
 async fn test_agui_sse_malformed_json() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let resp = app
@@ -737,7 +740,7 @@ async fn test_agui_sse_malformed_json() {
 async fn test_agui_sse_session_id_mismatch() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     // Pre-save a session with id "real-id".
     storage.save(&Thread::new("real-id")).await.unwrap();
@@ -755,9 +758,9 @@ async fn test_agui_sse_session_id_mismatch() {
 struct FailingStorage;
 
 #[async_trait]
-impl ThreadWriteStore for FailingStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+impl ThreadWriter for FailingStorage {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -767,22 +770,22 @@ impl ThreadWriteStore for FailingStorage {
         &self,
         _id: &str,
         _delta: &carve_agent::ThreadDelta,
-    ) -> Result<Committed, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    ) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
     }
 
-    async fn delete(&self, _id: &str) -> Result<(), StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    async fn delete(&self, _id: &str) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk delete denied",
         )))
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -790,16 +793,19 @@ impl ThreadWriteStore for FailingStorage {
 }
 
 #[async_trait]
-impl ThreadReadStore for FailingStorage {
-    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+impl ThreadReader for FailingStorage {
+    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk read denied",
         )))
     }
 
-    async fn list_threads(&self, _query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    async fn list_threads(
+        &self,
+        _query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk list denied",
         )))
@@ -809,7 +815,7 @@ impl ThreadReadStore for FailingStorage {
 #[tokio::test]
 async fn test_list_sessions_storage_error() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads").await;
@@ -823,7 +829,7 @@ async fn test_list_sessions_storage_error() {
 #[tokio::test]
 async fn test_get_session_storage_error() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/s1").await;
@@ -837,7 +843,7 @@ async fn test_get_session_storage_error() {
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_load_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
@@ -852,7 +858,7 @@ async fn test_ai_sdk_sse_storage_load_error() {
 #[tokio::test]
 async fn test_agui_sse_storage_load_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(FailingStorage)));
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(FailingStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(FailingStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({
@@ -872,9 +878,9 @@ async fn test_agui_sse_storage_load_error() {
 struct SaveFailStorage;
 
 #[async_trait]
-impl ThreadWriteStore for SaveFailStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+impl ThreadWriter for SaveFailStorage {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -884,19 +890,19 @@ impl ThreadWriteStore for SaveFailStorage {
         &self,
         _id: &str,
         _delta: &carve_agent::ThreadDelta,
-    ) -> Result<Committed, StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    ) -> Result<Committed, ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
     }
 
-    async fn delete(&self, _id: &str) -> Result<(), StorageError> {
+    async fn delete(&self, _id: &str) -> Result<(), ThreadStoreError> {
         Ok(())
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), StorageError> {
-        Err(StorageError::Io(std::io::Error::new(
+    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+        Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
         )))
@@ -904,12 +910,15 @@ impl ThreadWriteStore for SaveFailStorage {
 }
 
 #[async_trait]
-impl ThreadReadStore for SaveFailStorage {
-    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, StorageError> {
+impl ThreadReader for SaveFailStorage {
+    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
         Ok(None)
     }
 
-    async fn list_threads(&self, _query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
+    async fn list_threads(
+        &self,
+        _query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         Ok(ThreadListPage {
             items: vec![],
             total: 0,
@@ -921,7 +930,7 @@ impl ThreadReadStore for SaveFailStorage {
 #[tokio::test]
 async fn test_ai_sdk_sse_storage_save_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(SaveFailStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(SaveFailStorage);
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
@@ -936,7 +945,7 @@ async fn test_ai_sdk_sse_storage_save_error() {
 #[tokio::test]
 async fn test_agui_sse_storage_save_error() {
     let os = Arc::new(make_os_with_storage(Arc::new(SaveFailStorage)));
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(SaveFailStorage);
+    let read_store: Arc<dyn ThreadReader> = Arc::new(SaveFailStorage);
     let app = make_app(os, read_store);
 
     // Send a message so the session has changes to persist.
@@ -969,7 +978,7 @@ fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
 async fn test_messages_pagination_default_params() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 5);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -987,7 +996,7 @@ async fn test_messages_pagination_default_params() {
 async fn test_messages_pagination_with_limit() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1005,7 +1014,7 @@ async fn test_messages_pagination_with_limit() {
 async fn test_messages_pagination_cursor_forward() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1022,7 +1031,7 @@ async fn test_messages_pagination_cursor_forward() {
 async fn test_messages_pagination_desc_order() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 10);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1041,7 +1050,7 @@ async fn test_messages_pagination_desc_order() {
 async fn test_messages_pagination_limit_clamped() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
-    let read_store: Arc<dyn ThreadReadStore> = storage.clone();
+    let read_store: Arc<dyn ThreadReader> = storage.clone();
     let thread = make_session_with_n_messages("s1", 300);
     storage.save(&thread).await.unwrap();
     let app = make_app(os, read_store);
@@ -1057,7 +1066,7 @@ async fn test_messages_pagination_limit_clamped() {
 #[tokio::test]
 async fn test_messages_pagination_not_found() {
     let os = Arc::new(make_os());
-    let read_store: Arc<dyn ThreadReadStore> = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn ThreadReader> = Arc::new(MemoryStore::new());
     let app = make_app(os, read_store);
 
     let (status, body) = get_json(app, "/v1/threads/nonexistent/messages?limit=10").await;

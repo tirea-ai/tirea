@@ -9,8 +9,7 @@ pub mod research {
 }
 
 use carve_agent::{
-    tool_map_from_arc, AgentOsBuilder, FileStore, ModelDefinition, ThreadReadStore,
-    ThreadWriteStore, Tool,
+    tool_map_from_arc, AgentOsBuilder, FileStore, ModelDefinition, ThreadReader, ThreadStore, Tool,
 };
 use carve_agentos_server::http::{self, AppState};
 use clap::Parser;
@@ -70,10 +69,10 @@ pub async fn serve(
     }
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    builder = builder.with_storage(file_store.clone() as Arc<dyn ThreadWriteStore>);
+    builder = builder.with_thread_store(file_store.clone() as Arc<dyn ThreadStore>);
 
     let os = builder.build().expect("failed to build AgentOs");
-    let read_store: Arc<dyn ThreadReadStore> = file_store;
+    let read_store: Arc<dyn ThreadReader> = file_store;
 
     let app = http::router(AppState {
         os: Arc::new(os),

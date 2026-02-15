@@ -11,7 +11,9 @@ use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
 };
-use crate::storage::{CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadWriteStore};
+use crate::thread_store::{
+    CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
+};
 use crate::tool_filter::set_runtime_filters_from_definition_if_absent;
 use crate::traits::tool::Tool;
 use crate::types::Message;
@@ -35,20 +37,20 @@ pub use registry::{
 type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
 
 #[derive(Clone)]
-struct StorageStateCommitter {
-    storage: Arc<dyn ThreadWriteStore>,
+struct ThreadStoreStateCommitter {
+    thread_store: Arc<dyn ThreadStore>,
 }
 
-impl StorageStateCommitter {
-    fn new(storage: Arc<dyn ThreadWriteStore>) -> Self {
-        Self { storage }
+impl ThreadStoreStateCommitter {
+    fn new(thread_store: Arc<dyn ThreadStore>) -> Self {
+        Self { thread_store }
     }
 }
 
 #[async_trait::async_trait]
-impl StateCommitter for StorageStateCommitter {
+impl StateCommitter for ThreadStoreStateCommitter {
     async fn commit(&self, thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError> {
-        self.storage
+        self.thread_store
             .append(thread_id, &delta)
             .await
             .map(|_| ())
@@ -195,11 +197,11 @@ pub enum AgentOsRunError {
     #[error(transparent)]
     Loop(#[from] AgentLoopError),
 
-    #[error("storage error: {0}")]
-    Storage(#[from] StorageError),
+    #[error("thread store error: {0}")]
+    ThreadStore(#[from] ThreadStoreError),
 
-    #[error("storage not configured")]
-    StorageNotConfigured,
+    #[error("thread store not configured")]
+    ThreadStoreNotConfigured,
 }
 
 /// Request to run an agent. This is the unified entry point for all protocols
@@ -253,7 +255,7 @@ pub struct AgentOs {
     skills: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
-    storage: Option<Arc<dyn ThreadWriteStore>>,
+    thread_store: Option<Arc<dyn ThreadStore>>,
 }
 
 #[derive(Clone)]
@@ -272,7 +274,7 @@ pub struct AgentOsBuilder {
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
     agent_tools: AgentToolsConfig,
-    storage: Option<Arc<dyn ThreadWriteStore>>,
+    thread_store: Option<Arc<dyn ThreadStore>>,
 }
 
 impl std::fmt::Debug for AgentOs {
@@ -287,7 +289,7 @@ impl std::fmt::Debug for AgentOs {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
-            .field("storage", &self.storage.is_some())
+            .field("thread_store", &self.thread_store.is_some())
             .finish()
     }
 }
@@ -304,7 +306,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
-            .field("storage", &self.storage.is_some())
+            .field("thread_store", &self.thread_store.is_some())
             .finish()
     }
 }
@@ -326,7 +328,7 @@ impl AgentOsBuilder {
             skills_registry: None,
             skills: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
-            storage: None,
+            thread_store: None,
         }
     }
 
@@ -413,8 +415,8 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_storage(mut self, storage: Arc<dyn ThreadWriteStore>) -> Self {
-        self.storage = Some(storage);
+    pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
+        self.thread_store = Some(thread_store);
         self
     }
 
@@ -434,7 +436,7 @@ impl AgentOsBuilder {
             skills_registry,
             skills,
             agent_tools,
-            storage,
+            thread_store,
         } = self;
 
         if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
@@ -596,7 +598,7 @@ impl AgentOsBuilder {
             skills,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,
-            storage,
+            thread_store,
         })
     }
 }
@@ -908,14 +910,14 @@ impl AgentOs {
         Ok((client, cfg, tools, thread))
     }
 
-    pub fn storage(&self) -> Option<&Arc<dyn ThreadWriteStore>> {
-        self.storage.as_ref()
+    pub fn thread_store(&self) -> Option<&Arc<dyn ThreadStore>> {
+        self.thread_store.as_ref()
     }
 
-    fn require_storage(&self) -> Result<&Arc<dyn ThreadWriteStore>, AgentOsRunError> {
-        self.storage
+    fn require_thread_store(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
+        self.thread_store
             .as_ref()
-            .ok_or(AgentOsRunError::StorageNotConfigured)
+            .ok_or(AgentOsRunError::ThreadStoreNotConfigured)
     }
 
     fn generate_id() -> String {
@@ -925,8 +927,8 @@ impl AgentOs {
     /// Load a thread from storage. Returns the thread and its version.
     /// If the thread does not exist, returns `None`.
     pub async fn load_thread(&self, id: &str) -> Result<Option<ThreadHead>, AgentOsRunError> {
-        let storage = self.require_storage()?;
-        Ok(storage.load(id).await?)
+        let thread_store = self.require_thread_store()?;
+        Ok(thread_store.load(id).await?)
     }
 
     /// Run an agent from a [`RunRequest`].
@@ -938,7 +940,7 @@ impl AgentOs {
     /// 4. Agent resolution and execution
     /// 5. Background checkpoint persistence
     pub async fn run_stream(&self, mut request: RunRequest) -> Result<RunStream, AgentOsRunError> {
-        let storage = self.require_storage()?;
+        let thread_store = self.require_thread_store()?;
 
         // 0. Validate agent exists (fail fast before creating thread)
         self.validate_agent(&request.agent_id)?;
@@ -952,7 +954,7 @@ impl AgentOs {
         //    - Existing thread: replaces current state (persisted in UserMessage delta)
         let frontend_state = request.state.take();
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
-        let (mut thread, _version) = match storage.load(&thread_id).await? {
+        let (mut thread, _version) = match thread_store.load(&thread_id).await? {
             Some(head) => {
                 let mut t = head.thread;
                 if let Some(state) = frontend_state {
@@ -968,7 +970,7 @@ impl AgentOs {
                 } else {
                     Thread::new(thread_id.clone())
                 };
-                let committed = storage.create(&thread).await?;
+                let committed = thread_store.create(&thread).await?;
                 (thread, committed.version)
             }
         };
@@ -1007,13 +1009,14 @@ impl AgentOs {
                 patches: pending.patches,
                 snapshot: state_snapshot_for_delta,
             };
-            let _ = storage.append(&thread_id, &delta).await?;
+            let _ = thread_store.append(&thread_id, &delta).await?;
         }
 
         // 7. Resolve agent wiring and run with storage-backed state committer.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-        let run_ctx = RunContext::default()
-            .with_state_committer(Arc::new(StorageStateCommitter::new(storage.clone())));
+        let run_ctx = RunContext::default().with_state_committer(Arc::new(
+            ThreadStoreStateCommitter::new(thread_store.clone()),
+        ));
         let events = run_loop_stream(client, cfg, thread, tools, run_ctx);
 
         Ok(RunStream {
@@ -1103,8 +1106,8 @@ mod tests {
     use super::*;
     use crate::phase::{Phase, StepContext};
     use crate::skills::FsSkillRegistry;
-    use crate::storage::ThreadReadStore;
     use crate::thread::Thread;
+    use crate::thread_store::{ThreadReader, ThreadWriter};
     use crate::traits::tool::ToolDescriptor;
     use crate::traits::tool::{ToolError, ToolResult};
     use async_trait::async_trait;
@@ -1129,7 +1132,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FailOnNthAppendStorage {
-        inner: Arc<crate::storage::MemoryStore>,
+        inner: Arc<crate::thread_store::MemoryStore>,
         fail_on_nth_append: usize,
         append_calls: Arc<AtomicUsize>,
     }
@@ -1137,7 +1140,7 @@ mod tests {
     impl FailOnNthAppendStorage {
         fn new(fail_on_nth_append: usize) -> Self {
             Self {
-                inner: Arc::new(crate::storage::MemoryStore::new()),
+                inner: Arc::new(crate::thread_store::MemoryStore::new()),
                 fail_on_nth_append,
                 append_calls: Arc::new(AtomicUsize::new(0)),
             }
@@ -1149,12 +1152,13 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::storage::ThreadReadStore for FailOnNthAppendStorage {
+    impl crate::thread_store::ThreadReader for FailOnNthAppendStorage {
         async fn load(
             &self,
             thread_id: &str,
-        ) -> Result<Option<crate::storage::ThreadHead>, crate::storage::StorageError> {
-            <crate::storage::MemoryStore as crate::storage::ThreadReadStore>::load(
+        ) -> Result<Option<crate::thread_store::ThreadHead>, crate::thread_store::ThreadStoreError>
+        {
+            <crate::thread_store::MemoryStore as crate::thread_store::ThreadReader>::load(
                 self.inner.as_ref(),
                 thread_id,
             )
@@ -1163,9 +1167,10 @@ mod tests {
 
         async fn list_threads(
             &self,
-            query: &crate::storage::ThreadListQuery,
-        ) -> Result<crate::storage::ThreadListPage, crate::storage::StorageError> {
-            <crate::storage::MemoryStore as crate::storage::ThreadReadStore>::list_threads(
+            query: &crate::thread_store::ThreadListQuery,
+        ) -> Result<crate::thread_store::ThreadListPage, crate::thread_store::ThreadStoreError>
+        {
+            <crate::thread_store::MemoryStore as crate::thread_store::ThreadReader>::list_threads(
                 self.inner.as_ref(),
                 query,
             )
@@ -1174,12 +1179,12 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::storage::ThreadWriteStore for FailOnNthAppendStorage {
+    impl crate::thread_store::ThreadWriter for FailOnNthAppendStorage {
         async fn create(
             &self,
             thread: &Thread,
-        ) -> Result<crate::storage::Committed, crate::storage::StorageError> {
-            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::create(
+        ) -> Result<crate::thread_store::Committed, crate::thread_store::ThreadStoreError> {
+            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::create(
                 self.inner.as_ref(),
                 thread,
             )
@@ -1189,15 +1194,15 @@ mod tests {
         async fn append(
             &self,
             thread_id: &str,
-            delta: &crate::storage::ThreadDelta,
-        ) -> Result<crate::storage::Committed, crate::storage::StorageError> {
+            delta: &crate::thread_store::ThreadDelta,
+        ) -> Result<crate::thread_store::Committed, crate::thread_store::ThreadStoreError> {
             let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if append_idx == self.fail_on_nth_append {
-                return Err(crate::storage::StorageError::Serialization(format!(
-                    "injected append failure on call {append_idx}"
-                )));
+                return Err(crate::thread_store::ThreadStoreError::Serialization(
+                    format!("injected append failure on call {append_idx}"),
+                ));
             }
-            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::append(
+            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::append(
                 self.inner.as_ref(),
                 thread_id,
                 delta,
@@ -1205,8 +1210,11 @@ mod tests {
             .await
         }
 
-        async fn delete(&self, thread_id: &str) -> Result<(), crate::storage::StorageError> {
-            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::delete(
+        async fn delete(
+            &self,
+            thread_id: &str,
+        ) -> Result<(), crate::thread_store::ThreadStoreError> {
+            <crate::thread_store::MemoryStore as crate::thread_store::ThreadWriter>::delete(
                 self.inner.as_ref(),
                 thread_id,
             )
@@ -2055,7 +2063,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_applies_frontend_state_to_existing_thread() {
-        use crate::storage::MemoryStore;
+        use crate::thread_store::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2075,7 +2083,7 @@ mod tests {
 
         let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2114,7 +2122,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_uses_state_as_initial_for_new_thread() {
-        use crate::storage::MemoryStore;
+        use crate::thread_store::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2134,7 +2142,7 @@ mod tests {
 
         let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2164,7 +2172,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_preserves_state_when_no_frontend_state() {
-        use crate::storage::MemoryStore;
+        use crate::thread_store::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2184,7 +2192,7 @@ mod tests {
 
         let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2222,7 +2230,7 @@ mod tests {
 
         let storage = Arc::new(FailOnNthAppendStorage::new(2));
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini")
@@ -2301,7 +2309,7 @@ mod tests {
         storage.create(&initial).await.unwrap();
 
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini")
@@ -2369,5 +2377,23 @@ mod tests {
             AgentOsBuildError::AgentReservedPluginId { ref agent_id, ref plugin_id }
             if agent_id == "a1" && plugin_id == "agent_recovery"
         ));
+    }
+
+    #[test]
+    fn builder_with_thread_store_exposes_thread_store_accessor() {
+        let thread_store = Arc::new(crate::thread_store::MemoryStore::new())
+            as Arc<dyn crate::thread_store::ThreadStore>;
+        let os = AgentOs::builder()
+            .with_thread_store(thread_store)
+            .build()
+            .unwrap();
+        assert!(os.thread_store().is_some());
+    }
+
+    #[tokio::test]
+    async fn load_thread_without_thread_store_returns_not_configured() {
+        let os = AgentOs::builder().build().unwrap();
+        let err = os.load_thread("t1").await.unwrap_err();
+        assert!(matches!(err, AgentOsRunError::ThreadStoreNotConfigured));
     }
 }

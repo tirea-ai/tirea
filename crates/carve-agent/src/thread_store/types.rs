@@ -170,7 +170,7 @@ pub fn paginate_in_memory(
 
 /// Storage errors.
 #[derive(Debug, Error)]
-pub enum StorageError {
+pub enum ThreadStoreError {
     /// Thread not found.
     #[error("Thread not found: {0}")]
     NotFound(String),

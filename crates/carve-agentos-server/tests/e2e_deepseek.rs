@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStore, ThreadReadStore, Tool, ToolDescriptor, ToolError,
+    AgentDefinition, AgentOsBuilder, MemoryStore, ThreadReader, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};

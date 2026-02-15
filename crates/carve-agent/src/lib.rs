@@ -35,7 +35,7 @@
 //! - **Context**: Provides typed state access with automatic patch collection
 //! - **Thread**: Immutable conversation state with messages and patches
 //! - **StreamCollector**: Collects streaming LLM responses
-//! - **ThreadWriteStore/ThreadReadStore**: Traits for thread persistence
+//! - **ThreadWriter/ThreadReader**: Traits for thread persistence
 //!
 //! # Example: Implementing a Tool
 //!
@@ -68,7 +68,7 @@
 //! # Example: Using Sessions
 //!
 //! ```ignore
-//! use carve_agent::{Thread, Message, ThreadWriteStore, FileStore};
+//! use carve_agent::{Thread, Message, ThreadWriter, FileStore};
 //!
 //! // Create or load session
 //! let thread = Thread::new("session-1")
@@ -97,9 +97,9 @@ pub mod protocol;
 pub mod skills;
 pub mod state_types;
 pub mod stop;
-pub mod storage;
 pub mod stream;
 pub mod thread;
+pub mod thread_store;
 mod tool_filter;
 pub mod traits;
 pub mod types;
@@ -123,11 +123,11 @@ pub use thread::{PendingDelta, Thread, ThreadMetadata};
 
 // Storage exports
 #[cfg(feature = "postgres")]
-pub use storage::PostgresStore;
-pub use storage::{
+pub use thread_store::PostgresStore;
+pub use thread_store::{
     CheckpointReason, Committed, FileStore, MemoryStore, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder, StorageError, ThreadDelta, ThreadHead, ThreadListPage,
-    ThreadListQuery, ThreadReadStore, ThreadSync, ThreadWriteStore, Version,
+    MessageWithCursor, SortOrder, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery,
+    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, Version,
 };
 
 // Stream exports

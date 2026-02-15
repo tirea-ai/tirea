@@ -589,7 +589,7 @@ async fn test_tool_provider_reminder_integration() {
 
 use carve_agent::{
     loop_execute_tools, tool_map, AgentConfig, FileStore, MemoryStore, Message, Role, StreamResult,
-    Thread, ThreadReadStore, ThreadWriteStore,
+    Thread, ThreadReader, ThreadWriter,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
 use std::sync::Arc;
@@ -913,7 +913,7 @@ async fn test_concurrent_storage_operations() {
     // 100 concurrent save operations
     for i in 0..100 {
         let storage = Arc::clone(&storage);
-        let handle: tokio::task::JoinHandle<Result<(), carve_agent::StorageError>> =
+        let handle: tokio::task::JoinHandle<Result<(), carve_agent::ThreadStoreError>> =
             tokio::spawn(async move {
                 let thread =
                     Thread::with_initial_state(format!("concurrent-{}", i), json!({"index": i}))
@@ -1154,7 +1154,7 @@ async fn test_session_incremental_checkpoints() {
 
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
-    use carve_agent::{CheckpointReason, ThreadDelta, ThreadSync, ThreadWriteStore};
+    use carve_agent::{CheckpointReason, ThreadDelta, ThreadSync, ThreadWriter};
 
     let storage = MemoryStore::new();
 
@@ -1192,7 +1192,7 @@ async fn test_incremental_checkpoints_via_append() {
     }
 
     // Verify final state matches
-    let head = ThreadReadStore::load(&storage, "append-test")
+    let head = ThreadReader::load(&storage, "append-test")
         .await
         .unwrap()
         .unwrap();
@@ -1782,7 +1782,7 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     // 50 concurrent operations (mix of saves and loads)
     for i in 0..50 {
         let storage = Arc::clone(&storage);
-        let handle: tokio::task::JoinHandle<Result<Option<Thread>, carve_agent::StorageError>> =
+        let handle: tokio::task::JoinHandle<Result<Option<Thread>, carve_agent::ThreadStoreError>> =
             tokio::spawn(async move {
                 if i % 3 == 0 {
                     // Load
@@ -1926,7 +1926,7 @@ async fn test_file_storage_corrupted_json() {
     assert!(result.is_err());
 
     match result {
-        Err(carve_agent::StorageError::Serialization(msg)) => {
+        Err(carve_agent::ThreadStoreError::Serialization(msg)) => {
             assert!(msg.contains("expected") || msg.contains("key") || !msg.is_empty());
         }
         Err(other) => panic!("Expected Serialization error, got: {:?}", other),
@@ -2318,11 +2318,11 @@ async fn test_session_state_complex_operations() {
 
 #[test]
 fn test_storage_error_variants() {
-    use carve_agent::StorageError;
+    use carve_agent::ThreadStoreError;
     use std::io::{Error as IoError, ErrorKind};
 
     // Test IO error variant
-    let io_error = StorageError::from(IoError::new(
+    let io_error = ThreadStoreError::from(IoError::new(
         ErrorKind::PermissionDenied,
         "Permission denied",
     ));
@@ -2330,7 +2330,7 @@ fn test_storage_error_variants() {
     assert!(display.contains("IO error") || display.contains("Permission") || !display.is_empty());
 
     // Test Serialization error variant
-    let serialization_error = StorageError::Serialization("Invalid JSON at line 5".to_string());
+    let serialization_error = ThreadStoreError::Serialization("Invalid JSON at line 5".to_string());
     let display = serialization_error.to_string();
     assert!(
         display.contains("Serialization")
@@ -2339,7 +2339,7 @@ fn test_storage_error_variants() {
     );
 
     // Test NotFound error variant
-    let not_found = StorageError::NotFound("thread-123".to_string());
+    let not_found = ThreadStoreError::NotFound("thread-123".to_string());
     let display = not_found.to_string();
     assert!(
         display.contains("not found")
