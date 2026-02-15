@@ -1,10 +1,10 @@
 use super::*;
 
-pub struct FileStorage {
+pub struct FileStore {
     base_path: PathBuf,
 }
 
-impl FileStorage {
+impl FileStore {
     /// Create a new file storage with the given base path.
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -44,7 +44,7 @@ impl FileStorage {
 }
 
 #[async_trait]
-impl ThreadStore for FileStorage {
+impl ThreadWriteStore for FileStore {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
         let path = self.thread_path(&thread.id)?;
         if path.exists() {
@@ -82,10 +82,6 @@ impl ThreadStore for FileStorage {
         })
     }
 
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        self.load_head(thread_id).await
-    }
-
     async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         let path = self.thread_path(thread_id)?;
         if path.exists() {
@@ -96,7 +92,11 @@ impl ThreadStore for FileStorage {
 }
 
 #[async_trait]
-impl ThreadQuery for FileStorage {
+impl ThreadReadStore for FileStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        self.load_head(thread_id).await
+    }
+
     async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         // Read directory for all thread IDs
         let mut all = if !self.base_path.exists() {
@@ -159,7 +159,7 @@ impl ThreadQuery for FileStorage {
     }
 }
 
-impl FileStorage {
+impl FileStore {
     /// Load a thread head (thread + version) from file.
     async fn load_head(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
         let path = self.thread_path(thread_id)?;

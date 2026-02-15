@@ -588,8 +588,8 @@ async fn test_tool_provider_reminder_integration() {
 // ============================================================================
 
 use carve_agent::{
-    loop_execute_tools, tool_map, AgentConfig, FileStorage, MemoryStorage, Message, Role,
-    StreamResult, Thread, ThreadQuery, ThreadStore,
+    loop_execute_tools, tool_map, AgentConfig, FileStore, MemoryStore, Message, Role, StreamResult,
+    Thread, ThreadReadStore, ThreadWriteStore,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
 use std::sync::Arc;
@@ -658,7 +658,7 @@ async fn test_session_with_tool_workflow() {
 
 #[tokio::test]
 async fn test_session_storage_roundtrip() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create and save session
     let thread = Thread::with_initial_state("storage-test", json!({"data": "initial"}))
@@ -686,7 +686,7 @@ async fn test_session_storage_roundtrip() {
 #[tokio::test]
 async fn test_file_storage_session_persistence() {
     let temp_dir = TempDir::new().unwrap();
-    let storage = FileStorage::new(temp_dir.path());
+    let storage = FileStore::new(temp_dir.path());
 
     // Create complex session
     let thread = Thread::with_initial_state(
@@ -720,7 +720,7 @@ async fn test_file_storage_session_persistence() {
 
 #[tokio::test]
 async fn test_session_snapshot_and_continue() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create session with patches
     let thread = Thread::with_initial_state("snapshot-test", json!({"counter": 0}))
@@ -795,7 +795,7 @@ async fn test_session_message_types() {
 
 #[tokio::test]
 async fn test_storage_list_and_delete() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create multiple sessions
     storage.save(&Thread::new("thread-1")).await.unwrap();
@@ -906,7 +906,7 @@ async fn test_concurrent_tool_execution_stress() {
 
 #[tokio::test]
 async fn test_concurrent_storage_operations() {
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     let mut handles = vec![];
 
@@ -1012,7 +1012,7 @@ async fn test_large_session_1000_patches() {
 
 #[tokio::test]
 async fn test_large_session_storage_roundtrip() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create large session
     let mut thread = Thread::with_initial_state("large-storage-test", json!({"counter": 0}));
@@ -1080,7 +1080,7 @@ async fn test_large_session_snapshot_performance() {
 #[tokio::test]
 async fn test_session_recovery_after_partial_save() {
     let temp_dir = TempDir::new().unwrap();
-    let storage = FileStorage::new(temp_dir.path());
+    let storage = FileStore::new(temp_dir.path());
 
     // Create session with multiple messages and patches
     let thread = Thread::with_initial_state("recovery-test", json!({"step": 0}))
@@ -1119,7 +1119,7 @@ async fn test_session_recovery_after_partial_save() {
 
 #[tokio::test]
 async fn test_session_incremental_checkpoints() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     let mut thread = Thread::with_initial_state("checkpoint-test", json!({"progress": 0}));
 
@@ -1154,9 +1154,9 @@ async fn test_session_incremental_checkpoints() {
 
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
-    use carve_agent::{CheckpointReason, ThreadDelta, ThreadStore, ThreadSync};
+    use carve_agent::{CheckpointReason, ThreadDelta, ThreadSync, ThreadWriteStore};
 
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create thread
     let mut thread = Thread::with_initial_state("append-test", json!({"progress": 0}));
@@ -1192,7 +1192,7 @@ async fn test_incremental_checkpoints_via_append() {
     }
 
     // Verify final state matches
-    let head = ThreadStore::load(&storage, "append-test")
+    let head = ThreadReadStore::load(&storage, "append-test")
         .await
         .unwrap()
         .unwrap();
@@ -1216,7 +1216,7 @@ async fn test_incremental_checkpoints_via_append() {
 
 #[tokio::test]
 async fn test_session_recovery_with_snapshot() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create session with many patches
     let mut thread = Thread::with_initial_state("snapshot-recovery", json!({"counter": 0}));
@@ -1753,7 +1753,7 @@ async fn test_session_resilient_to_tool_errors() {
 #[tokio::test]
 async fn test_storage_error_recovery() {
     let temp_dir = TempDir::new().unwrap();
-    let storage = FileStorage::new(temp_dir.path());
+    let storage = FileStore::new(temp_dir.path());
 
     // Save a valid session
     let thread = Thread::new("valid-thread").with_message(Message::user("Hello"));
@@ -1771,7 +1771,7 @@ async fn test_storage_error_recovery() {
 
 #[tokio::test]
 async fn test_concurrent_errors_dont_corrupt_storage() {
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     // Save initial session
     let thread = Thread::new("concurrent-test").with_message(Message::user("Initial"));
@@ -1919,7 +1919,7 @@ async fn test_file_storage_corrupted_json() {
         .await
         .unwrap();
 
-    let storage = FileStorage::new(temp_dir.path());
+    let storage = FileStore::new(temp_dir.path());
 
     // Try to load corrupted session
     let result = storage.load_thread("corrupted").await;
@@ -3043,7 +3043,7 @@ async fn test_e2e_tool_failure_handling() {
 /// Simulate session persistence and restore mid-conversation
 #[tokio::test]
 async fn test_e2e_session_persistence_restore() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
     let tools = tool_map([IncrementTool]);
 
     // Phase 1: Start conversation
@@ -3211,7 +3211,7 @@ async fn test_e2e_long_conversation() {
     assert_eq!(thread.message_count(), 200);
 
     // Storage should handle this efficiently
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
     storage.save(&thread).await.unwrap();
     let loaded = storage.load_thread("e2e-long").await.unwrap().unwrap();
     assert_eq!(loaded.message_count(), 200);
@@ -3713,7 +3713,7 @@ fn test_stream_result_with_empty_tool_calls() {
 #[tokio::test]
 async fn test_concurrent_session_modifications() {
     // Test that concurrent modifications to different sessions work correctly
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     let mut handles = vec![];
 
@@ -3758,7 +3758,7 @@ async fn test_concurrent_session_modifications() {
 
 #[tokio::test]
 async fn test_concurrent_read_write_same_session() {
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     // Create initial session
     let thread = Thread::new("shared-thread").with_message(Message::user("Initial message"));
@@ -3849,7 +3849,7 @@ async fn test_concurrent_tool_executions_isolated() {
 
 #[tokio::test]
 async fn test_storage_session_not_found() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     let result = storage.load_thread("nonexistent").await.unwrap();
     assert!(result.is_none());
@@ -3857,7 +3857,7 @@ async fn test_storage_session_not_found() {
 
 #[tokio::test]
 async fn test_storage_delete_nonexistent() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Should not error when deleting non-existent session
     let result = storage.delete("nonexistent").await;
@@ -3866,7 +3866,7 @@ async fn test_storage_delete_nonexistent() {
 
 #[tokio::test]
 async fn test_storage_overwrite_session() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create and save
     let session1 = Thread::new("overwrite-test").with_message(Message::user("First version"));
@@ -3891,7 +3891,7 @@ async fn test_storage_overwrite_session() {
 #[tokio::test]
 async fn test_file_storage_special_characters_in_id() {
     let temp_dir = TempDir::new().unwrap();
-    let storage = FileStorage::new(temp_dir.path());
+    let storage = FileStore::new(temp_dir.path());
 
     // Thread ID with special characters (but filesystem-safe)
     let thread = Thread::new("session_with-special.chars_123").with_message(Message::user("Test"));
@@ -3907,14 +3907,14 @@ async fn test_file_storage_special_characters_in_id() {
 }
 
 // ============================================================================
-// FileStorage Concurrent Write Tests
+// FileStore Concurrent Write Tests
 // ============================================================================
 
 #[tokio::test]
 async fn test_file_storage_concurrent_writes_different_sessions() {
     // Multiple tasks writing different sessions concurrently should all succeed.
     let temp_dir = TempDir::new().unwrap();
-    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+    let storage = Arc::new(FileStore::new(temp_dir.path()));
 
     let mut handles = vec![];
     for i in 0..20 {
@@ -3949,7 +3949,7 @@ async fn test_file_storage_concurrent_writes_same_session() {
     // Last-write-wins: all writes should succeed without panic/corruption,
     // and the final file should be valid JSON.
     let temp_dir = TempDir::new().unwrap();
-    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+    let storage = Arc::new(FileStore::new(temp_dir.path()));
 
     let mut handles = vec![];
     for i in 0..10 {
@@ -3977,11 +3977,11 @@ async fn test_file_storage_concurrent_writes_same_session() {
 #[tokio::test]
 async fn test_file_storage_read_write_interleaved() {
     // Interleaved reads and writes should not deadlock or corrupt permanently.
-    // Note: FileStorage does not have write locking, so concurrent reads MAY
+    // Note: FileStore does not have write locking, so concurrent reads MAY
     // encounter partial writes. The test verifies no panic/deadlock occurs and
     // that the final state is consistent after all writes complete.
     let temp_dir = TempDir::new().unwrap();
-    let storage = Arc::new(FileStorage::new(temp_dir.path()));
+    let storage = Arc::new(FileStore::new(temp_dir.path()));
 
     // Seed an initial session.
     let initial = Thread::new("interleaved").with_message(Message::user("initial"));
@@ -4017,7 +4017,7 @@ async fn test_file_storage_read_write_interleaved() {
 
 #[tokio::test]
 async fn test_storage_empty_session() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Thread with no messages or patches
     let thread = Thread::new("empty-thread");
@@ -4030,7 +4030,7 @@ async fn test_storage_empty_session() {
 
 #[tokio::test]
 async fn test_storage_large_state() {
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
 
     // Create session with large state
     let mut large_data = serde_json::Map::new();
@@ -4155,7 +4155,7 @@ async fn test_e2e_system_prompt_in_session() {
         .with_message(Message::assistant("6"));
 
     // Save and load
-    let storage = MemoryStorage::new();
+    let storage = MemoryStore::new();
     storage.save(&thread).await.unwrap();
 
     let loaded = storage

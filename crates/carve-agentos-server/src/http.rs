@@ -15,7 +15,7 @@ use carve_agent::ai_sdk_v6::{
 use carve_agent::protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use carve_agent::{
     AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
-    ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
+    ThreadListPage, ThreadListQuery, ThreadReadStore, Visibility,
 };
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
@@ -27,7 +27,7 @@ use crate::transport::pump_encoded_stream;
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
-    pub storage: Arc<dyn ThreadQuery>,
+    pub read_store: Arc<dyn ThreadReadStore>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,7 +117,7 @@ async fn list_threads(
         resource_id: None,
         parent_thread_id: params.parent_thread_id,
     };
-    st.storage
+    st.read_store
         .list_paginated(&query)
         .await
         .map(Json)
@@ -129,7 +129,7 @@ async fn get_thread(
     Path(id): Path<String>,
 ) -> Result<Json<Thread>, ApiError> {
     let Some(thread) = st
-        .storage
+        .read_store
         .load_thread(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -167,7 +167,7 @@ async fn get_thread_messages(
     Query(params): Query<MessageQueryParams>,
 ) -> Result<Json<MessagePage>, ApiError> {
     let query = parse_message_query(&params);
-    st.storage
+    st.read_store
         .load_messages(&id, &query)
         .await
         .map(Json)
@@ -210,12 +210,12 @@ fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
 }
 
 async fn load_message_page(
-    storage: &Arc<dyn ThreadQuery>,
+    read_store: &Arc<dyn ThreadReadStore>,
     thread_id: &str,
     params: &MessageQueryParams,
 ) -> Result<MessagePage, ApiError> {
     let query = parse_message_query(params);
-    storage
+    read_store
         .load_messages(thread_id, &query)
         .await
         .map_err(|e| match e {
@@ -246,7 +246,7 @@ async fn get_thread_messages_agui(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let page = load_message_page(&st.storage, &id, &params).await?;
+    let page = load_message_page(&st.read_store, &id, &params).await?;
     let encoded = encode_message_page::<AgUiHistoryEncoder>(page);
     Ok(Json(encoded))
 }
@@ -256,7 +256,7 @@ async fn get_thread_messages_ai_sdk(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let page = load_message_page(&st.storage, &id, &params).await?;
+    let page = load_message_page(&st.read_store, &id, &params).await?;
     let encoded = encode_message_page::<AiSdkV6HistoryEncoder>(page);
     Ok(Json(encoded))
 }

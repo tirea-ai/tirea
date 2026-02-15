@@ -8,11 +8,11 @@ struct MemoryEntry {
 
 /// In-memory storage for testing.
 #[derive(Default)]
-pub struct MemoryStorage {
+pub struct MemoryStore {
     entries: tokio::sync::RwLock<std::collections::HashMap<String, MemoryEntry>>,
 }
 
-impl MemoryStorage {
+impl MemoryStore {
     /// Create a new in-memory storage.
     pub fn new() -> Self {
         Self::default()
@@ -20,7 +20,7 @@ impl MemoryStorage {
 }
 
 #[async_trait]
-impl ThreadStore for MemoryStorage {
+impl ThreadWriteStore for MemoryStore {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
@@ -55,14 +55,6 @@ impl ThreadStore for MemoryStorage {
         })
     }
 
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        let entries = self.entries.read().await;
-        Ok(entries.get(thread_id).map(|e| ThreadHead {
-            thread: e.thread.clone(),
-            version: e.version,
-        }))
-    }
-
     async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         let mut entries = self.entries.write().await;
         entries.remove(thread_id);
@@ -85,7 +77,15 @@ impl ThreadStore for MemoryStorage {
 }
 
 #[async_trait]
-impl ThreadQuery for MemoryStorage {
+impl ThreadReadStore for MemoryStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let entries = self.entries.read().await;
+        Ok(entries.get(thread_id).map(|e| ThreadHead {
+            thread: e.thread.clone(),
+            version: e.version,
+        }))
+    }
+
     async fn list_threads(&self, query: &ThreadListQuery) -> Result<ThreadListPage, StorageError> {
         let entries = self.entries.read().await;
         let mut ids: Vec<String> = entries
@@ -123,7 +123,7 @@ impl ThreadQuery for MemoryStorage {
 }
 
 #[async_trait]
-impl ThreadSync for MemoryStorage {
+impl ThreadSync for MemoryStore {
     async fn load_deltas(
         &self,
         thread_id: &str,

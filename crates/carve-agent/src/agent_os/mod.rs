@@ -11,7 +11,7 @@ use crate::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
 };
-use crate::storage::{CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadStore};
+use crate::storage::{CheckpointReason, StorageError, ThreadDelta, ThreadHead, ThreadWriteStore};
 use crate::tool_filter::set_runtime_filters_from_definition_if_absent;
 use crate::traits::tool::Tool;
 use crate::types::Message;
@@ -36,11 +36,11 @@ type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>,
 
 #[derive(Clone)]
 struct StorageStateCommitter {
-    storage: Arc<dyn ThreadStore>,
+    storage: Arc<dyn ThreadWriteStore>,
 }
 
 impl StorageStateCommitter {
-    fn new(storage: Arc<dyn ThreadStore>) -> Self {
+    fn new(storage: Arc<dyn ThreadWriteStore>) -> Self {
         Self { storage }
     }
 }
@@ -253,7 +253,7 @@ pub struct AgentOs {
     skills: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
-    storage: Option<Arc<dyn ThreadStore>>,
+    storage: Option<Arc<dyn ThreadWriteStore>>,
 }
 
 #[derive(Clone)]
@@ -272,7 +272,7 @@ pub struct AgentOsBuilder {
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
     agent_tools: AgentToolsConfig,
-    storage: Option<Arc<dyn ThreadStore>>,
+    storage: Option<Arc<dyn ThreadWriteStore>>,
 }
 
 impl std::fmt::Debug for AgentOs {
@@ -413,7 +413,7 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_storage(mut self, storage: Arc<dyn ThreadStore>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<dyn ThreadWriteStore>) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -908,11 +908,11 @@ impl AgentOs {
         Ok((client, cfg, tools, thread))
     }
 
-    pub fn storage(&self) -> Option<&Arc<dyn ThreadStore>> {
+    pub fn storage(&self) -> Option<&Arc<dyn ThreadWriteStore>> {
         self.storage.as_ref()
     }
 
-    fn require_storage(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
+    fn require_storage(&self) -> Result<&Arc<dyn ThreadWriteStore>, AgentOsRunError> {
         self.storage
             .as_ref()
             .ok_or(AgentOsRunError::StorageNotConfigured)
@@ -1103,6 +1103,7 @@ mod tests {
     use super::*;
     use crate::phase::{Phase, StepContext};
     use crate::skills::FsSkillRegistry;
+    use crate::storage::ThreadReadStore;
     use crate::thread::Thread;
     use crate::traits::tool::ToolDescriptor;
     use crate::traits::tool::{ToolError, ToolResult};
@@ -1128,7 +1129,7 @@ mod tests {
 
     #[derive(Clone)]
     struct FailOnNthAppendStorage {
-        inner: Arc<crate::storage::MemoryStorage>,
+        inner: Arc<crate::storage::MemoryStore>,
         fail_on_nth_append: usize,
         append_calls: Arc<AtomicUsize>,
     }
@@ -1136,7 +1137,7 @@ mod tests {
     impl FailOnNthAppendStorage {
         fn new(fail_on_nth_append: usize) -> Self {
             Self {
-                inner: Arc::new(crate::storage::MemoryStorage::new()),
+                inner: Arc::new(crate::storage::MemoryStore::new()),
                 fail_on_nth_append,
                 append_calls: Arc::new(AtomicUsize::new(0)),
             }
@@ -1148,12 +1149,37 @@ mod tests {
     }
 
     #[async_trait]
-    impl crate::storage::ThreadStore for FailOnNthAppendStorage {
+    impl crate::storage::ThreadReadStore for FailOnNthAppendStorage {
+        async fn load(
+            &self,
+            thread_id: &str,
+        ) -> Result<Option<crate::storage::ThreadHead>, crate::storage::StorageError> {
+            <crate::storage::MemoryStore as crate::storage::ThreadReadStore>::load(
+                self.inner.as_ref(),
+                thread_id,
+            )
+            .await
+        }
+
+        async fn list_threads(
+            &self,
+            query: &crate::storage::ThreadListQuery,
+        ) -> Result<crate::storage::ThreadListPage, crate::storage::StorageError> {
+            <crate::storage::MemoryStore as crate::storage::ThreadReadStore>::list_threads(
+                self.inner.as_ref(),
+                query,
+            )
+            .await
+        }
+    }
+
+    #[async_trait]
+    impl crate::storage::ThreadWriteStore for FailOnNthAppendStorage {
         async fn create(
             &self,
             thread: &Thread,
         ) -> Result<crate::storage::Committed, crate::storage::StorageError> {
-            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::create(
+            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::create(
                 self.inner.as_ref(),
                 thread,
             )
@@ -1171,7 +1197,7 @@ mod tests {
                     "injected append failure on call {append_idx}"
                 )));
             }
-            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::append(
+            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::append(
                 self.inner.as_ref(),
                 thread_id,
                 delta,
@@ -1179,19 +1205,8 @@ mod tests {
             .await
         }
 
-        async fn load(
-            &self,
-            thread_id: &str,
-        ) -> Result<Option<crate::storage::ThreadHead>, crate::storage::StorageError> {
-            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::load(
-                self.inner.as_ref(),
-                thread_id,
-            )
-            .await
-        }
-
         async fn delete(&self, thread_id: &str) -> Result<(), crate::storage::StorageError> {
-            <crate::storage::MemoryStorage as crate::storage::ThreadStore>::delete(
+            <crate::storage::MemoryStore as crate::storage::ThreadWriteStore>::delete(
                 self.inner.as_ref(),
                 thread_id,
             )
@@ -2040,7 +2055,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_applies_frontend_state_to_existing_thread() {
-        use crate::storage::MemoryStorage;
+        use crate::storage::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2058,9 +2073,9 @@ mod tests {
             }
         }
 
-        let storage = Arc::new(MemoryStorage::new());
+        let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2099,7 +2114,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_uses_state_as_initial_for_new_thread() {
-        use crate::storage::MemoryStorage;
+        use crate::storage::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2117,9 +2132,9 @@ mod tests {
             }
         }
 
-        let storage = Arc::new(MemoryStorage::new());
+        let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2149,7 +2164,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_stream_preserves_state_when_no_frontend_state() {
-        use crate::storage::MemoryStorage;
+        use crate::storage::MemoryStore;
         use futures::StreamExt;
 
         #[derive(Debug)]
@@ -2167,9 +2182,9 @@ mod tests {
             }
         }
 
-        let storage = Arc::new(MemoryStorage::new());
+        let storage = Arc::new(MemoryStore::new());
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -2207,7 +2222,7 @@ mod tests {
 
         let storage = Arc::new(FailOnNthAppendStorage::new(2));
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini")
@@ -2286,7 +2301,7 @@ mod tests {
         storage.create(&initial).await.unwrap();
 
         let os = AgentOs::builder()
-            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadStore>)
+            .with_storage(storage.clone() as Arc<dyn crate::storage::ThreadWriteStore>)
             .with_agent(
                 "a1",
                 AgentDefinition::new("gpt-4o-mini")

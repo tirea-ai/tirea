@@ -8,7 +8,10 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agent::{tool_map_from_arc, AgentOsBuilder, FileStorage, ModelDefinition, Tool};
+use carve_agent::{
+    tool_map_from_arc, AgentOsBuilder, FileStore, ModelDefinition, ThreadReadStore,
+    ThreadWriteStore, Tool,
+};
 use carve_agentos_server::http::{self, AppState};
 use clap::Parser;
 use std::collections::HashMap;
@@ -66,12 +69,15 @@ pub async fn serve(
         builder = builder.with_registered_plugin(id, plugin);
     }
 
+    let file_store = Arc::new(FileStore::new(args.storage_dir));
+    builder = builder.with_storage(file_store.clone() as Arc<dyn ThreadWriteStore>);
+
     let os = builder.build().expect("failed to build AgentOs");
-    let storage = Arc::new(FileStorage::new(args.storage_dir));
+    let read_store: Arc<dyn ThreadReadStore> = file_store;
 
     let app = http::router(AppState {
         os: Arc::new(os),
-        storage,
+        read_store,
     });
 
     let listener = tokio::net::TcpListener::bind(&args.http_addr)

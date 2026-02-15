@@ -1,13 +1,13 @@
 use super::*;
 
-pub struct PostgresStorage {
+pub struct PostgresStore {
     pool: sqlx::PgPool,
     table: String,
     messages_table: String,
 }
 
 #[cfg(feature = "postgres")]
-impl PostgresStorage {
+impl PostgresStore {
     /// Create a new PostgreSQL storage using the given connection pool.
     ///
     /// Sessions are stored in the `agent_sessions` table by default,
@@ -75,7 +75,7 @@ impl PostgresStorage {
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadStore for PostgresStorage {
+impl ThreadWriteStore for PostgresStore {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
         let mut v =
             serde_json::to_value(thread).map_err(|e| StorageError::Serialization(e.to_string()))?;
@@ -231,42 +231,6 @@ impl ThreadStore for PostgresStorage {
         })
     }
 
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(thread_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-
-        let Some((mut v,)) = row else {
-            return Ok(None);
-        };
-
-        let version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
-
-        // Load messages from separate table.
-        let msg_sql = format!(
-            "SELECT data FROM {} WHERE session_id = $1 ORDER BY seq",
-            self.messages_table
-        );
-        let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
-            .bind(thread_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(Self::sql_err)?;
-
-        let messages: Vec<serde_json::Value> = msg_rows.into_iter().map(|(d,)| d).collect();
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert("messages".to_string(), serde_json::Value::Array(messages));
-            obj.remove("_version");
-        }
-
-        let thread: Thread =
-            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
-        Ok(Some(ThreadHead { thread, version }))
-    }
-
     async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
@@ -357,7 +321,42 @@ impl ThreadStore for PostgresStorage {
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadQuery for PostgresStorage {
+impl ThreadReadStore for PostgresStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(thread_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let Some((mut v,)) = row else {
+            return Ok(None);
+        };
+
+        let version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        let msg_sql = format!(
+            "SELECT data FROM {} WHERE session_id = $1 ORDER BY seq",
+            self.messages_table
+        );
+        let msg_rows: Vec<(serde_json::Value,)> = sqlx::query_as(&msg_sql)
+            .bind(thread_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Self::sql_err)?;
+
+        let messages: Vec<serde_json::Value> = msg_rows.into_iter().map(|(d,)| d).collect();
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("messages".to_string(), serde_json::Value::Array(messages));
+            obj.remove("_version");
+        }
+
+        let thread: Thread =
+            serde_json::from_value(v).map_err(|e| StorageError::Serialization(e.to_string()))?;
+        Ok(Some(ThreadHead { thread, version }))
+    }
+
     async fn load_messages(
         &self,
         thread_id: &str,

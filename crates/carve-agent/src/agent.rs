@@ -6,7 +6,7 @@
 use crate::r#loop::{
     run_loop_stream, AgentDefinition, AgentLoopError, ChannelStateCommitter, RunContext,
 };
-use crate::storage::{StorageError, ThreadStore};
+use crate::storage::{StorageError, ThreadWriteStore};
 use crate::stream::AgentEvent;
 use crate::thread::Thread;
 use crate::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -82,7 +82,7 @@ pub struct Agent {
     definition: AgentDefinition,
     client: Client,
     tools: HashMap<String, Arc<dyn Tool>>,
-    storage: Option<Arc<dyn ThreadStore>>,
+    storage: Option<Arc<dyn ThreadWriteStore>>,
 }
 
 impl Agent {
@@ -110,7 +110,7 @@ impl Agent {
     }
 
     /// Set storage backend.
-    pub fn with_storage(mut self, storage: Arc<dyn ThreadStore>) -> Self {
+    pub fn with_storage(mut self, storage: Arc<dyn ThreadWriteStore>) -> Self {
         self.storage = Some(storage);
         self
     }
@@ -358,6 +358,7 @@ pub(crate) fn uuid_v7() -> String {
 mod tests {
     use super::*;
     use crate::r#loop::AgentDefinition;
+    use crate::storage::ThreadReadStore;
     use carve_state::Context;
 
     #[test]
@@ -681,7 +682,7 @@ mod tests {
 
     #[test]
     fn test_agent_with_storage() {
-        let storage: Arc<dyn ThreadStore> = Arc::new(crate::storage::MemoryStorage::new());
+        let storage: Arc<dyn ThreadWriteStore> = Arc::new(crate::storage::MemoryStore::new());
         let agent = Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage);
         assert!(agent.storage.is_some());
     }
@@ -732,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_subagent_inherits_storage() {
-        let storage: Arc<dyn ThreadStore> = Arc::new(crate::storage::MemoryStorage::new());
+        let storage: Arc<dyn ThreadWriteStore> = Arc::new(crate::storage::MemoryStore::new());
         let def = AgentDefinition::default();
         let agent = Agent::new(def, Client::default()).with_storage(storage.clone());
 
@@ -943,7 +944,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_with_nonexistent_session() {
-        let storage: Arc<dyn ThreadStore> = Arc::new(crate::storage::MemoryStorage::new());
+        let storage: Arc<dyn ThreadWriteStore> = Arc::new(crate::storage::MemoryStore::new());
         let agent = Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage);
         match agent.resume("nonexistent", "continue").await {
             Err(StorageError::NotFound(id)) => {
@@ -956,12 +957,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_resume_with_existing_session() {
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let storage = Arc::new(crate::storage::MemoryStore::new());
         let thread = Thread::new("saved-thread")
             .with_message(crate::types::Message::user("original prompt"));
         storage.save(&thread).await.unwrap();
 
-        let storage_arc: Arc<dyn ThreadStore> = storage;
+        let storage_arc: Arc<dyn ThreadWriteStore> = storage;
         let agent =
             Agent::new(AgentDefinition::default(), Client::default()).with_storage(storage_arc);
 
@@ -1360,7 +1361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subagent_tool_execute_with_resume_thread_found() {
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let storage = Arc::new(crate::storage::MemoryStore::new());
         let saved_thread = Thread::new("old-thread")
             .with_message(crate::types::Message::user("first question"))
             .with_message(crate::types::Message::assistant("first answer"));
@@ -1369,7 +1370,7 @@ mod tests {
         let def = AgentDefinition::new("gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent =
-            Agent::new(def, Client::default()).with_storage(storage as Arc<dyn ThreadStore>);
+            Agent::new(def, Client::default()).with_storage(storage as Arc<dyn ThreadWriteStore>);
         let tool = SubAgentTool::new(agent, "helper", "Helps");
 
         let state = json!({});
@@ -1392,11 +1393,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_saves_session_to_storage() {
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let storage = Arc::new(crate::storage::MemoryStore::new());
         let def = AgentDefinition::with_id("saver", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default())
-            .with_storage(storage.clone() as Arc<dyn ThreadStore>);
+            .with_storage(storage.clone() as Arc<dyn ThreadWriteStore>);
 
         let handle = agent.spawn("save this");
         let thread_id = handle.thread_id().to_string();
@@ -1418,12 +1419,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_returns_and_persists_final_thread_state() {
-        let storage = Arc::new(crate::storage::MemoryStorage::new());
+        let storage = Arc::new(crate::storage::MemoryStore::new());
         let def = AgentDefinition::with_id("spawn-final-state", "gpt-4o-mini")
             .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
             .with_plugin(Arc::new(ThreadEndStatePatchPlugin) as Arc<dyn AgentPlugin>);
         let agent = Agent::new(def, Client::default())
-            .with_storage(storage.clone() as Arc<dyn ThreadStore>);
+            .with_storage(storage.clone() as Arc<dyn ThreadWriteStore>);
 
         let handle = agent.spawn("persist final thread");
         let thread_id = handle.thread_id().to_string();

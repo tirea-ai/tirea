@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use carve_agent::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
-    FileStorage, Message, RunContext, Thread, ThreadStore, Tool, ToolDescriptor, ToolError,
+    FileStore, Message, RunContext, Thread, ThreadWriteStore, Tool, ToolDescriptor, ToolError,
     ToolResult,
 };
 use carve_state_derive::State;
@@ -625,7 +625,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     // Create a temporary directory for storage
     let temp_dir = std::env::temp_dir().join(format!("carve-test-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir)?;
-    let storage = FileStorage::new(&temp_dir);
+    let storage = FileStore::new(&temp_dir);
 
     println!("Storage path: {:?}", temp_dir);
 
@@ -1129,7 +1129,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     }
 
     // Test session serialization performance with large history
-    let storage = carve_agent::MemoryStorage::new();
+    let storage = carve_agent::MemoryStore::new();
     let save_start = std::time::Instant::now();
     storage.save(&thread).await?;
     let save_time = save_start.elapsed();

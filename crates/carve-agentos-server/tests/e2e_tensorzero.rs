@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::{
-    AgentDefinition, AgentOsBuilder, MemoryStorage, ModelDefinition, ThreadStore, Tool,
-    ToolDescriptor, ToolError, ToolResult,
+    AgentDefinition, AgentOsBuilder, MemoryStore, ModelDefinition, ThreadReadStore,
+    ThreadWriteStore, Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agentos_server::http::{router, AppState};
 use serde_json::{json, Value};
@@ -66,7 +66,7 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -86,7 +86,7 @@ fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
         .with_agent("deepseek", def)
-        .with_storage(storage)
+        .with_storage(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero")
 }
@@ -118,11 +118,11 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let payload = json!({
@@ -200,11 +200,11 @@ async fn e2e_tensorzero_ag_ui_sse() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let payload = json!({
@@ -421,7 +421,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadWriteStore>) -> carve_agent::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),
@@ -446,7 +446,7 @@ fn make_tool_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
         )
         .with_tools(tools)
         .with_agent("calc", def)
-        .with_storage(storage)
+        .with_storage(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero + calculator")
 }
@@ -519,11 +519,11 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -568,11 +568,11 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -636,13 +636,13 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text1) = post_sse(
@@ -668,7 +668,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
     // Turn 2.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text2) = post_sse(
@@ -717,7 +717,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     let os = Arc::new(
         AgentOsBuilder::new()
@@ -735,7 +735,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
 
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -784,11 +784,11 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -867,13 +867,13 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
 
     // Turn 1.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, _) = post_sse(
@@ -896,7 +896,7 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
     // Turn 2: AG-UI sends full history.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text2) = post_sse(
@@ -951,7 +951,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
     let tools: HashMap<String, Arc<dyn Tool>> =
         HashMap::from([("calculator".to_string(), Arc::new(CalculatorTool) as _)]);
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
 
     let os = Arc::new(
         AgentOsBuilder::new()
@@ -969,7 +969,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
 
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -1019,11 +1019,11 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
     let app = router(AppState {
         os,
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
 
     let (status, text) = post_sse(
@@ -1119,14 +1119,14 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let thread_id = "tz-sdk-history";
 
     // Turn 1: agent run to populate the thread.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, text1) = post_sse(
         app1,
@@ -1149,7 +1149,7 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     // Load history via AI SDK encoded endpoint.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, history_text) =
         get_json(app2, &format!("/v1/threads/{thread_id}/messages/ai-sdk")).await;
@@ -1212,14 +1212,14 @@ async fn e2e_tensorzero_ag_ui_load_history() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let thread_id = "tz-agui-history";
 
     // Turn 1: agent run to populate the thread.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, _) = post_sse(
         app1,
@@ -1241,7 +1241,7 @@ async fn e2e_tensorzero_ag_ui_load_history() {
     // Load history via AG-UI encoded endpoint.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, history_text) =
         get_json(app2, &format!("/v1/threads/{thread_id}/messages/ag-ui")).await;
@@ -1295,14 +1295,14 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let thread_id = "tz-sdk-mt-history";
 
     // Turn 1.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, _) = post_sse(
         app1,
@@ -1321,7 +1321,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     // Turn 2.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, text2) = post_sse(
         app2,
@@ -1347,7 +1347,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     // Load full history.
     let app3 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, history_text) = get_json(
         app3,
@@ -1408,14 +1408,14 @@ async fn e2e_tensorzero_raw_message_history() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
     let thread_id = "tz-raw-history";
 
     // Run one turn to create the thread.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, sse_text) = post_sse(
         app1,
@@ -1435,7 +1435,7 @@ async fn e2e_tensorzero_raw_message_history() {
     // Load raw messages.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, raw_text) = get_json(app2, &format!("/v1/threads/{thread_id}/messages")).await;
 
@@ -1461,7 +1461,7 @@ async fn e2e_tensorzero_raw_message_history() {
     // Load thread metadata.
     let app3 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, thread_text) = get_json(app3, &format!("/v1/threads/{thread_id}")).await;
 
@@ -1483,9 +1483,12 @@ async fn e2e_tensorzero_history_not_found() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os(storage.clone()));
-    let app = router(AppState { os, storage });
+    let app = router(AppState {
+        os,
+        read_store: storage,
+    });
 
     let (status, _) = get_json(app, "/v1/threads/nonexistent-thread/messages/ai-sdk").await;
 
@@ -1507,14 +1510,14 @@ async fn e2e_tensorzero_tool_call_history() {
         return;
     }
 
-    let storage = Arc::new(MemoryStorage::new());
+    let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_tool_os(storage.clone()));
     let thread_id = "tz-tool-history";
 
     // Run a tool-using conversation.
     let app1 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, text) = post_sse(
         app1,
@@ -1537,7 +1540,7 @@ async fn e2e_tensorzero_tool_call_history() {
     // Load AI SDK history — should include tool parts.
     let app2 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, history_text) = get_json(
         app2,
@@ -1586,7 +1589,7 @@ async fn e2e_tensorzero_tool_call_history() {
     // Load AG-UI history for comparison.
     let app3 = router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store: storage.clone(),
     });
     let (status, agui_text) = get_json(
         app3,

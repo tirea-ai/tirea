@@ -1,15 +1,15 @@
-//! Integration tests for NatsBufferedStorage using testcontainers.
+//! Integration tests for NatsBufferedWriteStore using testcontainers.
 //!
 //! Requires Docker. Run with:
 //! ```bash
-//! cargo test --package carve-agentos-server --test nats_storage -- --nocapture
+//! cargo test --package carve-agentos-server --test nats_buffered -- --nocapture
 //! ```
 
 use carve_agent::{
-    CheckpointReason, MemoryStorage, Message, MessageQuery, Thread, ThreadDelta, ThreadQuery,
-    ThreadStore,
+    CheckpointReason, MemoryStore, Message, MessageQuery, Thread, ThreadDelta, ThreadReadStore,
+    ThreadWriteStore,
 };
-use carve_agentos_server::nats_storage::NatsBufferedStorage;
+use carve_agentos_server::storage::NatsBufferedWriteStore;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
@@ -30,11 +30,13 @@ async fn start_nats_js() -> (testcontainers::ContainerAsync<Nats>, String) {
     (container, url)
 }
 
-async fn make_storage(nats_url: &str) -> (Arc<MemoryStorage>, NatsBufferedStorage) {
-    let inner = Arc::new(MemoryStorage::new());
+async fn make_storage(nats_url: &str) -> (Arc<MemoryStore>, NatsBufferedWriteStore) {
+    let inner = Arc::new(MemoryStore::new());
     let nats_client = async_nats::connect(nats_url).await.unwrap();
     let js = async_nats::jetstream::new(nats_client);
-    let storage = NatsBufferedStorage::new(inner.clone(), js).await.unwrap();
+    let storage = NatsBufferedWriteStore::new(inner.clone(), js)
+        .await
+        .unwrap();
     (inner, storage)
 }
 
@@ -204,7 +206,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     };
     storage.append("t1", &delta).await.unwrap();
 
-    // Query via NatsBufferedStorage.load() — should see first-run snapshot.
+    // Query via NatsBufferedWriteStore.load() — should see first-run snapshot.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(
         head.thread.messages.len(),
@@ -215,7 +217,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     assert_eq!(head.thread.messages[1].content, "first reply");
 }
 
-/// load_messages() (ThreadQuery default) also reads from the inner storage,
+/// load_messages() (ThreadReadStore default) also reads from the inner storage,
 /// so during a run it returns the last-flushed message list.
 #[tokio::test]
 async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
@@ -240,8 +242,8 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
         storage.append("t1", &delta).await.unwrap();
     }
 
-    // Query messages through the inner storage (which NatsBufferedStorage delegates to).
-    let page = ThreadQuery::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    // Query messages through the inner storage (which NatsBufferedWriteStore delegates to).
+    let page = ThreadReadStore::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(
@@ -288,7 +290,7 @@ async fn test_query_accurate_after_run_end_flush() {
     assert_eq!(post.thread.messages[1].content, "world");
 
     // load_messages also sees 2.
-    let page = ThreadQuery::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    let page = ThreadReadStore::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 2);

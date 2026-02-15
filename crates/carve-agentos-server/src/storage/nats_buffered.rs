@@ -1,6 +1,6 @@
 //! NATS JetStream-buffered storage decorator.
 //!
-//! Wraps an inner [`ThreadStore`] (typically PostgreSQL) and routes delta
+//! Wraps an inner [`ThreadWriteStore`] (typically PostgreSQL) and routes delta
 //! writes through NATS JetStream instead of hitting the database per-delta.
 //!
 //! # Run-end flush strategy
@@ -16,12 +16,14 @@
 //!
 //! # Crash recovery
 //!
-//! On startup, call [`NatsBufferedStorage::recover`] to replay any unacked
+//! On startup, call [`NatsBufferedWriteStore::recover`] to replay any unacked
 //! deltas left over from interrupted runs.
 
 use async_nats::jetstream;
 use async_trait::async_trait;
-use carve_agent::storage::{Committed, StorageError, ThreadDelta, ThreadHead, ThreadStore};
+use carve_agent::storage::{
+    Committed, StorageError, ThreadDelta, ThreadHead, ThreadReadStore, ThreadWriteStore,
+};
 use carve_agent::Thread;
 use std::sync::Arc;
 
@@ -35,24 +37,24 @@ fn delta_subject(thread_id: &str) -> String {
     format!("{SUBJECT_PREFIX}.{thread_id}.deltas")
 }
 
-/// A [`ThreadStore`] decorator that buffers deltas in NATS JetStream and
+/// A [`ThreadWriteStore`] decorator that buffers deltas in NATS JetStream and
 /// flushes the final thread to the inner storage at run end.
 ///
 /// # Query consistency (CQRS)
 ///
-/// [`load`](ThreadStore::load) always reads from the inner (durable) storage.
+/// [`load`](ThreadReadStore::load) always reads from the inner (durable) storage.
 /// During an active run, queries return the **last-flushed snapshot** — they do
 /// not include deltas that are buffered in NATS but not yet flushed.
 ///
 /// Real-time data for in-progress runs is delivered through the SSE/NATS event
 /// stream.  Callers that need up-to-date messages during a run should consume
 /// the event stream rather than polling the query API.
-pub struct NatsBufferedStorage {
-    inner: Arc<dyn ThreadStore>,
+pub struct NatsBufferedWriteStore {
+    inner: Arc<dyn ThreadWriteStore>,
     jetstream: jetstream::Context,
 }
 
-impl NatsBufferedStorage {
+impl NatsBufferedWriteStore {
     /// Create a new buffered storage.
     ///
     /// `inner` is the durable backend (e.g. PostgreSQL) used for `create`,
@@ -60,7 +62,7 @@ impl NatsBufferedStorage {
     ///
     /// `jetstream` is an already-connected JetStream context.
     pub async fn new(
-        inner: Arc<dyn ThreadStore>,
+        inner: Arc<dyn ThreadWriteStore>,
         jetstream: jetstream::Context,
     ) -> Result<Self, async_nats::Error> {
         // Ensure the stream exists (idempotent).
@@ -83,12 +85,12 @@ impl NatsBufferedStorage {
     /// Replays any unacked deltas from the JetStream stream, applies them to
     /// the corresponding threads loaded from the inner storage, and saves the
     /// result.  Acked messages are then purged.
-    pub async fn recover(&self) -> Result<usize, NatsStorageError> {
+    pub async fn recover(&self) -> Result<usize, NatsBufferedWriteStoreError> {
         let stream = self
             .jetstream
             .get_stream(STREAM_NAME)
             .await
-            .map_err(|e| NatsStorageError::JetStream(e.to_string()))?;
+            .map_err(|e| NatsBufferedWriteStoreError::JetStream(e.to_string()))?;
 
         let consumer = stream
             .create_consumer(jetstream::consumer::pull::Config {
@@ -99,7 +101,7 @@ impl NatsBufferedStorage {
                 ..Default::default()
             })
             .await
-            .map_err(|e| NatsStorageError::JetStream(e.to_string()))?;
+            .map_err(|e| NatsBufferedWriteStoreError::JetStream(e.to_string()))?;
 
         let mut recovered = 0usize;
         // Collect pending deltas grouped by thread_id.
@@ -111,7 +113,7 @@ impl NatsBufferedStorage {
         let mut messages = consumer
             .messages()
             .await
-            .map_err(|e| NatsStorageError::JetStream(e.to_string()))?;
+            .map_err(|e| NatsBufferedWriteStoreError::JetStream(e.to_string()))?;
 
         // Use a short timeout to drain available messages.
         loop {
@@ -185,7 +187,7 @@ impl NatsBufferedStorage {
 }
 
 #[async_trait]
-impl ThreadStore for NatsBufferedStorage {
+impl ThreadWriteStore for NatsBufferedWriteStore {
     async fn create(&self, thread: &Thread) -> Result<Committed, StorageError> {
         self.inner.create(thread).await
     }
@@ -214,10 +216,6 @@ impl ThreadStore for NatsBufferedStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
-        self.inner.load(thread_id).await
-    }
-
     async fn delete(&self, thread_id: &str) -> Result<(), StorageError> {
         self.inner.delete(thread_id).await
     }
@@ -237,6 +235,20 @@ impl ThreadStore for NatsBufferedStorage {
     }
 }
 
+#[async_trait]
+impl ThreadReadStore for NatsBufferedWriteStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, StorageError> {
+        self.inner.load(thread_id).await
+    }
+
+    async fn list_threads(
+        &self,
+        query: &carve_agent::ThreadListQuery,
+    ) -> Result<carve_agent::ThreadListPage, StorageError> {
+        self.inner.list_threads(query).await
+    }
+}
+
 /// Apply a delta to a thread in-place (same logic as storage::apply_delta but
 /// accessible here without depending on the private function).
 fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
@@ -249,7 +261,7 @@ fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum NatsStorageError {
+pub enum NatsBufferedWriteStoreError {
     #[error("jetstream error: {0}")]
     JetStream(String),
 

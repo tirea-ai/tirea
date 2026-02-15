@@ -13,18 +13,18 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
-mod file;
-mod memory;
+mod file_store;
+mod memory_store;
 #[cfg(feature = "postgres")]
-mod postgres;
+mod postgres_store;
 mod traits;
 mod types;
 
-pub use file::FileStorage;
-pub use memory::MemoryStorage;
+pub use file_store::FileStore;
+pub use memory_store::MemoryStore;
 #[cfg(feature = "postgres")]
-pub use postgres::PostgresStorage;
-pub use traits::{ThreadQuery, ThreadStore, ThreadSync};
+pub use postgres_store::PostgresStore;
+pub use traits::{ThreadReadStore, ThreadSync, ThreadWriteStore};
 pub use types::{
     paginate_in_memory, CheckpointReason, Committed, MessagePage, MessageQuery, MessageWithCursor,
     SortOrder, StorageError, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, Version,

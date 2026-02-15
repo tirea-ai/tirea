@@ -1,4 +1,7 @@
-use carve_agent::{AgentDefinition, AgentOs, AgentOsBuilder, FileStorage, ModelDefinition};
+use carve_agent::{
+    AgentDefinition, AgentOs, AgentOsBuilder, FileStore, ModelDefinition, ThreadReadStore,
+    ThreadWriteStore,
+};
 use carve_agentos_server::http::{self, AppState};
 use clap::Parser;
 use serde::Deserialize;
@@ -44,9 +47,9 @@ struct AgentConfigFile {
 fn build_os(
     cfg: Option<Config>,
     tensorzero_url: Option<String>,
-    storage: Arc<carve_agent::FileStorage>,
+    write_store: Arc<dyn ThreadWriteStore>,
 ) -> AgentOs {
-    let mut builder = AgentOsBuilder::new().with_storage(storage);
+    let mut builder = AgentOsBuilder::new().with_storage(write_store);
 
     let agents = match cfg {
         Some(c) => c.agents,
@@ -142,12 +145,14 @@ async fn main() {
         None => None,
     };
 
-    let storage: Arc<carve_agent::FileStorage> = Arc::new(FileStorage::new(args.storage_dir));
-    let os = Arc::new(build_os(cfg, args.tensorzero_url, storage.clone()));
+    let file_store = Arc::new(FileStore::new(args.storage_dir));
+    let write_store: Arc<dyn ThreadWriteStore> = file_store.clone();
+    let read_store: Arc<dyn ThreadReadStore> = file_store.clone();
+    let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
     let app = http::router(AppState {
         os: os.clone(),
-        storage: storage.clone(),
+        read_store,
     });
 
     if let Some(nats_url) = args.nats_url.clone() {
