@@ -1,11 +1,8 @@
 use crate::protocol::MessageRole;
-use carve_agent_runtime_contract::{
-    InteractionResponse, RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY, RUNTIME_INTERACTION_RESPONSES_KEY,
-};
+use carve_agent_runtime_contract::InteractionResponse;
 use carve_thread_model::{gen_message_id, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use tracing::warn;
 
 /// AG-UI message in a conversation.
@@ -304,53 +301,6 @@ pub fn convert_agui_messages(messages: &[AGUIMessage]) -> Vec<Message> {
         .filter(|m| m.role != MessageRole::Assistant)
         .map(core_message_from_ag_ui)
         .collect()
-}
-
-/// Build interaction runtime values from request payload.
-pub fn interaction_runtime_values(request: &RunAgentRequest) -> HashMap<String, Value> {
-    let mut runtime = HashMap::new();
-
-    let frontend_tools: Vec<String> = request
-        .frontend_tools()
-        .into_iter()
-        .map(|tool| tool.name.clone())
-        .collect();
-    if !frontend_tools.is_empty() {
-        match serde_json::to_value(frontend_tools) {
-            Ok(value) => {
-                runtime.insert(RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY.to_string(), value);
-            }
-            Err(err) => {
-                warn!(error = %err, "failed to serialize frontend tools into runtime");
-            }
-        }
-    }
-
-    let responses = request.interaction_responses();
-    if !responses.is_empty() {
-        match serde_json::to_value(responses) {
-            Ok(value) => {
-                runtime.insert(RUNTIME_INTERACTION_RESPONSES_KEY.to_string(), value);
-            }
-            Err(err) => {
-                warn!(error = %err, "failed to serialize interaction responses into runtime");
-            }
-        }
-    }
-
-    runtime
-}
-
-/// Build full runtime values for AG-UI input adaptation.
-pub fn request_runtime_values(request: &RunAgentRequest) -> HashMap<String, Value> {
-    let mut runtime = interaction_runtime_values(request);
-    if let Some(parent_run_id) = request.parent_run_id.clone() {
-        runtime.insert(
-            "parent_run_id".to_string(),
-            serde_json::Value::String(parent_run_id),
-        );
-    }
-    runtime
 }
 
 /// Error type for request processing.

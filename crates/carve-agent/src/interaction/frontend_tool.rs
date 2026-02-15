@@ -8,9 +8,7 @@ use crate::plugin::AgentPlugin;
 use crate::state_types::Interaction;
 use async_trait::async_trait;
 use carve_state::Context;
-use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::collections::HashSet;
 
 /// Strategy plugin that marks frontend tools as pending interactions.
 ///
@@ -86,176 +84,41 @@ impl AgentPlugin for FrontendToolPlugin {
     }
 }
 
-/// Stub `Tool` implementation for frontend-defined tools.
-///
-/// This provides a `ToolDescriptor` so the LLM knows the tool exists, but execution
-/// is intercepted by `FrontendToolPlugin` before `execute` is ever called.
-pub(crate) struct FrontendToolStub {
-    /// Tool descriptor for the frontend tool stub.
-    pub(crate) descriptor: crate::traits::tool::ToolDescriptor,
-}
-
-impl FrontendToolStub {
-    /// Create from a frontend tool spec.
-    pub(crate) fn from_spec(spec: &FrontendToolSpec) -> Self {
-        let parameters = spec
-            .parameters
-            .clone()
-            .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
-        Self {
-            descriptor: crate::traits::tool::ToolDescriptor::new(
-                &spec.name,
-                &spec.name,
-                &spec.description,
-            )
-            .with_parameters(parameters),
-        }
-    }
-}
-
-/// Protocol-agnostic frontend tool declaration used to install stub tools.
-#[derive(Debug, Clone)]
-pub(crate) struct FrontendToolSpec {
-    /// Tool name.
-    pub(crate) name: String,
-    /// Tool description.
-    pub(crate) description: String,
-    /// Optional JSON schema for parameters.
-    pub(crate) parameters: Option<Value>,
-}
-
-/// Registry for frontend tool definitions.
-///
-/// Frontend tools are presented to the model as normal callable tools (via
-/// [`FrontendToolStub`] descriptors). At execution time they are intercepted by
-/// [`FrontendToolPlugin`] and converted into pending interactions.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FrontendToolRegistry {
-    specs: HashMap<String, FrontendToolSpec>,
-}
-
-impl FrontendToolRegistry {
-    /// Build registry from an iterable of specs.
-    ///
-    /// First declaration wins for the same tool name.
-    pub(crate) fn new(specs: impl IntoIterator<Item = FrontendToolSpec>) -> Self {
-        let mut map = HashMap::new();
-        for spec in specs {
-            map.entry(spec.name.clone()).or_insert(spec);
-        }
-        Self { specs: map }
-    }
-
-    /// Install frontend tool stubs into the tool map without overriding existing tools.
-    pub(crate) fn install_stubs(
-        &self,
-        tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
-    ) {
-        for spec in self.specs.values() {
-            tools
-                .entry(spec.name.clone())
-                .or_insert_with(|| Arc::new(FrontendToolStub::from_spec(spec)));
-        }
-    }
-}
-
-#[async_trait]
-impl crate::traits::tool::Tool for FrontendToolStub {
-    fn descriptor(&self) -> crate::traits::tool::ToolDescriptor {
-        self.descriptor.clone()
-    }
-
-    async fn execute(
-        &self,
-        _args: Value,
-        _ctx: &carve_state::Context<'_>,
-    ) -> Result<crate::traits::tool::ToolResult, crate::traits::tool::ToolError> {
-        // Should never be reached – FrontendToolPlugin intercepts before execution.
-        Err(crate::traits::tool::ToolError::Internal(
-            "frontend tool stub should not be executed directly".into(),
-        ))
-    }
-}
-
-/// Convert frontend tool definitions from an AG-UI request into `Arc<dyn Tool>` stubs
-/// and merge them into the provided tools map.
-pub(crate) fn merge_frontend_tools(
-    tools: &mut HashMap<String, Arc<dyn crate::traits::tool::Tool>>,
-    frontend_tools: &[FrontendToolSpec],
-) {
-    FrontendToolRegistry::new(frontend_tools.iter().cloned()).install_stubs(tools);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use crate::phase::ToolContext;
+    use crate::thread::Thread;
+    use crate::types::ToolCall;
+    use serde_json::json;
 
     #[test]
-    fn merge_frontend_tools_inserts_stub_tools() {
-        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
-        let specs = vec![FrontendToolSpec {
-            name: "copy_to_clipboard".to_string(),
-            description: "Copy content".to_string(),
-            parameters: Some(json!({
-                "type": "object",
-                "properties": { "text": { "type": "string" } }
-            })),
-        }];
-
-        merge_frontend_tools(&mut tools, &specs);
-
-        let tool = tools.get("copy_to_clipboard").expect("tool should exist");
-        let descriptor = tool.descriptor();
-        assert_eq!(descriptor.name, "copy_to_clipboard");
-        assert_eq!(descriptor.description, "Copy content");
+    fn identifies_frontend_tool_names() {
+        let plugin = FrontendToolPlugin::new(["copy".to_string()].into_iter().collect());
+        assert!(plugin.is_frontend_tool("copy"));
+        assert!(!plugin.is_frontend_tool("search"));
     }
 
-    #[test]
-    fn merge_frontend_tools_does_not_override_existing_tool() {
-        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
-        let existing = FrontendToolStub::from_spec(&FrontendToolSpec {
-            name: "copy_to_clipboard".to_string(),
-            description: "Existing".to_string(),
-            parameters: None,
-        });
-        tools.insert("copy_to_clipboard".to_string(), Arc::new(existing));
+    #[tokio::test]
+    async fn marks_frontend_tool_as_pending() {
+        let plugin = FrontendToolPlugin::new(["copy".to_string()].into_iter().collect());
+        let state = json!({});
+        let ctx = Context::new(&state, "test", "test");
+        let thread = Thread::new("t1");
+        let mut step = StepContext::new(&thread, vec![]);
+        let call = ToolCall::new("call_1", "copy", json!({"text":"hello"}));
+        step.tool = Some(ToolContext::new(&call));
 
-        let specs = vec![FrontendToolSpec {
-            name: "copy_to_clipboard".to_string(),
-            description: "New".to_string(),
-            parameters: None,
-        }];
-        merge_frontend_tools(&mut tools, &specs);
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
-        let descriptor = tools
-            .get("copy_to_clipboard")
-            .expect("tool should exist")
-            .descriptor();
-        assert_eq!(descriptor.description, "Existing");
-    }
-
-    #[test]
-    fn frontend_registry_exposes_names_and_installs_stubs() {
-        let registry = FrontendToolRegistry::new(vec![
-            FrontendToolSpec {
-                name: "copy".to_string(),
-                description: "Copy".to_string(),
-                parameters: None,
-            },
-            FrontendToolSpec {
-                name: "notify".to_string(),
-                description: "Notify".to_string(),
-                parameters: None,
-            },
-        ]);
-        let names: HashSet<String> = registry.specs.keys().cloned().collect();
-        assert!(names.contains("copy"));
-        assert!(names.contains("notify"));
-
-        let mut tools: HashMap<String, Arc<dyn crate::traits::tool::Tool>> = HashMap::new();
-        registry.install_stubs(&mut tools);
-        assert!(tools.contains_key("copy"));
-        assert!(tools.contains_key("notify"));
+        let interaction = step
+            .tool
+            .as_ref()
+            .and_then(|t| t.pending_interaction.as_ref())
+            .expect("pending interaction should exist");
+        assert_eq!(interaction.id, "call_1");
+        assert_eq!(interaction.action, "tool:copy");
     }
 }

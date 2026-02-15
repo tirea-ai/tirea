@@ -25,10 +25,10 @@ impl ProtocolInputAdapter for AiSdkV6InputAdapter {
                 Some(request.thread_id)
             },
             run_id: request.run_id,
+            parent_run_id: None,
             resource_id: None,
             state: None,
             messages: vec![Message::user(request.input)],
-            runtime: std::collections::HashMap::new(),
         }
     }
 }

@@ -93,7 +93,6 @@ pub mod phase;
 pub mod plugin;
 pub mod plugins;
 pub mod prelude;
-pub mod protocol;
 pub mod skills;
 pub mod state_types;
 pub mod stop;
@@ -145,14 +144,10 @@ pub use skills::{
 // Protocol adapters/encoders
 pub use ag_ui::{AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder};
 
-// Protocol traits
-pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
-
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{
-    run_agent_events_with_request, run_agent_stream, run_agent_stream_with_parent, AGUIContext,
-    AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest,
-    ToolExecutionLocation,
+    AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, RequestError,
+    RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

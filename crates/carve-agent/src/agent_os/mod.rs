@@ -222,6 +222,22 @@ pub struct RunStream {
     pub events: Pin<Box<dyn Stream<Item = AgentEvent> + Send>>,
 }
 
+/// Fully prepared run payload ready for execution.
+///
+/// This separates request preprocessing from stream execution so preprocessing
+/// can be unit-tested deterministically.
+pub struct PreparedRun {
+    /// Resolved thread ID (may have been auto-generated).
+    pub thread_id: String,
+    /// Resolved run ID (may have been auto-generated).
+    pub run_id: String,
+    client: Client,
+    config: AgentConfig,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    thread: Thread,
+    run_ctx: RunContext,
+}
+
 #[derive(Clone)]
 pub struct AgentOs {
     default_client: Client,
@@ -910,15 +926,17 @@ impl AgentOs {
         Ok(thread_store.load(id).await?)
     }
 
-    /// Run an agent from a [`RunRequest`].
+    /// Prepare a request for execution.
     ///
-    /// This is the primary entry point for all protocols. It handles:
+    /// This handles all deterministic pre-run logic:
     /// 1. Thread loading/creation from storage
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
-    /// 4. Agent resolution and execution
-    /// 5. Background checkpoint persistence
-    pub async fn run_stream(&self, mut request: RunRequest) -> Result<RunStream, AgentOsRunError> {
+    /// 4. Agent resolution and run-context creation
+    pub async fn prepare_run(
+        &self,
+        mut request: RunRequest,
+    ) -> Result<PreparedRun, AgentOsRunError> {
         let thread_store = self.require_thread_store()?;
 
         // 0. Validate agent exists (fail fast before creating thread)
@@ -926,6 +944,7 @@ impl AgentOs {
 
         let thread_id = request.thread_id.unwrap_or_else(Self::generate_id);
         let run_id = request.run_id.unwrap_or_else(Self::generate_id);
+        let parent_run_id = request.parent_run_id.clone();
 
         // 1. Load or create thread
         //    If frontend sent a state snapshot, apply it:
@@ -959,30 +978,24 @@ impl AgentOs {
             thread.resource_id = Some(resource_id.clone());
         }
 
-        // 3. Apply request-scoped runtime context
-        for (key, value) in &request.runtime {
-            let _ = thread.runtime.set(key, value.clone());
+        // 3. Set run identity on thread runtime
+        let _ = thread.runtime.set("run_id", run_id.clone());
+        if let Some(parent) = parent_run_id.as_deref() {
+            let _ = thread.runtime.set("parent_run_id", parent.to_string());
         }
 
-        // 4. Set run_id on thread runtime
-        let _ = thread.runtime.set("run_id", run_id.clone());
-
-        // 5. Deduplicate and append inbound messages
+        // 4. Deduplicate and append inbound messages
         let deduped = Self::dedup_messages(&thread, request.messages);
         if !deduped.is_empty() {
             thread = thread.with_messages(deduped);
         }
 
-        // 6. Persist pending changes (user messages + frontend state snapshot)
+        // 5. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
             let delta = ThreadDelta {
                 run_id: run_id.clone(),
-                parent_run_id: request
-                    .runtime
-                    .get("parent_run_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from),
+                parent_run_id: parent_run_id.clone(),
                 reason: CheckpointReason::UserMessage,
                 messages: pending.messages,
                 patches: pending.patches,
@@ -991,18 +1004,43 @@ impl AgentOs {
             let _ = thread_store.append(&thread_id, &delta).await?;
         }
 
-        // 7. Resolve agent wiring and run with storage-backed state committer.
+        // 6. Resolve agent wiring and build storage-backed run context.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
             ThreadStoreStateCommitter::new(thread_store.clone()),
         ));
-        let events = run_loop_stream(client, cfg, thread, tools, run_ctx);
 
-        Ok(RunStream {
+        Ok(PreparedRun {
             thread_id,
             run_id,
-            events,
+            client,
+            config: cfg,
+            tools,
+            thread,
+            run_ctx,
         })
+    }
+
+    /// Execute a previously prepared run.
+    pub fn execute_prepared(prepared: PreparedRun) -> RunStream {
+        let events = run_loop_stream(
+            prepared.client,
+            prepared.config,
+            prepared.thread,
+            prepared.tools,
+            prepared.run_ctx,
+        );
+        RunStream {
+            thread_id: prepared.thread_id,
+            run_id: prepared.run_id,
+            events,
+        }
+    }
+
+    /// Run an agent from a [`RunRequest`].
+    pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
+        let prepared = self.prepare_run(request).await?;
+        Ok(Self::execute_prepared(prepared))
     }
 
     /// Deduplicate incoming messages against existing thread messages.
@@ -2083,10 +2121,10 @@ mod tests {
             agent_id: "a1".to_string(),
             thread_id: Some("t1".to_string()),
             run_id: Some("run-1".to_string()),
+            parent_run_id: None,
             resource_id: None,
             state: Some(json!({"counter": 42, "new_field": true})),
             messages: vec![crate::types::Message::user("hello")],
-            runtime: std::collections::HashMap::new(),
         };
 
         let run_stream = os.run_stream(request).await.unwrap();
@@ -2134,10 +2172,10 @@ mod tests {
             agent_id: "a1".to_string(),
             thread_id: Some("t-new".to_string()),
             run_id: Some("run-1".to_string()),
+            parent_run_id: None,
             resource_id: None,
             state: Some(json!({"initial": true})),
             messages: vec![crate::types::Message::user("hello")],
-            runtime: std::collections::HashMap::new(),
         };
 
         let run_stream = os.run_stream(request).await.unwrap();
@@ -2188,10 +2226,10 @@ mod tests {
             agent_id: "a1".to_string(),
             thread_id: Some("t1".to_string()),
             run_id: Some("run-1".to_string()),
+            parent_run_id: None,
             resource_id: None,
             state: None,
             messages: vec![crate::types::Message::user("hello")],
-            runtime: std::collections::HashMap::new(),
         };
 
         let run_stream = os.run_stream(request).await.unwrap();
@@ -2201,6 +2239,124 @@ mod tests {
         let head = storage.load("t1").await.unwrap().unwrap();
         let state = head.thread.rebuild_state().unwrap();
         assert_eq!(state, json!({"counter": 5}));
+    }
+
+    #[tokio::test]
+    async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
+        use carve_thread_store_adapters::MemoryStore;
+
+        #[derive(Debug)]
+        struct SkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str {
+                "skip"
+            }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let storage = Arc::new(MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let prepared = os
+            .prepare_run(RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-prepare".to_string()),
+                run_id: Some("run-prepare".to_string()),
+                parent_run_id: Some("run-parent".to_string()),
+                resource_id: None,
+                state: Some(json!({"count": 1})),
+                messages: vec![crate::types::Message::user("hello")],
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(prepared.thread_id, "t-prepare");
+        assert_eq!(prepared.run_id, "run-prepare");
+        assert_eq!(
+            prepared.thread.runtime.value("run_id"),
+            Some(&json!("run-prepare"))
+        );
+        assert_eq!(
+            prepared.thread.runtime.value("parent_run_id"),
+            Some(&json!("run-parent"))
+        );
+
+        let head = storage.load("t-prepare").await.unwrap().unwrap();
+        assert_eq!(head.thread.messages.len(), 1);
+        assert_eq!(head.thread.messages[0].role, crate::Role::User);
+        assert_eq!(head.thread.messages[0].content, "hello");
+    }
+
+    #[tokio::test]
+    async fn execute_prepared_runs_stream() {
+        use carve_thread_store_adapters::MemoryStore;
+        use futures::StreamExt;
+
+        #[derive(Debug)]
+        struct SkipPlugin;
+
+        #[async_trait]
+        impl AgentPlugin for SkipPlugin {
+            fn id(&self) -> &str {
+                "skip"
+            }
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        let storage = Arc::new(MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+            .with_agent(
+                "a1",
+                AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
+            )
+            .build()
+            .unwrap();
+
+        let prepared = os
+            .prepare_run(RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-exec-prepared".to_string()),
+                run_id: Some("run-exec-prepared".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![crate::types::Message::user("hello")],
+            })
+            .await
+            .unwrap();
+
+        let run = AgentOs::execute_prepared(prepared);
+        let events: Vec<_> = run.events.collect().await;
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::RunStart { .. })),
+            "prepared stream should emit RunStart"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|ev| matches!(ev, AgentEvent::RunFinish { .. })),
+            "prepared stream should emit RunFinish"
+        );
     }
 
     #[tokio::test]
@@ -2222,10 +2378,10 @@ mod tests {
             agent_id: "a1".to_string(),
             thread_id: Some("t-checkpoint-fail".to_string()),
             run_id: Some("run-checkpoint-fail".to_string()),
+            parent_run_id: None,
             resource_id: None,
             state: Some(json!({"base": 1})),
             messages: vec![crate::types::Message::user("hello")],
-            runtime: HashMap::new(),
         };
 
         let run_stream = os.run_stream(request).await.unwrap();
@@ -2301,10 +2457,10 @@ mod tests {
             agent_id: "a1".to_string(),
             thread_id: Some("t-existing-fail".to_string()),
             run_id: Some("run-existing-fail".to_string()),
+            parent_run_id: None,
             resource_id: None,
             state: None,
             messages: vec![],
-            runtime: HashMap::new(),
         };
 
         let run_stream = os.run_stream(request).await.unwrap();

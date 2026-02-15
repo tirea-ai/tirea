@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
 carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
-carve-protocol-contract = { path = "../carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
 carve-thread-model = { path = "../carve-thread-model" }
 carve-thread-store-contract = { path = "../carve-thread-store-contract" }

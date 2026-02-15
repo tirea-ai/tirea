@@ -1,11 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Runtime key carrying request-scoped frontend tool names.
-pub const RUNTIME_INTERACTION_FRONTEND_TOOLS_KEY: &str = "interaction_frontend_tools";
-/// Runtime key carrying request-scoped interaction responses.
-pub const RUNTIME_INTERACTION_RESPONSES_KEY: &str = "interaction_responses";
-
 /// Generic interaction request for client-side actions.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Interaction {
