@@ -1,11 +1,6 @@
 use crate::{AgentEvent, Message};
 use serde::Serialize;
 
-pub use crate::ag_ui::{AgUiInputAdapter, AgUiProtocolEncoder};
-pub use crate::ai_sdk_v6::{
-    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, AI_SDK_VERSION,
-};
-
 /// Protocol input boundary:
 /// protocol request -> internal `RunRequest`.
 pub trait ProtocolInputAdapter {

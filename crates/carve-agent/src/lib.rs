@@ -147,14 +147,17 @@ pub use skills::{
 // AI SDK v6 stream exports
 pub use ai_sdk_v6::{
     AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
+    AI_SDK_VERSION,
 };
 
 // Protocol adapters/encoders
-pub use protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder,
-    AI_SDK_VERSION,
+pub use ag_ui::{AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder};
+pub use ai_sdk_v6::{
+    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
 };
+
+// Protocol traits
+pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 
 // AG-UI exports (CopilotKit compatible)
 pub use ag_ui::{

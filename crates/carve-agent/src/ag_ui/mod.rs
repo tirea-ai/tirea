@@ -1,13 +1,17 @@
 //! AG-UI protocol support and request/runtime adapters.
 
-pub(crate) mod adapter;
 mod context;
+mod history_encoder;
+mod input_adapter;
+mod output_encoder;
 mod protocol;
 mod request;
 mod runner;
 
 pub use crate::interaction::AgUiInteractionPlugin;
-pub use adapter::{AgUiInputAdapter, AgUiProtocolEncoder};
+pub use history_encoder::AgUiHistoryEncoder;
+pub use input_adapter::AgUiInputAdapter;
+pub use output_encoder::AgUiProtocolEncoder;
 #[cfg(test)]
 pub(crate) use request::core_message_from_ag_ui;
 pub use request::InteractionPlugin;
