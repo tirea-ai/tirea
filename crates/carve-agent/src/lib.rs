@@ -82,7 +82,6 @@
 //! ```
 
 pub mod activity;
-pub mod ag_ui;
 pub mod agent;
 pub mod agent_os;
 pub mod convert;
@@ -139,15 +138,6 @@ pub use skills::{
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillRuntimePlugin,
     SkillScriptTool, SkillSubsystem, SkillSubsystemError, APPEND_USER_MESSAGES_METADATA_KEY,
-};
-
-// Protocol adapters/encoders
-pub use ag_ui::{AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder};
-
-// AG-UI exports (CopilotKit compatible)
-pub use ag_ui::{
-    AGUIContext, AGUIContextEntry, AGUIEvent, AGUIMessage, AGUIToolDef, RequestError,
-    RunAgentRequest, ToolExecutionLocation,
 };
 
 // Execute exports

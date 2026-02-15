@@ -4120,7 +4120,7 @@ async fn test_message_id_toolcalldone_matches_stored_tool_message() {
 /// and hence the stored assistant message.
 #[tokio::test]
 async fn test_message_id_agui_text_message_carries_step_id() {
-    use crate::ag_ui::{AGUIContext, AGUIEvent};
+    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
 
@@ -4155,7 +4155,7 @@ async fn test_message_id_agui_text_message_carries_step_id() {
 /// and hence the stored tool message.
 #[tokio::test]
 async fn test_message_id_agui_tool_result_carries_tool_id() {
-    use crate::ag_ui::{AGUIContext, AGUIEvent};
+    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
     let tool_msg_id = "pre-gen-tool-uuid".to_string();
 
@@ -4218,7 +4218,7 @@ async fn test_message_id_ai_sdk_encoder_uses_step_id() {
 /// are consistent across events, stored messages, and protocol conversions.
 #[tokio::test]
 async fn test_message_id_end_to_end_multi_step() {
-    use crate::ag_ui::{AGUIContext, AGUIEvent};
+    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
     // Step 1: tool call round. Step 2: final text answer.
     let responses = vec![

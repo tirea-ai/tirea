@@ -5,11 +5,10 @@
 
 use async_trait::async_trait;
 use carve_agent::{
-    ag_ui::MessageRole, ActivityHub, AgentLoopError, Context, ContextCategory, ContextProvider,
-    InteractionResponse, StateManager, SystemReminder, Tool, ToolDescriptor, ToolError,
-    ToolExecutionLocation, ToolResult,
+    ActivityHub, AgentLoopError, Context, ContextCategory, ContextProvider, InteractionResponse,
+    StateManager, SystemReminder, Tool, ToolDescriptor, ToolError, ToolResult,
 };
-use carve_protocol_ag_ui::interaction_to_ag_ui_events;
+use carve_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -4390,9 +4389,9 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
-use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
 use carve_agent::stream::AgentEvent;
 use carve_agent::Interaction;
+use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
 #[test]
@@ -4589,10 +4588,23 @@ fn test_scenario_various_interaction_types() {
 // AgUiInteractionPlugin Scenario Tests
 // ============================================================================
 
-use carve_agent::ag_ui::{AGUIToolDef, AgUiInteractionPlugin, RunAgentRequest};
+use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 use carve_agent::phase::{Phase, StepContext, ToolContext};
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::types::ToolCall;
+use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
+
+fn interaction_plugin_from_request(request: &RunAgentRequest) -> AgUiInteractionPlugin {
+    AgUiInteractionPlugin::new(
+        request
+            .frontend_tools()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect(),
+        request.approved_interaction_ids(),
+        request.denied_interaction_ids(),
+    )
+}
 
 /// Test scenario: Complete frontend tool flow from request to AG-UI events
 #[tokio::test]
@@ -4611,7 +4623,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     };
 
     // 2. AgUiInteractionPlugin is created from request
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     // 3. Simulate agent calling a frontend tool
     let thread = Thread::new("session_1");
@@ -4685,7 +4697,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     // Simulate three frontend tool calls in sequence
@@ -5090,7 +5102,7 @@ fn test_scenario_no_frontend_tools_in_request() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     // All tools are backend, none should be frontend
     assert!(!plugin.is_frontend_tool("search"));
@@ -5104,7 +5116,7 @@ fn test_scenario_no_frontend_tools_in_request() {
 fn test_scenario_empty_request() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     // No tools in request, none should be frontend
     assert!(!plugin.is_frontend_tool("any_tool"));
@@ -5115,8 +5127,8 @@ fn test_scenario_empty_request() {
 // Permission Resume Flow Scenario Tests
 // ============================================================================
 
-use carve_agent::ag_ui::AGUIMessage;
 use carve_agent::plugins::PermissionPlugin;
+use carve_protocol_ag_ui::AGUIMessage;
 
 /// Test scenario: Complete permission approval flow
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
@@ -5256,7 +5268,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5510,7 +5522,7 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the denied ID.
     let thread = Thread::with_initial_state(
@@ -5554,7 +5566,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the approved ID.
     let thread = Thread::with_initial_state(
@@ -5591,7 +5603,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 async fn test_scenario_e2e_permission_to_response_flow() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -5636,7 +5648,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
-    let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+    let response_plugin = interaction_plugin_from_request(&response_request);
     let mut step2 = StepContext::new(&session2, vec![]);
     step2.scratchpad_set(
         "permissions",
@@ -5674,7 +5686,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 async fn test_scenario_frontend_tool_with_response_plugin() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -5685,7 +5697,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     };
 
     // Step 1: AgUiInteractionPlugin creates pending for frontend tool
-    let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
+    let frontend_plugin = interaction_plugin_from_request(&request);
     let mut step1 = StepContext::new(&thread, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
     step1.tool = Some(ToolContext::new(&call));
@@ -5710,7 +5722,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     );
 
     // Step 3: On resume, AgUiInteractionPlugin processes the result
-    let _response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+    let _response_plugin = interaction_plugin_from_request(&response_request);
 
     // The result is available (not blocked/denied)
     let response = response_request
@@ -6002,7 +6014,7 @@ fn test_agui_sse_multiple_events() {
 async fn test_permission_flow_approval_e2e() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let thread = Thread::new("test");
@@ -6048,7 +6060,7 @@ async fn test_permission_flow_approval_e2e() {
         .any(|id| id == &interaction.id));
 
     // Phase 4: Resume with AgUiInteractionPlugin
-    let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+    let response_plugin = interaction_plugin_from_request(&response_request);
     assert!(response_plugin.has_responses());
 
     // Phase 5: On resume, tool should NOT be blocked
@@ -6073,7 +6085,7 @@ async fn test_permission_flow_approval_e2e() {
 async fn test_permission_flow_denial_e2e() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
@@ -6115,7 +6127,7 @@ async fn test_permission_flow_denial_e2e() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
-    let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+    let response_plugin = interaction_plugin_from_request(&response_request);
 
     let mut step2 = StepContext::new(&session2, vec![]);
     let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
@@ -6138,7 +6150,7 @@ async fn test_permission_flow_denial_e2e() {
 async fn test_permission_flow_multiple_tools_mixed() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -6187,7 +6199,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
         .with_message(AGUIMessage::tool("true", &int1.id))
         .with_message(AGUIMessage::tool("false", &int2.id));
 
-    let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
+    let response_plugin = interaction_plugin_from_request(&response_request);
 
     // Verify first tool (approved) — session has its pending interaction persisted.
     let session_r1 = Thread::with_initial_state(
@@ -6296,7 +6308,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 /// After suspend, denial causes the tool to be blocked (error result, no execution).
 #[tokio::test]
 async fn test_e2e_permission_deny_blocks_via_execute_tools() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
     let thread = Thread::with_initial_state(
@@ -6339,7 +6351,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         .any(|id| id == &interaction.id));
 
     // Resume with only AgUiInteractionPlugin — denial should block the tool
-    let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
+    let response_plugin = interaction_plugin_from_request(&deny_request);
     let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -6390,7 +6402,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 /// After suspend, approval (without PermissionPlugin re-running) lets the tool execute.
 #[tokio::test]
 async fn test_e2e_permission_approve_executes_via_execute_tools() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
     let thread = Thread::with_initial_state(
@@ -6433,7 +6445,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .any(|id| id == &interaction.id));
 
     // Resume with only AgUiInteractionPlugin (no PermissionPlugin)
-    let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
+    let response_plugin = interaction_plugin_from_request(&approve_request);
     let resume_plugins: Vec<Arc<dyn carve_agent::AgentPlugin>> = vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -6491,7 +6503,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 async fn test_frontend_tool_flow_creates_pending() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -6501,7 +6513,7 @@ async fn test_frontend_tool_flow_creates_pending() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     let mut step = StepContext::new(&thread, vec![]);
@@ -6551,7 +6563,7 @@ fn test_frontend_tool_flow_result_from_client() {
 async fn test_frontend_tool_flow_mixed_with_backend() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest {
         tools: vec![
@@ -6561,7 +6573,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     // Backend tool - should NOT be pending
@@ -6785,7 +6797,7 @@ fn test_error_flow_agent_abort() {
 async fn test_resume_flow_with_approval() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Simulate: Previous run ended with pending permission
     let interaction_id = "permission_tool_x";
@@ -6794,7 +6806,7 @@ async fn test_resume_flow_with_approval() {
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("true", interaction_id));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
     assert!(plugin.is_approved(interaction_id));
 
@@ -6815,14 +6827,14 @@ async fn test_resume_flow_with_approval() {
 async fn test_resume_flow_with_denial() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let interaction_id = "permission_dangerous_tool";
 
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("no", interaction_id));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.is_denied(interaction_id));
 
     // Thread must have the pending interaction persisted.
@@ -6845,7 +6857,7 @@ async fn test_resume_flow_with_denial() {
 async fn test_resume_flow_multiple_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Previous run had 3 pending interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -6853,7 +6865,7 @@ async fn test_resume_flow_multiple_responses() {
         .with_message(AGUIMessage::tool("false", "perm_2"))
         .with_message(AGUIMessage::tool("yes", "perm_3"));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     assert!(plugin.is_approved("perm_1"));
     assert!(plugin.is_denied("perm_2"));
@@ -6885,14 +6897,14 @@ async fn test_resume_flow_multiple_responses() {
 async fn test_resume_flow_partial_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("true", "perm_1"));
     // perm_2 not responded to
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     assert!(plugin.is_approved("perm_1"));
     assert!(!plugin.is_approved("perm_2")); // No response
@@ -6931,7 +6943,7 @@ async fn test_resume_flow_partial_responses() {
 async fn test_plugin_interaction_frontend_and_response() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest {
@@ -6943,8 +6955,8 @@ async fn test_plugin_interaction_frontend_and_response() {
     }
     .with_message(AGUIMessage::tool("true", "call_prev"));
 
-    let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
-    let response_plugin = AgUiInteractionPlugin::from_request(&request);
+    let frontend_plugin = interaction_plugin_from_request(&request);
+    let response_plugin = interaction_plugin_from_request(&request);
 
     let thread = Thread::new("test");
 
@@ -6988,7 +7000,7 @@ async fn test_plugin_interaction_frontend_and_response() {
 async fn test_plugin_interaction_execution_order() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Setup: Frontend tool that was previously denied
     let request = RunAgentRequest {
@@ -6997,8 +7009,8 @@ async fn test_plugin_interaction_execution_order() {
     }
     .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
 
-    let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
-    let response_plugin = AgUiInteractionPlugin::from_request(&request);
+    let frontend_plugin = interaction_plugin_from_request(&request);
+    let response_plugin = interaction_plugin_from_request(&request);
 
     // Thread must have a persisted pending interaction matching the denied ID.
     let thread = Thread::with_initial_state(
@@ -7028,7 +7040,7 @@ async fn test_plugin_interaction_execution_order() {
 async fn test_plugin_interaction_permission_and_frontend() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Frontend tool with permission set to Ask
     let request = RunAgentRequest {
@@ -7036,7 +7048,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
+    let frontend_plugin = interaction_plugin_from_request(&request);
     let permission_plugin = PermissionPlugin;
 
     let thread = Thread::new("test");
@@ -7507,7 +7519,7 @@ async fn test_multiple_pending_interactions_flow() {
 async fn test_multiple_interaction_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Client responds to all 3 interactions: approve, deny, approve
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7515,7 +7527,7 @@ async fn test_multiple_interaction_responses() {
         .with_message(AGUIMessage::tool("no", "perm_write"))
         .with_message(AGUIMessage::tool("approved", "perm_exec"));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     assert!(plugin.is_approved("perm_read"));
     assert!(plugin.is_denied("perm_write"));
@@ -9750,10 +9762,10 @@ fn test_now_millis_with_event() {
 /// Protocol: Check if request contains any interaction responses
 #[test]
 fn test_has_any_interaction_responses_empty() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
 
     assert!(!plugin.has_responses());
 }
@@ -9762,12 +9774,12 @@ fn test_has_any_interaction_responses_empty() {
 /// Protocol: Tool messages in request indicate interaction responses
 #[test]
 fn test_has_any_interaction_responses_with_tool_messages() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("approved", "interaction_1"));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
 }
 
@@ -9775,7 +9787,7 @@ fn test_has_any_interaction_responses_with_tool_messages() {
 /// Protocol: Multiple interaction responses in single request
 #[test]
 fn test_has_any_interaction_responses_multiple() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("Hello"))
@@ -9783,7 +9795,7 @@ fn test_has_any_interaction_responses_multiple() {
         .with_message(AGUIMessage::tool("no", "perm_2"))
         .with_message(AGUIMessage::assistant("Processing..."));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     assert!(plugin.has_responses());
 }
 
@@ -9791,14 +9803,14 @@ fn test_has_any_interaction_responses_multiple() {
 /// Protocol: Only tool messages count as interaction responses
 #[test]
 fn test_has_any_interaction_responses_only_counts_tool_messages() {
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("Hello"))
         .with_message(AGUIMessage::assistant("Hi!"))
         .with_message(AGUIMessage::system("Be helpful"));
 
-    let plugin = AgUiInteractionPlugin::from_request(&request);
+    let plugin = interaction_plugin_from_request(&request);
     assert!(!plugin.has_responses());
 }
 
@@ -9901,7 +9913,7 @@ fn test_message_role_default_is_assistant() {
 /// Protocol: rawEvent field in BaseEvent for external system passthrough
 #[test]
 fn test_base_event_fields_with_raw_event() {
-    use carve_agent::ag_ui::BaseEventFields;
+    use carve_protocol_ag_ui::BaseEventFields;
 
     let base = BaseEventFields {
         timestamp: Some(1234567890),
@@ -9918,7 +9930,7 @@ fn test_base_event_fields_with_raw_event() {
 /// Protocol: rawEvent is optional and omitted when None
 #[test]
 fn test_base_event_fields_without_raw_event() {
-    use carve_agent::ag_ui::BaseEventFields;
+    use carve_protocol_ag_ui::BaseEventFields;
 
     let base = BaseEventFields {
         timestamp: Some(1234567890),
@@ -9943,7 +9955,7 @@ fn test_event_with_raw_event_passthrough() {
     let event = AGUIEvent::TextMessageContent {
         message_id: "msg1".into(),
         delta: "Hello".into(),
-        base: carve_agent::ag_ui::BaseEventFields {
+        base: carve_protocol_ag_ui::BaseEventFields {
             timestamp: Some(1234567890),
             raw_event: Some(external_response.clone()),
         },
@@ -11323,7 +11335,7 @@ fn test_interaction_response_instance_methods() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_invalid_field() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err = RequestError::invalid_field("threadId cannot be empty");
 
@@ -11336,7 +11348,7 @@ fn test_request_error_invalid_field() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_validation() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err = RequestError::validation("Invalid state format");
 
@@ -11349,7 +11361,7 @@ fn test_request_error_validation() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_internal() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err = RequestError::internal("Connection lost");
 
@@ -11362,7 +11374,7 @@ fn test_request_error_internal() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_display() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err = RequestError::invalid_field("bad value");
     let display = format!("{}", err);
@@ -11374,7 +11386,7 @@ fn test_request_error_display() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_from_string() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err: RequestError = "something went wrong".to_string().into();
     assert_eq!(err.code, "VALIDATION_ERROR");
@@ -11386,7 +11398,7 @@ fn test_request_error_from_string() {
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
 fn test_request_error_serialization() {
-    use carve_agent::ag_ui::RequestError;
+    use carve_protocol_ag_ui::RequestError;
 
     let err = RequestError::invalid_field("missing threadId");
     let json = serde_json::to_string(&err).unwrap();
@@ -11917,7 +11929,7 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
 /// Test: AgentEvent::ActivitySnapshot maps to AGUIEvent::ActivitySnapshot
 #[test]
 fn test_agent_event_activity_snapshot_to_ag_ui() {
-    use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivitySnapshot {
@@ -11949,7 +11961,7 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
 /// Test: AgentEvent::ActivityDelta maps to AGUIEvent::ActivityDelta
 #[test]
 fn test_agent_event_activity_delta_to_ag_ui() {
-    use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
+    use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivityDelta {
@@ -12333,7 +12345,7 @@ mod llmmetry_tracing {
 async fn test_interaction_response_session_start_sets_replay_on_approval() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12383,7 +12395,7 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
 async fn test_interaction_response_session_start_no_replay_on_denial() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12417,7 +12429,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
 async fn test_interaction_response_session_start_no_pending() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let thread = Thread::with_initial_state("test", json!({ "agent": {} }));
 
@@ -12438,7 +12450,7 @@ async fn test_interaction_response_session_start_no_pending() {
 async fn test_interaction_response_session_start_mismatched_id() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let thread = Thread::with_initial_state(
         "test",
@@ -12467,7 +12479,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
 async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12503,7 +12515,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     // Phase 1: PermissionPlugin creates pending interaction
     let thread = Thread::new("test");
@@ -12566,7 +12578,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         .any(|id| id == &interaction.id));
 
     // Phase 4: AgUiInteractionPlugin processes approval in SessionStart
-    let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
+    let response_plugin = interaction_plugin_from_request(&approve_request);
     let mut step2 = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step2, &ctx)
@@ -12587,7 +12599,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 async fn test_hitl_replay_denial_does_not_schedule() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_call_add";
 
@@ -12615,7 +12627,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
         .iter()
         .any(|id| id == pending_id));
 
-    let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
+    let response_plugin = interaction_plugin_from_request(&deny_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step, &ctx)
@@ -12633,7 +12645,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 async fn test_hitl_replay_picks_first_tool_call() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_multi";
 
@@ -12659,7 +12671,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
     let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", pending_id));
 
-    let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
+    let response_plugin = interaction_plugin_from_request(&approve_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
         .on_phase(Phase::SessionStart, &mut step, &ctx)
@@ -12677,7 +12689,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
 async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::ag_ui::AgUiInteractionPlugin;
+    use carve_agent::interaction::InteractionPlugin as AgUiInteractionPlugin;
 
     let pending_id = "permission_phase_test";
 
@@ -12699,7 +12711,7 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
 
     let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", pending_id));
-    let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
+    let response_plugin = interaction_plugin_from_request(&approve_request);
 
     // SessionStart sets __replay_tool_calls
     let mut step1 = StepContext::new(&thread, vec![]);

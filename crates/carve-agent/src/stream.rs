@@ -5,8 +5,8 @@
 //! - `StreamCollector` / `StreamResult`: Helpers for collecting stream chunks
 //!
 //! Protocol-specific conversion lives in the respective protocol modules:
-//! - `AGUIContext::on_agent_event()`: Convert to AG-UI protocol events
-//! - `AiSdkEncoder::on_agent_event()`: Convert to AI SDK v6 UIStreamEvents
+//! - `carve_protocol_ag_ui::AGUIContext::on_agent_event()`: AG-UI events
+//! - `carve_protocol_ai_sdk_v6::AiSdkEncoder::on_agent_event()`: AI SDK v6 events
 
 use crate::types::ToolCall;
 use genai::chat::{ChatStreamEvent, Usage};
