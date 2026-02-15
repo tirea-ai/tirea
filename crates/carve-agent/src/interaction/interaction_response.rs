@@ -1,4 +1,4 @@
-//! AG-UI Interaction Response Plugin.
+//! Interaction Response Plugin.
 //!
 //! Handles client responses to pending interactions (approvals/denials).
 
@@ -28,7 +28,7 @@ pub(crate) struct InteractionResolution {
 /// the interaction flow:
 ///
 /// 1. A plugin (e.g., PermissionPlugin) creates a pending interaction
-/// 2. Agent emits `AgentEvent::Pending` which becomes AG-UI tool call events
+/// 2. Agent emits `AgentEvent::Pending` which becomes protocol tool-call events
 /// 3. Client responds with a new request containing tool message(s)
 /// 4. This plugin checks if the response approves/denies the pending interaction
 /// 5. Based on response, tool execution proceeds or is blocked

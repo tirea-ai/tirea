@@ -5,7 +5,7 @@
 //! - `StreamCollector` / `StreamResult`: Helpers for collecting stream chunks
 //!
 //! Protocol-specific conversion lives in the respective protocol modules:
-//! - `carve_protocol_ag_ui::AGUIContext::on_agent_event()`: AG-UI events
+//! - `carve_protocol_ag_ui::AGUIContext::on_agent_event()`: protocol events
 //! - `carve_protocol_ai_sdk_v6::AiSdkEncoder::on_agent_event()`: AI SDK v6 events
 
 use crate::types::ToolCall;
