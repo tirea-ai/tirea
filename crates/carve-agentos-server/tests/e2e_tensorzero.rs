@@ -19,10 +19,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::{
-    AgentDefinition, AgentOsBuilder, ModelDefinition, ThreadReader, ThreadStore, Tool,
-    ToolDescriptor, ToolError, ToolResult,
-};
+use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
@@ -67,7 +67,7 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
+fn make_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -384,7 +384,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent::Context<'_>,
+        _ctx: &carve_agent::prelude::Context<'_>,
     ) -> Result<ToolResult, ToolError> {
         let op = args["operation"]
             .as_str()
@@ -422,7 +422,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
+fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),

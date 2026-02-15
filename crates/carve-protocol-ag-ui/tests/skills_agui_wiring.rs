@@ -1,9 +1,11 @@
-use carve_agent::{
-    execute_single_tool, AgentEvent, FsSkillRegistry, SkillSubsystem, Thread, ToolCall,
-    ToolDescriptor,
-};
+use carve_agent::contracts::traits::tool::ToolDescriptor;
+use carve_agent::engine::tool_execution::execute_single_tool;
+use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
+use carve_agent::prelude::Context;
+use carve_agent::runtime::streaming::AgentEvent;
+use carve_agent::thread::Thread;
+use carve_agent::types::ToolCall;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
-use carve_state::Context;
 use serde_json::json;
 use std::fs;
 use tempfile::TempDir;
@@ -131,11 +133,18 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
 
     // Even without activation, discovery should inject available_skills.
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut step = carve_agent::StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+    let mut step = carve_agent::contracts::phase::StepContext::new(
+        &thread,
+        vec![ToolDescriptor::new("t", "t", "t")],
+    );
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
     plugin
-        .on_phase(carve_agent::Phase::BeforeInference, &mut step, &ctx)
+        .on_phase(
+            carve_agent::contracts::phase::Phase::BeforeInference,
+            &mut step,
+            &ctx,
+        )
         .await;
     assert_eq!(step.system_context.len(), 1);
     assert!(step.system_context[0].contains("<available_skills>"));

@@ -1,6 +1,6 @@
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::traits::tool::Tool;
-use crate::AgentDefinition;
+use crate::runtime::loop_runner::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;
 use std::collections::HashMap;

@@ -8,8 +8,6 @@ error[E0432]: unresolved imports `carve_agent::AGUIEvent`, `carve_agent::RunAgen
  --> tests/ui/no_agui_reexports.rs:2:19
   |
 2 | use carve_agent::{AGUIEvent, RunAgentRequest};
-  |                   ^^^^^^^^^  ^^^^^^^^^^^^^^^
-  |                   |          |
-  |                   |          no `RunAgentRequest` in the root
-  |                   |          help: a similar name exists in the module: `RunRequest`
+  |                   ^^^^^^^^^  ^^^^^^^^^^^^^^^ no `RunAgentRequest` in the root
+  |                   |
   |                   no `AGUIEvent` in the root

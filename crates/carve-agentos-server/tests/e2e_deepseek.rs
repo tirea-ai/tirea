@@ -9,9 +9,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::{
-    AgentDefinition, AgentOsBuilder, ThreadReader, Tool, ToolDescriptor, ToolError, ToolResult,
-};
+use carve_agent::contracts::storage::ThreadReader;
+use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::orchestrator::AgentOsBuilder;
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
@@ -23,7 +24,7 @@ fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
 }
 
-fn make_os() -> carve_agent::AgentOs {
+fn make_os() -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "deepseek".to_string(),
         model: "deepseek-chat".to_string(),
@@ -67,7 +68,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent::Context<'_>,
+        _ctx: &carve_agent::prelude::Context<'_>,
     ) -> Result<ToolResult, ToolError> {
         let op = args["operation"]
             .as_str()
@@ -100,7 +101,7 @@ impl Tool for CalculatorTool {
 }
 
 /// Build AgentOs with a calculator tool and multi-round support.
-fn make_tool_os() -> carve_agent::AgentOs {
+fn make_tool_os() -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek-chat".to_string(),
@@ -125,7 +126,7 @@ fn make_tool_os() -> carve_agent::AgentOs {
 }
 
 /// Build AgentOs for multi-turn conversation tests.
-fn make_multiturn_os() -> carve_agent::AgentOs {
+fn make_multiturn_os() -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "chat".to_string(),
         model: "deepseek-chat".to_string(),

@@ -1,7 +1,13 @@
-use carve_agent::{
-    execute_tools_with_plugins, run_step, AgentConfig, AgentPlugin, InMemorySink, LLMMetryPlugin,
-    Message, StreamResult, Thread, ToolCall, ToolResult,
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
+use carve_agent::prelude::Context;
+use carve_agent::runtime::loop_runner::{
+    execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
+use carve_agent::runtime::streaming::{AgentEvent, StreamResult};
+use carve_agent::thread::Thread;
+use carve_agent::types::{Message, ToolCall};
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -94,16 +100,16 @@ struct NoopTool {
 }
 
 #[async_trait::async_trait]
-impl carve_agent::Tool for NoopTool {
-    fn descriptor(&self) -> carve_agent::ToolDescriptor {
-        carve_agent::ToolDescriptor::new(self.id, self.id, "noop")
+impl Tool for NoopTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(self.id, self.id, "noop")
     }
 
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &carve_agent::Context<'_>,
-    ) -> Result<carve_agent::ToolResult, carve_agent::ToolError> {
+        _ctx: &Context<'_>,
+    ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success(self.id, json!({"ok": true})))
     }
 }
@@ -127,7 +133,7 @@ async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
         usage: None,
     };
 
-    let mut tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     tools.insert("t1".into(), Arc::new(NoopTool { id: "t1" }));
     tools.insert("t2".into(), Arc::new(NoopTool { id: "t2" }));
     tools.insert("t3".into(), Arc::new(NoopTool { id: "t3" }));
@@ -197,7 +203,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let (_thread, result) = run_step(&client, &config, thread, &tools).await.unwrap();
     let usage = result
@@ -247,7 +253,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let err = run_step(&client, &config, thread, &tools)
         .await
@@ -308,15 +314,12 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let events: Vec<_> =
-        carve_agent::run_loop_stream(client, config, thread, tools, Default::default())
-            .collect()
-            .await;
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, carve_agent::AgentEvent::Error { .. })));
+    let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())
+        .collect()
+        .await;
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
 
     // Metrics should record a failed inference.
     let m = sink.metrics();
@@ -370,18 +373,15 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn carve_agent::Tool>> = HashMap::new();
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let events: Vec<_> =
-        carve_agent::run_loop_stream(client, config, thread, tools, Default::default())
-            .collect()
-            .await;
+    let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())
+        .collect()
+        .await;
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
     assert!(events
         .iter()
-        .any(|e| matches!(e, carve_agent::AgentEvent::Error { .. })));
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, carve_agent::AgentEvent::TextDelta { .. })));
+        .any(|e| matches!(e, AgentEvent::TextDelta { .. })));
 
     let m = sink.metrics();
     assert_eq!(m.inference_count(), 1);

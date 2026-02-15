@@ -24,7 +24,8 @@ pub enum ContextCategory {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::{ContextProvider, ContextCategory, Context};
+/// use carve_agent::contracts::traits::provider::{ContextCategory, ContextProvider};
+/// use carve_agent::prelude::Context;
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]

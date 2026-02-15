@@ -6,8 +6,8 @@ use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::Thread;
-use crate::ToolCall;
+use crate::thread::Thread;
+use crate::types::ToolCall;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = Thread::new("child-1").with_message(crate::Message::user("seed"));
+        let child = Thread::new("child-1").with_message(crate::types::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),

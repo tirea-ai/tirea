@@ -12,12 +12,16 @@ use crate::extensions::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
 };
-use crate::runtime::loop_runner::{run_loop_stream, RunContext, StateCommitError, StateCommitter};
+use crate::runtime::loop_runner::{
+    run_loop_stream, AgentConfig, AgentDefinition, AgentLoopError, RunContext, StateCommitError,
+    StateCommitter,
+};
+use crate::runtime::streaming::AgentEvent;
+use crate::thread::Thread;
 use crate::thread_store::{
     CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
 };
 use crate::types::Message;
-use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Thread};
 
 pub(crate) mod agent_tools;
 mod bundle;
@@ -2568,7 +2572,7 @@ mod tests {
 
         let head = storage.load("t-prepare").await.unwrap().unwrap();
         assert_eq!(head.thread.messages.len(), 1);
-        assert_eq!(head.thread.messages[0].role, crate::Role::User);
+        assert_eq!(head.thread.messages[0].role, crate::types::Role::User);
         assert_eq!(head.thread.messages[0].content, "hello");
     }
 
@@ -2693,7 +2697,7 @@ mod tests {
             1,
             "only user message delta should be persisted before checkpoint failure"
         );
-        assert_eq!(head.thread.messages[0].role, crate::Role::User);
+        assert_eq!(head.thread.messages[0].role, crate::types::Role::User);
         assert_eq!(
             head.thread.messages[0].content.as_str(),
             "hello",

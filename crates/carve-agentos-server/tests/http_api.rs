@@ -2,12 +2,15 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::conversation::Thread;
 use carve_agent::contracts::phase::Phase;
-use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, Committed, StepContext, Thread, ThreadDelta,
-    ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore, ThreadStoreError,
-    ThreadWriter,
+use carve_agent::contracts::phase::StepContext;
+use carve_agent::contracts::storage::{
+    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadWriter,
 };
+use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
@@ -29,7 +32,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::Context<'_>,
+        _ctx: &carve_agent::prelude::Context<'_>,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -152,7 +155,8 @@ async fn test_sessions_query_endpoints() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
 
-    let thread = Thread::new("s1").with_message(carve_agent::Message::user("hello"));
+    let thread = Thread::new("s1")
+        .with_message(carve_agent::contracts::conversation::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
     let app = router(AppState {
@@ -172,7 +176,8 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: carve_agent::ThreadListPage = serde_json::from_slice(&body).unwrap();
+    let page: carve_agent::contracts::storage::ThreadListPage =
+        serde_json::from_slice(&body).unwrap();
     assert_eq!(page.items, vec!["s1".to_string()]);
     assert_eq!(page.total, 1);
     assert!(!page.has_more);
@@ -189,7 +194,7 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: carve_agent::MessagePage = serde_json::from_slice(&body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_slice(&body).unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].message.content, "hello");
     assert!(!page.has_more);
@@ -479,7 +484,10 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
     let user_hello_count = saved
         .messages
         .iter()
-        .filter(|m| m.role == carve_agent::Role::User && m.content == "hello without id")
+        .filter(|m| {
+            m.role == carve_agent::contracts::conversation::Role::User
+                && m.content == "hello without id"
+        })
         .count();
     assert_eq!(
         user_hello_count, 1,
@@ -770,7 +778,7 @@ impl ThreadWriter for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::ThreadDelta,
+        _delta: &carve_agent::contracts::storage::ThreadDelta,
     ) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -890,7 +898,7 @@ impl ThreadWriter for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::ThreadDelta,
+        _delta: &carve_agent::contracts::storage::ThreadDelta,
     ) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -970,7 +978,9 @@ async fn test_agui_sse_storage_save_error() {
 fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
     let mut thread = Thread::new(id);
     for i in 0..n {
-        thread = thread.with_message(carve_agent::Message::user(format!("msg-{}", i)));
+        thread = thread.with_message(carve_agent::contracts::conversation::Message::user(
+            format!("msg-{}", i),
+        ));
     }
     thread
 }
@@ -986,7 +996,7 @@ async fn test_messages_pagination_default_params() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 5);
     assert!(!page.has_more);
     assert_eq!(page.messages[0].message.content, "msg-0");
@@ -1004,7 +1014,7 @@ async fn test_messages_pagination_with_limit() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     assert!(page.has_more);
     assert_eq!(page.messages[0].cursor, 0);
@@ -1022,7 +1032,7 @@ async fn test_messages_pagination_cursor_forward() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?after=4&limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     assert_eq!(page.messages[0].cursor, 5);
     assert_eq!(page.messages[0].message.content, "msg-5");
@@ -1039,7 +1049,7 @@ async fn test_messages_pagination_desc_order() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?order=desc&before=8&limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     // Desc order: highest cursors first
     assert_eq!(page.messages[0].cursor, 7);
@@ -1058,7 +1068,7 @@ async fn test_messages_pagination_limit_clamped() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=999").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
     // limit should be clamped to 200
     assert_eq!(page.messages.len(), 200);
     assert!(page.has_more);

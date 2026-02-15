@@ -240,7 +240,7 @@ fn test_execute_tools_injects_caller_runtime_context_for_tools() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::with_initial_state("caller-s", json!({"k":"v"}))
-            .with_message(crate::Message::user("hello"));
+            .with_message(crate::types::Message::user("hello"));
         let result = StreamResult {
             text: "Calling tool".to_string(),
             tool_calls: vec![crate::types::ToolCall::new(
@@ -260,7 +260,10 @@ fn test_execute_tools_injects_caller_runtime_context_for_tools() {
             .expect("tool result message should exist");
         let tool_result: ToolResult =
             serde_json::from_str(&tool_msg.content).expect("tool result json");
-        assert_eq!(tool_result.status, crate::ToolStatus::Success);
+        assert_eq!(
+            tool_result.status,
+            crate::contracts::traits::tool::ToolStatus::Success
+        );
         assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
         assert_eq!(tool_result.data["state"]["k"], json!("v"));
         assert_eq!(tool_result.data["messages_len"], json!(1));
@@ -2194,7 +2197,9 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     let tool_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .filter(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        .filter(|m| {
+            m.role == crate::types::Role::Tool && m.tool_call_id.as_deref() == Some("call_1")
+        })
         .collect();
     assert!(!tool_msgs.is_empty(), "expected tool messages for call_1");
     let placeholder_index = tool_msgs
@@ -2301,7 +2306,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let tool_msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        .find(|m| m.role == crate::types::Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
         .expect("placeholder tool message should remain when denied");
     assert!(
         tool_msg.content.contains("awaiting approval"),
@@ -2957,7 +2962,9 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
     let msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::Role::Tool && m.tool_call_id.as_deref() == Some("replay_call_1"))
+        .find(|m| {
+            m.role == crate::types::Role::Tool && m.tool_call_id.as_deref() == Some("replay_call_1")
+        })
         .expect("replay should append a real tool message when no placeholder exists");
     assert!(
         !msg.content.contains("awaiting approval"),
@@ -3843,7 +3850,7 @@ async fn test_message_id_stepstart_matches_stored_assistant_message() {
     let assistant_msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::Role::Assistant)
+        .find(|m| m.role == crate::types::Role::Assistant)
         .expect("final thread must contain an assistant message");
 
     assert_eq!(
@@ -3896,7 +3903,7 @@ async fn test_message_id_toolcalldone_matches_stored_tool_message() {
     let tool_msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::Role::Tool)
+        .find(|m| m.role == crate::types::Role::Tool)
         .expect("final thread must contain a tool message");
 
     assert_eq!(
@@ -3965,7 +3972,7 @@ async fn test_message_id_end_to_end_multi_step() {
     let assistant_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .filter(|m| m.role == crate::Role::Assistant)
+        .filter(|m| m.role == crate::types::Role::Assistant)
         .collect();
     assert_eq!(assistant_msgs.len(), 2);
     assert_eq!(assistant_msgs[0].id.as_deref(), Some(step_ids[0].as_str()));
@@ -3975,7 +3982,7 @@ async fn test_message_id_end_to_end_multi_step() {
     let tool_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .filter(|m| m.role == crate::Role::Tool)
+        .filter(|m| m.role == crate::types::Role::Tool)
         .collect();
     assert_eq!(tool_msgs.len(), 1);
     assert_eq!(

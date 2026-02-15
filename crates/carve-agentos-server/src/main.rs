@@ -1,6 +1,6 @@
-use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, ModelDefinition, ThreadReader, ThreadStore,
-};
+use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{self, AppState};
 use carve_thread_store_adapters::FileStore;
 use clap::Parser;

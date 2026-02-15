@@ -1,8 +1,13 @@
-use carve_agent::{
-    execute_single_tool, execute_single_tool_with_runtime, AgentPlugin, FsSkillRegistry,
-    LoadSkillResourceTool, Message, Phase, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
-    SkillScriptTool, StepContext, Thread, ToolCall, ToolDescriptor, ToolResult,
+use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::phase::{Phase, StepContext};
+use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_runtime};
+use carve_agent::extensions::skills::{
+    FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
+    SkillScriptTool,
 };
+use carve_agent::thread::Thread;
+use carve_agent::types::{Message, ToolCall};
 use carve_state::Context;
 use serde_json::json;
 use std::fs;
@@ -45,11 +50,7 @@ echo "hello"
     (td, reg)
 }
 
-async fn apply_tool(
-    thread: Thread,
-    tool: &dyn carve_agent::Tool,
-    call: ToolCall,
-) -> (Thread, ToolResult) {
+async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -62,7 +63,7 @@ async fn apply_tool(
 
 async fn apply_tool_with_runtime(
     thread: Thread,
-    tool: &dyn carve_agent::Tool,
+    tool: &dyn Tool,
     call: ToolCall,
     runtime: &carve_state::Runtime,
 ) -> (Thread, ToolResult) {

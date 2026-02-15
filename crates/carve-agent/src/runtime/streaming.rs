@@ -224,7 +224,7 @@ pub use carve_agent_runtime_contract::AgentEvent;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolResult;
+    use crate::contracts::traits::tool::ToolResult;
     use serde_json::json;
 
     #[test]

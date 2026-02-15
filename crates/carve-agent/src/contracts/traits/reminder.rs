@@ -11,7 +11,8 @@ use carve_state::Context;
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::{SystemReminder, Context};
+/// use carve_agent::contracts::traits::reminder::SystemReminder;
+/// use carve_agent::prelude::Context;
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]

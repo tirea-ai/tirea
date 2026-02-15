@@ -96,7 +96,8 @@ impl ToolDescriptor {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::{Tool, ToolDescriptor, ToolResult, Context};
+/// use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
+/// use carve_agent::prelude::Context;
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]

@@ -1,7 +1,7 @@
 use super::*;
+use crate::thread::Thread;
 use crate::types::Message;
-use crate::Thread;
-use crate::Visibility;
+use crate::types::Visibility;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::json;

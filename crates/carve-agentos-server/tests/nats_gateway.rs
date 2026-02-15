@@ -12,7 +12,10 @@
 use async_trait::async_trait;
 use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::phase::Phase;
-use carve_agent::{AgentDefinition, AgentOsBuilder, StepContext, ThreadReader, ThreadStore};
+use carve_agent::contracts::phase::StepContext;
+use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::orchestrator::AgentOsBuilder;
+use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::nats::NatsGateway;
 use carve_thread_store_adapters::MemoryStore;
 use futures::StreamExt;
@@ -33,7 +36,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::Context<'_>,
+        _ctx: &carve_agent::prelude::Context<'_>,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -41,7 +44,7 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
-fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::AgentOs {
+fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],

@@ -47,7 +47,7 @@ struct AgentRunRecord {
     target_agent_id: String,
     parent_run_id: Option<String>,
     status: AgentRunStatus,
-    thread: crate::Thread,
+    thread: crate::thread::Thread,
     assistant: Option<String>,
     error: Option<String>,
     run_cancellation_requested: bool,
@@ -131,7 +131,11 @@ impl AgentRunManager {
         out
     }
 
-    async fn owned_record(&self, owner_thread_id: &str, run_id: &str) -> Option<crate::Thread> {
+    async fn owned_record(
+        &self,
+        owner_thread_id: &str,
+        run_id: &str,
+    ) -> Option<crate::thread::Thread> {
         let runs = self.runs.lock().await;
         let rec = runs.get(run_id)?;
         if rec.owner_thread_id != owner_thread_id {
@@ -202,7 +206,7 @@ impl AgentRunManager {
         owner_thread_id: String,
         target_agent_id: String,
         parent_run_id: Option<String>,
-        thread: crate::Thread,
+        thread: crate::thread::Thread,
         cancellation_token: Option<RunCancellationToken>,
     ) -> u64 {
         let mut runs = self.runs.lock().await;
@@ -276,13 +280,13 @@ impl AgentRunManager {
 
 #[derive(Debug)]
 struct AgentRunCompletion {
-    thread: crate::Thread,
+    thread: crate::thread::Thread,
     status: AgentRunStatus,
     assistant: Option<String>,
     error: Option<String>,
 }
 
-fn last_assistant_message(thread: &crate::Thread) -> Option<String> {
+fn last_assistant_message(thread: &crate::thread::Thread) -> Option<String> {
     thread
         .messages
         .iter()
@@ -294,7 +298,7 @@ fn last_assistant_message(thread: &crate::Thread) -> Option<String> {
 async fn execute_target_agent(
     os: AgentOs,
     target_agent_id: String,
-    thread: crate::Thread,
+    thread: crate::thread::Thread,
     cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
     let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
@@ -322,12 +326,12 @@ async fn execute_target_agent(
 
     while let Some(ev) = events.next().await {
         match ev {
-            crate::AgentEvent::Error { message } => {
+            crate::runtime::streaming::AgentEvent::Error { message } => {
                 if saw_error.is_none() {
                     saw_error = Some(message);
                 }
             }
-            crate::AgentEvent::RunFinish {
+            crate::runtime::streaming::AgentEvent::RunFinish {
                 stop_reason: reason,
                 ..
             } => {
@@ -409,11 +413,11 @@ fn runtime_run_id(runtime: Option<&carve_state::Runtime>) -> Option<String> {
 }
 
 fn bind_child_lineage(
-    mut thread: crate::Thread,
+    mut thread: crate::thread::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
-) -> crate::Thread {
+) -> crate::thread::Thread {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
@@ -450,14 +454,17 @@ fn bind_child_lineage(
     thread
 }
 
-fn parent_run_id_from_thread(thread: Option<&crate::Thread>) -> Option<String> {
+fn parent_run_id_from_thread(thread: Option<&crate::thread::Thread>) -> Option<String> {
     thread
         .and_then(|s| s.runtime.value(RUNTIME_PARENT_RUN_ID_KEY))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
 
-fn as_agent_run_state(summary: &AgentRunSummary, thread: Option<crate::Thread>) -> AgentRunState {
+fn as_agent_run_state(
+    summary: &AgentRunSummary,
+    thread: Option<crate::thread::Thread>,
+) -> AgentRunState {
     let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     AgentRunState {
         run_id: summary.run_id.clone(),
@@ -797,7 +804,7 @@ fn parse_caller_messages(runtime: Option<&carve_state::Runtime>) -> Option<Vec<M
 fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
-        .filter(|m| m.visibility == crate::Visibility::All)
+        .filter(|m| m.visibility == crate::types::Visibility::All)
         .filter(|m| matches!(m.role, Role::System | Role::User | Role::Assistant))
         .map(|mut m| {
             if m.role == Role::Assistant {
@@ -865,7 +872,7 @@ impl Tool for AgentRunTool {
         &self,
         args: Value,
         ctx: &carve_state::Context<'_>,
-    ) -> Result<ToolResult, crate::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
         let tool_name = "agent_run";
         let run_id = optional_string(&args, "run_id");
         let background = required_bool(&args, "background", false);
@@ -1204,13 +1211,13 @@ impl Tool for AgentRunTool {
                 .and_then(|rt| rt.value(RUNTIME_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut forked = crate::Thread::with_initial_state(thread_id, fork_state);
+            let mut forked = crate::thread::Thread::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(runtime) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::Thread::new(thread_id)
+            crate::thread::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(
@@ -1333,7 +1340,7 @@ impl Tool for AgentStopTool {
         &self,
         args: Value,
         ctx: &carve_state::Context<'_>,
-    ) -> Result<ToolResult, crate::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
         let tool_name = "agent_stop";
         let run_id = match required_string(&args, "run_id", tool_name) {
             Ok(v) => v,
@@ -1703,8 +1710,14 @@ mod tests {
     #[test]
     fn plugin_filters_out_caller_agent() {
         let mut reg = InMemoryAgentRegistry::new();
-        reg.upsert("a", crate::AgentDefinition::new("mock"));
-        reg.upsert("b", crate::AgentDefinition::new("mock"));
+        reg.upsert(
+            "a",
+            crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        );
+        reg.upsert(
+            "b",
+            crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        );
         let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
         let rendered = plugin.render_available_agents(Some("a"), None);
         assert!(rendered.contains("<id>b</id>"));
@@ -1714,8 +1727,14 @@ mod tests {
     #[test]
     fn plugin_filters_agents_by_runtime_policy() {
         let mut reg = InMemoryAgentRegistry::new();
-        reg.upsert("writer", crate::AgentDefinition::new("mock"));
-        reg.upsert("reviewer", crate::AgentDefinition::new("mock"));
+        reg.upsert(
+            "writer",
+            crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        );
+        reg.upsert(
+            "reviewer",
+            crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        );
         let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
         let mut rt = carve_state::Runtime::new();
         rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
@@ -1729,7 +1748,10 @@ mod tests {
         let doc = json!({});
         let ctx = Context::new(&doc, "test", "test");
         let mut reg = InMemoryAgentRegistry::new();
-        reg.upsert("worker", crate::AgentDefinition::new("mock"));
+        reg.upsert(
+            "worker",
+            crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        );
         let manager = Arc::new(AgentRunManager::new());
         let plugin = AgentToolsPlugin::new(Arc::new(reg), manager.clone());
 
@@ -1835,7 +1857,10 @@ mod tests {
     #[tokio::test]
     async fn agent_run_tool_requires_runtime_context() {
         let os = AgentOs::builder()
-            .with_agent("worker", crate::AgentDefinition::new("gpt-4o-mini"))
+            .with_agent(
+                "worker",
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            )
             .build()
             .unwrap();
         let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
@@ -1858,8 +1883,14 @@ mod tests {
     #[tokio::test]
     async fn agent_run_tool_rejects_disallowed_target_agent() {
         let os = AgentOs::builder()
-            .with_agent("worker", crate::AgentDefinition::new("gpt-4o-mini"))
-            .with_agent("reviewer", crate::AgentDefinition::new("gpt-4o-mini"))
+            .with_agent(
+                "worker",
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            )
+            .with_agent(
+                "reviewer",
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            )
             .build()
             .unwrap();
         let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
@@ -1911,7 +1942,7 @@ mod tests {
         rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, state).unwrap();
         rt.set(
             TOOL_RUNTIME_CALLER_MESSAGES_KEY,
-            vec![crate::Message::user("seed message")],
+            vec![crate::types::Message::user("seed message")],
         )
         .unwrap();
         rt
@@ -1930,7 +1961,8 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
@@ -2067,7 +2099,8 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
@@ -2111,7 +2144,8 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
@@ -2171,14 +2205,15 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
         let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2214,15 +2249,16 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
         let manager = Arc::new(AgentRunManager::new());
         let run_tool = AgentRunTool::new(os, manager.clone());
 
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2284,14 +2320,15 @@ mod tests {
         let os = AgentOs::builder()
             .with_agent(
                 "worker",
-                crate::AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SlowSkipPlugin)),
+                crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+                    .with_plugin(Arc::new(SlowSkipPlugin)),
             )
             .build()
             .unwrap();
         let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let doc = json!({
             "agent": {
                 "agent_runs": {
@@ -2439,8 +2476,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2498,8 +2535,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_does_not_override_existing_pending_interaction() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2543,8 +2580,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_approve_when_permission_allow() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2597,8 +2634,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_deny_when_permission_deny() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2649,8 +2686,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2697,8 +2734,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({
@@ -2746,8 +2783,8 @@ mod tests {
     #[tokio::test]
     async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-        let child_thread =
-            crate::Thread::new("child-run").with_message(crate::Message::user("seed"));
+        let child_thread = crate::thread::Thread::new("child-run")
+            .with_message(crate::types::Message::user("seed"));
         let thread = Thread::with_initial_state(
             "owner-1",
             json!({

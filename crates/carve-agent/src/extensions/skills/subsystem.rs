@@ -23,12 +23,13 @@ pub enum SkillSubsystemError {
 /// # Example
 ///
 /// ```no_run
-/// use carve_agent::{AgentConfig, SkillSubsystem, Tool};
+/// use carve_agent::contracts::traits::tool::Tool;
+/// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
+/// use carve_agent::runtime::loop_runner::AgentConfig;
 /// use std::collections::HashMap;
 /// use std::sync::Arc;
 ///
 /// // 1) Build a registry and wire it into the subsystem.
-/// # use carve_agent::FsSkillRegistry;
 /// let reg = FsSkillRegistry::discover_root("skills").unwrap();
 /// let skills = SkillSubsystem::new(Arc::new(reg));
 ///
@@ -84,8 +85,8 @@ impl SkillSubsystem {
     /// Returns an error if any tool id is already present.
     ///
     /// ```no_run
-    /// use carve_agent::{SkillSubsystem, Tool};
-    /// use carve_agent::FsSkillRegistry;
+    /// use carve_agent::contracts::traits::tool::Tool;
+    /// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
     /// use std::collections::HashMap;
     /// use std::sync::Arc;
     ///

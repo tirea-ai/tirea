@@ -1,4 +1,4 @@
-use carve_agent::AgentEvent;
+use carve_agent::runtime::streaming::AgentEvent;
 use carve_protocol_contract::ProtocolOutputEncoder;
 use futures::Stream;
 use futures::StreamExt;

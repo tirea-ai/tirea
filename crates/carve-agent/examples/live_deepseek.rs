@@ -7,11 +7,15 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
-    Message, RunContext, Thread, ThreadReader, ThreadWriter, Tool, ToolDescriptor, ToolError,
-    ToolResult,
+use carve_agent::contracts::storage::{ThreadReader, ThreadWriter};
+use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::prelude::Context;
+use carve_agent::runtime::loop_runner::{
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError, RunContext,
 };
+use carve_agent::runtime::streaming::AgentEvent;
+use carve_agent::thread::Thread;
+use carve_agent::types::Message;
 use carve_state_derive::State;
 use carve_thread_store_adapters::{FileStore, MemoryStore};
 use futures::StreamExt;
@@ -905,7 +909,9 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
         if let Some(ref calls) = msg.tool_calls {
             tool_calls += calls.len();
         }
-        if msg.role == carve_agent::Role::Tool && msg.content.contains("error") {
+        if msg.role == carve_agent::contracts::conversation::Role::Tool
+            && msg.content.contains("error")
+        {
             error_messages += 1;
         }
     }

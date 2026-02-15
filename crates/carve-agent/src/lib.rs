@@ -52,7 +52,8 @@
 //! # Example: Implementing a Tool
 //!
 //! ```ignore
-//! use carve_agent::{Tool, ToolDescriptor, ToolResult, ToolError, Context};
+//! use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+//! use carve_agent::prelude::Context;
 //! use async_trait::async_trait;
 //! use serde_json::{json, Value};
 //!
@@ -80,7 +81,9 @@
 //! # Example: Using Sessions
 //!
 //! ```ignore
-//! use carve_agent::{Thread, Message, ThreadWriter};
+//! use carve_agent::contracts::storage::ThreadWriter;
+//! use carve_agent::thread::Thread;
+//! use carve_agent::types::Message;
 //! use carve_thread_store_adapters::FileStore;
 //!
 //! // Create or load session
@@ -103,81 +106,3 @@ pub mod prelude;
 pub mod thread;
 pub mod thread_store;
 pub mod types;
-
-// Re-export from carve-state for convenience
-pub use carve_state::{Context, StateManager, TrackedPatch};
-
-// Contracts exports
-pub use contracts::conversation::{
-    gen_message_id, Message, MessageMetadata, PendingDelta, Role, Thread, ThreadMetadata, ToolCall,
-    Visibility,
-};
-pub use contracts::plugin::{
-    AgentPlugin, ContextCategory, ContextProvider, Phase, StepContext, StepOutcome, SystemReminder,
-    ToolContext,
-};
-pub use contracts::state::{
-    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
-    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_STATE_PATH,
-};
-pub use contracts::storage::{
-    CheckpointReason, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
-    ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
-    ThreadStoreError, ThreadSync, ThreadWriter, Version,
-};
-pub use contracts::tools::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-
-// Runtime exports
-pub use runtime::activity::ActivityHub;
-pub use runtime::loop_runner::{
-    execute_tools as loop_execute_tools, execute_tools_with_config, execute_tools_with_plugins,
-    run_loop, run_loop_stream, run_round, run_step, tool_map, tool_map_from_arc, AgentConfig,
-    AgentDefinition, AgentLoopError, ChannelStateCommitter, RoundResult, RunContext,
-    StateCommitError, StateCommitter,
-};
-pub use runtime::streaming::{AgentEvent, StreamCollector, StreamOutput, StreamResult};
-
-// Extensions exports
-pub use extensions::skills::{
-    CompositeSkillRegistry, CompositeSkillRegistryError, FsSkillRegistry, InMemorySkillRegistry,
-    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
-    SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillRuntimePlugin,
-    SkillScriptTool, SkillSubsystem, SkillSubsystemError,
-};
-pub use extensions::{
-    observability::{
-        AgentMetrics, GenAISpan, InMemorySink, LLMMetryPlugin, MetricsSink, ModelStats, ToolSpan,
-        ToolStats,
-    },
-    permission::{PermissionContextExt, PermissionPlugin, PermissionState},
-    reminder::{ReminderContextExt, ReminderPlugin, ReminderState},
-};
-
-// Engine exports
-pub use engine::convert::{
-    assistant_message, assistant_tool_calls, build_request, to_chat_message, to_genai_tool,
-    tool_response, user_message,
-};
-pub use engine::stop_conditions::{
-    check_stop_conditions, ConsecutiveErrors, ContentMatch, LoopDetection, MaxRounds,
-    StopCheckContext, StopCondition, StopConditionSpec, StopOnTool, StopReason, Timeout,
-    TokenBudget,
-};
-pub use engine::tool_execution::{
-    collect_patches, execute_single_tool, execute_single_tool_with_runtime, execute_tools_parallel,
-    execute_tools_sequential, ToolExecution,
-};
-
-// Orchestrator exports
-pub use orchestrator::{
-    AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
-    AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig, BundleComposeError,
-    BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
-    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
-    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
-    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry,
-    ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
-    ProviderRegistryError, RegistryBundle, RegistrySet, RunExtensions, RunRequest, RunStream,
-    SkillsConfig, SkillsMode, ToolPluginBundle, ToolRegistry, ToolRegistryError,
-};

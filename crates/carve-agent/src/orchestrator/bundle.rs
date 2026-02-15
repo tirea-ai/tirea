@@ -6,7 +6,7 @@ use crate::contracts::traits::tool::Tool;
 use crate::extensions::skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, SkillRegistry,
 };
-use crate::AgentDefinition;
+use crate::runtime::loop_runner::AgentDefinition;
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
