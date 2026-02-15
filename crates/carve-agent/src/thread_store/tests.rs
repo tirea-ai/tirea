@@ -1,6 +1,6 @@
 use super::*;
-use crate::Thread;
 use crate::types::Message;
+use crate::Thread;
 use crate::Visibility;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use carve_thread_store_adapters::MemoryStore;

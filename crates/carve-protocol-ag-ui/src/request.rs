@@ -246,8 +246,7 @@ impl RunAgentRequest {
             .filter(|m| m.role == MessageRole::Tool)
             .filter_map(|m| {
                 m.tool_call_id.as_ref().map(|id| {
-                    let result = serde_json::from_str(&m.content)
-                        .unwrap_or_else(|_| Value::String(m.content.clone()));
+                    let result = parse_interaction_result_value(&m.content);
                     InteractionResponse::new(id.clone(), result)
                 })
             })
@@ -271,6 +270,10 @@ impl RunAgentRequest {
             .map(|r| r.interaction_id)
             .collect()
     }
+}
+
+fn parse_interaction_result_value(content: &str) -> Value {
+    serde_json::from_str(content).unwrap_or_else(|_| Value::String(content.to_string()))
 }
 
 /// Convert AG-UI message to internal message.

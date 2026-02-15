@@ -108,9 +108,13 @@ pub fn run_agent_stream_with_parent(
 /// # Example
 ///
 /// ```ignore
-/// let request = RunAgentRequest::new("thread_1", "run_1")
-///     .with_tool(AGUIToolDef::backend("search", "Search the web"))
-///     .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"));
+/// let request = RunAgentRequest {
+///     tools: vec![
+///         AGUIToolDef::backend("search", "Search the web"),
+///         AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
+///     ],
+///     ..RunAgentRequest::new("thread_1", "run_1")
+/// };
 ///
 /// let stream = run_agent_stream_with_request(
 ///     client,

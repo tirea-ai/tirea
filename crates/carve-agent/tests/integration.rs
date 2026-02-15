@@ -9,6 +9,7 @@ use carve_agent::{
     InteractionResponse, StateManager, SystemReminder, Tool, ToolDescriptor, ToolError,
     ToolExecutionLocation, ToolResult,
 };
+use carve_protocol_ag_ui::interaction_to_ag_ui_events;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -4440,7 +4441,7 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
             ..
         } => {
             assert_eq!(tool_call_id, "perm_write_file_123");
-            let args: Value = serde_json::from_str(delta).unwrap();
+            let args: Value = serde_json::from_str(&delta).unwrap();
             assert_eq!(args["id"], "perm_write_file_123");
             assert_eq!(
                 args["message"],
@@ -4481,7 +4482,7 @@ fn test_scenario_custom_frontend_action_to_ag_ui() {
         }));
 
     // 2. Convert directly to AG-UI events
-    let ag_ui_events = interaction.to_ag_ui_events();
+    let ag_ui_events = interaction_to_ag_ui_events(&interaction);
 
     // 3. Verify the tool call represents our custom action
     assert_eq!(ag_ui_events.len(), 3);
@@ -4565,7 +4566,7 @@ fn test_scenario_various_interaction_types() {
     for (id, action, message) in interactions {
         let interaction = Interaction::new(id, action).with_message(message);
 
-        let events = interaction.to_ag_ui_events();
+        let events = interaction_to_ag_ui_events(&interaction);
 
         // All produce the same event structure
         assert_eq!(events.len(), 3);
@@ -4599,17 +4600,15 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
     // 1. Client sends request with mixed frontend/backend tools
-    let request = RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search the web"))
-        .with_tool(AGUIToolDef::backend("read_file", "Read a file"))
-        .with_tool(AGUIToolDef::frontend(
-            "copyToClipboard",
-            "Copy text to clipboard",
-        ))
-        .with_tool(AGUIToolDef::frontend(
-            "showNotification",
-            "Show a notification",
-        ));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search the web"),
+            AGUIToolDef::backend("read_file", "Read a file"),
+            AGUIToolDef::frontend("copyToClipboard", "Copy text to clipboard"),
+            AGUIToolDef::frontend("showNotification", "Show a notification"),
+        ],
+        ..RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
+    };
 
     // 2. AgUiInteractionPlugin is created from request
     let plugin = AgUiInteractionPlugin::from_request(&request);
@@ -4645,7 +4644,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
         .clone()
         .unwrap();
 
-    let events = interaction.to_ag_ui_events();
+    let events = interaction_to_ag_ui_events(&interaction);
 
     // 7. Verify AG-UI events
     assert_eq!(events.len(), 3);
@@ -4677,10 +4676,14 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 async fn test_scenario_multiple_frontend_tools_sequence() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
-        .with_tool(AGUIToolDef::frontend("showNotification", "Notify"))
-        .with_tool(AGUIToolDef::frontend("openDialog", "Dialog"));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::frontend("copyToClipboard", "Copy"),
+            AGUIToolDef::frontend("showNotification", "Notify"),
+            AGUIToolDef::frontend("openDialog", "Dialog"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
     let thread = Thread::new("test");
@@ -4938,7 +4941,7 @@ fn test_scenario_frontend_tool_wire_format() {
         }));
 
     // Convert to AG-UI events (what goes over the wire)
-    let events = interaction.to_ag_ui_events();
+    let events = interaction_to_ag_ui_events(&interaction);
 
     // Serialize each event as it would be sent
     for event in &events {
@@ -5078,10 +5081,14 @@ async fn test_scenario_backend_tool_passthrough() {
 /// Test scenario: Request with no frontend tools creates empty plugin
 #[test]
 fn test_scenario_no_frontend_tools_in_request() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search"))
-        .with_tool(AGUIToolDef::backend("read", "Read file"))
-        .with_tool(AGUIToolDef::backend("write", "Write file"));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search"),
+            AGUIToolDef::backend("read", "Read file"),
+            AGUIToolDef::backend("write", "Write file"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
 
@@ -5151,7 +5158,7 @@ async fn test_scenario_permission_approved_complete_flow() {
         .unwrap();
 
     // Phase 2: Convert to AG-UI events
-    let ag_ui_events = interaction.to_ag_ui_events();
+    let ag_ui_events = interaction_to_ag_ui_events(&interaction);
     assert_eq!(ag_ui_events.len(), 3);
 
     // Phase 3: Client receives events and approves
@@ -5160,12 +5167,20 @@ async fn test_scenario_permission_approved_complete_flow() {
         .with_message(AGUIMessage::tool("true", &interaction.id));
 
     // Phase 4: Check approval
-    assert!(client_response_request.is_interaction_approved(&interaction.id));
-    assert!(!client_response_request.is_interaction_denied(&interaction.id));
+    assert!(client_response_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
+    assert!(!client_response_request
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Phase 5: Get response and verify
     let response = client_response_request
-        .get_interaction_response(&interaction.id)
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == interaction.id.as_str())
         .unwrap();
     assert!(response.approved());
 }
@@ -5210,11 +5225,19 @@ async fn test_scenario_permission_denied_complete_flow() {
         .with_message(AGUIMessage::tool("false", &interaction.id));
 
     // Phase 4: Check denial
-    assert!(client_response_request.is_interaction_denied(&interaction.id));
-    assert!(!client_response_request.is_interaction_approved(&interaction.id));
+    assert!(client_response_request
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
+    assert!(!client_response_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     let response = client_response_request
-        .get_interaction_response(&interaction.id)
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == interaction.id.as_str())
         .unwrap();
     assert!(response.denied());
 }
@@ -5225,9 +5248,13 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
     // Phase 1: Agent calls frontend tool
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
-        AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
-    );
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend(
+            "copyToClipboard",
+            "Copy to clipboard",
+        )],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
 
@@ -5254,7 +5281,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     assert_eq!(interaction.action, "tool:copyToClipboard");
 
     // Phase 2: Convert to AG-UI
-    let ag_ui_events = interaction.to_ag_ui_events();
+    let ag_ui_events = interaction_to_ag_ui_events(&interaction);
     assert_eq!(ag_ui_events.len(), 3);
 
     // Phase 3: Client executes and returns result
@@ -5266,7 +5293,9 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 
     // Phase 4: Agent receives result
     let response = client_response_request
-        .get_interaction_response(&interaction.id)
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == interaction.id.as_str())
         .unwrap();
 
     assert!(response.result["success"].as_bool().unwrap());
@@ -5327,8 +5356,14 @@ async fn test_scenario_multiple_interactions_sequence() {
         .with_message(AGUIMessage::tool("false", &interaction2.id));
 
     // Verify responses
-    assert!(response_request.is_interaction_approved(&interaction1.id));
-    assert!(response_request.is_interaction_denied(&interaction2.id));
+    assert!(response_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction1.id));
+    assert!(response_request
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction2.id));
 
     let responses = response_request.interaction_responses();
     assert_eq!(responses.len(), 2);
@@ -5354,7 +5389,9 @@ fn test_scenario_frontend_tool_complex_result() {
         ));
 
     let response = client_response_request
-        .get_interaction_response("file_picker_call_1")
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == "file_picker_call_1")
         .unwrap();
 
     assert!(response.result["success"].as_bool().unwrap());
@@ -5379,20 +5416,29 @@ fn test_scenario_permission_custom_response_format() {
             "perm_1",
         ));
 
-    assert!(request1.is_interaction_approved("perm_1"));
+    assert!(request1
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == "perm_1"));
 
     // Using object format with denied flag
     let request2 = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_message(
         AGUIMessage::tool(r#"{"denied":true,"reason":"User is cautious"}"#, "perm_2"),
     );
 
-    assert!(request2.is_interaction_denied("perm_2"));
+    assert!(request2
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == "perm_2"));
 
     // Using allowed flag
     let request3 = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool(r#"{"allowed":true}"#, "perm_3"));
 
-    assert!(request3.is_interaction_approved("perm_3"));
+    assert!(request3
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == "perm_3"));
 }
 
 /// Test scenario: Interaction response with input value
@@ -5402,7 +5448,11 @@ fn test_scenario_input_interaction_response() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("John Doe", "input_name_1"));
 
-    let response = request.get_interaction_response("input_name_1").unwrap();
+    let response = request
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == "input_name_1")
+        .unwrap();
     assert_eq!(response.result, Value::String("John Doe".into()));
 
     // Not approved or denied - it's just input
@@ -5419,7 +5469,11 @@ fn test_scenario_select_interaction_response() {
             "select_option_1",
         ));
 
-    let response = request.get_interaction_response("select_option_1").unwrap();
+    let response = request
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == "select_option_1")
+        .unwrap();
     assert_eq!(response.result["selected_index"], 2);
     assert_eq!(response.result["selected_value"], "Option C");
 }
@@ -5437,8 +5491,14 @@ fn test_scenario_mixed_messages_with_interaction_response() {
         .with_message(AGUIMessage::assistant("Done!"));
 
     // Should find the tool response
-    assert!(request.has_interaction_response("perm_write_1"));
-    assert!(request.is_interaction_approved("perm_write_1"));
+    assert!(request
+        .interaction_responses()
+        .iter()
+        .any(|response| response.interaction_id == "perm_write_1"));
+    assert!(request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == "perm_write_1"));
 
     // Should have exactly one interaction response
     let responses = request.interaction_responses();
@@ -5565,7 +5625,10 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     // Step 2: Client approves
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", &interaction.id));
-    assert!(response_request.is_interaction_approved(&interaction.id));
+    assert!(response_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Step 3: Second run - AgUiInteractionPlugin processes approval
     // The session must have the pending interaction persisted (as the real loop does).
@@ -5616,8 +5679,10 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     let thread = Thread::new("test");
 
     // Setup: Frontend tool request
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("showDialog", "Show a dialog"));
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend("showDialog", "Show a dialog")],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     // Step 1: AgUiInteractionPlugin creates pending for frontend tool
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
@@ -5649,7 +5714,9 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 
     // The result is available (not blocked/denied)
     let response = response_request
-        .get_interaction_response(&interaction.id)
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == interaction.id.as_str())
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["user_clicked"], "OK");
@@ -5968,14 +6035,17 @@ async fn test_permission_flow_approval_e2e() {
     assert!(interaction.id.starts_with("permission_"));
 
     // Phase 2: Convert to AG-UI events (client would receive these)
-    let ag_ui_events = interaction.to_ag_ui_events();
+    let ag_ui_events = interaction_to_ag_ui_events(&interaction);
     assert_eq!(ag_ui_events.len(), 3); // Start, Args, End
 
     // Phase 3: Client approves (simulated by creating response request)
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", &interaction.id));
 
-    assert!(response_request.is_interaction_approved(&interaction.id));
+    assert!(response_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Phase 4: Resume with AgUiInteractionPlugin
     let response_plugin = AgUiInteractionPlugin::from_request(&response_request);
@@ -6034,7 +6104,10 @@ async fn test_permission_flow_denial_e2e() {
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("false", &interaction.id));
 
-    assert!(response_request.is_interaction_denied(&interaction.id));
+    assert!(response_request
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Phase 3: On resume, tool should be blocked.
     // The session must have the pending interaction persisted (as the real loop does).
@@ -6260,7 +6333,10 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     // Phase 2: Client denies
     let deny_request =
         RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("false", &interaction.id));
-    assert!(deny_request.is_interaction_denied(&interaction.id));
+    assert!(deny_request
+        .denied_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Resume with only AgUiInteractionPlugin — denial should block the tool
     let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
@@ -6351,7 +6427,10 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     // Phase 2: Client approves
     let approve_request =
         RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::tool("true", &interaction.id));
-    assert!(approve_request.is_interaction_approved(&interaction.id));
+    assert!(approve_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Resume with only AgUiInteractionPlugin (no PermissionPlugin)
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
@@ -6414,9 +6493,13 @@ async fn test_frontend_tool_flow_creates_pending() {
     let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string()).with_tool(
-        AGUIToolDef::frontend("copyToClipboard", "Copy to clipboard"),
-    );
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend(
+            "copyToClipboard",
+            "Copy to clipboard",
+        )],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
     let thread = Thread::new("test");
@@ -6455,7 +6538,9 @@ fn test_frontend_tool_flow_result_from_client() {
     );
 
     let response = response_request
-        .get_interaction_response("call_copy")
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == "call_copy")
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(response.result["bytes_copied"], 11);
@@ -6468,9 +6553,13 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let ctx = Context::new(&doc, "test", "test");
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("showDialog", "Show dialog"))
-        .with_tool(AGUIToolDef::backend("search", "Search files"));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::frontend("showDialog", "Show dialog"),
+            AGUIToolDef::backend("search", "Search files"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let plugin = AgUiInteractionPlugin::from_request(&request);
     let thread = Thread::new("test");
@@ -6521,7 +6610,9 @@ fn test_frontend_tool_flow_complex_result() {
     );
 
     let response = response_request
-        .get_interaction_response("file_picker_call")
+        .interaction_responses()
+        .into_iter()
+        .find(|response| response.interaction_id == "file_picker_call")
         .unwrap();
     assert!(response.result["success"].as_bool().unwrap());
     assert_eq!(
@@ -6843,12 +6934,14 @@ async fn test_plugin_interaction_frontend_and_response() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Request has both frontend tools and interaction responses
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_tool(AGUIToolDef::frontend(
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend(
             "showNotification",
             "Show notification",
-        ))
-        .with_message(AGUIMessage::tool("true", "call_prev"));
+        )],
+        ..RunAgentRequest::new("t1".to_string(), "r2".to_string())
+    }
+    .with_message(AGUIMessage::tool("true", "call_prev"));
 
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let response_plugin = AgUiInteractionPlugin::from_request(&request);
@@ -6898,9 +6991,11 @@ async fn test_plugin_interaction_execution_order() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Setup: Frontend tool that was previously denied
-    let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
-        .with_tool(AGUIToolDef::frontend("dangerousAction", "Dangerous"))
-        .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend("dangerousAction", "Dangerous")],
+        ..RunAgentRequest::new("t1".to_string(), "r2".to_string())
+    }
+    .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
 
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let response_plugin = AgUiInteractionPlugin::from_request(&request);
@@ -6936,8 +7031,10 @@ async fn test_plugin_interaction_permission_and_frontend() {
     use carve_agent::ag_ui::AgUiInteractionPlugin;
 
     // Frontend tool with permission set to Ask
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::frontend("modifySettings", "Modify settings"));
+    let request = RunAgentRequest {
+        tools: vec![AGUIToolDef::frontend("modifySettings", "Modify settings")],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let frontend_plugin = AgUiInteractionPlugin::from_request(&request);
     let permission_plugin = PermissionPlugin;
@@ -7390,7 +7487,7 @@ async fn test_multiple_pending_interactions_flow() {
     // Convert all to AG-UI events
     let mut all_events: Vec<AGUIEvent> = Vec::new();
     for interaction in &interactions {
-        all_events.extend(interaction.to_ag_ui_events());
+        all_events.extend(interaction_to_ag_ui_events(&interaction));
     }
 
     // Each interaction should produce 3 events (Start, Args, End)
@@ -8717,9 +8814,13 @@ fn test_run_agent_request_with_messages() {
 /// Protocol: Tools array defines available capabilities
 #[test]
 fn test_run_agent_request_with_tools() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search the web"))
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy text"));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search the web"),
+            AGUIToolDef::frontend("copyToClipboard", "Copy text"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     assert_eq!(request.tools.len(), 2);
 }
@@ -9717,10 +9818,10 @@ fn test_run_agent_request_has_any_interaction_responses_empty() {
     assert!(!request.has_any_interaction_responses());
 }
 
-/// Test: RunAgentRequest.has_any_interaction_responses with tool message
+/// Test: RunAgentRequest.has_any_interaction_responses with a tool message
 /// Protocol: Tool messages indicate interaction responses
 #[test]
-fn test_run_agent_request_has_any_interaction_responses_with_tool() {
+fn test_run_agent_request_has_any_interaction_responses_with_tool_message() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("approved", "int_1"));
 
@@ -10893,8 +10994,8 @@ fn test_tool_execution_location() {
 // ============================================================================
 //
 // AG-UI Protocol Reference: https://docs.ag-ui.com/sdk/js/core/types
-// RunAgentInput: with_messages, with_model, with_system_prompt, last_user_message,
-//                frontend_tools, backend_tools, is_frontend_tool
+// RunAgentInput: with_messages, with_model, with_system_prompt, frontend_tools.
+// Last-user lookup and backend/fronted matching are verified via direct collection traversal.
 //
 
 /// Test: RunAgentRequest.with_messages batch
@@ -10942,38 +11043,58 @@ fn test_run_agent_request_with_system_prompt() {
     );
 }
 
-/// Test: RunAgentRequest.last_user_message
+/// Test: last user message lookup via direct message scan
 /// Protocol: Extract last user message for quick access
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
-fn test_run_agent_request_last_user_message() {
+fn test_run_agent_request_last_user_message_via_messages_scan() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("First"))
         .with_message(AGUIMessage::assistant("Response"))
         .with_message(AGUIMessage::user("Second"));
 
-    assert_eq!(request.last_user_message(), Some("Second"));
+    assert_eq!(
+        request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == MessageRole::User)
+            .map(|message| message.content.as_str()),
+        Some("Second")
+    );
 }
 
-/// Test: RunAgentRequest.last_user_message when empty
+/// Test: last user message lookup via direct message scan when empty
 /// Protocol: Returns None when no user messages
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
-fn test_run_agent_request_last_user_message_empty() {
+fn test_run_agent_request_last_user_message_via_messages_scan_empty() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
-    assert!(request.last_user_message().is_none());
+    assert!(request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.content.as_str())
+        .is_none());
 }
 
-/// Test: RunAgentRequest.last_user_message with only non-user messages
+/// Test: last user message lookup via direct message scan with only non-user messages
 /// Protocol: Returns None when no user messages present
 /// Reference: https://docs.ag-ui.com/sdk/js/core/types
 #[test]
-fn test_run_agent_request_last_user_message_no_user() {
+fn test_run_agent_request_last_user_message_via_messages_scan_no_user() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::assistant("Hi"))
         .with_message(AGUIMessage::system("Be helpful"));
 
-    assert!(request.last_user_message().is_none());
+    assert!(request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.content.as_str())
+        .is_none());
 }
 
 /// Test: RunAgentRequest.frontend_tools
@@ -10981,11 +11102,15 @@ fn test_run_agent_request_last_user_message_no_user() {
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
 fn test_run_agent_request_frontend_tools() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search"))
-        .with_tool(AGUIToolDef::frontend("copyToClipboard", "Copy"))
-        .with_tool(AGUIToolDef::backend("read_file", "Read file"))
-        .with_tool(AGUIToolDef::frontend("showNotification", "Notify"));
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search"),
+            AGUIToolDef::frontend("copyToClipboard", "Copy"),
+            AGUIToolDef::backend("read_file", "Read file"),
+            AGUIToolDef::frontend("showNotification", "Notify"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
     let frontend = request.frontend_tools();
     assert_eq!(frontend.len(), 2);
@@ -10994,35 +11119,56 @@ fn test_run_agent_request_frontend_tools() {
         .all(|t| t.execute == ToolExecutionLocation::Frontend));
 }
 
-/// Test: RunAgentRequest.backend_tools
+/// Test: backend tool filtering via direct tools iteration
 /// Protocol: Filter tools by backend execution location
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
-fn test_run_agent_request_backend_tools() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search"))
-        .with_tool(AGUIToolDef::frontend("copy", "Copy"))
-        .with_tool(AGUIToolDef::backend("read", "Read"));
+fn test_run_agent_request_backend_tools_via_filter() {
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search"),
+            AGUIToolDef::frontend("copy", "Copy"),
+            AGUIToolDef::backend("read", "Read"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
-    let backend = request.backend_tools();
+    let backend: Vec<&AGUIToolDef> = request
+        .tools
+        .iter()
+        .filter(|tool| !tool.is_frontend())
+        .collect();
     assert_eq!(backend.len(), 2);
     assert!(backend
         .iter()
         .all(|t| t.execute == ToolExecutionLocation::Backend));
 }
 
-/// Test: RunAgentRequest.is_frontend_tool
+/// Test: frontend tool lookup via frontend_tools filtering
 /// Protocol: Check if a named tool is frontend
 /// Reference: https://docs.ag-ui.com/concepts/tools
 #[test]
-fn test_run_agent_request_is_frontend_tool() {
-    let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
-        .with_tool(AGUIToolDef::backend("search", "Search"))
-        .with_tool(AGUIToolDef::frontend("copy", "Copy"));
+fn test_run_agent_request_frontend_tool_lookup_via_frontend_tools() {
+    let request = RunAgentRequest {
+        tools: vec![
+            AGUIToolDef::backend("search", "Search"),
+            AGUIToolDef::frontend("copy", "Copy"),
+        ],
+        ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
+    };
 
-    assert!(!request.is_frontend_tool("search"));
-    assert!(request.is_frontend_tool("copy"));
-    assert!(!request.is_frontend_tool("nonexistent"));
+    assert!(!request
+        .frontend_tools()
+        .iter()
+        .any(|tool| tool.name == "search"));
+    assert!(request
+        .frontend_tools()
+        .iter()
+        .any(|tool| tool.name == "copy"));
+    assert!(!request
+        .frontend_tools()
+        .iter()
+        .any(|tool| tool.name == "nonexistent"));
 }
 
 // ============================================================================
@@ -11924,7 +12070,7 @@ fn test_interaction_to_ag_ui_events() {
     let interaction = Interaction::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));
 
-    let events = interaction.to_ag_ui_events();
+    let events = interaction_to_ag_ui_events(&interaction);
 
     assert_eq!(events.len(), 3, "Should produce START, ARGS, END");
     assert!(matches!(&events[0], AGUIEvent::ToolCallStart { .. }));
@@ -12414,7 +12560,10 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     // Phase 3: Client approves via AG-UI tool message
     let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", &interaction.id));
-    assert!(approve_request.is_interaction_approved(&interaction.id));
+    assert!(approve_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == &interaction.id));
 
     // Phase 4: AgUiInteractionPlugin processes approval in SessionStart
     let response_plugin = AgUiInteractionPlugin::from_request(&approve_request);
@@ -12461,7 +12610,10 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     // Client denies
     let deny_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("false", pending_id));
-    assert!(!deny_request.is_interaction_approved(pending_id));
+    assert!(!deny_request
+        .approved_interaction_ids()
+        .iter()
+        .any(|id| id == pending_id));
 
     let response_plugin = AgUiInteractionPlugin::from_request(&deny_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);

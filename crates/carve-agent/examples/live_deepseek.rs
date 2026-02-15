@@ -9,7 +9,8 @@
 use async_trait::async_trait;
 use carve_agent::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentEvent, AgentLoopError, Context,
-    Message, RunContext, Thread, ThreadWriter, Tool, ToolDescriptor, ToolError, ToolResult,
+    Message, RunContext, Thread, ThreadReader, ThreadWriter, Tool, ToolDescriptor, ToolError,
+    ToolResult,
 };
 use carve_state_derive::State;
 use carve_thread_store_adapters::{FileStore, MemoryStore};
