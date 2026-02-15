@@ -1139,7 +1139,10 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(text1.contains(r#""type":"finish""#), "turn 1 did not finish");
+    assert!(
+        text1.contains(r#""type":"finish""#),
+        "turn 1 did not finish"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1148,11 +1151,8 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
         os: os.clone(),
         storage: storage.clone(),
     });
-    let (status, history_text) = get_json(
-        app2,
-        &format!("/v1/threads/{thread_id}/messages/ai-sdk"),
-    )
-    .await;
+    let (status, history_text) =
+        get_json(app2, &format!("/v1/threads/{thread_id}/messages/ai-sdk")).await;
 
     println!("=== AI SDK History ===\n{history_text}");
     assert_eq!(status, StatusCode::OK);
@@ -1160,7 +1160,9 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
 
     // Must have messages array.
-    let messages = history["messages"].as_array().expect("messages must be array");
+    let messages = history["messages"]
+        .as_array()
+        .expect("messages must be array");
     assert!(
         messages.len() >= 2,
         "expected at least 2 messages (user + assistant), got {}",
@@ -1187,8 +1189,13 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
 
     // AI SDK format: parts should have state=done.
     let assistant_msg = messages.iter().find(|m| m["role"] == "assistant").unwrap();
-    let assistant_parts = assistant_msg["parts"].as_array().expect("parts must be array");
-    assert!(!assistant_parts.is_empty(), "assistant parts should not be empty");
+    let assistant_parts = assistant_msg["parts"]
+        .as_array()
+        .expect("parts must be array");
+    assert!(
+        !assistant_parts.is_empty(),
+        "assistant parts should not be empty"
+    );
 
     // Pagination fields should be present.
     assert!(history.get("has_more").is_some(), "missing has_more field");
@@ -1236,11 +1243,8 @@ async fn e2e_tensorzero_ag_ui_load_history() {
         os: os.clone(),
         storage: storage.clone(),
     });
-    let (status, history_text) = get_json(
-        app2,
-        &format!("/v1/threads/{thread_id}/messages/ag-ui"),
-    )
-    .await;
+    let (status, history_text) =
+        get_json(app2, &format!("/v1/threads/{thread_id}/messages/ag-ui")).await;
 
     println!("=== AG-UI History ===\n{history_text}");
     assert_eq!(status, StatusCode::OK);
@@ -1248,7 +1252,9 @@ async fn e2e_tensorzero_ag_ui_load_history() {
     let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
 
     // Must have messages array.
-    let messages = history["messages"].as_array().expect("messages must be array");
+    let messages = history["messages"]
+        .as_array()
+        .expect("messages must be array");
     assert!(
         messages.len() >= 2,
         "expected at least 2 messages (user + assistant), got {}",
@@ -1353,7 +1359,9 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     assert_eq!(status, StatusCode::OK);
 
     let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
-    let messages = history["messages"].as_array().expect("messages must be array");
+    let messages = history["messages"]
+        .as_array()
+        .expect("messages must be array");
 
     // Should have at least 4 messages: user1, assistant1, user2, assistant2.
     assert!(
@@ -1429,11 +1437,7 @@ async fn e2e_tensorzero_raw_message_history() {
         os: os.clone(),
         storage: storage.clone(),
     });
-    let (status, raw_text) = get_json(
-        app2,
-        &format!("/v1/threads/{thread_id}/messages"),
-    )
-    .await;
+    let (status, raw_text) = get_json(app2, &format!("/v1/threads/{thread_id}/messages")).await;
 
     println!("=== Raw Message History (status={status}) ===\n{raw_text}");
     assert_eq!(status, StatusCode::OK, "raw messages failed: {raw_text}");
@@ -1448,10 +1452,7 @@ async fn e2e_tensorzero_raw_message_history() {
 
     // Raw format has flat fields: role, content, id, cursor.
     let first = &messages[0];
-    assert!(
-        first["role"].is_string(),
-        "raw message should have role"
-    );
+    assert!(first["role"].is_string(), "raw message should have role");
     assert!(
         first["content"].is_string(),
         "raw message should have content"
@@ -1462,11 +1463,7 @@ async fn e2e_tensorzero_raw_message_history() {
         os: os.clone(),
         storage: storage.clone(),
     });
-    let (status, thread_text) = get_json(
-        app3,
-        &format!("/v1/threads/{thread_id}"),
-    )
-    .await;
+    let (status, thread_text) = get_json(app3, &format!("/v1/threads/{thread_id}")).await;
 
     println!("=== Thread Metadata ===\n{thread_text}");
     assert_eq!(status, StatusCode::OK);
@@ -1490,11 +1487,7 @@ async fn e2e_tensorzero_history_not_found() {
     let os = Arc::new(make_os(storage.clone()));
     let app = router(AppState { os, storage });
 
-    let (status, _) = get_json(
-        app,
-        "/v1/threads/nonexistent-thread/messages/ai-sdk",
-    )
-    .await;
+    let (status, _) = get_json(app, "/v1/threads/nonexistent-thread/messages/ai-sdk").await;
 
     assert_eq!(
         status,
@@ -1556,7 +1549,9 @@ async fn e2e_tensorzero_tool_call_history() {
     assert_eq!(status, StatusCode::OK);
 
     let history: Value = serde_json::from_str(&history_text).expect("invalid JSON");
-    let messages = history["messages"].as_array().expect("messages must be array");
+    let messages = history["messages"]
+        .as_array()
+        .expect("messages must be array");
 
     // Should have user message + assistant messages (including tool calls).
     assert!(
@@ -1603,7 +1598,9 @@ async fn e2e_tensorzero_tool_call_history() {
     assert_eq!(status, StatusCode::OK);
 
     let agui_history: Value = serde_json::from_str(&agui_text).expect("invalid JSON");
-    let agui_messages = agui_history["messages"].as_array().expect("messages must be array");
+    let agui_messages = agui_history["messages"]
+        .as_array()
+        .expect("messages must be array");
 
     // AG-UI should also have the conversation.
     assert!(

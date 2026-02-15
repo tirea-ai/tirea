@@ -1154,9 +1154,7 @@ async fn test_session_incremental_checkpoints() {
 
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
-    use carve_agent::{
-        CheckpointReason, ThreadDelta, ThreadStore, ThreadSync,
-    };
+    use carve_agent::{CheckpointReason, ThreadDelta, ThreadStore, ThreadSync};
 
     let storage = MemoryStorage::new();
 
@@ -2059,7 +2057,9 @@ fn test_agent_event_all_variants() {
         message_id: String::new(),
     };
     match tool_done {
-        AgentEvent::ToolCallDone { id, result, patch, .. } => {
+        AgentEvent::ToolCallDone {
+            id, result, patch, ..
+        } => {
             assert_eq!(id, "call_1");
             assert!(result.is_success());
             assert!(patch.is_none());
@@ -4628,7 +4628,9 @@ async fn test_scenario_frontend_tool_request_to_agui() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 4. Plugin intercepts in BeforeToolExecute phase
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     // 5. Tool should be pending
     assert!(step.tool_pending());
@@ -4694,7 +4696,9 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(step.tool_pending(), "Tool {} should be pending", tool_name);
 
@@ -4749,7 +4753,9 @@ async fn test_scenario_frontend_tool_complex_args() {
     let tool_call = ToolCall::new("call_complex", "fileDialog", complex_args.clone());
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(step.tool_pending());
 
@@ -4790,7 +4796,9 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -4809,7 +4817,9 @@ async fn test_scenario_frontend_tool_empty_args() {
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(step.tool_pending());
         let interaction = step
@@ -4848,7 +4858,9 @@ async fn test_scenario_frontend_tool_special_names() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert!(
             step.tool_pending(),
@@ -4898,7 +4910,9 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert_eq!(
             step.tool_pending(),
@@ -4979,7 +4993,9 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // 1. Plugin creates pending state with interaction
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     // 2. Agent loop would create AgentEvent::Pending
     let interaction = step
@@ -5046,7 +5062,9 @@ async fn test_scenario_backend_tool_passthrough() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     // Plugin should not interfere
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(!step.tool_pending(), "Backend tool should not be pending");
     assert!(!step.tool_blocked(), "Backend tool should not be blocked");
@@ -5118,7 +5136,9 @@ async fn test_scenario_permission_approved_complete_flow() {
 
     // PermissionPlugin creates pending interaction
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5171,7 +5191,9 @@ async fn test_scenario_permission_denied_complete_flow() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5214,7 +5236,9 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
     step.tool = Some(ToolContext::new(&tool_call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(step.tool_pending());
     let interaction = step
@@ -5265,7 +5289,9 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
+        .await;
     let interaction1 = step1
         .tool
         .as_ref()
@@ -5283,7 +5309,9 @@ async fn test_scenario_multiple_interactions_sequence() {
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
+        .await;
     let interaction2 = step2
         .tool
         .as_ref()
@@ -5445,7 +5473,9 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     // Tool should be blocked
     assert!(step.tool_blocked(), "Denied tool should be blocked");
@@ -5487,7 +5517,9 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     step.tool = Some(ToolContext::new(&call));
 
     // Run plugin
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     // Tool should NOT be blocked
     assert!(!step.tool_blocked(), "Approved tool should not be blocked");
@@ -5917,7 +5949,9 @@ async fn test_permission_flow_approval_e2e() {
 
     // PermissionPlugin creates pending
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
     assert!(
         step.tool_pending(),
         "Tool should be pending after permission ask"
@@ -5982,7 +6016,9 @@ async fn test_permission_flow_denial_e2e() {
     step.tool = Some(ToolContext::new(&tool_call));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
     assert!(step.tool_pending());
 
     let interaction = step
@@ -6042,7 +6078,9 @@ async fn test_permission_flow_multiple_tools_mixed() {
     step1.tool = Some(ToolContext::new(&call1));
 
     let plugin = PermissionPlugin;
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
+        .await;
     let int1 = step1
         .tool
         .as_ref()
@@ -6059,7 +6097,9 @@ async fn test_permission_flow_multiple_tools_mixed() {
     );
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
+        .await;
     let int2 = step2
         .tool
         .as_ref()
@@ -6388,7 +6428,9 @@ async fn test_frontend_tool_flow_creates_pending() {
     );
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
 
     assert!(step.tool_pending(), "Frontend tool should be pending");
 
@@ -6670,7 +6712,9 @@ async fn test_resume_flow_with_approval() {
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
     assert!(!step.tool_blocked());
 }
 
@@ -6698,7 +6742,9 @@ async fn test_resume_flow_with_denial() {
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
 
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+        .await;
     assert!(step.tool_blocked());
 }
 
@@ -6730,7 +6776,9 @@ async fn test_resume_flow_multiple_responses() {
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
         assert_eq!(
             step.tool_blocked(),
             should_block,
@@ -6766,7 +6814,9 @@ async fn test_resume_flow_partial_responses() {
     let mut step1 = StepContext::new(&session1, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step1, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step1, &ctx)
+        .await;
     assert!(!step1.tool_blocked());
 
     // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
@@ -6774,7 +6824,9 @@ async fn test_resume_flow_partial_responses() {
     let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
-    plugin.on_phase(Phase::BeforeToolExecute, &mut step2, &ctx).await;
+    plugin
+        .on_phase(Phase::BeforeToolExecute, &mut step2, &ctx)
+        .await;
     assert!(!step2.tool_blocked()); // Not blocked by response plugin (no response)
 }
 
@@ -7387,7 +7439,9 @@ async fn test_multiple_interaction_responses() {
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         assert_eq!(
             step.tool_blocked(),
@@ -7914,7 +7968,9 @@ fn test_multiple_step_sequences() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
     // Step 1
-    let step1_start = AgentEvent::StepStart { message_id: String::new() };
+    let step1_start = AgentEvent::StepStart {
+        message_id: String::new(),
+    };
     let events1 = ctx.on_agent_event(&step1_start);
     let step1_name = if let AGUIEvent::StepStarted { step_name, .. } = &events1[0] {
         step_name.clone()
@@ -7929,7 +7985,9 @@ fn test_multiple_step_sequences() {
     }
 
     // Step 2
-    let step2_start = AgentEvent::StepStart { message_id: String::new() };
+    let step2_start = AgentEvent::StepStart {
+        message_id: String::new(),
+    };
     let events2 = ctx.on_agent_event(&step2_start);
     let step2_name = if let AGUIEvent::StepStarted { step_name, .. } = &events2[0] {
         step_name.clone()
@@ -9800,7 +9858,6 @@ fn test_event_with_raw_event_passthrough() {
         assert_eq!(raw["model"], "claude-3");
     }
 }
-
 
 // ============================================================================
 // AG-UI Protocol Spec Tests - Complete Event Flow Patterns
@@ -11714,7 +11771,7 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
 #[test]
 fn test_agent_event_activity_snapshot_to_ag_ui() {
     use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-    
+
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivitySnapshot {
         message_id: "activity_1".to_string(),
@@ -11746,7 +11803,7 @@ fn test_agent_event_activity_snapshot_to_ag_ui() {
 #[test]
 fn test_agent_event_activity_delta_to_ag_ui() {
     use carve_agent::ag_ui::{AGUIContext, AGUIEvent};
-    
+
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
     let event = AgentEvent::ActivityDelta {
         message_id: "activity_1".to_string(),
@@ -11779,7 +11836,9 @@ fn test_agent_event_activity_delta_to_ag_ui() {
 fn test_agent_event_step_events() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let step_start = AgentEvent::StepStart { message_id: String::new() };
+    let step_start = AgentEvent::StepStart {
+        message_id: String::new(),
+    };
     let events = ctx.on_agent_event(&step_start);
     assert_eq!(events.len(), 1);
     assert!(
@@ -11974,7 +12033,9 @@ mod llmmetry_tracing {
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
 
         step.response = Some(StreamResult {
             text: "hello".into(),
@@ -11982,7 +12043,9 @@ mod llmmetry_tracing {
             usage: Some(usage(100, 50, 150)),
         });
 
-        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12020,12 +12083,16 @@ mod llmmetry_tracing {
         let call = ToolCall::new("tc1", "search", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
-        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12062,21 +12129,29 @@ mod llmmetry_tracing {
         plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
 
         // Inference
-        plugin.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .await;
         step.response = Some(StreamResult {
             text: "use search tool".into(),
             tool_calls: vec![],
             usage: Some(usage(50, 25, 75)),
         });
-        plugin.on_phase(Phase::AfterInference, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .await;
 
         // Tool execution
         let call = ToolCall::new("c1", "search", json!({"q": "test"}));
         step.tool = Some(ToolContext::new(&call));
-        plugin.on_phase(Phase::BeforeToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"results": []})));
-        plugin.on_phase(Phase::AfterToolExecute, &mut step, &ctx).await;
+        plugin
+            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .await;
 
         // Thread end
         plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
