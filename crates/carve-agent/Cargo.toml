@@ -11,7 +11,6 @@ carve-state-derive = { path = "../carve-state-derive" }
 carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
 carve-protocol-contract = { path = "../carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
-carve-protocol-ai-sdk-v6 = { path = "../carve-protocol-ai-sdk-v6" }
 carve-thread-model = { path = "../carve-thread-model" }
 carve-thread-store-contract = { path = "../carve-thread-store-contract" }
 serde = { version = "1", features = ["derive"] }
@@ -38,6 +37,7 @@ mcp = ["dep:mcp"]
 
 [dev-dependencies]
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
+carve-protocol-ai-sdk-v6 = { path = "../carve-protocol-ai-sdk-v6" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }

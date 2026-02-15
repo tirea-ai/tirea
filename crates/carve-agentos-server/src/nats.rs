@@ -1,9 +1,9 @@
-use carve_agent::ag_ui::{AGUIEvent, RunAgentRequest};
-use carve_agent::ai_sdk_v6::{
+use carve_agent::{AgentEvent, AgentOs, RunRequest};
+use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
+use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
-use carve_agent::protocol::{ProtocolInputAdapter, ProtocolOutputEncoder};
-use carve_agent::{AgUiInputAdapter, AgUiProtocolEncoder, AgentEvent, AgentOs, RunRequest};
+use carve_protocol_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;

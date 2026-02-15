@@ -4185,7 +4185,7 @@ async fn test_message_id_agui_tool_result_carries_tool_id() {
 /// entire stream, overriding its default run-derived ID.
 #[tokio::test]
 async fn test_message_id_ai_sdk_encoder_uses_step_id() {
-    use crate::ai_sdk_v6::AiSdkEncoder;
+    use carve_protocol_ai_sdk_v6::AiSdkEncoder;
 
     let step_msg_id = "pre-gen-assistant-uuid".to_string();
     let mut enc = AiSdkEncoder::new("run_12345678".to_string());

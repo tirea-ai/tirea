@@ -85,7 +85,6 @@ pub mod activity;
 pub mod ag_ui;
 pub mod agent;
 pub mod agent_os;
-pub mod ai_sdk_v6;
 pub mod convert;
 pub mod execute;
 pub mod interaction;
@@ -143,17 +142,8 @@ pub use skills::{
     SkillScriptTool, SkillSubsystem, SkillSubsystemError, APPEND_USER_MESSAGES_METADATA_KEY,
 };
 
-// AI SDK v6 stream exports
-pub use ai_sdk_v6::{
-    AiSdkEncoder, StreamState, ToolState, UIMessage, UIMessagePart, UIRole, UIStreamEvent,
-    AI_SDK_VERSION,
-};
-
 // Protocol adapters/encoders
 pub use ag_ui::{AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder};
-pub use ai_sdk_v6::{
-    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-};
 
 // Protocol traits
 pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};

@@ -5,17 +5,19 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::ag_ui::{
-    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
-};
-use carve_agent::ai_sdk_v6::{
-    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-    AI_SDK_VERSION,
-};
-use carve_agent::protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use carve_agent::{
     AgentEvent, AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
     ThreadListPage, ThreadListQuery, ThreadReader, Visibility,
+};
+use carve_protocol_ag_ui::{
+    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
+};
+use carve_protocol_ai_sdk_v6::{
+    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
+    AI_SDK_VERSION,
+};
+use carve_protocol_contract::{
+    ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder,
 };
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
