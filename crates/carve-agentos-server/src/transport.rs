@@ -12,7 +12,7 @@ pub async fn pump_encoded_stream<E, SendFn, SendFut>(
     mut encoder: E,
     mut send: SendFn,
 ) where
-    E: ProtocolOutputEncoder,
+    E: ProtocolOutputEncoder<InputEvent = AgentEvent>,
     SendFn: FnMut(E::Event) -> SendFut,
     SendFut: Future<Output = Result<(), ()>>,
 {

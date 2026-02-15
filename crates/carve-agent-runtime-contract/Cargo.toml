@@ -1,0 +1,16 @@
+[package]
+name = "carve-agent-runtime-contract"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Shared runtime contract types for carve-agent and protocol adapters"
+
+[dependencies]
+carve-state = { path = "../carve-state" }
+carve-thread-model = { path = "../carve-thread-model" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+genai = "0.5"
+
+[lints]
+workspace = true

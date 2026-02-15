@@ -1,6 +1,6 @@
 use super::{AGUIContext, AGUIEvent};
-use crate::protocol::ProtocolOutputEncoder;
-use crate::AgentEvent;
+use carve_agent_runtime_contract::AgentEvent;
+use carve_protocol_contract::ProtocolOutputEncoder;
 
 pub struct AgUiProtocolEncoder {
     ctx: AGUIContext,
@@ -15,6 +15,7 @@ impl AgUiProtocolEncoder {
 }
 
 impl ProtocolOutputEncoder for AgUiProtocolEncoder {
+    type InputEvent = AgentEvent;
     type Event = AGUIEvent;
 
     fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<Self::Event> {

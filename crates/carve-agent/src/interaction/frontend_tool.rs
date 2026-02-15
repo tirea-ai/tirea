@@ -49,11 +49,6 @@ impl FrontendToolPlugin {
     pub(crate) fn is_frontend_tool(&self, name: &str) -> bool {
         self.frontend_tools.contains(name)
     }
-
-    /// Whether any frontend tools are configured.
-    pub(crate) fn has_frontend_tools(&self) -> bool {
-        !self.frontend_tools.is_empty()
-    }
 }
 
 #[async_trait]
@@ -149,16 +144,6 @@ impl FrontendToolRegistry {
             map.entry(spec.name.clone()).or_insert(spec);
         }
         Self { specs: map }
-    }
-
-    /// Return true when registry contains any tool.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.specs.is_empty()
-    }
-
-    /// Return all frontend tool names.
-    pub(crate) fn names(&self) -> HashSet<String> {
-        self.specs.keys().cloned().collect()
     }
 
     /// Install frontend tool stubs into the tool map without overriding existing tools.
@@ -264,8 +249,7 @@ mod tests {
                 parameters: None,
             },
         ]);
-        assert!(!registry.is_empty());
-        let names = registry.names();
+        let names: HashSet<String> = registry.specs.keys().cloned().collect();
         assert!(names.contains("copy"));
         assert!(names.contains("notify"));
 

@@ -1,4 +1,5 @@
 use super::UIStreamEvent;
+use carve_agent_runtime_contract::{AgentEvent, StopReason};
 use tracing::warn;
 
 /// Data event name for a full state snapshot payload.
@@ -22,7 +23,7 @@ pub const DATA_EVENT_INTERACTION_RESOLVED: &str = "interaction-resolved";
 ///
 /// Tracks text block lifecycle (open/close) across tool calls, ensuring
 /// `text-start` and `text-end` are always properly paired. This mirrors the
-/// pattern used by [`AGUIContext`](crate::ag_ui::AGUIContext) for AG-UI.
+/// pattern used by AG-UI encoders for AG-UI.
 ///
 /// # Text lifecycle rules
 ///
@@ -94,9 +95,7 @@ impl AiSdkEncoder {
     }
 
     /// Convert an `AgentEvent` to UI stream events with proper text lifecycle.
-    pub fn on_agent_event(&mut self, ev: &crate::stream::AgentEvent) -> Vec<UIStreamEvent> {
-        use crate::stream::AgentEvent;
-
+    pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<UIStreamEvent> {
         if self.finished {
             return Vec::new();
         }
@@ -264,8 +263,7 @@ impl AiSdkEncoder {
         }
     }
 
-    fn map_stop_reason(reason: Option<&crate::stop::StopReason>) -> &'static str {
-        use crate::stop::StopReason;
+    fn map_stop_reason(reason: Option<&StopReason>) -> &'static str {
         match reason {
             Some(StopReason::NaturalEnd)
             | Some(StopReason::ContentMatched(_))

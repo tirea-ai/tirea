@@ -4,7 +4,6 @@
 
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::Thread;
@@ -22,104 +21,7 @@ pub enum ToolPermissionBehavior {
     Deny,
 }
 
-/// Generic interaction request for client-side actions.
-///
-/// This is a pure mechanism for requesting actions from the client.
-/// The meaning of `action` and `parameters` is defined by the caller
-/// and interpreted by the client.
-///
-/// # Examples
-///
-/// ```
-/// use carve_agent::Interaction;
-/// use serde_json::json;
-///
-/// // Confirmation request
-/// let confirm = Interaction::new("perm_1", "confirm")
-///     .with_message("Allow tool 'read_file' to execute?");
-///
-/// // Input request with parameters
-/// let input = Interaction::new("input_1", "input")
-///     .with_message("Enter your name:")
-///     .with_parameters(json!({ "default": "John Doe" }));
-///
-/// // Custom action
-/// let custom = Interaction::new("action_1", "file_picker")
-///     .with_parameters(json!({ "accept": ".txt,.md" }));
-/// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Interaction {
-    /// Unique interaction ID.
-    pub id: String,
-
-    /// Action identifier (freeform string, meaning defined by caller).
-    pub action: String,
-
-    /// Human-readable message/description.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub message: String,
-
-    /// Action-specific parameters.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub parameters: Value,
-
-    /// Optional JSON Schema for expected response.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response_schema: Option<Value>,
-}
-
-impl Interaction {
-    /// Create a new interaction with id and action.
-    pub fn new(id: impl Into<String>, action: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            action: action.into(),
-            message: String::new(),
-            parameters: Value::Null,
-            response_schema: None,
-        }
-    }
-
-    /// Set the message.
-    pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = message.into();
-        self
-    }
-
-    /// Set the parameters.
-    pub fn with_parameters(mut self, parameters: Value) -> Self {
-        self.parameters = parameters;
-        self
-    }
-
-    /// Set the response schema.
-    pub fn with_response_schema(mut self, schema: Value) -> Self {
-        self.response_schema = Some(schema);
-        self
-    }
-}
-
-/// Generic interaction response.
-///
-/// The structure of `result` depends on the action type and is
-/// interpreted by the caller.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InteractionResponse {
-    /// The interaction ID this response is for.
-    pub interaction_id: String,
-    /// Result value (structure defined by the action type).
-    pub result: Value,
-}
-
-impl InteractionResponse {
-    /// Create a new interaction response.
-    pub fn new(interaction_id: impl Into<String>, result: Value) -> Self {
-        Self {
-            interaction_id: interaction_id.into(),
-            result,
-        }
-    }
-}
+pub use carve_agent_runtime_contract::{Interaction, InteractionResponse};
 
 /// Agent-owned state stored in the session document.
 ///
@@ -191,6 +93,7 @@ pub struct AgentState {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serde_json::Value;
 
     #[test]
     fn test_tool_permission_behavior_default() {

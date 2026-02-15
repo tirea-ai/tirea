@@ -1,0 +1,19 @@
+[package]
+name = "carve-protocol-ag-ui"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "AG-UI protocol types and adapters for carve-agent"
+
+[dependencies]
+carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
+carve-protocol-contract = { path = "../carve-protocol-contract" }
+carve-thread-model = { path = "../carve-thread-model" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+json-patch = "3"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "v7"] }
+
+[lints]
+workspace = true

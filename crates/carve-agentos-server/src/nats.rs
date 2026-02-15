@@ -3,7 +3,7 @@ use carve_agent::ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
 use carve_agent::protocol::{ProtocolInputAdapter, ProtocolOutputEncoder};
-use carve_agent::{AgUiInputAdapter, AgUiProtocolEncoder, AgentOs, RunRequest};
+use carve_agent::{AgUiInputAdapter, AgUiProtocolEncoder, AgentEvent, AgentOs, RunRequest};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;
@@ -169,7 +169,7 @@ impl NatsGateway {
         build_error_event: BuildErrorEvent,
     ) -> Result<(), NatsGatewayError>
     where
-        E: ProtocolOutputEncoder + Send + 'static,
+        E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
         E::Event: Serialize + Send + 'static,
         ErrEvent: Serialize,
         BuildEncoder: FnOnce(&carve_agent::RunStream) -> E,

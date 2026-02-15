@@ -1,0 +1,14 @@
+[package]
+name = "carve-protocol-contract"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Protocol adapter traits shared across UI protocol crates"
+
+[dependencies]
+carve-agent-runtime-contract = { path = "../carve-agent-runtime-contract" }
+carve-thread-model = { path = "../carve-thread-model" }
+serde = { workspace = true, features = ["derive"] }
+
+[lints]
+workspace = true

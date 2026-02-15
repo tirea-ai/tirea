@@ -1,6 +1,6 @@
 use super::{AiSdkEncoder, UIStreamEvent, AI_SDK_VERSION};
-use crate::protocol::ProtocolOutputEncoder;
-use crate::AgentEvent;
+use carve_agent_runtime_contract::AgentEvent;
+use carve_protocol_contract::ProtocolOutputEncoder;
 use serde_json::json;
 
 const RUN_INFO_EVENT_NAME: &str = "run-info";
@@ -32,6 +32,7 @@ impl AiSdkV6ProtocolEncoder {
 }
 
 impl ProtocolOutputEncoder for AiSdkV6ProtocolEncoder {
+    type InputEvent = AgentEvent;
     type Event = UIStreamEvent;
 
     fn prologue(&mut self) -> Vec<Self::Event> {

@@ -1,4 +1,5 @@
-use crate::ag_ui::protocol::AGUIEvent;
+use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent};
+use carve_agent_runtime_contract::AgentEvent;
 use serde_json::Value;
 use std::collections::HashMap;
 use tracing::warn;
@@ -123,9 +124,7 @@ impl AGUIContext {
     ///
     /// Handles full stream lifecycle: text start/end pairs, step counters,
     /// terminal event suppression (after Error), and Pending event filtering.
-    pub fn on_agent_event(&mut self, ev: &crate::stream::AgentEvent) -> Vec<AGUIEvent> {
-        use crate::stream::AgentEvent;
-
+    pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
         // After a terminal event (Error/Aborted), suppress everything.
         if self.stopped {
             return Vec::new();
@@ -145,7 +144,7 @@ impl AGUIContext {
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
-                events.extend(interaction.to_ag_ui_events());
+                events.extend(interaction_to_ag_ui_events(interaction));
                 return events;
             }
             _ => {}

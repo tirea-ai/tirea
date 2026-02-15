@@ -1,6 +1,5 @@
-use crate::ag_ui::context::AGUIContext;
-use crate::ag_ui::protocol::AGUIEvent;
-use crate::ag_ui::request::{prepare_request_runtime, set_run_identity, RunAgentRequest};
+use crate::ag_ui::request::{prepare_request_runtime, set_run_identity};
+use crate::ag_ui::{AGUIContext, AGUIEvent, RunAgentRequest};
 use crate::r#loop::{run_loop_stream, AgentConfig, RunContext};
 use crate::thread::Thread;
 use crate::traits::tool::Tool;

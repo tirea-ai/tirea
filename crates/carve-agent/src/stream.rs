@@ -8,10 +8,7 @@
 //! - `AGUIContext::on_agent_event()`: Convert to AG-UI protocol events
 //! - `AiSdkEncoder::on_agent_event()`: Convert to AI SDK v6 UIStreamEvents
 
-use crate::state_types::Interaction;
-use crate::traits::tool::ToolResult;
 use crate::types::ToolCall;
-use carve_state::TrackedPatch;
 use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -222,154 +219,12 @@ impl StreamResult {
     }
 }
 
-/// Agent loop events for streaming execution.
-///
-/// These events represent the protocol-agnostic internal agent loop state.
-/// Use [`AGUIContext::on_agent_event`] or [`AiSdkEncoder::on_agent_event`] for protocol conversion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event_type", rename_all = "snake_case")]
-pub enum AgentEvent {
-    // ========================================================================
-    // Lifecycle Events (AG-UI compatible)
-    // ========================================================================
-    /// Run started (emitted at the beginning of agent execution).
-    RunStart {
-        thread_id: String,
-        run_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parent_run_id: Option<String>,
-    },
-    /// Run finished (emitted when agent execution completes).
-    RunFinish {
-        thread_id: String,
-        run_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        result: Option<Value>,
-        /// Why the agent loop stopped. `None` for pauses (e.g. pending interaction).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stop_reason: Option<crate::stop::StopReason>,
-    },
-
-    // ========================================================================
-    // Text Events
-    // ========================================================================
-    /// LLM text delta.
-    TextDelta { delta: String },
-
-    // ========================================================================
-    // Tool Events
-    // ========================================================================
-    /// Tool call started.
-    ToolCallStart { id: String, name: String },
-    /// Tool call arguments delta.
-    ToolCallDelta { id: String, args_delta: String },
-    /// Tool call input is complete (ready for execution).
-    ToolCallReady {
-        id: String,
-        name: String,
-        arguments: Value,
-    },
-    /// Tool call completed.
-    ToolCallDone {
-        id: String,
-        result: ToolResult,
-        patch: Option<TrackedPatch>,
-        /// Pre-generated ID for the stored tool result message.
-        #[serde(default)]
-        message_id: String,
-    },
-    // ========================================================================
-    // Step Events
-    // ========================================================================
-    /// Step started (for multi-step agents).
-    StepStart {
-        /// Pre-generated ID for the assistant message this step will produce.
-        #[serde(default)]
-        message_id: String,
-    },
-    /// Step completed.
-    StepEnd,
-
-    // ========================================================================
-    // LLM Telemetry Events
-    // ========================================================================
-    /// LLM inference completed with token usage data.
-    InferenceComplete {
-        /// Model used for this inference.
-        model: String,
-        /// Token usage (if available from the provider).
-        #[serde(skip_serializing_if = "Option::is_none")]
-        usage: Option<Usage>,
-        /// Duration of the LLM call in milliseconds.
-        duration_ms: u64,
-    },
-
-    // ========================================================================
-    // State Events (AG-UI compatible)
-    // ========================================================================
-    /// State snapshot (complete state).
-    StateSnapshot { snapshot: Value },
-    /// State delta (RFC 6902 JSON Patch operations).
-    StateDelta { delta: Vec<Value> },
-    /// Messages snapshot (for reconnection).
-    MessagesSnapshot { messages: Vec<Value> },
-
-    // ========================================================================
-    // Activity Events (AG-UI compatible)
-    // ========================================================================
-    /// Activity snapshot (complete activity state).
-    ActivitySnapshot {
-        message_id: String,
-        activity_type: String,
-        content: Value,
-        replace: Option<bool>,
-    },
-    /// Activity delta (RFC 6902 JSON Patch operations).
-    ActivityDelta {
-        message_id: String,
-        activity_type: String,
-        patch: Vec<Value>,
-    },
-
-    // ========================================================================
-    // Interaction Events
-    // ========================================================================
-    /// Interaction request created (before entering pending).
-    InteractionRequested { interaction: Interaction },
-    /// Interaction resolution received from client (approved/denied/payload).
-    InteractionResolved {
-        interaction_id: String,
-        result: Value,
-    },
-    /// Pending interaction request (client action required).
-    Pending { interaction: Interaction },
-
-    // ========================================================================
-    // Completion Events
-    // ========================================================================
-    /// Stream aborted by user or system.
-    Aborted { reason: String },
-    /// Error occurred.
-    Error { message: String },
-}
-
-impl AgentEvent {
-    /// Extract the response text from a `RunFinish` result value.
-    ///
-    /// Looks for `result.response` as a string; returns empty string if absent.
-    pub(crate) fn extract_response(result: &Option<Value>) -> String {
-        result
-            .as_ref()
-            .and_then(|v| v.get("response"))
-            .and_then(|r| r.as_str())
-            .unwrap_or_default()
-            .to_string()
-    }
-}
+pub use carve_agent_runtime_contract::AgentEvent;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ToolResult;
     use serde_json::json;
 
     #[test]

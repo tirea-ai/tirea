@@ -1,4 +1,4 @@
-use crate::state_types::Interaction;
+use carve_agent_runtime_contract::Interaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -612,43 +612,33 @@ impl AGUIEvent {
 // Interaction to AG-UI Conversion
 // ============================================================================
 
-impl Interaction {
-    /// Convert to AG-UI tool call events.
-    ///
-    /// Maps the interaction to a frontend tool call sequence:
-    /// - `action` becomes the tool name
-    /// - `id` becomes the tool call ID
-    /// - Other fields are passed as tool arguments
-    ///
-    /// This is a pure protocol mapping with no semantic interpretation.
-    /// The client determines how to handle each action.
-    pub fn to_ag_ui_events(&self) -> Vec<AGUIEvent> {
-        let args = json!({
-            "id": self.id,
-            "message": self.message,
-            "parameters": self.parameters,
-            "response_schema": self.response_schema,
-        });
+/// Convert one interaction to AG-UI tool call events.
+pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<AGUIEvent> {
+    let args = json!({
+        "id": interaction.id,
+        "message": interaction.message,
+        "parameters": interaction.parameters,
+        "response_schema": interaction.response_schema,
+    });
 
-        vec![
-            AGUIEvent::tool_call_start(&self.id, &self.action, None),
-            AGUIEvent::tool_call_args(
-                &self.id,
-                match serde_json::to_string(&args) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        warn!(
-                            error = %err,
-                            interaction_id = %self.id,
-                            "failed to serialize interaction arguments for AG-UI"
-                        );
-                        "{}".to_string()
-                    }
-                },
-            ),
-            AGUIEvent::tool_call_end(&self.id),
-        ]
-    }
+    vec![
+        AGUIEvent::tool_call_start(&interaction.id, &interaction.action, None),
+        AGUIEvent::tool_call_args(
+            &interaction.id,
+            match serde_json::to_string(&args) {
+                Ok(value) => value,
+                Err(err) => {
+                    warn!(
+                        error = %err,
+                        interaction_id = %interaction.id,
+                        "failed to serialize interaction arguments for AG-UI"
+                    );
+                    "{}".to_string()
+                }
+            },
+        ),
+        AGUIEvent::tool_call_end(&interaction.id),
+    ]
 }
 
 // ============================================================================

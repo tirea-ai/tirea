@@ -1,5 +1,6 @@
-use crate::protocol::ProtocolInputAdapter;
-use crate::Message;
+use carve_agent_runtime_contract::RunRequest;
+use carve_protocol_contract::ProtocolInputAdapter;
+use carve_thread_model::Message;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AiSdkV6RunRequest {
@@ -15,8 +16,8 @@ pub struct AiSdkV6InputAdapter;
 impl ProtocolInputAdapter for AiSdkV6InputAdapter {
     type Request = AiSdkV6RunRequest;
 
-    fn to_run_request(agent_id: String, request: Self::Request) -> crate::agent_os::RunRequest {
-        crate::agent_os::RunRequest {
+    fn to_run_request(agent_id: String, request: Self::Request) -> RunRequest {
+        RunRequest {
             agent_id,
             thread_id: if request.thread_id.trim().is_empty() {
                 None

@@ -14,7 +14,7 @@ use carve_agent::ai_sdk_v6::{
 };
 use carve_agent::protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use carve_agent::{
-    AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
+    AgentEvent, AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
     ThreadListPage, ThreadListQuery, ThreadReader, Visibility,
 };
 use serde::{Deserialize, Serialize};
@@ -267,7 +267,7 @@ fn encoded_sse_body<E>(
     trailer: Option<&'static str>,
 ) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
 where
-    E: ProtocolOutputEncoder + Send + 'static,
+    E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
     E::Event: Serialize + Send + 'static,
 {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);

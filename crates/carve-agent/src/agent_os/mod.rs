@@ -204,28 +204,7 @@ pub enum AgentOsRunError {
     ThreadStoreNotConfigured,
 }
 
-/// Request to run an agent. This is the unified entry point for all protocols
-/// (AI SDK, AG-UI, etc.) — the transport layer converts protocol-specific
-/// requests into this internal format.
-#[derive(Debug, Clone)]
-pub struct RunRequest {
-    pub agent_id: String,
-    /// Thread (conversation) ID. `None` → auto-generate (new conversation).
-    pub thread_id: Option<String>,
-    /// Run ID. `None` → auto-generate.
-    pub run_id: Option<String>,
-    /// Resource this thread belongs to (for listing/querying).
-    pub resource_id: Option<String>,
-    /// Frontend state snapshot. For new threads, this becomes the initial state.
-    /// For existing threads, this replaces the current state (persisted atomically
-    /// with the user message).
-    pub state: Option<serde_json::Value>,
-    /// Messages to append before running (already converted to internal format).
-    /// Duplicates (by message ID / tool_call_id) are automatically skipped.
-    pub messages: Vec<Message>,
-    /// Request-scoped runtime context (user_id, token, parent_run_id, etc.).
-    pub runtime: HashMap<String, serde_json::Value>,
-}
+pub use carve_agent_runtime_contract::RunRequest;
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
 ///

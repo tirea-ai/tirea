@@ -1,63 +1,17 @@
 //! AG-UI protocol support and request/runtime adapters.
 
-mod context;
-mod history_encoder;
-mod input_adapter;
-mod output_encoder;
-mod protocol;
 mod request;
 mod runner;
 
 pub use crate::interaction::AgUiInteractionPlugin;
-pub use history_encoder::AgUiHistoryEncoder;
-pub use input_adapter::AgUiInputAdapter;
-pub use output_encoder::AgUiProtocolEncoder;
-#[cfg(test)]
-pub(crate) use request::core_message_from_ag_ui;
-pub use request::InteractionPlugin;
-
-pub use context::AGUIContext;
-pub use protocol::{AGUIEvent, BaseEventFields, MessageRole};
-pub use request::{
-    AGUIContextEntry, AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest,
-    ToolExecutionLocation,
+pub use carve_protocol_ag_ui::{
+    build_context_addendum, convert_agui_messages, core_message_from_ag_ui,
+    interaction_runtime_values, request_runtime_values, AGUIContext, AGUIContextEntry, AGUIEvent,
+    AGUIMessage, AGUIToolDef, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder,
+    BaseEventFields, MessageRole, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
+pub use request::InteractionPlugin;
 pub use runner::{
     run_agent_events_with_request, run_agent_stream, run_agent_stream_with_parent,
     run_agent_stream_with_request,
 };
-
-#[cfg(test)]
-use context::value_to_map;
-#[cfg(test)]
-use request::{
-    apply_agui_request_to_thread, build_context_addendum, ensure_agui_request_applied,
-    merge_frontend_tools, prepare_request_runtime, seed_session_from_request,
-    session_has_message_id, session_has_tool_call_id, should_seed_session_from_request,
-    AGUI_REQUEST_APPLIED_RUNTIME_KEY,
-};
-
-#[cfg(test)]
-use crate::r#loop::AgentConfig;
-#[cfg(test)]
-use crate::state_types::{Interaction, InteractionResponse};
-#[cfg(test)]
-use crate::thread::Thread;
-#[cfg(test)]
-use crate::traits::tool::Tool;
-#[cfg(test)]
-use genai::Client;
-#[cfg(test)]
-use serde_json::Value;
-#[cfg(test)]
-use std::collections::HashMap;
-#[cfg(test)]
-use std::sync::Arc;
-
-#[cfg(test)]
-use crate::interaction::FrontendToolStub;
-#[cfg(test)]
-use crate::interaction::{FrontendToolPlugin, InteractionResponsePlugin};
-
-#[cfg(test)]
-mod tests;
