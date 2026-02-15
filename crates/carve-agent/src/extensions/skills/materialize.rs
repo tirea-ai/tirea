@@ -1,4 +1,4 @@
-use crate::extensions::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
+use crate::extensions::skills::{LoadedAsset, LoadedReference, ScriptResult};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use carve_agent_contract::skills::SkillMaterializeError;
 use sha2::{Digest, Sha256};

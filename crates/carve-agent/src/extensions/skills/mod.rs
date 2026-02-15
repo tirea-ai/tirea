@@ -11,6 +11,7 @@ mod embedded_registry;
 mod in_memory_registry;
 mod materialize;
 mod registry;
+mod resource_lookup;
 mod runtime_plugin;
 mod skill_md;
 pub mod state;
@@ -19,8 +20,8 @@ mod tools;
 
 pub use carve_agent_contract::skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset, LoadedReference,
-    ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
-    SkillResource, SkillResourceKind,
+    ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
+    SkillRegistryWarning, SkillResource, SkillResourceKind,
 };
 pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;

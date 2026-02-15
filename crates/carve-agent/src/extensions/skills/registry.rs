@@ -3,9 +3,9 @@ use crate::extensions::skills::materialize::{
 };
 use crate::extensions::skills::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
 use async_trait::async_trait;
-pub use carve_agent_contract::skills::{
-    ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError, SkillRegistryWarning,
-    SkillResource, SkillResourceKind,
+use carve_agent_contract::skills::{
+    ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
+    SkillRegistryWarning, SkillResource, SkillResourceKind,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -131,17 +131,19 @@ impl SkillRegistry for FsSkillRegistry {
         let skill_id = skill_id.to_string();
         let path = path.to_string();
 
-        tokio::task::spawn_blocking(move || match kind {
-            SkillResourceKind::Reference => {
-                load_reference_material(&skill_id, &root, &path).map(SkillResource::Reference)
-            }
-            SkillResourceKind::Asset => {
-                load_asset_material(&skill_id, &root, &path).map(SkillResource::Asset)
-            }
-        })
-        .await
-        .map_err(|e| SkillRegistryError::Io(e.to_string()))?
-        .map_err(SkillRegistryError::from)
+        let materialized: Result<SkillResource, SkillMaterializeError> =
+            tokio::task::spawn_blocking(move || match kind {
+                SkillResourceKind::Reference => {
+                    load_reference_material(&skill_id, &root, &path).map(SkillResource::Reference)
+                }
+                SkillResourceKind::Asset => {
+                    load_asset_material(&skill_id, &root, &path).map(SkillResource::Asset)
+                }
+            })
+            .await
+            .map_err(|e| SkillRegistryError::Io(e.to_string()))?;
+
+        materialized.map_err(SkillRegistryError::from)
     }
 
     async fn run_script(
@@ -156,9 +158,9 @@ impl SkillRegistry for FsSkillRegistry {
             .get(skill_id)
             .cloned()
             .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
-        run_script_material(skill_id, &root, script, args)
-            .await
-            .map_err(SkillRegistryError::from)
+        let result: Result<ScriptResult, SkillMaterializeError> =
+            run_script_material(skill_id, &root, script, args).await;
+        result.map_err(SkillRegistryError::from)
     }
 }
 

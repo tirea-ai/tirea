@@ -1,8 +1,8 @@
-use crate::extensions::skills::registry::{
-    SkillRegistry, SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind,
+use crate::extensions::skills::resource_lookup::load_resource_from_maps;
+use crate::extensions::skills::{
+    LoadedAsset, LoadedReference, ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError,
+    SkillRegistryWarning, SkillResource, SkillResourceKind,
 };
-use crate::extensions::skills::state::{LoadedAsset, LoadedReference, ScriptResult};
-use crate::extensions::skills::SkillMeta;
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -75,24 +75,7 @@ impl SkillRegistry for InMemorySkillRegistry {
         kind: SkillResourceKind,
         path: &str,
     ) -> Result<SkillResource, SkillRegistryError> {
-        match kind {
-            SkillResourceKind::Reference => self
-                .references
-                .get(&(skill_id.to_string(), path.to_string()))
-                .cloned()
-                .map(SkillResource::Reference)
-                .ok_or_else(|| {
-                    SkillRegistryError::Unsupported(format!("reference not available: {path}"))
-                }),
-            SkillResourceKind::Asset => self
-                .assets
-                .get(&(skill_id.to_string(), path.to_string()))
-                .cloned()
-                .map(SkillResource::Asset)
-                .ok_or_else(|| {
-                    SkillRegistryError::Unsupported(format!("asset not available: {path}"))
-                }),
-        }
+        load_resource_from_maps(&self.references, &self.assets, skill_id, kind, path)
     }
 
     async fn run_script(
