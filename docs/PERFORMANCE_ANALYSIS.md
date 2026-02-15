@@ -115,7 +115,7 @@ Each parallel tool spawns a task with cloned context:
 ```rust
 // loop.rs:1229-1235
 let state = state.clone();          // Clone state
-let scratchpad = scratchpad.clone(); // Clone scratchpad
+let runtime = runtime.clone();      // Clone run-scoped runtime values
 ```
 
 **Impact**: For 3 concurrent tools, we clone state 3 times per step.
@@ -160,16 +160,16 @@ pub struct Thread {
 
 ---
 
-### Priority 2: Scratchpad Arc Sharing (MEDIUM IMPACT)
+### Priority 2: Runtime Context Sharing (MEDIUM IMPACT)
 
 **Change**:
 ```rust
 // From:
-let scratchpad = scratchpad.clone(); // in tool execution
+let runtime = runtime.clone(); // in tool execution
 
 // To:
-let scratchpad = Arc::new(scratchpad);
-// or use Arc<RwLock<HashMap>> for shared mutable access
+let runtime = Arc::new(runtime);
+// or use Arc<RwLock<Value>> for shared mutable access
 ```
 
 **Benefits**:
