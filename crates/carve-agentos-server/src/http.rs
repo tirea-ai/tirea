@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use crate::transport::pump_encoded_stream;
 use carve_agent::protocol::{
     AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
     AiSdkV6RunRequest, ProtocolHistoryEncoder, ProtocolInputAdapter, AI_SDK_VERSION,
 };
-use crate::transport::pump_encoded_stream;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -72,8 +72,14 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/threads", get(list_threads))
         .route("/v1/threads/:id", get(get_thread))
         .route("/v1/threads/:id/messages", get(get_thread_messages))
-        .route("/v1/threads/:id/messages/ag-ui", get(get_thread_messages_agui))
-        .route("/v1/threads/:id/messages/ai-sdk", get(get_thread_messages_ai_sdk))
+        .route(
+            "/v1/threads/:id/messages/ag-ui",
+            get(get_thread_messages_agui),
+        )
+        .route(
+            "/v1/threads/:id/messages/ai-sdk",
+            get(get_thread_messages_ai_sdk),
+        )
         .route("/v1/agents/:agent_id/runs/ai-sdk/sse", post(run_ai_sdk_sse))
         .route("/v1/agents/:agent_id/runs/ag-ui/sse", post(run_ag_ui_sse))
         .with_state(state)

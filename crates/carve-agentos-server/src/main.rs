@@ -153,17 +153,14 @@ async fn main() {
     if let Some(nats_url) = args.nats_url.clone() {
         let os = os.clone();
         tokio::spawn(async move {
-            let gateway = match carve_agentos_server::nats::NatsGateway::connect(
-                os, &nats_url,
-            )
-            .await
-            {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("nats connect failed: {}", e);
-                    return;
-                }
-            };
+            let gateway =
+                match carve_agentos_server::nats::NatsGateway::connect(os, &nats_url).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        eprintln!("nats connect failed: {}", e);
+                        return;
+                    }
+                };
             if let Err(e) = gateway.serve().await {
                 eprintln!("nats gateway stopped: {}", e);
             }

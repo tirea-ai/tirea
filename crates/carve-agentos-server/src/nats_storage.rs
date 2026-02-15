@@ -20,11 +20,9 @@
 //! deltas left over from interrupted runs.
 
 use async_nats::jetstream;
-use carve_agent::storage::{
-    Committed, StorageError, ThreadDelta, ThreadHead, ThreadStore,
-};
-use carve_agent::Thread;
 use async_trait::async_trait;
+use carve_agent::storage::{Committed, StorageError, ThreadDelta, ThreadHead, ThreadStore};
+use carve_agent::Thread;
 use std::sync::Arc;
 
 /// NATS JetStream stream name for thread deltas.
@@ -202,8 +200,8 @@ impl ThreadStore for NatsBufferedStorage {
         thread_id: &str,
         delta: &ThreadDelta,
     ) -> Result<Committed, StorageError> {
-        let payload = serde_json::to_vec(delta)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let payload =
+            serde_json::to_vec(delta).map_err(|e| StorageError::Serialization(e.to_string()))?;
 
         self.jetstream
             .publish(delta_subject(thread_id), payload.into())
@@ -232,10 +230,7 @@ impl ThreadStore for NatsBufferedStorage {
 
         // Best-effort purge of buffered deltas for this thread.
         if let Ok(stream) = self.jetstream.get_stream(STREAM_NAME).await {
-            let _ = stream
-                .purge()
-                .filter(delta_subject(&thread.id))
-                .await;
+            let _ = stream.purge().filter(delta_subject(&thread.id)).await;
         }
 
         Ok(())
