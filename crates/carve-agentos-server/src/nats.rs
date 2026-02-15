@@ -1,4 +1,4 @@
-use carve_agent::{AgentEvent, AgentOs, RunRequest};
+use carve_agent::{AgentEvent, AgentOs, RunExtensions, RunRequest};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing;
 
+use crate::agui_runtime::build_agui_extensions;
 use crate::transport::pump_encoded_stream;
 use async_nats::ConnectErrorKind;
 
@@ -101,9 +102,11 @@ impl NatsGateway {
             ));
         };
 
+        let extensions = build_agui_extensions(&req.request);
         let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
         self.run_and_publish(
             run_request,
+            extensions,
             reply,
             |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
             |msg| AGUIEvent::run_error(msg, None),
@@ -154,6 +157,7 @@ impl NatsGateway {
 
         self.run_and_publish(
             run_request,
+            RunExtensions::default(),
             reply,
             |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
             UIStreamEvent::error,
@@ -164,6 +168,7 @@ impl NatsGateway {
     async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
         &self,
         run_request: RunRequest,
+        extensions: RunExtensions,
         reply: async_nats::Subject,
         build_encoder: BuildEncoder,
         build_error_event: BuildErrorEvent,
@@ -175,7 +180,11 @@ impl NatsGateway {
         BuildEncoder: FnOnce(&carve_agent::RunStream) -> E,
         BuildErrorEvent: FnOnce(String) -> ErrEvent,
     {
-        let run = match self.os.run_stream(run_request).await {
+        let run = match self
+            .os
+            .run_stream_with_extensions(run_request, extensions)
+            .await
+        {
             Ok(run) => run,
             Err(err) => {
                 let event = build_error_event(err.to_string());

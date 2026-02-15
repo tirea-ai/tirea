@@ -101,14 +101,6 @@ pub(crate) fn is_runtime_allowed(
     is_tool_allowed(id, allowed.as_deref(), excluded.as_deref())
 }
 
-pub(crate) fn is_tool_allowed_by_definition(tool_id: &str, def: &AgentDefinition) -> bool {
-    is_tool_allowed(
-        tool_id,
-        def.allowed_tools.as_deref(),
-        def.excluded_tools.as_deref(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

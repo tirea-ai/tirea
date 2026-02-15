@@ -24,6 +24,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tracing::warn;
 
+use crate::agui_runtime::build_agui_extensions;
 use crate::transport::pump_encoded_stream;
 
 #[derive(Clone)]
@@ -335,8 +336,12 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
+    let extensions = build_agui_extensions(&req);
     let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
-    let run = st.os.run_stream(run_request).await?;
+    let run = st
+        .os
+        .run_stream_with_extensions(run_request, extensions)
+        .await?;
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
     let body_stream = encoded_sse_body(run, enc, None);
 

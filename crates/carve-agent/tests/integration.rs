@@ -4,6 +4,7 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
+use carve_agent::interaction::InteractionPlugin;
 use carve_agent::{
     ActivityHub, AgentLoopError, Context, ContextCategory, ContextProvider, InteractionResponse,
     StateManager, SystemReminder, Tool, ToolDescriptor, ToolError, ToolResult,
@@ -4588,21 +4589,69 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use carve_agent::interaction::InteractionPlugin;
 use carve_agent::phase::{Phase, StepContext, ToolContext};
 use carve_agent::plugin::AgentPlugin;
 use carve_agent::types::ToolCall;
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
+use std::collections::HashSet;
 
 fn interaction_plugin_from_request(request: &RunAgentRequest) -> InteractionPlugin {
-    InteractionPlugin::new(
+    InteractionPlugin::with_responses(
+        request.approved_interaction_ids(),
+        request.denied_interaction_ids(),
+    )
+}
+
+struct TestFrontendToolPlugin {
+    frontend_tools: HashSet<String>,
+}
+
+impl TestFrontendToolPlugin {
+    fn new(frontend_tools: HashSet<String>) -> Self {
+        Self { frontend_tools }
+    }
+
+    fn is_frontend_tool(&self, tool_name: &str) -> bool {
+        self.frontend_tools.contains(tool_name)
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentPlugin for TestFrontendToolPlugin {
+    fn id(&self) -> &str {
+        "test_frontend_tools"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        if phase != Phase::BeforeToolExecute {
+            return;
+        }
+
+        if step.tool_blocked() || step.tool_pending() {
+            return;
+        }
+
+        let Some(tool) = step.tool.as_ref() else {
+            return;
+        };
+
+        if !self.frontend_tools.contains(&tool.name) {
+            return;
+        }
+
+        let interaction = Interaction::new(&tool.id, format!("tool:{}", tool.name))
+            .with_parameters(tool.args.clone());
+        step.pending(interaction);
+    }
+}
+
+fn frontend_plugin_from_request(request: &RunAgentRequest) -> TestFrontendToolPlugin {
+    TestFrontendToolPlugin::new(
         request
             .frontend_tools()
             .iter()
             .map(|tool| tool.name.clone())
             .collect(),
-        request.approved_interaction_ids(),
-        request.denied_interaction_ids(),
     )
 }
 
@@ -4622,8 +4671,8 @@ async fn test_scenario_frontend_tool_request_to_agui() {
         ..RunAgentRequest::new("thread_1".to_string(), "run_1".to_string())
     };
 
-    // 2. InteractionPlugin is created from request
-    let plugin = interaction_plugin_from_request(&request);
+    // 2. Frontend strategy plugin is created from request
+    let plugin = frontend_plugin_from_request(&request);
 
     // 3. Simulate agent calling a frontend tool
     let thread = Thread::new("session_1");
@@ -4697,7 +4746,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     // Simulate three frontend tool calls in sequence
@@ -4736,8 +4785,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
 async fn test_scenario_frontend_tool_complex_args() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    let plugin =
-        InteractionPlugin::with_frontend_tools(["fileDialog".to_string()].into_iter().collect());
+    let plugin = TestFrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -4799,8 +4847,7 @@ async fn test_scenario_frontend_tool_complex_args() {
 async fn test_scenario_frontend_tool_empty_args() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    let plugin =
-        InteractionPlugin::with_frontend_tools(["getClipboard".to_string()].into_iter().collect());
+    let plugin = TestFrontendToolPlugin::new(["getClipboard".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
 
@@ -4863,8 +4910,7 @@ async fn test_scenario_frontend_tool_special_names() {
     ];
 
     for tool_name in tool_names {
-        let plugin =
-            InteractionPlugin::with_frontend_tools([tool_name.to_string()].into_iter().collect());
+        let plugin = TestFrontendToolPlugin::new([tool_name.to_string()].into_iter().collect());
 
         let thread = Thread::new("test");
         let mut step = StepContext::new(&thread, vec![]);
@@ -4904,9 +4950,7 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
     // Only "CopyToClipboard" is registered as frontend
-    let plugin = InteractionPlugin::with_frontend_tools(
-        ["CopyToClipboard".to_string()].into_iter().collect(),
-    );
+    let plugin = TestFrontendToolPlugin::new(["CopyToClipboard".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
 
@@ -4989,8 +5033,7 @@ fn test_scenario_frontend_tool_wire_format() {
 async fn test_scenario_frontend_tool_full_event_pipeline() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    let plugin =
-        InteractionPlugin::with_frontend_tools(["showModal".to_string()].into_iter().collect());
+    let plugin = TestFrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5056,8 +5099,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 async fn test_scenario_backend_tool_passthrough() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    let plugin =
-        InteractionPlugin::with_frontend_tools(["frontendOnly".to_string()].into_iter().collect());
+    let plugin = TestFrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5098,7 +5140,7 @@ fn test_scenario_no_frontend_tools_in_request() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
 
     // All tools are backend, none should be frontend
     assert!(!plugin.is_frontend_tool("search"));
@@ -5112,7 +5154,7 @@ fn test_scenario_no_frontend_tools_in_request() {
 fn test_scenario_empty_request() {
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
 
     // No tools in request, none should be frontend
     assert!(!plugin.is_frontend_tool("any_tool"));
@@ -5264,7 +5306,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
 
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5518,7 +5560,6 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the denied ID.
     let thread = Thread::with_initial_state(
@@ -5562,7 +5603,6 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Thread must have a persisted pending interaction matching the approved ID.
     let thread = Thread::with_initial_state(
@@ -5599,7 +5639,6 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 async fn test_scenario_e2e_permission_to_response_flow() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -5682,7 +5721,6 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 async fn test_scenario_frontend_tool_with_response_plugin() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -5693,7 +5731,7 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
     };
 
     // Step 1: InteractionPlugin creates pending for frontend tool
-    let frontend_plugin = interaction_plugin_from_request(&request);
+    let frontend_plugin = frontend_plugin_from_request(&request);
     let mut step1 = StepContext::new(&thread, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
     step1.tool = Some(ToolContext::new(&call));
@@ -6010,7 +6048,6 @@ fn test_agui_sse_multiple_events() {
 async fn test_permission_flow_approval_e2e() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let thread = Thread::new("test");
@@ -6081,7 +6118,6 @@ async fn test_permission_flow_approval_e2e() {
 async fn test_permission_flow_denial_e2e() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
@@ -6146,7 +6182,6 @@ async fn test_permission_flow_denial_e2e() {
 async fn test_permission_flow_multiple_tools_mixed() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let thread = Thread::new("test");
 
@@ -6304,7 +6339,6 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 /// After suspend, denial causes the tool to be blocked (error result, no execution).
 #[tokio::test]
 async fn test_e2e_permission_deny_blocks_via_execute_tools() {
-    use carve_agent::interaction::InteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
     let thread = Thread::with_initial_state(
@@ -6398,7 +6432,6 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 /// After suspend, approval (without PermissionPlugin re-running) lets the tool execute.
 #[tokio::test]
 async fn test_e2e_permission_approve_executes_via_execute_tools() {
-    use carve_agent::interaction::InteractionPlugin;
     use carve_agent::{execute_tools_with_plugins, tool_map, AgentLoopError};
 
     let thread = Thread::with_initial_state(
@@ -6499,7 +6532,6 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 async fn test_frontend_tool_flow_creates_pending() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -6509,7 +6541,7 @@ async fn test_frontend_tool_flow_creates_pending() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     let mut step = StepContext::new(&thread, vec![]);
@@ -6559,7 +6591,6 @@ fn test_frontend_tool_flow_result_from_client() {
 async fn test_frontend_tool_flow_mixed_with_backend() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let request = RunAgentRequest {
         tools: vec![
@@ -6569,7 +6600,7 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let plugin = interaction_plugin_from_request(&request);
+    let plugin = frontend_plugin_from_request(&request);
     let thread = Thread::new("test");
 
     // Backend tool - should NOT be pending
@@ -6793,7 +6824,6 @@ fn test_error_flow_agent_abort() {
 async fn test_resume_flow_with_approval() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Simulate: Previous run ended with pending permission
     let interaction_id = "permission_tool_x";
@@ -6823,7 +6853,6 @@ async fn test_resume_flow_with_approval() {
 async fn test_resume_flow_with_denial() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let interaction_id = "permission_dangerous_tool";
 
@@ -6853,7 +6882,6 @@ async fn test_resume_flow_with_denial() {
 async fn test_resume_flow_multiple_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Previous run had 3 pending interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -6893,7 +6921,6 @@ async fn test_resume_flow_multiple_responses() {
 async fn test_resume_flow_partial_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -6939,7 +6966,6 @@ async fn test_resume_flow_partial_responses() {
 async fn test_plugin_interaction_frontend_and_response() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest {
@@ -6951,7 +6977,7 @@ async fn test_plugin_interaction_frontend_and_response() {
     }
     .with_message(AGUIMessage::tool("true", "call_prev"));
 
-    let frontend_plugin = interaction_plugin_from_request(&request);
+    let frontend_plugin = frontend_plugin_from_request(&request);
     let response_plugin = interaction_plugin_from_request(&request);
 
     let thread = Thread::new("test");
@@ -6996,7 +7022,6 @@ async fn test_plugin_interaction_frontend_and_response() {
 async fn test_plugin_interaction_execution_order() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Setup: Frontend tool that was previously denied
     let request = RunAgentRequest {
@@ -7005,7 +7030,7 @@ async fn test_plugin_interaction_execution_order() {
     }
     .with_message(AGUIMessage::tool("false", "call_danger")); // Denied
 
-    let frontend_plugin = interaction_plugin_from_request(&request);
+    let frontend_plugin = frontend_plugin_from_request(&request);
     let response_plugin = interaction_plugin_from_request(&request);
 
     // Thread must have a persisted pending interaction matching the denied ID.
@@ -7036,7 +7061,6 @@ async fn test_plugin_interaction_execution_order() {
 async fn test_plugin_interaction_permission_and_frontend() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Frontend tool with permission set to Ask
     let request = RunAgentRequest {
@@ -7044,7 +7068,7 @@ async fn test_plugin_interaction_permission_and_frontend() {
         ..RunAgentRequest::new("t1".to_string(), "r1".to_string())
     };
 
-    let frontend_plugin = interaction_plugin_from_request(&request);
+    let frontend_plugin = frontend_plugin_from_request(&request);
     let permission_plugin = PermissionPlugin;
 
     let thread = Thread::new("test");
@@ -7515,7 +7539,6 @@ async fn test_multiple_pending_interactions_flow() {
 async fn test_multiple_interaction_responses() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Client responds to all 3 interactions: approve, deny, approve
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -9758,8 +9781,6 @@ fn test_now_millis_with_event() {
 /// Protocol: Check if request contains any interaction responses
 #[test]
 fn test_has_any_interaction_responses_empty() {
-    use carve_agent::interaction::InteractionPlugin;
-
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string());
     let plugin = interaction_plugin_from_request(&request);
 
@@ -9770,8 +9791,6 @@ fn test_has_any_interaction_responses_empty() {
 /// Protocol: Tool messages in request indicate interaction responses
 #[test]
 fn test_has_any_interaction_responses_with_tool_messages() {
-    use carve_agent::interaction::InteractionPlugin;
-
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("approved", "interaction_1"));
 
@@ -9783,8 +9802,6 @@ fn test_has_any_interaction_responses_with_tool_messages() {
 /// Protocol: Multiple interaction responses in single request
 #[test]
 fn test_has_any_interaction_responses_multiple() {
-    use carve_agent::interaction::InteractionPlugin;
-
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("Hello"))
         .with_message(AGUIMessage::tool("yes", "perm_1"))
@@ -9799,8 +9816,6 @@ fn test_has_any_interaction_responses_multiple() {
 /// Protocol: Only tool messages count as interaction responses
 #[test]
 fn test_has_any_interaction_responses_only_counts_tool_messages() {
-    use carve_agent::interaction::InteractionPlugin;
-
     let request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::user("Hello"))
         .with_message(AGUIMessage::assistant("Hi!"))
@@ -12341,7 +12356,6 @@ mod llmmetry_tracing {
 async fn test_interaction_response_session_start_sets_replay_on_approval() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12391,7 +12405,6 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
 async fn test_interaction_response_session_start_no_replay_on_denial() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12425,7 +12438,6 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
 async fn test_interaction_response_session_start_no_pending() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let thread = Thread::with_initial_state("test", json!({ "agent": {} }));
 
@@ -12446,7 +12458,6 @@ async fn test_interaction_response_session_start_no_pending() {
 async fn test_interaction_response_session_start_mismatched_id() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let thread = Thread::with_initial_state(
         "test",
@@ -12475,7 +12486,6 @@ async fn test_interaction_response_session_start_mismatched_id() {
 async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_add_trips";
 
@@ -12511,7 +12521,6 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     // Phase 1: PermissionPlugin creates pending interaction
     let thread = Thread::new("test");
@@ -12595,7 +12604,6 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 async fn test_hitl_replay_denial_does_not_schedule() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_call_add";
 
@@ -12641,7 +12649,6 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 async fn test_hitl_replay_picks_first_tool_call() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_multi";
 
@@ -12685,7 +12692,6 @@ async fn test_hitl_replay_picks_first_tool_call() {
 async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
-    use carve_agent::interaction::InteractionPlugin;
 
     let pending_id = "permission_phase_test";
 

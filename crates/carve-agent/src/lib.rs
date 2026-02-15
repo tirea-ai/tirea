@@ -82,7 +82,6 @@
 //! ```
 
 pub mod activity;
-pub mod agent;
 pub mod agent_os;
 pub mod convert;
 pub mod execute;
@@ -152,8 +151,6 @@ pub use convert::{
     tool_response, user_message,
 };
 
-// Agent exports
-pub use agent::{filter_tools, Agent, SubAgentHandle, SubAgentResult, SubAgentTool};
 pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
     AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig,
@@ -161,8 +158,8 @@ pub use agent_os::{
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
     InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
     ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
-    ProviderRegistryError, RunRequest, RunStream, SkillsConfig, SkillsMode, ToolRegistry,
-    ToolRegistryError,
+    ProviderRegistryError, RunExtensions, RunRequest, RunStream, SkillsConfig, SkillsMode,
+    ToolRegistry, ToolRegistryError,
 };
 
 // Loop exports

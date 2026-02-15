@@ -1,8 +1,7 @@
-//! Core interaction plugins and frontend-tool stubs.
+//! Core interaction plugins and intent primitives.
 //!
 //! This module is protocol-agnostic and operates on runtime interaction data.
 
-mod frontend_tool;
 mod intent;
 mod interaction_plugin;
 mod interaction_response;

@@ -42,7 +42,6 @@ mod config;
 mod outcome;
 
 use crate::activity::ActivityHub;
-use crate::agent::uuid_v7;
 use crate::convert::{assistant_message, assistant_tool_calls, build_request, tool_response};
 use crate::execute::{collect_patches, ToolExecution};
 use crate::phase::{Phase, StepContext, ToolContext};
@@ -67,6 +66,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
+use uuid::Uuid;
 
 pub use config::{
     AgentConfig, AgentDefinition, RunCancellationToken, RunContext, ScratchpadMergePolicy,
@@ -79,6 +79,10 @@ pub(crate) use config::{
 pub use outcome::{run_round, tool_map, tool_map_from_arc, AgentLoopError, RoundResult};
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
+
+fn uuid_v7() -> String {
+    Uuid::now_v7().simple().to_string()
+}
 
 #[async_trait]
 trait ChatStreamProvider: Send + Sync {

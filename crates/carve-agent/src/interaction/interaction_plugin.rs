@@ -1,10 +1,9 @@
 //! Unified interaction mechanism plugin.
 //!
 //! This plugin is strategy-agnostic: it provides a shared lifecycle/channel
-//! for interaction intents and responses, while concrete strategies (frontend
-//! tools, permissions, recovery, etc.) emit intents independently.
+//! for interaction intents and responses, while concrete strategies
+//! (permissions, recovery, protocol adapters, etc.) emit intents independently.
 
-use super::frontend_tool::FrontendToolPlugin;
 use super::interaction_response::InteractionResponsePlugin;
 use super::take_intents;
 use super::InteractionIntent;
@@ -12,55 +11,33 @@ use crate::phase::{Phase, StepContext};
 use crate::plugin::AgentPlugin;
 use async_trait::async_trait;
 use carve_state::Context;
-use std::collections::HashSet;
 
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {
     static_response: InteractionResponsePlugin,
-    static_frontend_tools: HashSet<String>,
 }
 
 impl InteractionPlugin {
-    /// Build combined plugin from explicit frontend tools and responses.
-    pub fn new(
-        frontend_tools: HashSet<String>,
-        approved_ids: Vec<String>,
-        denied_ids: Vec<String>,
-    ) -> Self {
+    /// Build plugin from interaction responses.
+    pub fn new(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
         Self {
             static_response: InteractionResponsePlugin::new(approved_ids, denied_ids),
-            static_frontend_tools: frontend_tools,
         }
-    }
-
-    /// Build combined plugin from frontend tools only.
-    pub fn with_frontend_tools(frontend_tools: HashSet<String>) -> Self {
-        Self::new(frontend_tools, Vec::new(), Vec::new())
     }
 
     /// Build combined plugin from interaction responses only.
     pub fn with_responses(approved_ids: Vec<String>, denied_ids: Vec<String>) -> Self {
-        Self::new(HashSet::new(), approved_ids, denied_ids)
+        Self::new(approved_ids, denied_ids)
     }
 
     /// Whether this plugin should be installed for the current request.
     pub fn is_active(&self) -> bool {
-        self.static_response.has_responses() || !self.static_frontend_tools.is_empty()
-    }
-
-    /// Whether request contains frontend tools and therefore needs tool stubs.
-    pub fn has_frontend_tools(&self) -> bool {
-        !self.static_frontend_tools.is_empty()
+        self.static_response.has_responses()
     }
 
     /// Whether any interaction responses are present.
     pub fn has_responses(&self) -> bool {
         self.static_response.has_responses()
-    }
-
-    /// Check if a specific tool is configured as a frontend tool.
-    pub fn is_frontend_tool(&self, tool_name: &str) -> bool {
-        self.static_frontend_tools.contains(tool_name)
     }
 
     /// Check if an interaction ID is approved.
@@ -73,10 +50,6 @@ impl InteractionPlugin {
         self.static_response.is_denied(interaction_id)
     }
 
-    fn frontend_plugin(&self) -> FrontendToolPlugin {
-        FrontendToolPlugin::new(self.static_frontend_tools.clone())
-    }
-
     fn response_plugin(&self) -> InteractionResponsePlugin {
         InteractionResponsePlugin::from_responses(self.static_response.responses())
     }
@@ -84,7 +57,7 @@ impl InteractionPlugin {
 
 impl Default for InteractionPlugin {
     fn default() -> Self {
-        Self::new(HashSet::new(), Vec::new(), Vec::new())
+        Self::new(Vec::new(), Vec::new())
     }
 }
 
@@ -96,9 +69,7 @@ impl AgentPlugin for InteractionPlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         let response = self.response_plugin();
-        let frontend = self.frontend_plugin();
         response.on_phase(phase, step, ctx).await;
-        frontend.on_phase(phase, step, ctx).await;
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -132,30 +103,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn plugin_inactive_without_frontend_tools_or_responses() {
-        let plugin = InteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
+    fn plugin_inactive_without_responses() {
+        let plugin = InteractionPlugin::new(Vec::new(), Vec::new());
         assert!(!plugin.is_active());
     }
 
     #[test]
-    fn plugin_active_with_frontend_tools() {
-        let mut tools = HashSet::new();
-        tools.insert("copyToClipboard".to_string());
-        let plugin = InteractionPlugin::new(tools, Vec::new(), Vec::new());
-        assert!(plugin.is_active());
-        assert!(plugin.has_frontend_tools());
-    }
-
-    #[test]
     fn plugin_active_with_responses() {
-        let plugin = InteractionPlugin::new(HashSet::new(), vec!["call_1".to_string()], Vec::new());
+        let plugin = InteractionPlugin::new(vec!["call_1".to_string()], Vec::new());
         assert!(plugin.is_active());
         assert!(plugin.has_responses());
     }
 
     #[tokio::test]
     async fn converts_intent_to_pending_immediately_within_same_run() {
-        let plugin = InteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
+        let plugin = InteractionPlugin::new(Vec::new(), Vec::new());
         let state = json!({});
         let ctx = Context::new(&state, "test", "test");
         let thread = Thread::new("t1");
@@ -185,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_pending_intent_is_applied() {
-        let plugin = InteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
+        let plugin = InteractionPlugin::new(Vec::new(), Vec::new());
         let state = json!({});
         let ctx = Context::new(&state, "test", "test");
         let thread = Thread::new("t1");
@@ -217,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn existing_gate_state_is_not_overridden_and_intents_are_dropped() {
-        let plugin = InteractionPlugin::new(HashSet::new(), Vec::new(), Vec::new());
+        let plugin = InteractionPlugin::new(Vec::new(), Vec::new());
         let state = json!({});
         let ctx = Context::new(&state, "test", "test");
         let thread = Thread::new("t1");

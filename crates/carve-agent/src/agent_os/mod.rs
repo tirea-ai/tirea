@@ -122,6 +122,9 @@ pub enum AgentOsWiringError {
     #[error("agent tool id already registered: {0}")]
     AgentToolIdConflict(String),
 
+    #[error("run extension tool id conflicts with existing tool: {0}")]
+    RunExtensionToolIdConflict(String),
+
     #[error("agent tools plugin already installed: {0}")]
     AgentToolsPluginAlreadyInstalled(String),
 
@@ -205,6 +208,38 @@ pub enum AgentOsRunError {
 }
 
 pub use carve_agent_runtime_contract::RunRequest;
+
+/// Run-scoped runtime extensions injected for a single run.
+///
+/// These extensions are merged after static `AgentDefinition` wiring and
+/// affect only the current run.
+#[derive(Clone, Default)]
+pub struct RunExtensions {
+    /// Additional tools visible only to this run.
+    pub tools: HashMap<String, Arc<dyn Tool>>,
+    /// Additional plugins active only for this run.
+    pub plugins: Vec<Arc<dyn AgentPlugin>>,
+}
+
+impl RunExtensions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.tools.insert(tool.descriptor().id, tool);
+        self
+    }
+
+    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
+        self.plugins.push(plugin);
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty() && self.plugins.is_empty()
+    }
+}
 
 /// Result of [`AgentOs::run_stream`]: an event stream plus metadata.
 ///
@@ -882,6 +917,28 @@ impl AgentOs {
         }
     }
 
+    fn apply_run_extensions(
+        mut config: AgentConfig,
+        mut tools: HashMap<String, Arc<dyn Tool>>,
+        extensions: RunExtensions,
+    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>), AgentOsWiringError> {
+        for (id, tool) in extensions.tools {
+            if tools.contains_key(&id) {
+                return Err(AgentOsWiringError::RunExtensionToolIdConflict(id));
+            }
+            tools.insert(id, tool);
+        }
+
+        if !extensions.plugins.is_empty() {
+            let mut merged = config.plugins;
+            merged.extend(extensions.plugins);
+            Self::ensure_unique_plugin_ids(&merged)?;
+            config.plugins = merged;
+        }
+
+        Ok((config, tools))
+    }
+
     pub fn resolve(
         &self,
         agent_id: &str,
@@ -933,9 +990,16 @@ impl AgentOs {
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
     /// 4. Agent resolution and run-context creation
-    pub async fn prepare_run(
+    pub async fn prepare_run(&self, request: RunRequest) -> Result<PreparedRun, AgentOsRunError> {
+        self.prepare_run_with_extensions(request, RunExtensions::default())
+            .await
+    }
+
+    /// Prepare a request for execution with run-scoped extensions.
+    pub async fn prepare_run_with_extensions(
         &self,
         mut request: RunRequest,
+        extensions: RunExtensions,
     ) -> Result<PreparedRun, AgentOsRunError> {
         let thread_store = self.require_thread_store()?;
 
@@ -1004,8 +1068,11 @@ impl AgentOs {
             let _ = thread_store.append(&thread_id, &delta).await?;
         }
 
-        // 6. Resolve agent wiring and build storage-backed run context.
+        // 6. Resolve static wiring, then merge run-scoped extensions.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
+        let (cfg, tools) = Self::apply_run_extensions(cfg, tools, extensions)
+            .map_err(AgentOsResolveError::from)
+            .map_err(AgentOsRunError::from)?;
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
             ThreadStoreStateCommitter::new(thread_store.clone()),
         ));
@@ -1039,7 +1106,19 @@ impl AgentOs {
 
     /// Run an agent from a [`RunRequest`].
     pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
-        let prepared = self.prepare_run(request).await?;
+        self.run_stream_with_extensions(request, RunExtensions::default())
+            .await
+    }
+
+    /// Run an agent from a [`RunRequest`] with run-scoped extensions.
+    pub async fn run_stream_with_extensions(
+        &self,
+        request: RunRequest,
+        extensions: RunExtensions,
+    ) -> Result<RunStream, AgentOsRunError> {
+        let prepared = self
+            .prepare_run_with_extensions(request, extensions)
+            .await?;
         Ok(Self::execute_prepared(prepared))
     }
 
@@ -1080,7 +1159,7 @@ impl AgentOs {
             .collect()
     }
 
-    // --- Legacy methods (used by SubAgentTool and tests) ---
+    // --- Legacy low-level helpers (used by agent tools and tests) ---
 
     pub async fn run_blocking(
         &self,
@@ -2530,5 +2609,143 @@ mod tests {
         let os = AgentOs::builder().build().unwrap();
         let err = os.load_thread("t1").await.unwrap_err();
         assert!(matches!(err, AgentOsRunError::ThreadStoreNotConfigured));
+    }
+
+    #[tokio::test]
+    async fn prepare_run_with_extensions_merges_run_scoped_tools_and_plugins() {
+        struct RuntimeOnlyPlugin;
+        #[async_trait::async_trait]
+        impl AgentPlugin for RuntimeOnlyPlugin {
+            fn id(&self) -> &str {
+                "runtime_only"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        struct RuntimeOnlyTool;
+        #[async_trait::async_trait]
+        impl Tool for RuntimeOnlyTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("runtime_tool", "Runtime Tool", "run-scoped tool")
+                    .with_parameters(json!({"type":"object"}))
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("runtime_tool", json!({"ok": true})))
+            }
+        }
+
+        let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage)
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+
+        let prepared = os
+            .prepare_run_with_extensions(
+                RunRequest {
+                    agent_id: "a1".to_string(),
+                    thread_id: Some("t-run-ext".to_string()),
+                    run_id: Some("run-ext".to_string()),
+                    parent_run_id: None,
+                    resource_id: None,
+                    state: None,
+                    messages: vec![Message::user("hello")],
+                },
+                RunExtensions::new()
+                    .with_tool(Arc::new(RuntimeOnlyTool))
+                    .with_plugin(Arc::new(RuntimeOnlyPlugin)),
+            )
+            .await
+            .unwrap();
+
+        assert!(prepared.tools.contains_key("runtime_tool"));
+        assert!(prepared
+            .config
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id() == "runtime_only"));
+    }
+
+    #[tokio::test]
+    async fn prepare_run_with_extensions_errors_on_tool_id_conflict() {
+        struct BaseTool;
+        #[async_trait::async_trait]
+        impl Tool for BaseTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("dup_tool", "Dup Tool", "base")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("dup_tool", json!({})))
+            }
+        }
+
+        struct RuntimeToolConflict;
+        #[async_trait::async_trait]
+        impl Tool for RuntimeToolConflict {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("dup_tool", "Dup Tool Runtime", "runtime")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("dup_tool", json!({})))
+            }
+        }
+
+        let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage)
+            .with_tools(HashMap::from([(
+                "dup_tool".to_string(),
+                Arc::new(BaseTool) as Arc<dyn Tool>,
+            )]))
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+
+        let err = match os
+            .prepare_run_with_extensions(
+                RunRequest {
+                    agent_id: "a1".to_string(),
+                    thread_id: Some("t-run-ext-conflict".to_string()),
+                    run_id: Some("run-ext-conflict".to_string()),
+                    parent_run_id: None,
+                    resource_id: None,
+                    state: None,
+                    messages: vec![Message::user("hello")],
+                },
+                RunExtensions::new().with_tool(Arc::new(RuntimeToolConflict)),
+            )
+            .await
+        {
+            Ok(_) => panic!("expected run extension tool id conflict"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
+                AgentOsWiringError::RunExtensionToolIdConflict(ref id)
+            )) if id == "dup_tool"
+        ));
     }
 }
