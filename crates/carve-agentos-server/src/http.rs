@@ -5,20 +5,24 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::ag_ui::RunAgentRequest;
+use carve_agent::ag_ui::{
+    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
+};
+use carve_agent::ai_sdk_v6::{
+    AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
+    AI_SDK_VERSION,
+};
+use carve_agent::protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use carve_agent::{
-    AgentOs, AgentOsRunError, MessagePage, MessageQuery, SortOrder, Thread, ThreadListPage,
-    ThreadListQuery, ThreadQuery, Visibility,
+    AgentOs, AgentOsRunError, MessagePage, MessageQuery, RunStream, SortOrder, Thread,
+    ThreadListPage, ThreadListQuery, ThreadQuery, Visibility,
 };
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::transport::pump_encoded_stream;
-use carve_agent::protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, ProtocolHistoryEncoder, ProtocolInputAdapter, AI_SDK_VERSION,
-};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -205,31 +209,45 @@ fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
     }
 }
 
+async fn load_message_page(
+    storage: &Arc<dyn ThreadQuery>,
+    thread_id: &str,
+    params: &MessageQueryParams,
+) -> Result<MessagePage, ApiError> {
+    let query = parse_message_query(params);
+    storage
+        .load_messages(thread_id, &query)
+        .await
+        .map_err(|e| match e {
+            carve_agent::StorageError::NotFound(_) => {
+                ApiError::ThreadNotFound(thread_id.to_string())
+            }
+            other => ApiError::Internal(other.to_string()),
+        })
+}
+
+fn encode_message_page<E: ProtocolHistoryEncoder>(
+    page: MessagePage,
+) -> EncodedMessagePage<E::HistoryMessage> {
+    EncodedMessagePage {
+        messages: page
+            .messages
+            .iter()
+            .map(|m| E::encode_message(&m.message))
+            .collect(),
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        prev_cursor: page.prev_cursor,
+    }
+}
+
 async fn get_thread_messages_agui(
     State(st): State<AppState>,
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let query = parse_message_query(&params);
-    let page = st
-        .storage
-        .load_messages(&id, &query)
-        .await
-        .map_err(|e| match e {
-            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
-            other => ApiError::Internal(other.to_string()),
-        })?;
-
-    let encoded = EncodedMessagePage {
-        messages: page
-            .messages
-            .iter()
-            .map(|m| AgUiInputAdapter::encode_message(&m.message))
-            .collect(),
-        has_more: page.has_more,
-        next_cursor: page.next_cursor,
-        prev_cursor: page.prev_cursor,
-    };
+    let page = load_message_page(&st.storage, &id, &params).await?;
+    let encoded = encode_message_page::<AgUiHistoryEncoder>(page);
     Ok(Json(encoded))
 }
 
@@ -238,27 +256,51 @@ async fn get_thread_messages_ai_sdk(
     Path(id): Path<String>,
     Query(params): Query<MessageQueryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let query = parse_message_query(&params);
-    let page = st
-        .storage
-        .load_messages(&id, &query)
-        .await
-        .map_err(|e| match e {
-            carve_agent::StorageError::NotFound(_) => ApiError::ThreadNotFound(id),
-            other => ApiError::Internal(other.to_string()),
-        })?;
-
-    let encoded = EncodedMessagePage {
-        messages: page
-            .messages
-            .iter()
-            .map(|m| AiSdkV6InputAdapter::encode_message(&m.message))
-            .collect(),
-        has_more: page.has_more,
-        next_cursor: page.next_cursor,
-        prev_cursor: page.prev_cursor,
-    };
+    let page = load_message_page(&st.storage, &id, &params).await?;
+    let encoded = encode_message_page::<AiSdkV6HistoryEncoder>(page);
     Ok(Json(encoded))
+}
+
+fn encoded_sse_body<E>(
+    run: RunStream,
+    encoder: E,
+    trailer: Option<&'static str>,
+) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
+where
+    E: ProtocolOutputEncoder + Send + 'static,
+    E::Event: Serialize + Send + 'static,
+{
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
+
+    tokio::spawn(async move {
+        let tx_events = tx.clone();
+        pump_encoded_stream(run.events, encoder, move |event| {
+            let tx = tx_events.clone();
+            async move {
+                let json = match serde_json::to_string(&event) {
+                    Ok(json) => json,
+                    Err(err) => {
+                        warn!(error = %err, "failed to serialize SSE protocol event");
+                        return Err(());
+                    }
+                };
+                tx.send(Bytes::from(format!("data: {json}\n\n")))
+                    .await
+                    .map_err(|_| ())
+            }
+        })
+        .await;
+
+        if let Some(trailer) = trailer {
+            let _ = tx.send(Bytes::from(trailer)).await;
+        }
+    });
+
+    async_stream::stream! {
+        while let Some(chunk) = rx.recv().await {
+            yield Ok::<Bytes, Infallible>(chunk);
+        }
+    }
 }
 
 async fn run_ai_sdk_sse(
@@ -276,36 +318,9 @@ async fn run_ai_sdk_sse(
     }
 
     let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
-
     let run = st.os.run_stream(run_request).await?;
-
-    let thread_id = run.thread_id.clone();
-    let run_id = run.run_id.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
-
-    tokio::spawn(async move {
-        let enc = AiSdkV6ProtocolEncoder::new(run_id, Some(thread_id));
-        let tx_events = tx.clone();
-        pump_encoded_stream(run.events, enc, move |event| {
-            let tx = tx_events.clone();
-            async move {
-                let Ok(json) = serde_json::to_string(&event) else {
-                    return Ok(());
-                };
-                tx.send(Bytes::from(format!("data: {}\n\n", json)))
-                    .await
-                    .map_err(|_| ())
-            }
-        })
-        .await;
-        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
-    });
-
-    let body_stream = async_stream::stream! {
-        while let Some(chunk) = rx.recv().await {
-            yield Ok::<Bytes, Infallible>(chunk);
-        }
-    };
+    let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
+    let body_stream = encoded_sse_body(run, enc, Some("data: [DONE]\n\n"));
 
     Ok(ai_sdk_sse_response(body_stream))
 }
@@ -319,35 +334,9 @@ async fn run_ag_ui_sse(
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
-
     let run = st.os.run_stream(run_request).await?;
-
-    let thread_id = run.thread_id.clone();
-    let run_id = run.run_id.clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(64);
-
-    tokio::spawn(async move {
-        let enc = AgUiProtocolEncoder::new(thread_id, run_id);
-        let tx_events = tx.clone();
-        pump_encoded_stream(run.events, enc, move |event| {
-            let tx = tx_events.clone();
-            async move {
-                let Ok(json) = serde_json::to_string(&event) else {
-                    return Ok(());
-                };
-                tx.send(Bytes::from(format!("data: {}\n\n", json)))
-                    .await
-                    .map_err(|_| ())
-            }
-        })
-        .await;
-    });
-
-    let body_stream = async_stream::stream! {
-        while let Some(chunk) = rx.recv().await {
-            yield Ok::<Bytes, Infallible>(chunk);
-        }
-    };
+    let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
+    let body_stream = encoded_sse_body(run, enc, None);
 
     Ok(sse_response(body_stream))
 }

@@ -1,17 +1,17 @@
 use carve_agent::ag_ui::{AGUIEvent, RunAgentRequest};
-use carve_agent::ai_sdk_v6::UIStreamEvent;
-use carve_agent::AgentOs;
+use carve_agent::ai_sdk_v6::{
+    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
+};
+use carve_agent::protocol::{ProtocolInputAdapter, ProtocolOutputEncoder};
+use carve_agent::{AgUiInputAdapter, AgUiProtocolEncoder, AgentOs, RunRequest};
 use futures::StreamExt;
 use serde::Deserialize;
+use serde::Serialize;
 use std::sync::Arc;
 use tracing;
 
 use crate::transport::pump_encoded_stream;
 use async_nats::ConnectErrorKind;
-use carve_agent::protocol::{
-    AgUiInputAdapter, AgUiProtocolEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder,
-    AiSdkV6RunRequest, ProtocolInputAdapter,
-};
 
 const SUBJECT_RUN_AGUI: &str = "agentos.run.agui";
 const SUBJECT_RUN_AISDK: &str = "agentos.run.aisdk";
@@ -102,32 +102,13 @@ impl NatsGateway {
         };
 
         let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
-
-        let run = match self.os.run_stream(run_request).await {
-            Ok(r) => r,
-            Err(e) => {
-                let err = AGUIEvent::run_error(e.to_string(), None);
-                let _ = self
-                    .client
-                    .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
-                    .await;
-                return Ok(());
-            }
-        };
-
-        let enc = AgUiProtocolEncoder::new(run.thread_id, run.run_id);
-        let client = self.client.clone();
-        pump_encoded_stream(run.events, enc, move |event| {
-            let client = client.clone();
-            let reply = reply.clone();
-            async move {
-                let payload = serde_json::to_vec(&event).unwrap_or_default().into();
-                client.publish(reply, payload).await.map_err(|_| ())
-            }
-        })
-        .await;
-
-        Ok(())
+        self.run_and_publish(
+            run_request,
+            reply,
+            |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
+            |msg| AGUIEvent::run_error(msg, None),
+        )
+        .await
     }
 
     async fn handle_aisdk(
@@ -171,25 +152,60 @@ impl NatsGateway {
             },
         );
 
+        self.run_and_publish(
+            run_request,
+            reply,
+            |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
+            UIStreamEvent::error,
+        )
+        .await
+    }
+
+    async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
+        &self,
+        run_request: RunRequest,
+        reply: async_nats::Subject,
+        build_encoder: BuildEncoder,
+        build_error_event: BuildErrorEvent,
+    ) -> Result<(), NatsGatewayError>
+    where
+        E: ProtocolOutputEncoder + Send + 'static,
+        E::Event: Serialize + Send + 'static,
+        ErrEvent: Serialize,
+        BuildEncoder: FnOnce(&carve_agent::RunStream) -> E,
+        BuildErrorEvent: FnOnce(String) -> ErrEvent,
+    {
         let run = match self.os.run_stream(run_request).await {
-            Ok(r) => r,
-            Err(e) => {
-                let err = UIStreamEvent::error(e.to_string());
-                let _ = self
-                    .client
-                    .publish(reply, serde_json::to_vec(&err).unwrap_or_default().into())
-                    .await;
+            Ok(run) => run,
+            Err(err) => {
+                let event = build_error_event(err.to_string());
+                let payload = serde_json::to_vec(&event)
+                    .map_err(|e| {
+                        NatsGatewayError::Run(format!("serialize error event failed: {e}"))
+                    })?
+                    .into();
+                if let Err(publish_err) = self.client.publish(reply, payload).await {
+                    return Err(NatsGatewayError::Run(format!(
+                        "publish error event failed: {publish_err}"
+                    )));
+                }
                 return Ok(());
             }
         };
 
-        let enc = AiSdkV6ProtocolEncoder::new(run.run_id, Some(run.thread_id));
+        let encoder = build_encoder(&run);
         let client = self.client.clone();
-        pump_encoded_stream(run.events, enc, move |event| {
+        pump_encoded_stream(run.events, encoder, move |event| {
             let client = client.clone();
             let reply = reply.clone();
             async move {
-                let payload = serde_json::to_vec(&event).unwrap_or_default().into();
+                let payload = match serde_json::to_vec(&event) {
+                    Ok(payload) => payload.into(),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "failed to serialize NATS protocol event");
+                        return Err(());
+                    }
+                };
                 client.publish(reply, payload).await.map_err(|_| ())
             }
         })
