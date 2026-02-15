@@ -35,7 +35,7 @@ For microservice deployments, `carve-agentos-server` can also listen on NATS sub
 The server requires:
 
 - An `AgentOs` instance (with agents, tools, models registered)
-- A thread store implementation for thread persistence
+- A thread store implementation for thread persistence (for example `carve_thread_store_adapters::FileStore`)
 - Network binding configuration (host, port)
 
 ```rust,ignore

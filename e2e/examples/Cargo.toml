@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 carve-agent = { path = "../../crates/carve-agent" }
 carve-agentos-server = { path = "../../crates/carve-agentos-server" }
+carve-thread-store-adapters = { path = "../../crates/carve-thread-store-adapters" }
 carve-state = { path = "../../crates/carve-state" }
 carve-state-derive = { path = "../../crates/carve-state-derive" }
 serde = { version = "1", features = ["derive"] }

@@ -131,9 +131,10 @@ Thread persistence is modeled with:
 
 - `ThreadReader` / `ThreadWriter` traits
 - `ThreadStore` (combined read+write trait)
-- `FileStore` — JSON files on disk
 - `MemoryStore` — In-memory (for testing)
-- `PostgresStore` — PostgreSQL (with `postgres` feature)
+- `carve_thread_store_adapters::FileStore` — JSON files on disk
+- `carve_thread_store_adapters::PostgresStore` — PostgreSQL (`postgres` feature)
+- `carve_thread_store_adapters::NatsBufferedThreadWriter` — NATS JetStream buffering decorator (`nats` feature)
 
 ## Streaming
 

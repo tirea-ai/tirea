@@ -1,7 +1,8 @@
 use carve_agent::{
-    AgentDefinition, AgentOs, AgentOsBuilder, FileStore, ModelDefinition, ThreadReader, ThreadStore,
+    AgentDefinition, AgentOs, AgentOsBuilder, ModelDefinition, ThreadReader, ThreadStore,
 };
 use carve_agentos_server::http::{self, AppState};
+use carve_thread_store_adapters::FileStore;
 use clap::Parser;
 use serde::Deserialize;
 use std::path::PathBuf;

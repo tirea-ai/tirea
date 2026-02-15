@@ -68,7 +68,8 @@
 //! # Example: Using Sessions
 //!
 //! ```ignore
-//! use carve_agent::{Thread, Message, ThreadWriter, FileStore};
+//! use carve_agent::{Thread, Message, ThreadWriter};
+//! use carve_thread_store_adapters::FileStore;
 //!
 //! // Create or load session
 //! let thread = Thread::new("session-1")
@@ -122,12 +123,10 @@ pub use types::{gen_message_id, Message, MessageMetadata, Role, ToolCall, Visibi
 pub use thread::{PendingDelta, Thread, ThreadMetadata};
 
 // Storage exports
-#[cfg(feature = "postgres")]
-pub use thread_store::PostgresStore;
 pub use thread_store::{
-    CheckpointReason, Committed, FileStore, MemoryStore, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery,
-    ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter, Version,
+    CheckpointReason, Committed, MemoryStore, MessagePage, MessageQuery, MessageWithCursor,
+    SortOrder, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadSync, ThreadWriter, Version,
 };
 
 // Stream exports

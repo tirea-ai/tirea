@@ -2,7 +2,6 @@ use super::*;
 use crate::types::Message;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use serde_json::json;
-use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_memory_storage_save_load() {
@@ -129,162 +128,6 @@ async fn test_memory_storage_concurrent_access() {
     assert_eq!(ids.len(), 10);
 }
 
-// File storage tests
-
-#[tokio::test]
-async fn test_file_storage_save_load() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    let thread = Thread::new("test-1").with_message(Message::user("Hello"));
-    storage.save(&thread).await.unwrap();
-
-    let loaded = storage.load_thread("test-1").await.unwrap();
-    assert!(loaded.is_some());
-    let loaded = loaded.unwrap();
-    assert_eq!(loaded.id, "test-1");
-    assert_eq!(loaded.message_count(), 1);
-}
-
-#[tokio::test]
-async fn test_file_storage_load_not_found() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    let loaded = storage.load_thread("nonexistent").await.unwrap();
-    assert!(loaded.is_none());
-}
-
-#[tokio::test]
-async fn test_file_storage_delete() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    let thread = Thread::new("test-1");
-    storage.save(&thread).await.unwrap();
-    assert!(storage.load_thread("test-1").await.unwrap().is_some());
-
-    storage.delete("test-1").await.unwrap();
-    assert!(storage.load_thread("test-1").await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn test_file_storage_list() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    storage.save(&Thread::new("thread-a")).await.unwrap();
-    storage.save(&Thread::new("thread-b")).await.unwrap();
-    storage.save(&Thread::new("thread-c")).await.unwrap();
-
-    let mut ids = storage.list().await.unwrap();
-    ids.sort();
-
-    assert_eq!(ids.len(), 3);
-    assert_eq!(ids, vec!["thread-a", "thread-b", "thread-c"]);
-}
-
-#[tokio::test]
-async fn test_file_storage_list_empty_dir() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    let ids = storage.list().await.unwrap();
-    assert!(ids.is_empty());
-}
-
-#[tokio::test]
-async fn test_file_storage_list_nonexistent_dir() {
-    let storage = FileStore::new("/tmp/nonexistent_carve_test_dir");
-    let ids = storage.list().await.unwrap();
-    assert!(ids.is_empty());
-}
-
-#[tokio::test]
-async fn test_file_storage_creates_directory() {
-    let temp_dir = TempDir::new().unwrap();
-    let nested_path = temp_dir.path().join("nested").join("threads");
-    let storage = FileStore::new(&nested_path);
-
-    let thread = Thread::new("test-1");
-    storage.save(&thread).await.unwrap();
-
-    assert!(nested_path.exists());
-    assert!(storage.load_thread("test-1").await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn test_file_storage_with_complex_session() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    let thread = Thread::with_initial_state(
-        "complex-thread",
-        json!({
-            "user": {"name": "Alice", "age": 30},
-            "items": [1, 2, 3],
-            "active": true
-        }),
-    )
-    .with_message(Message::user("Hello"))
-    .with_message(Message::assistant("Hi there!"))
-    .with_patch(TrackedPatch::new(
-        Patch::new()
-            .with_op(Op::set(path!("user").key("age"), json!(31)))
-            .with_op(Op::append(path!("items"), json!(4))),
-    ));
-
-    storage.save(&thread).await.unwrap();
-
-    let loaded = storage
-        .load_thread("complex-thread")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(loaded.message_count(), 2);
-    assert_eq!(loaded.patch_count(), 1);
-
-    let state = loaded.rebuild_state().unwrap();
-    assert_eq!(state["user"]["age"], 31);
-}
-
-#[tokio::test]
-async fn test_file_storage_update_session() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-
-    // Save initial
-    let thread = Thread::new("test-1").with_message(Message::user("First"));
-    storage.save(&thread).await.unwrap();
-
-    // Update
-    let thread = thread
-        .with_message(Message::assistant("Second"))
-        .with_message(Message::user("Third"));
-    storage.save(&thread).await.unwrap();
-
-    // Verify
-    let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
-    assert_eq!(loaded.message_count(), 3);
-}
-
-#[tokio::test]
-async fn test_file_storage_ignores_non_json_files() {
-    let temp_dir = TempDir::new().unwrap();
-
-    // Create a non-JSON file
-    tokio::fs::write(temp_dir.path().join("not-json.txt"), "hello")
-        .await
-        .unwrap();
-
-    let storage = FileStore::new(temp_dir.path());
-    storage.save(&Thread::new("valid")).await.unwrap();
-
-    let ids = storage.list().await.unwrap();
-    assert_eq!(ids.len(), 1);
-    assert_eq!(ids[0], "valid");
-}
-
 #[test]
 fn test_storage_error_display() {
     let err = ThreadStoreError::NotFound("thread-1".to_string());
@@ -293,23 +136,6 @@ fn test_storage_error_display() {
 
     let err = ThreadStoreError::Serialization("invalid json".to_string());
     assert!(err.to_string().contains("Serialization"));
-}
-
-#[test]
-fn test_file_storage_thread_path() {
-    let storage = FileStore::new("/base/path");
-    let path = storage.thread_path("my-thread").unwrap();
-    assert_eq!(path.to_string_lossy(), "/base/path/my-thread.json");
-}
-
-#[test]
-fn test_file_storage_rejects_path_traversal() {
-    let storage = FileStore::new("/base/path");
-    assert!(storage.thread_path("../../etc/passwd").is_err());
-    assert!(storage.thread_path("foo/bar").is_err());
-    assert!(storage.thread_path("foo\\bar").is_err());
-    assert!(storage.thread_path("").is_err());
-    assert!(storage.thread_path("foo\0bar").is_err());
 }
 
 // ========================================================================
@@ -499,38 +325,6 @@ async fn test_memory_storage_message_count_not_found() {
     let storage = MemoryStore::new();
     let result = storage.message_count("nonexistent").await;
     assert!(matches!(result, Err(ThreadStoreError::NotFound(_))));
-}
-
-#[tokio::test]
-async fn test_file_storage_load_messages() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-    let thread = make_thread_with_messages("test-1", 10);
-    storage.save(&thread).await.unwrap();
-
-    let query = MessageQuery {
-        after: Some(4),
-        limit: 3,
-        ..Default::default()
-    };
-    let page = ThreadReader::load_messages(&storage, "test-1", &query)
-        .await
-        .unwrap();
-
-    assert_eq!(page.messages.len(), 3);
-    assert_eq!(page.messages[0].cursor, 5);
-    assert_eq!(page.messages[0].message.content, "msg-5");
-}
-
-#[tokio::test]
-async fn test_file_storage_message_count() {
-    let temp_dir = TempDir::new().unwrap();
-    let storage = FileStore::new(temp_dir.path());
-    let thread = make_thread_with_messages("test-1", 5);
-    storage.save(&thread).await.unwrap();
-
-    let count = storage.message_count("test-1").await.unwrap();
-    assert_eq!(count, 5);
 }
 
 #[test]
@@ -1137,47 +931,6 @@ async fn test_parent_thread_id_none_omitted() {
 }
 
 // ========================================================================
-// FileStore ThreadWriter tests
-// ========================================================================
-
-#[tokio::test]
-async fn test_file_thread_store_create_and_load() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = FileStore::new(temp_dir.path());
-    let thread = Thread::new("t1").with_message(Message::user("hi"));
-    let committed = store.create(&thread).await.unwrap();
-    assert_eq!(committed.version, 0);
-
-    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.version, 0);
-    assert_eq!(head.thread.message_count(), 1);
-}
-
-#[tokio::test]
-async fn test_file_thread_store_append_and_version() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = FileStore::new(temp_dir.path());
-    store.create(&Thread::new("t1")).await.unwrap();
-
-    let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
-    let committed = store.append("t1", &delta).await.unwrap();
-    assert_eq!(committed.version, 1);
-
-    let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.version, 1);
-    assert_eq!(head.thread.message_count(), 1);
-}
-
-#[tokio::test]
-async fn test_file_thread_store_already_exists() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = FileStore::new(temp_dir.path());
-    store.create(&Thread::new("t1")).await.unwrap();
-    let err = store.create(&Thread::new("t1")).await.unwrap_err();
-    assert!(matches!(err, ThreadStoreError::AlreadyExists));
-}
-
-// ========================================================================
 // End-to-end: PendingDelta → ThreadDelta → append (full agent flow)
 // ========================================================================
 
@@ -1424,60 +1177,6 @@ async fn test_append_preserves_parent_run_id() {
 
     let head = ThreadReader::load(&store, "child").await.unwrap().unwrap();
     assert_eq!(head.thread.parent_thread_id.as_deref(), Some("parent"));
-}
-
-/// FileStore: multi-round append with version tracking persisted to disk.
-#[tokio::test]
-async fn test_file_multi_round_append() {
-    let temp_dir = TempDir::new().unwrap();
-    let store = FileStore::new(temp_dir.path());
-    store.create(&Thread::new("t1")).await.unwrap();
-
-    // Round 1: user message
-    let d1 = ThreadDelta {
-        run_id: "run-1".to_string(),
-        parent_run_id: None,
-        reason: CheckpointReason::UserMessage,
-        messages: vec![Arc::new(Message::user("hello"))],
-        patches: vec![],
-        snapshot: None,
-    };
-    let c1 = store.append("t1", &d1).await.unwrap();
-    assert_eq!(c1.version, 1);
-
-    // Round 2: assistant response + patch
-    let d2 = ThreadDelta {
-        run_id: "run-1".to_string(),
-        parent_run_id: None,
-        reason: CheckpointReason::AssistantTurnCommitted,
-        messages: vec![Arc::new(Message::assistant("hi"))],
-        patches: vec![TrackedPatch::new(
-            Patch::new().with_op(Op::set(path!("greeted"), json!(true))),
-        )],
-        snapshot: None,
-    };
-    let c2 = store.append("t1", &d2).await.unwrap();
-    assert_eq!(c2.version, 2);
-
-    // Round 3: run finished with snapshot
-    let d3 = ThreadDelta {
-        run_id: "run-1".to_string(),
-        parent_run_id: None,
-        reason: CheckpointReason::RunFinished,
-        messages: vec![],
-        patches: vec![],
-        snapshot: Some(json!({"greeted": true})),
-    };
-    let c3 = store.append("t1", &d3).await.unwrap();
-    assert_eq!(c3.version, 3);
-
-    // Re-create store from same path (simulates restart)
-    let store2 = FileStore::new(temp_dir.path());
-    let head = ThreadReader::load(&store2, "t1").await.unwrap().unwrap();
-    assert_eq!(head.version, 3);
-    assert_eq!(head.thread.message_count(), 2);
-    assert!(head.thread.patches.is_empty()); // snapshot cleared patches
-    assert_eq!(head.thread.state, json!({"greeted": true}));
 }
 
 /// Empty delta produces no change but still increments version.

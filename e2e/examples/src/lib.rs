@@ -9,9 +9,10 @@ pub mod research {
 }
 
 use carve_agent::{
-    tool_map_from_arc, AgentOsBuilder, FileStore, ModelDefinition, ThreadReader, ThreadStore, Tool,
+    tool_map_from_arc, AgentOsBuilder, ModelDefinition, ThreadReader, ThreadStore, Tool,
 };
 use carve_agentos_server::http::{self, AppState};
+use carve_thread_store_adapters::FileStore;
 use clap::Parser;
 use std::collections::HashMap;
 use std::path::PathBuf;

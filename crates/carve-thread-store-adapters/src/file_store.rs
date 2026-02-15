@@ -1,4 +1,12 @@
-use super::*;
+use async_trait::async_trait;
+use carve_agent::thread_store::{
+    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStoreError, ThreadWriter, Version,
+};
+use carve_agent::Thread;
+use serde::Deserialize;
+use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 
 pub struct FileStore {
     base_path: PathBuf,
@@ -238,4 +246,138 @@ impl FileStore {
 struct VersionedThread {
     #[serde(default)]
     _version: Option<Version>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use carve_agent::thread_store::{CheckpointReason, MessageQuery, ThreadReader, ThreadWriter};
+    use carve_agent::types::Message;
+    use carve_state::{path, Op, Patch, TrackedPatch};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
+        let mut thread = Thread::new(thread_id);
+        for i in 0..n {
+            thread = thread.with_message(Message::user(format!("msg-{i}")));
+        }
+        thread
+    }
+
+    #[tokio::test]
+    async fn file_storage_save_load_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+
+        let thread = Thread::new("test-1").with_message(Message::user("hello"));
+        storage.save(&thread).await.unwrap();
+
+        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
+        assert_eq!(loaded.id, "test-1");
+        assert_eq!(loaded.message_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn file_storage_list_and_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+
+        storage.create(&Thread::new("thread-a")).await.unwrap();
+        storage.create(&Thread::new("thread-b")).await.unwrap();
+        storage.create(&Thread::new("thread-c")).await.unwrap();
+
+        let mut ids = storage.list().await.unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["thread-a", "thread-b", "thread-c"]);
+
+        storage.delete("thread-b").await.unwrap();
+        let mut ids = storage.list().await.unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["thread-a", "thread-c"]);
+    }
+
+    #[tokio::test]
+    async fn file_storage_message_queries() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStore::new(temp_dir.path());
+        let thread = make_thread_with_messages("t1", 10);
+        storage.save(&thread).await.unwrap();
+
+        let page = storage
+            .load_messages(
+                "t1",
+                &MessageQuery {
+                    after: Some(4),
+                    limit: 3,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.messages.len(), 3);
+        assert_eq!(page.messages[0].cursor, 5);
+        assert_eq!(page.messages[0].message.content, "msg-5");
+        assert_eq!(storage.message_count("t1").await.unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn file_storage_append_and_versioning() {
+        let temp_dir = TempDir::new().unwrap();
+        let store = FileStore::new(temp_dir.path());
+        store.create(&Thread::new("t1")).await.unwrap();
+
+        let d1 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::UserMessage,
+            messages: vec![Arc::new(Message::user("hello"))],
+            patches: vec![],
+            snapshot: None,
+        };
+        let c1 = store.append("t1", &d1).await.unwrap();
+        assert_eq!(c1.version, 1);
+
+        let d2 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::AssistantTurnCommitted,
+            messages: vec![Arc::new(Message::assistant("hi"))],
+            patches: vec![TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("greeted"), json!(true))),
+            )],
+            snapshot: None,
+        };
+        let c2 = store.append("t1", &d2).await.unwrap();
+        assert_eq!(c2.version, 2);
+
+        let d3 = ThreadDelta {
+            run_id: "run-1".to_string(),
+            parent_run_id: None,
+            reason: CheckpointReason::RunFinished,
+            messages: vec![],
+            patches: vec![],
+            snapshot: Some(json!({"greeted": true})),
+        };
+        let c3 = store.append("t1", &d3).await.unwrap();
+        assert_eq!(c3.version, 3);
+
+        let store2 = FileStore::new(temp_dir.path());
+        let head = store2.load("t1").await.unwrap().unwrap();
+        assert_eq!(head.version, 3);
+        assert_eq!(head.thread.message_count(), 2);
+        assert!(head.thread.patches.is_empty());
+        assert_eq!(head.thread.state, json!({"greeted": true}));
+    }
+
+    #[test]
+    fn file_storage_rejects_path_traversal() {
+        let storage = FileStore::new("/base/path");
+        assert!(storage.thread_path("../../etc/passwd").is_err());
+        assert!(storage.thread_path("foo/bar").is_err());
+        assert!(storage.thread_path("foo\\bar").is_err());
+        assert!(storage.thread_path("").is_err());
+        assert!(storage.thread_path("foo\0bar").is_err());
+    }
 }

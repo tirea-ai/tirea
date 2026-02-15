@@ -102,7 +102,8 @@ while let Some(event) = stream.next().await {
 ## Step 4: Persist Threads
 
 ```rust,ignore
-use carve_agent::{FileStore, ThreadReader, ThreadWriter};
+use carve_agent::{ThreadReader, ThreadWriter};
+use carve_thread_store_adapters::FileStore;
 
 let thread_store = FileStore::new("./threads");
 

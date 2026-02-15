@@ -7,6 +7,7 @@ description = "HTTP/SSE/NATS gateway for carve-agent AgentOs"
 
 [dependencies]
 carve-agent = { path = "../carve-agent" }
+carve-thread-store-adapters = { path = "../carve-thread-store-adapters", features = ["nats"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

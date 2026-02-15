@@ -2,14 +2,16 @@
 //!
 //! Requires Docker. Run with:
 //! ```bash
-//! cargo test --package carve-agentos-server --test nats_buffered -- --nocapture
+//! cargo test --package carve-thread-store-adapters --features nats --test nats_buffered -- --nocapture
 //! ```
+
+#![cfg(feature = "nats")]
 
 use carve_agent::{
     CheckpointReason, MemoryStore, Message, MessageQuery, Thread, ThreadDelta, ThreadReader,
     ThreadWriter,
 };
-use carve_agentos_server::thread_store_adapters::NatsBufferedThreadWriter;
+use carve_thread_store_adapters::NatsBufferedThreadWriter;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;

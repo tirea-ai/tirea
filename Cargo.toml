@@ -4,6 +4,7 @@ members = [
     "crates/carve-state",
     "crates/carve-state-derive",
     "crates/carve-agent",
+    "crates/carve-thread-store-adapters",
     "crates/carve-agentos-server",
     "e2e/examples",
 ]
@@ -18,6 +19,7 @@ repository = "https://github.com/user/uncarve"
 # Internal crates
 carve-state = { path = "crates/carve-state" }
 carve-state-derive = { path = "crates/carve-state-derive" }
+carve-thread-store-adapters = { path = "crates/carve-thread-store-adapters" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,34 @@
+[package]
+name = "carve-thread-store-adapters"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Thread store adapter implementations for carve-agent"
+
+[dependencies]
+carve-agent = { path = "../carve-agent" }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+async-trait = "0.1"
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "time"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+tracing = "0.1"
+futures = "0.3"
+
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
+async-nats = { version = "0.38", optional = true }
+
+[features]
+default = []
+postgres = ["dep:sqlx"]
+nats = ["dep:async-nats"]
+
+[dev-dependencies]
+carve-state = { path = "../carve-state" }
+tempfile = "3"
+async-trait = "0.1"
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+testcontainers = "0.26"
+testcontainers-modules = { version = "0.14", features = ["nats"] }

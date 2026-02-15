@@ -25,14 +25,16 @@ tokio-util = "0.7"
 base64 = "0.22"
 json-patch = "3"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"], optional = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"], default-features = false, optional = true }
 
 [features]
 default = []
 mcp = ["dep:mcp"]
-postgres = ["dep:sqlx"]
+# Kept as a no-op compatibility feature after moving PostgresStore
+# implementation to `carve-thread-store-adapters`.
+postgres = []
 
 [dev-dependencies]
+carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }

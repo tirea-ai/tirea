@@ -588,10 +588,11 @@ async fn test_tool_provider_reminder_integration() {
 // ============================================================================
 
 use carve_agent::{
-    loop_execute_tools, tool_map, AgentConfig, FileStore, MemoryStore, Message, Role, StreamResult,
-    Thread, ThreadReader, ThreadWriter,
+    loop_execute_tools, tool_map, AgentConfig, MemoryStore, Message, Role, StreamResult, Thread,
+    ThreadReader, ThreadWriter,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
+use carve_thread_store_adapters::FileStore;
 use std::sync::Arc;
 use tempfile::TempDir;
 
