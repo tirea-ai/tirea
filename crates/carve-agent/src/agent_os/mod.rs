@@ -20,11 +20,16 @@ use crate::types::Message;
 use crate::{AgentConfig, AgentDefinition, AgentEvent, AgentLoopError, Thread};
 
 pub(crate) mod agent_tools;
+mod bundle;
 mod registry;
 
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     RUNTIME_CALLER_AGENT_ID_KEY,
+};
+pub use bundle::{
+    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
+    RegistryBundle, RegistrySet, ToolPluginBundle,
 };
 pub use registry::{
     AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
@@ -35,6 +40,12 @@ pub use registry::{
 };
 
 type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleMergeScope {
+    System,
+    RunExtension,
+}
 
 #[derive(Clone)]
 struct ThreadStoreStateCommitter {
@@ -130,12 +141,28 @@ pub enum AgentOsWiringError {
 
     #[error("agent recovery plugin already installed: {0}")]
     AgentRecoveryPluginAlreadyInstalled(String),
+
+    #[error("bundle '{bundle_id}' includes unsupported contribution in wiring: {kind}")]
+    BundleUnsupportedContribution { bundle_id: String, kind: String },
+
+    #[error("bundle '{bundle_id}' tool id already registered: {id}")]
+    BundleToolIdConflict { bundle_id: String, id: String },
+
+    #[error("bundle '{bundle_id}' plugin id mismatch: key={key} plugin.id()={plugin_id}")]
+    BundlePluginIdMismatch {
+        bundle_id: String,
+        key: String,
+        plugin_id: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum AgentOsBuildError {
     #[error(transparent)]
     Agents(#[from] AgentRegistryError),
+
+    #[error(transparent)]
+    Bundle(#[from] BundleComposeError),
 
     #[error(transparent)]
     Tools(#[from] ToolRegistryError),
@@ -219,6 +246,8 @@ pub struct RunExtensions {
     pub tools: HashMap<String, Arc<dyn Tool>>,
     /// Additional plugins active only for this run.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
+    /// Additional bundles merged only for this run.
+    pub bundles: Vec<Arc<dyn RegistryBundle>>,
 }
 
 impl RunExtensions {
@@ -236,8 +265,13 @@ impl RunExtensions {
         self
     }
 
+    pub fn with_bundle(mut self, bundle: Arc<dyn RegistryBundle>) -> Self {
+        self.bundles.push(bundle);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.tools.is_empty() && self.plugins.is_empty()
+        self.tools.is_empty() && self.plugins.is_empty() && self.bundles.is_empty()
     }
 }
 
@@ -291,6 +325,7 @@ pub struct AgentOs {
 #[derive(Clone)]
 pub struct AgentOsBuilder {
     client: Option<Client>,
+    bundles: Vec<Arc<dyn RegistryBundle>>,
     agents: HashMap<String, AgentDefinition>,
     agent_registries: Vec<Arc<dyn AgentRegistry>>,
     base_tools: HashMap<String, Arc<dyn Tool>>,
@@ -328,6 +363,7 @@ impl std::fmt::Debug for AgentOsBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentOsBuilder")
             .field("client", &self.client.is_some())
+            .field("bundles", &self.bundles.len())
             .field("agents", &self.agents.len())
             .field("base_tools", &self.base_tools.len())
             .field("plugins", &self.plugins.len())
@@ -345,6 +381,7 @@ impl AgentOsBuilder {
     pub fn new() -> Self {
         Self {
             client: None,
+            bundles: Vec::new(),
             agents: HashMap::new(),
             agent_registries: Vec::new(),
             base_tools: HashMap::new(),
@@ -364,6 +401,11 @@ impl AgentOsBuilder {
 
     pub fn with_client(mut self, client: Client) -> Self {
         self.client = Some(client);
+        self
+    }
+
+    pub fn with_bundle(mut self, bundle: Arc<dyn RegistryBundle>) -> Self {
+        self.bundles.push(bundle);
         self
     }
 
@@ -453,27 +495,46 @@ impl AgentOsBuilder {
     pub fn build(self) -> Result<AgentOs, AgentOsBuildError> {
         let AgentOsBuilder {
             client,
-            agents: agents_defs,
-            agent_registries,
-            base_tools: base_tools_defs,
-            base_tool_registries,
-            plugins: plugin_defs,
-            plugin_registries,
-            providers: provider_defs,
-            provider_registries,
-            models: model_defs,
-            model_registries,
+            bundles,
+            agents: mut agents_defs,
+            mut agent_registries,
+            base_tools: mut base_tools_defs,
+            mut base_tool_registries,
+            plugins: mut plugin_defs,
+            mut plugin_registries,
+            providers: mut provider_defs,
+            mut provider_registries,
+            models: mut model_defs,
+            mut model_registries,
             skills_registry,
             skills,
             agent_tools,
             thread_store,
         } = self;
 
+        let mut skill_registries: Vec<Arc<dyn SkillRegistry>> =
+            skills_registry.into_iter().collect();
+        BundleComposer::apply(
+            &bundles,
+            BundleRegistryAccumulator {
+                agent_definitions: &mut agents_defs,
+                agent_registries: &mut agent_registries,
+                tool_definitions: &mut base_tools_defs,
+                tool_registries: &mut base_tool_registries,
+                plugin_definitions: &mut plugin_defs,
+                plugin_registries: &mut plugin_registries,
+                provider_definitions: &mut provider_defs,
+                provider_registries: &mut provider_registries,
+                model_definitions: &mut model_defs,
+                model_registries: &mut model_registries,
+                skill_registries: &mut skill_registries,
+            },
+        )?;
+        let skills_registry = BundleComposer::merge_skill_registries(skill_registries)?;
+
         if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
             return Err(AgentOsBuildError::SkillsNotConfigured);
         }
-
-        let skills_registry: Option<Arc<dyn SkillRegistry>> = skills_registry;
 
         let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(base_tools_defs)?;
@@ -617,14 +678,23 @@ impl AgentOsBuilder {
             }
         };
 
-        Ok(AgentOs {
-            default_client: client.unwrap_or_default(),
+        let registries = RegistrySet::new(
             agents,
             base_tools,
             plugins,
             providers,
             models,
             skills_registry,
+        );
+
+        Ok(AgentOs {
+            default_client: client.unwrap_or_default(),
+            agents: registries.agents,
+            base_tools: registries.tools,
+            plugins: registries.plugins,
+            providers: registries.providers,
+            models: registries.models,
+            skills_registry: registries.skills_registry,
             skills,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,
@@ -782,13 +852,12 @@ impl AgentOs {
         }
     }
 
-    fn wire_skills_plugins_and_tools(
+    fn build_skills_bundle(
         &self,
         explicit_plugins: &[Arc<dyn AgentPlugin>],
-        tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Result<Option<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         if self.skills.mode == SkillsMode::Disabled {
-            return Ok(Vec::new());
+            return Ok(None);
         }
 
         Self::ensure_skills_plugin_not_installed(explicit_plugins)?;
@@ -797,35 +866,31 @@ impl AgentOs {
             .clone()
             .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
 
-        let skills = SkillSubsystem::new(reg.clone());
-        skills.extend_tools(tools).map_err(|e| match e {
-            SkillSubsystemError::ToolIdConflict(id) => AgentOsWiringError::SkillsToolIdConflict(id),
-        })?;
+        let mut tool_defs = HashMap::new();
+        SkillSubsystem::new(reg.clone())
+            .extend_tools(&mut tool_defs)
+            .map_err(|e| match e {
+                SkillSubsystemError::ToolIdConflict(id) => {
+                    AgentOsWiringError::SkillsToolIdConflict(id)
+                }
+            })?;
 
-        Ok(self.build_skills_plugins(reg))
+        let mut bundle = ToolPluginBundle::new("skills").with_tools(tool_defs);
+        for plugin in self.build_skills_plugins(reg) {
+            bundle = bundle.with_plugin(plugin);
+        }
+        Ok(Some(Arc::new(bundle)))
     }
 
-    fn wire_agent_tools_plugins_and_tools(
+    fn build_agent_tools_bundles(
         &self,
         explicit_plugins: &[Arc<dyn AgentPlugin>],
-        tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         Self::ensure_agent_tools_plugin_not_installed(explicit_plugins)?;
 
         let run_tool: Arc<dyn Tool> =
             Arc::new(AgentRunTool::new(self.clone(), self.agent_runs.clone()));
-        let run_tool_id = run_tool.descriptor().id.clone();
-        if tools.contains_key(&run_tool_id) {
-            return Err(AgentOsWiringError::AgentToolIdConflict(run_tool_id));
-        }
-        tools.insert(run_tool.descriptor().id.clone(), run_tool);
-
         let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.agent_runs.clone()));
-        let stop_tool_id = stop_tool.descriptor().id.clone();
-        if tools.contains_key(&stop_tool_id) {
-            return Err(AgentOsWiringError::AgentToolIdConflict(stop_tool_id));
-        }
-        tools.insert(stop_tool.descriptor().id.clone(), stop_tool);
 
         let tools_plugin = AgentToolsPlugin::new(self.agents.clone(), self.agent_runs.clone())
             .with_limits(
@@ -833,7 +898,165 @@ impl AgentOs {
                 self.agent_tools.discovery_max_chars,
             );
         let recovery_plugin = AgentRecoveryPlugin::new(self.agent_runs.clone());
-        Ok(vec![Arc::new(tools_plugin), Arc::new(recovery_plugin)])
+
+        let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
+            ToolPluginBundle::new("agent_tools")
+                .with_tool(run_tool)
+                .with_tool(stop_tool)
+                .with_plugin(Arc::new(tools_plugin)),
+        );
+        let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
+            ToolPluginBundle::new("agent_recovery").with_plugin(Arc::new(recovery_plugin)),
+        );
+
+        Ok(vec![tools_bundle, recovery_bundle])
+    }
+
+    fn merge_bundles_into(
+        &self,
+        bundles: &[Arc<dyn RegistryBundle>],
+        tools: &mut HashMap<String, Arc<dyn Tool>>,
+        scope: BundleMergeScope,
+    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        let mut plugins = Vec::new();
+        for bundle in bundles {
+            Self::validate_bundle_scope(bundle.as_ref())?;
+            Self::merge_bundle_tools(bundle.as_ref(), tools, scope)?;
+            let mut bundle_plugins = Self::collect_bundle_plugins(bundle.as_ref())?;
+            plugins.append(&mut bundle_plugins);
+        }
+        Self::ensure_unique_plugin_ids(&plugins)?;
+        Ok(plugins)
+    }
+
+    fn validate_bundle_scope(bundle: &dyn RegistryBundle) -> Result<(), AgentOsWiringError> {
+        let unsupported = [
+            (
+                !bundle.agent_definitions().is_empty(),
+                "agent_definitions".to_string(),
+            ),
+            (
+                !bundle.agent_registries().is_empty(),
+                "agent_registries".to_string(),
+            ),
+            (
+                !bundle.provider_definitions().is_empty(),
+                "provider_definitions".to_string(),
+            ),
+            (
+                !bundle.provider_registries().is_empty(),
+                "provider_registries".to_string(),
+            ),
+            (
+                !bundle.model_definitions().is_empty(),
+                "model_definitions".to_string(),
+            ),
+            (
+                !bundle.model_registries().is_empty(),
+                "model_registries".to_string(),
+            ),
+            (
+                !bundle.skill_registries().is_empty(),
+                "skill_registries".to_string(),
+            ),
+        ];
+        if let Some((_, kind)) = unsupported.into_iter().find(|(has, _)| *has) {
+            return Err(AgentOsWiringError::BundleUnsupportedContribution {
+                bundle_id: bundle.id().to_string(),
+                kind,
+            });
+        }
+        Ok(())
+    }
+
+    fn merge_bundle_tools(
+        bundle: &dyn RegistryBundle,
+        tools: &mut HashMap<String, Arc<dyn Tool>>,
+        scope: BundleMergeScope,
+    ) -> Result<(), AgentOsWiringError> {
+        let mut defs: Vec<(String, Arc<dyn Tool>)> =
+            bundle.tool_definitions().into_iter().collect();
+        defs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (id, tool) in defs {
+            if tools.contains_key(&id) {
+                return Err(Self::bundle_tool_conflict(scope, bundle.id(), id));
+            }
+            tools.insert(id, tool);
+        }
+
+        for reg in bundle.tool_registries() {
+            let mut ids = reg.ids();
+            ids.sort();
+            for id in ids {
+                let Some(tool) = reg.get(&id) else {
+                    continue;
+                };
+                if tools.contains_key(&id) {
+                    return Err(Self::bundle_tool_conflict(scope, bundle.id(), id));
+                }
+                tools.insert(id, tool);
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_bundle_plugins(
+        bundle: &dyn RegistryBundle,
+    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        let mut out = Vec::new();
+
+        let mut defs: Vec<(String, Arc<dyn AgentPlugin>)> =
+            bundle.plugin_definitions().into_iter().collect();
+        defs.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, plugin) in defs {
+            let plugin_id = plugin.id().to_string();
+            if key != plugin_id {
+                return Err(AgentOsWiringError::BundlePluginIdMismatch {
+                    bundle_id: bundle.id().to_string(),
+                    key,
+                    plugin_id,
+                });
+            }
+            out.push(plugin);
+        }
+
+        for reg in bundle.plugin_registries() {
+            let mut ids = reg.ids();
+            ids.sort();
+            for id in ids {
+                let Some(plugin) = reg.get(&id) else {
+                    continue;
+                };
+                if id != plugin.id() {
+                    return Err(AgentOsWiringError::BundlePluginIdMismatch {
+                        bundle_id: bundle.id().to_string(),
+                        key: id,
+                        plugin_id: plugin.id().to_string(),
+                    });
+                }
+                out.push(plugin);
+            }
+        }
+
+        Ok(out)
+    }
+
+    fn bundle_tool_conflict(
+        scope: BundleMergeScope,
+        bundle_id: &str,
+        id: String,
+    ) -> AgentOsWiringError {
+        match scope {
+            BundleMergeScope::RunExtension => AgentOsWiringError::RunExtensionToolIdConflict(id),
+            BundleMergeScope::System => match bundle_id {
+                "skills" => AgentOsWiringError::SkillsToolIdConflict(id),
+                "agent_tools" | "agent_recovery" => AgentOsWiringError::AgentToolIdConflict(id),
+                _ => AgentOsWiringError::BundleToolIdConflict {
+                    bundle_id: bundle_id.to_string(),
+                    id,
+                },
+            },
+        }
     }
 
     pub fn wire_plugins_into(
@@ -862,8 +1085,13 @@ impl AgentOs {
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
 
-        let mut system_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
-        system_plugins.extend(self.wire_agent_tools_plugins_and_tools(&explicit_plugins, tools)?);
+        let mut system_bundles: Vec<Arc<dyn RegistryBundle>> = Vec::new();
+        if let Some(skills_bundle) = self.build_skills_bundle(&explicit_plugins)? {
+            system_bundles.push(skills_bundle);
+        }
+        system_bundles.extend(self.build_agent_tools_bundles(&explicit_plugins)?);
+        let system_plugins =
+            self.merge_bundles_into(&system_bundles, tools, BundleMergeScope::System)?;
         config.plugins = Self::assemble_plugin_chain(
             system_plugins,
             policy_plugins,
@@ -902,7 +1130,11 @@ impl AgentOs {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
         let explicit_plugins = std::mem::take(&mut config.plugins);
-        let skills_plugins = self.wire_skills_plugins_and_tools(&explicit_plugins, tools)?;
+        let mut skills_plugins = Vec::new();
+        if let Some(skills_bundle) = self.build_skills_bundle(&explicit_plugins)? {
+            skills_plugins =
+                self.merge_bundles_into(&[skills_bundle], tools, BundleMergeScope::System)?;
+        }
         config.plugins =
             Self::assemble_plugin_chain(skills_plugins, Vec::new(), Vec::new(), explicit_plugins)?;
         Ok(config)
@@ -918,20 +1150,38 @@ impl AgentOs {
     }
 
     fn apply_run_extensions(
+        &self,
         mut config: AgentConfig,
         mut tools: HashMap<String, Arc<dyn Tool>>,
         extensions: RunExtensions,
     ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>), AgentOsWiringError> {
-        for (id, tool) in extensions.tools {
+        let RunExtensions {
+            tools: mut extension_tools,
+            plugins: mut extension_plugins,
+            bundles,
+        } = extensions;
+
+        let bundle_plugins = if bundles.is_empty() {
+            Vec::new()
+        } else {
+            self.merge_bundles_into(
+                &bundles,
+                &mut extension_tools,
+                BundleMergeScope::RunExtension,
+            )?
+        };
+        extension_plugins.extend(bundle_plugins);
+
+        for (id, tool) in extension_tools {
             if tools.contains_key(&id) {
                 return Err(AgentOsWiringError::RunExtensionToolIdConflict(id));
             }
             tools.insert(id, tool);
         }
 
-        if !extensions.plugins.is_empty() {
+        if !extension_plugins.is_empty() {
             let mut merged = config.plugins;
-            merged.extend(extensions.plugins);
+            merged.extend(extension_plugins);
             Self::ensure_unique_plugin_ids(&merged)?;
             config.plugins = merged;
         }
@@ -1070,7 +1320,8 @@ impl AgentOs {
 
         // 6. Resolve static wiring, then merge run-scoped extensions.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-        let (cfg, tools) = Self::apply_run_extensions(cfg, tools, extensions)
+        let (cfg, tools) = self
+            .apply_run_extensions(cfg, tools, extensions)
             .map_err(AgentOsResolveError::from)
             .map_err(AgentOsRunError::from)?;
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
@@ -2664,6 +2915,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_run_with_extensions_merges_bundle_tools_and_plugins() {
+        struct RuntimeBundlePlugin;
+        #[async_trait::async_trait]
+        impl AgentPlugin for RuntimeBundlePlugin {
+            fn id(&self) -> &str {
+                "runtime_bundle_plugin"
+            }
+
+            async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+                if phase == Phase::BeforeInference {
+                    step.skip_inference = true;
+                }
+            }
+        }
+
+        struct RuntimeBundleTool;
+        #[async_trait::async_trait]
+        impl Tool for RuntimeBundleTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new(
+                    "runtime_bundle_tool",
+                    "Runtime Bundle Tool",
+                    "run-scoped tool from bundle",
+                )
+                .with_parameters(json!({"type":"object"}))
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success(
+                    "runtime_bundle_tool",
+                    json!({"ok": true}),
+                ))
+            }
+        }
+
+        let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage)
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+        let bundle = ToolPluginBundle::new("runtime_bundle")
+            .with_tool(Arc::new(RuntimeBundleTool))
+            .with_plugin(Arc::new(RuntimeBundlePlugin));
+
+        let prepared = os
+            .prepare_run_with_extensions(
+                RunRequest {
+                    agent_id: "a1".to_string(),
+                    thread_id: Some("t-run-ext-bundle".to_string()),
+                    run_id: Some("run-ext-bundle".to_string()),
+                    parent_run_id: None,
+                    resource_id: None,
+                    state: None,
+                    messages: vec![Message::user("hello")],
+                },
+                RunExtensions::new().with_bundle(Arc::new(bundle)),
+            )
+            .await
+            .unwrap();
+
+        assert!(prepared.tools.contains_key("runtime_bundle_tool"));
+        assert!(prepared
+            .config
+            .plugins
+            .iter()
+            .any(|plugin| plugin.id() == "runtime_bundle_plugin"));
+    }
+
+    #[tokio::test]
     async fn prepare_run_with_extensions_errors_on_tool_id_conflict() {
         struct BaseTool;
         #[async_trait::async_trait]
@@ -2733,5 +3058,200 @@ mod tests {
                 AgentOsWiringError::RunExtensionToolIdConflict(ref id)
             )) if id == "dup_tool"
         ));
+    }
+
+    #[tokio::test]
+    async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
+        struct BaseTool;
+        #[async_trait::async_trait]
+        impl Tool for BaseTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("dup_tool", "Dup Tool", "base")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("dup_tool", json!({})))
+            }
+        }
+
+        struct BundleToolConflict;
+        #[async_trait::async_trait]
+        impl Tool for BundleToolConflict {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor::new("dup_tool", "Dup Tool Runtime Bundle", "runtime")
+            }
+
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &Context<'_>,
+            ) -> Result<ToolResult, ToolError> {
+                Ok(ToolResult::success("dup_tool", json!({})))
+            }
+        }
+
+        let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+        let os = AgentOs::builder()
+            .with_thread_store(storage)
+            .with_tools(HashMap::from([(
+                "dup_tool".to_string(),
+                Arc::new(BaseTool) as Arc<dyn Tool>,
+            )]))
+            .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+            .build()
+            .unwrap();
+        let bundle = ToolPluginBundle::new("runtime_bundle_conflict")
+            .with_tool(Arc::new(BundleToolConflict));
+
+        let err = match os
+            .prepare_run_with_extensions(
+                RunRequest {
+                    agent_id: "a1".to_string(),
+                    thread_id: Some("t-run-ext-bundle-conflict".to_string()),
+                    run_id: Some("run-ext-bundle-conflict".to_string()),
+                    parent_run_id: None,
+                    resource_id: None,
+                    state: None,
+                    messages: vec![Message::user("hello")],
+                },
+                RunExtensions::new().with_bundle(Arc::new(bundle)),
+            )
+            .await
+        {
+            Ok(_) => panic!("expected run extension tool id conflict"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(
+            err,
+            AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
+                AgentOsWiringError::RunExtensionToolIdConflict(ref id)
+            )) if id == "dup_tool"
+        ));
+    }
+
+    #[derive(Debug)]
+    struct BundleTestTool;
+
+    #[async_trait::async_trait]
+    impl Tool for BundleTestTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("dup_tool", "Duplicate Tool", "bundle test tool")
+                .with_parameters(json!({"type":"object"}))
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &Context<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("dup_tool", json!({"ok": true})))
+        }
+    }
+
+    #[derive(Clone)]
+    struct ToolConflictBundle;
+
+    impl RegistryBundle for ToolConflictBundle {
+        fn id(&self) -> &str {
+            "tool_conflict_bundle"
+        }
+
+        fn tool_definitions(&self) -> HashMap<String, Arc<dyn Tool>> {
+            HashMap::from([(
+                "dup_tool".to_string(),
+                Arc::new(BundleTestTool) as Arc<dyn Tool>,
+            )])
+        }
+    }
+
+    #[derive(Clone)]
+    struct SkillRegistryBundle {
+        id: &'static str,
+        registry: Arc<dyn SkillRegistry>,
+    }
+
+    impl RegistryBundle for SkillRegistryBundle {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        fn skill_registries(&self) -> Vec<Arc<dyn SkillRegistry>> {
+            vec![self.registry.clone()]
+        }
+    }
+
+    #[test]
+    fn builder_fails_fast_on_bundle_registry_conflict() {
+        let err = AgentOs::builder()
+            .with_tools(HashMap::from([(
+                "dup_tool".to_string(),
+                Arc::new(BundleTestTool) as Arc<dyn Tool>,
+            )]))
+            .with_bundle(Arc::new(ToolConflictBundle))
+            .build()
+            .expect_err("duplicate tool id between base and bundle should fail");
+
+        assert!(matches!(
+            err,
+            AgentOsBuildError::Bundle(BundleComposeError::DuplicateId {
+                bundle_id,
+                kind: BundleRegistryKind::Tool,
+                id,
+            }) if bundle_id == "tool_conflict_bundle" && id == "dup_tool"
+        ));
+    }
+
+    #[test]
+    fn builder_merges_skill_registries_from_multiple_bundles() {
+        use crate::skills::{InMemorySkillRegistry, SkillMeta};
+
+        let mut a = InMemorySkillRegistry::new();
+        a.insert_skill(
+            SkillMeta {
+                id: "s1".to_string(),
+                name: "s1".to_string(),
+                description: "skill one".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            "---\nname: s1\ndescription: skill one\n---\nBody\n",
+        );
+
+        let mut b = InMemorySkillRegistry::new();
+        b.insert_skill(
+            SkillMeta {
+                id: "s2".to_string(),
+                name: "s2".to_string(),
+                description: "skill two".to_string(),
+                allowed_tools: Vec::new(),
+            },
+            "---\nname: s2\ndescription: skill two\n---\nBody\n",
+        );
+
+        let os = AgentOs::builder()
+            .with_skills_config(SkillsConfig {
+                mode: SkillsMode::DiscoveryOnly,
+                ..SkillsConfig::default()
+            })
+            .with_bundle(Arc::new(SkillRegistryBundle {
+                id: "skills_a",
+                registry: Arc::new(a),
+            }))
+            .with_bundle(Arc::new(SkillRegistryBundle {
+                id: "skills_b",
+                registry: Arc::new(b),
+            }))
+            .build()
+            .expect("multiple bundle skill registries should compose");
+
+        let reg = os
+            .skill_registry()
+            .expect("skills should be configured through bundles");
+        let ids: Vec<String> = reg.list().into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec!["s1".to_string(), "s2".to_string()]);
     }
 }

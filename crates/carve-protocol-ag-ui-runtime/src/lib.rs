@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use carve_agent::interaction::InteractionPlugin;
 use carve_agent::{
     AgentPlugin, Context, Interaction, Phase, RunExtensions, StepContext, Tool, ToolDescriptor,
-    ToolError, ToolResult,
+    ToolError, ToolPluginBundle, ToolResult,
 };
 use carve_protocol_ag_ui::RunAgentRequest;
 use serde_json::Value;
@@ -21,9 +21,11 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
     let frontend_tool_names: HashSet<String> =
         frontend_defs.iter().map(|tool| tool.name.clone()).collect();
 
-    let mut extensions = RunExtensions::new();
+    let mut bundle = ToolPluginBundle::new("agui_runtime");
+    let mut has_contributions = false;
     for tool in frontend_defs {
-        extensions = extensions.with_tool(Arc::new(FrontendToolStub::new(
+        has_contributions = true;
+        bundle = bundle.with_tool(Arc::new(FrontendToolStub::new(
             tool.name.clone(),
             tool.description.clone(),
             tool.parameters.clone(),
@@ -31,7 +33,8 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
     }
 
     if !frontend_tool_names.is_empty() {
-        extensions = extensions.with_plugin(Arc::new(FrontendToolPendingPlugin::new(
+        has_contributions = true;
+        bundle = bundle.with_plugin(Arc::new(FrontendToolPendingPlugin::new(
             frontend_tool_names,
         )));
     }
@@ -41,10 +44,15 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
         request.denied_interaction_ids(),
     );
     if interaction_plugin.is_active() {
-        extensions = extensions.with_plugin(Arc::new(interaction_plugin));
+        has_contributions = true;
+        bundle = bundle.with_plugin(Arc::new(interaction_plugin));
     }
 
-    extensions
+    if has_contributions {
+        RunExtensions::new().with_bundle(Arc::new(bundle))
+    } else {
+        RunExtensions::new()
+    }
 }
 
 /// Runtime-only frontend tool descriptor stub.
@@ -158,9 +166,9 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
-        assert_eq!(extensions.tools.len(), 1);
-        assert!(extensions.tools.contains_key("copyToClipboard"));
-        assert_eq!(extensions.plugins.len(), 1);
+        assert!(extensions.tools.is_empty());
+        assert!(extensions.plugins.is_empty());
+        assert_eq!(extensions.bundles.len(), 1);
     }
 
     #[test]
@@ -183,7 +191,8 @@ mod tests {
 
         let extensions = build_agui_extensions(&request);
         assert!(extensions.tools.is_empty());
-        assert_eq!(extensions.plugins.len(), 1);
+        assert!(extensions.plugins.is_empty());
+        assert_eq!(extensions.bundles.len(), 1);
     }
 
     #[test]
@@ -210,7 +219,7 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
-        assert_eq!(extensions.plugins.len(), 2);
+        assert_eq!(extensions.bundles.len(), 1);
     }
 
     #[test]

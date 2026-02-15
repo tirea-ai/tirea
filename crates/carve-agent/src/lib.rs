@@ -153,13 +153,14 @@ pub use convert::{
 
 pub use agent_os::{
     AgentOs, AgentOsBuildError, AgentOsBuilder, AgentOsResolveError, AgentOsRunError,
-    AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig,
-    CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
-    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
-    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
-    ProviderRegistryError, RunExtensions, RunRequest, RunStream, SkillsConfig, SkillsMode,
-    ToolRegistry, ToolRegistryError,
+    AgentOsWiringError, AgentRegistry, AgentRegistryError, AgentToolsConfig, BundleComposeError,
+    BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
+    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
+    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry,
+    InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition, ModelRegistry,
+    ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    ProviderRegistryError, RegistryBundle, RegistrySet, RunExtensions, RunRequest, RunStream,
+    SkillsConfig, SkillsMode, ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
 // Loop exports
