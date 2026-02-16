@@ -4,9 +4,11 @@
 //! forwarding them to a pluggable [`MetricsSink`].
 
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::Context;
+use crate::contracts::context::AgentState;
 use crate::contracts::phase::{Phase, StepContext};
-use crate::contracts::state_types::{AgentInferenceError, AgentState, AGENT_STATE_PATH};
+use crate::contracts::state_types::{
+    AgentInferenceError, AgentState as AgentStateDoc, AGENT_STATE_PATH,
+};
 use async_trait::async_trait;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
@@ -355,7 +357,7 @@ impl AgentPlugin for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
         match phase {
             Phase::RunStart => {
                 *lock_unpoison(&self.run_start) = Some(Instant::now());
@@ -587,8 +589,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
     }
 }
 
-fn inference_error_from_state(ctx: &Context<'_>) -> Option<AgentInferenceError> {
-    let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
+fn inference_error_from_state(ctx: &AgentState<'_>) -> Option<AgentInferenceError> {
+    let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
     agent.inference_error().ok().flatten()
 }
 
@@ -604,7 +606,7 @@ mod tests {
     use crate::contracts::events::StreamResult;
     use crate::contracts::phase::ToolContext as PhaseToolContext;
     use crate::contracts::traits::tool::ToolResult;
-    use crate::contracts::context::Context;
+    use crate::contracts::context::AgentState;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;
     use serde_json::json;
@@ -751,7 +753,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_inference() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -787,7 +789,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_inference_with_cache() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -819,7 +821,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_tool() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
@@ -852,7 +854,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_tool_failure() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
@@ -880,7 +882,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_session_lifecycle() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
@@ -900,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_no_usage() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
@@ -928,7 +930,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_multiple_rounds() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
@@ -965,7 +967,7 @@ mod tests {
                 }
             }
         });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
@@ -989,7 +991,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_parallel_tool_spans_are_isolated_by_call_id() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use std::time::Duration;
 
         let sink = InMemorySink::new();
@@ -1327,7 +1329,7 @@ mod tests {
     #[tokio::test]
     async fn test_tracing_span_inference() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1364,7 +1366,7 @@ mod tests {
     #[tokio::test]
     async fn test_tracing_span_tool() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1438,7 +1440,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_inference_span() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1511,7 +1513,7 @@ mod tests {
                     }
                 }
             });
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1552,7 +1554,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_parent_child_propagation() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1618,7 +1620,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_tool_parent_child_propagation() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1678,7 +1680,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_no_parent_context() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1719,7 +1721,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_tracing_span_cleared_after_phases() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, _exporter, _provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1771,7 +1773,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_inference_and_tool_are_siblings() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1864,7 +1866,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_tool_span() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1917,7 +1919,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_inference_span_name_format() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1958,7 +1960,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_tool_span_name_format() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1996,7 +1998,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_inference_span_kind_client() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2037,7 +2039,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_tool_span_kind_internal() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2077,7 +2079,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_tool_span_has_provider() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2117,7 +2119,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_error_sets_status_code() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2164,7 +2166,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_success_no_error_status() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2208,7 +2210,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_required_attributes_present() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2274,7 +2276,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_no_usage_omits_token_attributes() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2317,7 +2319,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_semconv_cache_tokens_only_when_present() {
             let doc = json!({});
-            let ctx = Context::new(&doc, "test", "test");
+            let ctx = AgentState::new(&doc, "test", "test");
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();

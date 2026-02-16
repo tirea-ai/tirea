@@ -9,7 +9,7 @@ use carve_agent::contracts::traits::provider::{ContextCategory, ContextProvider}
 use carve_agent::contracts::traits::reminder::SystemReminder;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::interaction::InteractionPlugin;
-use carve_agent::prelude::Context;
+use carve_agent::prelude::AgentState;
 use carve_agent::runtime::activity::ActivityHub;
 use carve_agent::runtime::loop_runner::AgentLoopError;
 use carve_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
@@ -63,7 +63,7 @@ impl Tool for IncrementTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("path is required".to_string()))?;
@@ -87,7 +87,7 @@ impl Tool for AddTaskTool {
         ToolDescriptor::new("add_task", "Add Task", "Adds a new task item")
     }
 
-    async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let item = args["item"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("item is required".to_string()))?;
@@ -112,7 +112,7 @@ impl Tool for UpdateCallStateTool {
         ToolDescriptor::new("update_call", "Update Call State", "Updates the call state")
     }
 
-    async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let label = args["label"].as_str().unwrap_or("updated");
 
         // Use call_state() for per-call state
@@ -148,7 +148,7 @@ impl ContextProvider for CounterContextProvider {
         100
     }
 
-    async fn provide(&self, ctx: &Context<'_>) -> Vec<String> {
+    async fn provide(&self, ctx: &AgentState<'_>) -> Vec<String> {
         let counter = ctx.state::<CounterState>("counter");
 
         // Provider can also modify state
@@ -178,7 +178,7 @@ impl SystemReminder for TaskReminder {
         "task_reminder"
     }
 
-    async fn remind(&self, ctx: &Context<'_>) -> Option<String> {
+    async fn remind(&self, ctx: &AgentState<'_>) -> Option<String> {
         let tasks = ctx.state::<TaskState>("tasks");
 
         let count = tasks.count().unwrap_or(0);
@@ -202,7 +202,7 @@ async fn test_tool_basic_execution() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "tool:increment");
+    let ctx = AgentState::new(&snapshot, "call_001", "tool:increment");
 
     let result = tool
         .execute(json!({"path": "counter"}), &ctx)
@@ -230,7 +230,7 @@ async fn test_tool_multiple_executions() {
 
     for i in 1..=5 {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, format!("call_{}", i), "tool:increment");
+        let ctx = AgentState::new(&snapshot, format!("call_{}", i), "tool:increment");
 
         let result = tool
             .execute(json!({"path": "counter"}), &ctx)
@@ -260,7 +260,7 @@ async fn test_tool_with_call_state() {
     // First execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_abc", "tool:update_call");
+        let ctx = AgentState::new(&snapshot, "call_abc", "tool:update_call");
 
         let result = tool.execute(json!({"label": "step1"}), &ctx).await.unwrap();
 
@@ -273,7 +273,7 @@ async fn test_tool_with_call_state() {
     // Second execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_abc", "tool:update_call");
+        let ctx = AgentState::new(&snapshot, "call_abc", "tool:update_call");
 
         let result = tool.execute(json!({"label": "step2"}), &ctx).await.unwrap();
 
@@ -294,7 +294,7 @@ async fn test_tool_error_handling() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "tool:increment");
+    let ctx = AgentState::new(&snapshot, "call_001", "tool:increment");
 
     // Missing required argument
     let result = tool.execute(json!({}), &ctx).await;
@@ -321,7 +321,7 @@ async fn test_context_provider_basic() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "provider:counter");
+    let ctx = AgentState::new(&snapshot, "call_001", "provider:counter");
 
     let messages = provider.provide(&ctx).await;
     assert!(messages.is_empty()); // value <= 10
@@ -343,7 +343,7 @@ async fn test_context_provider_with_high_value() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "provider:counter");
+    let ctx = AgentState::new(&snapshot, "call_001", "provider:counter");
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -373,7 +373,7 @@ async fn test_system_reminder_with_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "reminder:task");
+    let ctx = AgentState::new(&snapshot, "call_001", "reminder:task");
 
     let message = reminder.remind(&ctx).await;
     assert!(message.is_some());
@@ -389,7 +389,7 @@ async fn test_system_reminder_no_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_001", "reminder:task");
+    let ctx = AgentState::new(&snapshot, "call_001", "reminder:task");
 
     let message = reminder.remind(&ctx).await;
     assert!(message.is_none());
@@ -498,7 +498,7 @@ async fn test_full_tool_workflow() {
     for i in 1..=3 {
         let call_id = format!("call_{}", i);
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, &call_id, "tool:add_task");
+        let ctx = AgentState::new(&snapshot, &call_id, "tool:add_task");
 
         let result = tool
             .execute(json!({"item": format!("Task {}", i)}), &ctx)
@@ -544,7 +544,7 @@ async fn test_tool_provider_reminder_integration() {
     // Execute increment tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_1", "tool:increment");
+        let ctx = AgentState::new(&snapshot, "call_1", "tool:increment");
         let _ = increment_tool
             .execute(json!({"path": "counter"}), &ctx)
             .await
@@ -555,7 +555,7 @@ async fn test_tool_provider_reminder_integration() {
     // Execute add task tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_2", "tool:add_task");
+        let ctx = AgentState::new(&snapshot, "call_2", "tool:add_task");
         let _ = task_tool
             .execute(json!({"item": "New task"}), &ctx)
             .await
@@ -566,7 +566,7 @@ async fn test_tool_provider_reminder_integration() {
     // Run context provider
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_3", "provider:counter");
+        let ctx = AgentState::new(&snapshot, "call_3", "provider:counter");
         let messages = provider.provide(&ctx).await;
         assert!(messages.is_empty()); // value is only 1
         manager.commit(ctx.take_patch()).await.unwrap();
@@ -575,7 +575,7 @@ async fn test_tool_provider_reminder_integration() {
     // Run system reminder
     {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, "call_4", "reminder:task");
+        let ctx = AgentState::new(&snapshot, "call_4", "reminder:task");
         let message = reminder.remind(&ctx).await;
         assert!(message.is_some());
         assert!(message.unwrap().contains("1")); // 1 pending task
@@ -906,7 +906,7 @@ async fn test_concurrent_tool_execution_stress() {
         let manager = manager.clone();
         let handle = tokio::spawn(async move {
             let snapshot = manager.snapshot().await;
-            let ctx = Context::new(&snapshot, format!("call_{}", i), "tool:increment");
+            let ctx = AgentState::new(&snapshot, format!("call_{}", i), "tool:increment");
 
             // Create counter path for this task
             let path = format!("counters.c{}", i % 10);
@@ -1303,8 +1303,8 @@ async fn test_patch_conflict_same_field() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = Context::new(&snapshot1, "call_1", "test");
-    let ctx2 = Context::new(&snapshot2, "call_2", "test");
+    let ctx1 = AgentState::new(&snapshot1, "call_1", "test");
+    let ctx2 = AgentState::new(&snapshot2, "call_2", "test");
 
     // Both read same value
     let counter1 = ctx1.state::<CounterState>("");
@@ -1338,8 +1338,8 @@ async fn test_patch_conflict_different_fields() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = Context::new(&snapshot1, "call_1", "test");
-    let ctx2 = Context::new(&snapshot2, "call_2", "test");
+    let ctx1 = AgentState::new(&snapshot1, "call_1", "test");
+    let ctx2 = AgentState::new(&snapshot2, "call_2", "test");
 
     // Modify different fields
     {
@@ -1371,8 +1371,8 @@ async fn test_patch_conflict_array_operations() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = Context::new(&snapshot1, "call_1", "test");
-    let ctx2 = Context::new(&snapshot2, "call_2", "test");
+    let ctx1 = AgentState::new(&snapshot1, "call_1", "test");
+    let ctx2 = AgentState::new(&snapshot2, "call_2", "test");
 
     let tasks1 = ctx1.state::<TaskState>("tasks");
     let tasks2 = ctx2.state::<TaskState>("tasks");
@@ -1433,7 +1433,7 @@ impl Tool for SlowTool {
         ToolDescriptor::new("slow_tool", "Slow Tool", "A tool that takes time")
     }
 
-    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
 
         let counter = ctx.state::<CounterState>("counter");
@@ -1450,7 +1450,7 @@ async fn test_tool_execution_with_timeout() {
     let tool = SlowTool { delay_ms: 50 };
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_slow", "tool:slow");
+    let ctx = AgentState::new(&snapshot, "call_slow", "tool:slow");
 
     // Execute with timeout
     let result = tokio::time::timeout(
@@ -1472,7 +1472,7 @@ async fn test_tool_timeout_exceeded() {
     let tool = SlowTool { delay_ms: 200 };
 
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_slow", "tool:slow");
+    let ctx = AgentState::new(&snapshot, "call_slow", "tool:slow");
 
     // Execute with short timeout
     let result = tokio::time::timeout(
@@ -1505,17 +1505,17 @@ async fn test_multiple_tools_with_varying_timeouts() {
     let snapshot = manager.snapshot().await;
 
     // Fast - should complete
-    let ctx = Context::new(&snapshot, "fast", "tool:fast");
+    let ctx = AgentState::new(&snapshot, "fast", "tool:fast");
     let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &ctx)).await;
     assert!(fast_result.is_ok());
 
     // Medium - should complete
-    let ctx = Context::new(&snapshot, "medium", "tool:medium");
+    let ctx = AgentState::new(&snapshot, "medium", "tool:medium");
     let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &ctx)).await;
     assert!(medium_result.is_ok());
 
     // Slow - should timeout
-    let ctx = Context::new(&snapshot, "slow", "tool:slow");
+    let ctx = AgentState::new(&snapshot, "slow", "tool:slow");
     let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &ctx)).await;
     assert!(slow_result.is_err());
 }
@@ -1667,7 +1667,7 @@ impl Tool for NetworkErrorTool {
         ToolDescriptor::new("network_tool", "Network Tool", "Tool that may fail")
     }
 
-    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let count = self
             .fail_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1697,19 +1697,19 @@ async fn test_tool_network_error_retry() {
 
     // Attempt 1 - fails
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_1", "tool:network");
+    let ctx = AgentState::new(&snapshot, "call_1", "tool:network");
     let result1 = tool.execute(json!({}), &ctx).await;
     assert!(result1.is_err());
 
     // Attempt 2 - fails
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_2", "tool:network");
+    let ctx = AgentState::new(&snapshot, "call_2", "tool:network");
     let result2 = tool.execute(json!({}), &ctx).await;
     assert!(result2.is_err());
 
     // Attempt 3 - succeeds
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_3", "tool:network");
+    let ctx = AgentState::new(&snapshot, "call_3", "tool:network");
     let result3 = tool.execute(json!({}), &ctx).await;
     assert!(result3.is_ok());
 
@@ -1729,7 +1729,7 @@ async fn test_tool_error_does_not_corrupt_state() {
 
     for i in 0..5 {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(&snapshot, format!("call_{}", i), "tool:network");
+        let ctx = AgentState::new(&snapshot, format!("call_{}", i), "tool:network");
 
         let result = tool.execute(json!({}), &ctx).await;
         assert!(result.is_err());
@@ -2181,7 +2181,7 @@ async fn test_activity_context_emits_snapshot_on_update() {
     let hub = Arc::new(ActivityHub::new(tx));
     let snapshot = json!({});
 
-    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
+    let ctx = AgentState::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
     let activity = ctx.activity("stream_1", "progress");
 
     let progress = activity.state::<ProgressState>("");
@@ -2226,12 +2226,12 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     let snapshot = json!({});
 
     let ctx =
-        Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub.clone()));
+        AgentState::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub.clone()));
     let activity = ctx.activity("stream_2", "progress");
     let progress = activity.state::<ProgressState>("");
     progress.set_progress(0.9);
 
-    let ctx2 = Context::new_with_activity_manager(&snapshot, "call_2", "tool:test", Some(hub));
+    let ctx2 = AgentState::new_with_activity_manager(&snapshot, "call_2", "tool:test", Some(hub));
     let activity2 = ctx2.activity("stream_2", "progress");
     let progress2 = activity2.state::<ProgressState>("");
     assert_eq!(progress2.progress().unwrap_or_default(), 0.9);
@@ -2247,7 +2247,7 @@ async fn test_activity_context_multiple_streams_emit_separately() {
     let hub = Arc::new(ActivityHub::new(tx));
     let snapshot = json!({});
 
-    let ctx = Context::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
+    let ctx = AgentState::new_with_activity_manager(&snapshot, "call_1", "tool:test", Some(hub));
     let activity_a = ctx.activity("stream_a", "progress");
     let activity_b = ctx.activity("stream_b", "progress");
 
@@ -2406,7 +2406,7 @@ impl Tool for NestedStateTool {
         ToolDescriptor::new("nested_state", "Nested State Tool", "Modifies nested state")
     }
 
-    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         // Modify deeply nested state
         let nested = ctx.state::<NestedState>("deeply.nested");
         let current = nested.value().unwrap_or(0);
@@ -2811,7 +2811,7 @@ impl Tool for ReadOnlyTool {
         ToolDescriptor::new("read_only", "Read Only", "Reads state without modification")
     }
 
-    async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         // Only read, don't modify
         let counter = ctx.state::<CounterState>("counter");
         let value = counter.value().unwrap_or(-1);
@@ -3445,7 +3445,7 @@ async fn test_e2e_context_provider_integration() {
 
     // 1. Provider runs and may modify state
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "provider_call", "provider:counter");
+    let ctx = AgentState::new(&snapshot, "provider_call", "provider:counter");
 
     let messages = provider.provide(&ctx).await;
 
@@ -3462,7 +3462,7 @@ async fn test_e2e_context_provider_integration() {
 
     // 3. Now a tool runs and sees the provider's changes
     let tool = IncrementTool;
-    let ctx = Context::new(&new_snapshot, "tool_call", "tool:increment");
+    let ctx = AgentState::new(&new_snapshot, "tool_call", "tool:increment");
     let result = tool
         .execute(json!({"path": "counter"}), &ctx)
         .await
@@ -3484,7 +3484,7 @@ async fn test_e2e_system_reminder_integration() {
 
     // Reminder checks state and returns message
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "reminder_call", "reminder:task");
+    let ctx = AgentState::new(&snapshot, "reminder_call", "reminder:task");
 
     let message = reminder.remind(&ctx).await;
 
@@ -3513,7 +3513,7 @@ async fn test_e2e_multiple_providers_priority() {
             100
         } // Higher priority
 
-        async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
+        async fn provide(&self, _ctx: &AgentState<'_>) -> Vec<String> {
             vec!["High priority context".to_string()]
         }
     }
@@ -3530,7 +3530,7 @@ async fn test_e2e_multiple_providers_priority() {
             10
         } // Lower priority
 
-        async fn provide(&self, _ctx: &Context<'_>) -> Vec<String> {
+        async fn provide(&self, _ctx: &AgentState<'_>) -> Vec<String> {
             vec!["Low priority context".to_string()]
         }
     }
@@ -3544,7 +3544,7 @@ async fn test_e2e_multiple_providers_priority() {
     // Both providers can run and produce context
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "test", "test");
+    let ctx = AgentState::new(&snapshot, "test", "test");
 
     let high_msgs = high.provide(&ctx).await;
     let low_msgs = low.provide(&ctx).await;
@@ -3570,7 +3570,7 @@ async fn test_e2e_conditional_context_provider() {
             50
         }
 
-        async fn provide(&self, ctx: &Context<'_>) -> Vec<String> {
+        async fn provide(&self, ctx: &AgentState<'_>) -> Vec<String> {
             let counter = ctx.state::<CounterState>("counter");
             let value = counter.value().unwrap_or(0);
 
@@ -3591,7 +3591,7 @@ async fn test_e2e_conditional_context_provider() {
     // Test with negative value
     let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "test", "provider:conditional");
+    let ctx = AgentState::new(&snapshot, "test", "provider:conditional");
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -3621,7 +3621,7 @@ impl Tool for ConfirmationTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let confirmed = args["confirmed"].as_bool().unwrap_or(false);
 
         if confirmed {
@@ -3647,7 +3647,7 @@ impl Tool for PartialSuccessTool {
         ToolDescriptor::new("batch_process", "Batch Process", "Process multiple items")
     }
 
-    async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let items = args["items"].as_array().map(|a| a.len()).unwrap_or(0);
 
         // Simulate: some items succeed, some fail
@@ -3678,7 +3678,7 @@ async fn test_e2e_tool_pending_status() {
     let tool = ConfirmationTool;
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_1", "tool:dangerous");
+    let ctx = AgentState::new(&snapshot, "call_1", "tool:dangerous");
 
     // First call without confirmation
     let result = tool.execute(json!({}), &ctx).await.unwrap();
@@ -3703,7 +3703,7 @@ async fn test_e2e_tool_warning_status() {
     let tool = PartialSuccessTool;
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx = Context::new(&snapshot, "call_1", "tool:batch");
+    let ctx = AgentState::new(&snapshot, "call_1", "tool:batch");
 
     // Process 10 items (80% success = 8 success, 2 failed)
     let result = tool
@@ -4753,7 +4753,7 @@ impl AgentPlugin for TestFrontendToolPlugin {
         "test_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -4790,7 +4790,7 @@ fn frontend_plugin_from_request(request: &RunAgentRequest) -> TestFrontendToolPl
 #[tokio::test]
 async fn test_scenario_frontend_tool_request_to_agui() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // 1. Client sends request with mixed frontend/backend tools
     let request = RunAgentRequest {
         tools: vec![
@@ -4867,7 +4867,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 #[tokio::test]
 async fn test_scenario_multiple_frontend_tools_sequence() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let request = RunAgentRequest {
         tools: vec![
             AGUIToolDef::frontend("copyToClipboard", "Copy"),
@@ -4915,7 +4915,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_complex_args() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let plugin = TestFrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
@@ -4977,7 +4977,7 @@ async fn test_scenario_frontend_tool_complex_args() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_empty_args() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let plugin = TestFrontendToolPlugin::new(["getClipboard".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
@@ -5029,7 +5029,7 @@ async fn test_scenario_frontend_tool_empty_args() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_special_names() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // Various tool name formats that might appear
     let tool_names = vec![
         "copy_to_clipboard",       // snake_case
@@ -5079,7 +5079,7 @@ async fn test_scenario_frontend_tool_special_names() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_case_sensitivity() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // Only "CopyToClipboard" is registered as frontend
     let plugin = TestFrontendToolPlugin::new(["CopyToClipboard".to_string()].into_iter().collect());
 
@@ -5163,7 +5163,7 @@ fn test_scenario_frontend_tool_wire_format() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_full_event_pipeline() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let plugin = TestFrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
@@ -5229,7 +5229,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 #[tokio::test]
 async fn test_scenario_backend_tool_passthrough() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let plugin = TestFrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
 
     let thread = Thread::new("test");
@@ -5304,7 +5304,7 @@ use carve_protocol_ag_ui::AGUIMessage;
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5366,7 +5366,7 @@ async fn test_scenario_permission_approved_complete_flow() {
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
     let mut step = StepContext::new(&thread, vec![]);
@@ -5418,7 +5418,7 @@ async fn test_scenario_permission_denied_complete_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     // Phase 1: Agent calls frontend tool
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -5478,7 +5478,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let thread = Thread::new("test");
     let plugin = PermissionPlugin;
 
@@ -5673,7 +5673,7 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Thread must have a persisted pending interaction matching the denied ID.
     let thread = Thread::with_initial_state(
@@ -5716,7 +5716,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Thread must have a persisted pending interaction matching the approved ID.
     let thread = Thread::with_initial_state(
@@ -5752,7 +5752,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 #[tokio::test]
 async fn test_scenario_e2e_permission_to_response_flow() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let thread = Thread::new("test");
 
@@ -5826,7 +5826,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_with_response_plugin() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let thread = Thread::new("test");
 
@@ -6153,7 +6153,7 @@ fn test_agui_sse_multiple_events() {
 #[tokio::test]
 async fn test_permission_flow_approval_e2e() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let thread = Thread::new("test");
@@ -6219,7 +6219,7 @@ async fn test_permission_flow_approval_e2e() {
 #[tokio::test]
 async fn test_permission_flow_denial_e2e() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Phase 1: Agent requests permission
     let thread = Thread::new("test");
@@ -6279,7 +6279,7 @@ async fn test_permission_flow_denial_e2e() {
 #[tokio::test]
 async fn test_permission_flow_multiple_tools_mixed() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let thread = Thread::new("test");
 
@@ -6626,7 +6626,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 #[tokio::test]
 async fn test_frontend_tool_flow_creates_pending() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -6685,7 +6685,7 @@ fn test_frontend_tool_flow_result_from_client() {
 #[tokio::test]
 async fn test_frontend_tool_flow_mixed_with_backend() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let request = RunAgentRequest {
         tools: vec![
@@ -6918,7 +6918,7 @@ fn test_error_flow_agent_abort() {
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Simulate: Previous run ended with pending permission
     let interaction_id = "permission_tool_x";
@@ -6947,7 +6947,7 @@ async fn test_resume_flow_with_approval() {
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let interaction_id = "permission_dangerous_tool";
 
@@ -6976,7 +6976,7 @@ async fn test_resume_flow_with_denial() {
 #[tokio::test]
 async fn test_resume_flow_multiple_responses() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Previous run had 3 pending interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7015,7 +7015,7 @@ async fn test_resume_flow_multiple_responses() {
 #[tokio::test]
 async fn test_resume_flow_partial_responses() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7060,7 +7060,7 @@ async fn test_resume_flow_partial_responses() {
 #[tokio::test]
 async fn test_plugin_interaction_frontend_and_response() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest {
@@ -7116,7 +7116,7 @@ async fn test_plugin_interaction_frontend_and_response() {
 #[tokio::test]
 async fn test_plugin_interaction_execution_order() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Setup: Frontend tool that was previously denied
     let request = RunAgentRequest {
@@ -7155,7 +7155,7 @@ async fn test_plugin_interaction_execution_order() {
 #[tokio::test]
 async fn test_plugin_interaction_permission_and_frontend() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Frontend tool with permission set to Ask
     let request = RunAgentRequest {
@@ -7629,7 +7629,7 @@ async fn test_multiple_pending_interactions_flow() {
 #[tokio::test]
 async fn test_multiple_interaction_responses() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Client responds to all 3 interactions: approve, deny, approve
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -12215,7 +12215,7 @@ mod llmmetry_tracing {
     use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
     use carve_agent::contracts::traits::tool::ToolResult;
     use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
-    use carve_agent::prelude::Context;
+    use carve_agent::prelude::AgentState;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt;
@@ -12286,7 +12286,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_inference_tracing_span_lifecycle() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -12335,7 +12335,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_tool_tracing_span_lifecycle() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -12378,7 +12378,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_full_session_with_tracing_spans() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -12446,7 +12446,7 @@ mod llmmetry_tracing {
 // InteractionPlugin RunStart / replay_tool_calls state tests
 // ============================================================================
 
-fn replay_calls_after_ctx_changes(thread: &Thread, ctx: &Context<'_>) -> Vec<ToolCall> {
+fn replay_calls_after_ctx_changes(thread: &Thread, ctx: &AgentState<'_>) -> Vec<ToolCall> {
     let state = if ctx.has_changes() {
         thread
             .clone()
@@ -12471,7 +12471,7 @@ fn replay_calls_after_ctx_changes(thread: &Thread, ctx: &Context<'_>) -> Vec<Too
 #[tokio::test]
 async fn test_interaction_response_run_start_sets_replay_on_approval() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_add_trips";
 
@@ -12520,7 +12520,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
 #[tokio::test]
 async fn test_interaction_response_run_start_no_replay_on_denial() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_add_trips";
 
@@ -12555,7 +12555,7 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
 #[tokio::test]
 async fn test_interaction_response_run_start_no_pending() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let thread = Thread::with_initial_state("test", json!({ "agent": {} }));
 
@@ -12575,7 +12575,7 @@ async fn test_interaction_response_run_start_no_pending() {
 #[tokio::test]
 async fn test_interaction_response_run_start_mismatched_id() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let thread = Thread::with_initial_state(
         "test",
@@ -12603,7 +12603,7 @@ async fn test_interaction_response_run_start_mismatched_id() {
 #[tokio::test]
 async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_add_trips";
 
@@ -12638,7 +12638,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 #[tokio::test]
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     // Phase 1: PermissionPlugin creates pending interaction
     let thread = Thread::new("test");
@@ -12717,7 +12717,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 #[tokio::test]
 async fn test_hitl_replay_denial_does_not_schedule() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_call_add";
 
@@ -12761,7 +12761,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
 #[tokio::test]
 async fn test_hitl_replay_picks_first_tool_call() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_multi";
 
@@ -12804,7 +12804,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
 #[tokio::test]
 async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
 
     let pending_id = "permission_phase_test";
 

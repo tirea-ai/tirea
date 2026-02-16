@@ -1,10 +1,10 @@
 //! Tool trait for agent actions.
 //!
-//! Tools execute actions and can modify state through the Context.
+//! Tools execute actions and can modify state through `AgentState`.
 
 pub use crate::{ToolResult, ToolStatus};
 use async_trait::async_trait;
-use crate::Context;
+use crate::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -97,7 +97,7 @@ impl ToolDescriptor {
 ///
 /// ```ignore
 /// use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
-/// use carve_agent::prelude::Context;
+/// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]
@@ -116,7 +116,7 @@ impl ToolDescriptor {
 ///     async fn execute(
 ///         &self,
 ///         args: Value,
-///         ctx: &Context<'_>,
+///         ctx: &AgentState<'_>,
 ///     ) -> Result<ToolResult, ToolError> {
 ///         let state = ctx.call_state::<MyToolState>();
 ///         let current = state.count().unwrap_or(0);
@@ -137,12 +137,12 @@ pub trait Tool: Send + Sync {
     /// # Arguments
     ///
     /// - `args`: Tool arguments as JSON value
-    /// - `ctx`: Context for state access (reference - framework extracts patch after execution)
+    /// - `ctx`: AgentState for state access (framework extracts patch after execution)
     ///
     /// # Returns
     ///
     /// Tool result or error
-    async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError>;
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ use crate::contracts::conversation::{Message, Role, ToolCall};
 use crate::contracts::events::AgentEvent;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::{
-    AgentRunState, AgentRunStatus, AgentState, Interaction, ToolPermissionBehavior,
+    AgentRunState, AgentRunStatus, Interaction, ToolPermissionBehavior,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
@@ -18,7 +18,7 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use crate::contracts::context::Context;
+use crate::contracts::context::AgentState;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};

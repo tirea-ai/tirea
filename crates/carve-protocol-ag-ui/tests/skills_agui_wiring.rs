@@ -4,7 +4,7 @@ use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::ToolDescriptor;
 use carve_agent::engine::tool_execution::execute_single_tool;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-use carve_agent::prelude::Context;
+use carve_agent::prelude::AgentState;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;
@@ -138,7 +138,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
         vec![ToolDescriptor::new("t", "t", "t")],
     );
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     plugin
         .on_phase(
             carve_agent::contracts::phase::Phase::BeforeInference,

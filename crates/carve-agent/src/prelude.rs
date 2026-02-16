@@ -17,7 +17,7 @@
 //!         ToolDescriptor::new("my_tool", "My Tool", "Does something useful")
 //!     }
 //!
-//!     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+//!     async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
 //!         // Extension traits are auto-imported
 //!         ctx.allow_tool("follow_up");           // PermissionContextExt
 //!         ctx.add_reminder("Remember to check"); // ReminderContextExt
@@ -33,8 +33,8 @@ pub use async_trait::async_trait;
 // Re-export serde_json for tool implementations
 pub use serde_json::{json, Value};
 
-// Core execution context (state + activity wiring)
-pub use crate::contracts::context::Context;
+// Core execution state object (state + runtime metadata + activity wiring)
+pub use crate::contracts::context::AgentState;
 // Raw state-only context for lower-level integrations
 pub use carve_state::StateContext;
 
@@ -52,12 +52,12 @@ pub use crate::contracts::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
 pub use crate::contracts::state_types::{
-    AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
+    AgentRunState, AgentRunStatus, AgentState as AgentStateDoc, Interaction, InteractionResponse,
     ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };
 
-// Extension traits - these add methods to Context
+// Extension traits - these add helper methods to AgentState
 pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};
 
 // State types (for advanced usage)

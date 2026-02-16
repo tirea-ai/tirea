@@ -14,7 +14,7 @@ pub mod extension;
 pub mod skills;
 pub mod stop_conditions;
 
-pub use context::{ActivityContext, ActivityManager, AgentContext, Context};
+pub use context::{ActivityContext, ActivityManager, AgentChangeSet, AgentState};
 pub use event::AgentEvent;
 pub use interaction::{Interaction, InteractionResponse};
 pub use run::RunRequest;

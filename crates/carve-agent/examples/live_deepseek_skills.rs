@@ -16,7 +16,7 @@ use carve_agent::contracts::conversation::Thread;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-use carve_agent::prelude::Context;
+use carve_agent::prelude::AgentState;
 use carve_agent::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
 };
@@ -53,7 +53,7 @@ impl Tool for CalculatorTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'expression'".to_string()))?;
@@ -117,7 +117,7 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;

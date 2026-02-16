@@ -5,7 +5,7 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
-use crate::contracts::context::Context;
+use crate::contracts::context::AgentState;
 use crate::contracts::events::{AgentEvent, TerminationReason};
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::AgentInferenceError;
@@ -91,7 +91,7 @@ fn validate_phase_mutation(
 pub(super) async fn emit_phase_checked(
     phase: Phase,
     step: &mut StepContext<'_>,
-    ctx: &Context<'_>,
+    ctx: &AgentState<'_>,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     for plugin in plugins {
@@ -122,8 +122,13 @@ where
     let current_state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let ctx =
-        Context::new(&current_state, "phase", "plugin:phase").with_scope(Some(&thread.scope));
+    let ctx = AgentState::new(&current_state, "phase", "plugin:phase")
+        .with_scope(Some(&thread.scope))
+        .with_thread_data(
+            thread.id.clone(),
+            thread.messages.clone(),
+            super::thread_state_version(thread),
+        );
     let mut step = StepContext::new(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
@@ -212,8 +217,13 @@ pub(super) async fn emit_run_end_phase(
                 return thread;
             }
         };
-        let ctx = Context::new(&current_state, "phase", "plugin:run_end")
-            .with_scope(Some(&thread.scope));
+        let ctx = AgentState::new(&current_state, "phase", "plugin:run_end")
+            .with_scope(Some(&thread.scope))
+            .with_thread_data(
+                thread.id.clone(),
+                thread.messages.clone(),
+                super::thread_state_version(&thread),
+            );
         let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
         if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {
             tracing::warn!(error = %e, "RunEndPhase(RunEnd) plugin phase validation failed");

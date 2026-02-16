@@ -36,7 +36,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::Context<'_>,
+        _ctx: &carve_agent::prelude::AgentState<'_>,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;

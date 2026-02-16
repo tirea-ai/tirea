@@ -53,6 +53,8 @@ async fn drain_run_start_outbox_and_replay(
             None,
             Some(&rt_for_replay),
             &thread.id,
+            &thread.messages,
+            thread_state_version(&thread),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -495,6 +497,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 }
             };
             let sid_for_tools = thread.id.clone();
+            let thread_messages_for_tools = thread.messages.clone();
+            let thread_version_for_tools = thread_state_version(&thread);
             let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
                 Box::pin(execute_tool_calls_with_phases(
                     &tools,
@@ -506,6 +510,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     Some(activity_manager.clone()),
                     Some(&tool_context.scope),
                     &sid_for_tools,
+                    &thread_messages_for_tools,
+                    thread_version_for_tools,
                 ));
             let mut activity_closed = false;
             let results = loop {

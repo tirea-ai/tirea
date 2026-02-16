@@ -55,7 +55,7 @@ impl AgentOs {
         //    - Existing thread: replaces current state (persisted in UserMessage delta)
         let frontend_state = request.state.take();
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
-        let (mut thread, _version) = match thread_store.load(&thread_id).await? {
+        let (mut thread, mut version) = match thread_store.load(&thread_id).await? {
             Some(head) => {
                 let mut t = head.thread;
                 if let Some(state) = frontend_state {
@@ -104,8 +104,13 @@ impl AgentOs {
                 patches: pending.patches,
                 snapshot: state_snapshot_for_delta,
             };
-            let _ = thread_store.append(&thread_id, &delta).await?;
+            let committed = thread_store.append(&thread_id, &delta).await?;
+            version = committed.version;
         }
+        thread.metadata.extra.insert(
+            crate::runtime::loop_runner::AGENT_STATE_VERSION_META_KEY.to_string(),
+            serde_json::Value::from(version),
+        );
 
         // 6. Resolve static wiring, then merge run-scoped extensions.
         let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;

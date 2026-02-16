@@ -4,7 +4,7 @@ use carve_agent::contracts::conversation::{Message, ToolCall};
 use carve_agent::contracts::events::{AgentEvent, StreamResult};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
-use carve_agent::prelude::Context;
+use carve_agent::prelude::AgentState;
 use carve_agent::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
@@ -117,7 +117,7 @@ impl Tool for NoopTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &Context<'_>,
+        _ctx: &AgentState<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success(self.id, json!({"ok": true})))
     }

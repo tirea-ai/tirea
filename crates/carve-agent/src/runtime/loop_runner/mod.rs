@@ -82,6 +82,7 @@ pub use carve_agent_contract::agent::{
     StateCommitError, StateCommitter,
 };
 pub(crate) use carve_agent_contract::agent::{
+    AGENT_STATE_VERSION_META_KEY,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
@@ -119,6 +120,22 @@ pub use tool_exec::{execute_tools, execute_tools_with_config, execute_tools_with
 
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
+}
+
+pub(super) fn thread_state_version(thread: &Thread) -> u64 {
+    thread
+        .metadata
+        .extra
+        .get(AGENT_STATE_VERSION_META_KEY)
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
+pub(super) fn set_thread_state_version(thread: &mut Thread, version: u64) {
+    thread.metadata.extra.insert(
+        AGENT_STATE_VERSION_META_KEY.to_string(),
+        serde_json::Value::from(version),
+    );
 }
 
 pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
@@ -807,6 +824,8 @@ async fn run_loop_with_context_provider(
                 terminate_run!(move |_| e);
             }
         };
+        let thread_messages_for_tools = thread.messages.clone();
+        let thread_version_for_tools = thread_state_version(&thread);
 
         let tool_exec_future = execute_tool_calls_with_phases(
             tools,
@@ -818,6 +837,8 @@ async fn run_loop_with_context_provider(
             None,
             Some(&tool_context.scope),
             &thread.id,
+            &thread_messages_for_tools,
+            thread_version_for_tools,
         );
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {

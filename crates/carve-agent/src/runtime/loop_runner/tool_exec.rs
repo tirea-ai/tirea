@@ -9,7 +9,7 @@ use super::{
 };
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
-use crate::contracts::context::{ActivityManager, Context};
+use crate::contracts::context::{ActivityManager, AgentState};
 use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::events::StreamResult;
 use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -362,6 +362,8 @@ pub async fn execute_tools_with_plugins(
         None,
         Some(&rt_for_tools),
         &thread.id,
+        &thread.messages,
+        super::thread_state_version(&thread),
     )
     .await?;
 
@@ -386,6 +388,8 @@ pub(super) async fn execute_tool_calls_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
+    thread_messages: &[Arc<Message>],
+    state_version: u64,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     if parallel {
         execute_tools_parallel_with_phases(
@@ -397,6 +401,8 @@ pub(super) async fn execute_tool_calls_with_phases(
             activity_manager,
             scope,
             thread_id,
+            thread_messages,
+            state_version,
         )
         .await
     } else {
@@ -409,6 +415,8 @@ pub(super) async fn execute_tool_calls_with_phases(
             activity_manager,
             scope,
             thread_id,
+            thread_messages,
+            state_version,
         )
         .await
     }
@@ -424,12 +432,15 @@ pub(super) async fn execute_tools_parallel_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
+    thread_messages: &[Arc<Message>],
+    state_version: u64,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
     // Clone scope state for parallel tasks (ScopeState is Clone).
     let scope_owned = scope.cloned();
     let thread_id = thread_id.to_string();
+    let thread_messages = Arc::new(thread_messages.to_vec());
 
     let futures = calls.iter().map(|call| {
         let tool = tools.get(&call.name).cloned();
@@ -440,6 +451,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let activity_manager = activity_manager.clone();
         let rt = scope_owned.clone();
         let sid = thread_id.clone();
+        let thread_messages = thread_messages.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -451,6 +463,8 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 activity_manager,
                 rt.as_ref(),
                 &sid,
+                thread_messages.as_slice(),
+                state_version,
             )
             .await
         }
@@ -470,6 +484,8 @@ pub(super) async fn execute_tools_sequential_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
+    thread_messages: &[Arc<Message>],
+    state_version: u64,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
 
@@ -487,6 +503,8 @@ pub(super) async fn execute_tools_sequential_with_phases(
             activity_manager.clone(),
             scope,
             thread_id,
+            thread_messages,
+            state_version,
         )
         .await?;
 
@@ -547,6 +565,8 @@ pub(super) async fn execute_single_tool_with_phases(
     activity_manager: Option<Arc<dyn ActivityManager>>,
     scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
+    thread_messages: &[Arc<Message>],
+    state_version: u64,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create a thread stub so plugins see the real thread id and scope.
     let mut temp_thread = Thread::with_initial_state(thread_id, state.clone());
@@ -555,7 +575,9 @@ pub(super) async fn execute_single_tool_with_phases(
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_scope(scope);
+    let plugin_ctx = AgentState::new(state, "plugin_phase", "plugin:tool_phase")
+        .with_scope(scope)
+        .with_thread_data(thread_id.to_string(), thread_messages.to_vec(), state_version);
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
@@ -621,13 +643,14 @@ pub(super) async fn execute_single_tool_with_phases(
     } else {
         // Execute the tool with its own Context (instrumented with tracing span)
         let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
-        let tool_ctx = Context::new_with_activity_manager(
+        let tool_ctx = AgentState::new_with_activity_manager(
             state,
             &call.id,
             format!("tool:{}", call.name),
             activity_manager,
         )
-        .with_scope(scope);
+        .with_scope(scope)
+        .with_thread_data(thread_id.to_string(), thread_messages.to_vec(), state_version);
         let result = async {
             match tool
                 .unwrap()

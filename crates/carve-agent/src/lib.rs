@@ -53,7 +53,7 @@
 //!
 //! ```ignore
 //! use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-//! use carve_agent::prelude::Context;
+//! use carve_agent::prelude::AgentState;
 //! use async_trait::async_trait;
 //! use serde_json::{json, Value};
 //!
@@ -70,7 +70,7 @@
 //!             }))
 //!     }
 //!
-//!     async fn execute(&self, args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+//!     async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
 //!         let expr = args["expr"].as_str().unwrap_or("0");
 //!         // ... evaluate expression ...
 //!         Ok(ToolResult::success("calculator", json!({"result": 42})))

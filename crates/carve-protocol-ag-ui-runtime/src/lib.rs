@@ -11,7 +11,7 @@ use carve_agent::contracts::state_types::Interaction;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::orchestrator::{RunExtensions, ToolPluginBundle};
-use carve_agent::prelude::Context;
+use carve_agent::prelude::AgentState;
 use carve_protocol_ag_ui::RunAgentRequest;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -81,7 +81,7 @@ impl Tool for FrontendToolStub {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, _args: Value, _ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::error(
             &self.descriptor.id,
             "frontend tool stub should be intercepted before backend execution",
@@ -106,7 +106,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -232,7 +232,7 @@ mod tests {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let state = json!({});
-        let ctx = Context::new(&state, "test", "test");
+        let ctx = AgentState::new(&state, "test", "test");
         let thread = Thread::new("t1");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));

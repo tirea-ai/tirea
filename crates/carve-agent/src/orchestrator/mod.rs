@@ -65,11 +65,15 @@ impl ThreadStoreStateCommitter {
 
 #[async_trait::async_trait]
 impl StateCommitter for ThreadStoreStateCommitter {
-    async fn commit(&self, thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError> {
+    async fn commit(
+        &self,
+        thread_id: &str,
+        changeset: crate::contracts::context::AgentChangeSet,
+    ) -> Result<u64, StateCommitError> {
         self.thread_store
-            .append(thread_id, &delta)
+            .append(thread_id, &changeset.delta)
             .await
-            .map(|_| ())
+            .map(|committed| committed.version)
             .map_err(|e| StateCommitError::new(format!("checkpoint append failed: {e}")))
     }
 }

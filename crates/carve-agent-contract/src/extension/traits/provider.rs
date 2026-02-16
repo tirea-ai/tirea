@@ -4,7 +4,7 @@
 //! based on the current state.
 
 use async_trait::async_trait;
-use crate::Context;
+use crate::AgentState;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.
@@ -25,7 +25,7 @@ pub enum ContextCategory {
 ///
 /// ```ignore
 /// use carve_agent::contracts::traits::provider::{ContextCategory, ContextProvider};
-/// use carve_agent::prelude::Context;
+/// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]
@@ -50,7 +50,7 @@ pub enum ContextCategory {
 ///         100
 ///     }
 ///
-///     async fn provide(&self, ctx: &Context<'_>) -> Vec<String> {
+///     async fn provide(&self, ctx: &AgentState<'_>) -> Vec<String> {
 ///         let state = ctx.state::<BuildStatusState>("components.build_status");
 ///
 ///         // Update last check time
@@ -85,5 +85,5 @@ pub trait ContextProvider: Send + Sync {
     /// # Returns
     ///
     /// List of context messages to inject. Empty list means no injection.
-    async fn provide(&self, ctx: &Context<'_>) -> Vec<String>;
+    async fn provide(&self, ctx: &AgentState<'_>) -> Vec<String>;
 }

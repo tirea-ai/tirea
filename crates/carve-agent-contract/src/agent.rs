@@ -1,7 +1,7 @@
 use crate::extension::agent_plugin::AgentPlugin;
+use crate::context::AgentChangeSet;
 use crate::stop_conditions::{StopCondition, StopConditionSpec};
 use async_trait::async_trait;
-use carve_thread_store_contract::ThreadDelta;
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 use thiserror::Error;
@@ -112,8 +112,14 @@ impl StateCommitError {
 /// Sink for committed thread deltas.
 #[async_trait]
 pub trait StateCommitter: Send + Sync {
-    /// Commit a single delta for a thread.
-    async fn commit(&self, thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError>;
+    /// Commit a single change set for a thread.
+    ///
+    /// Returns the committed storage version after the write succeeds.
+    async fn commit(
+        &self,
+        thread_id: &str,
+        changeset: AgentChangeSet,
+    ) -> Result<u64, StateCommitError>;
 }
 
 /// Optional lifecycle context for a streaming agent run.
@@ -173,6 +179,8 @@ pub const TOOL_SCOPE_CALLER_AGENT_ID_KEY: &str = "__agent_tool_caller_agent_id";
 pub const TOOL_SCOPE_CALLER_STATE_KEY: &str = "__agent_tool_caller_state";
 /// Scope key: caller message snapshot visible to tools.
 pub const TOOL_SCOPE_CALLER_MESSAGES_KEY: &str = "__agent_tool_caller_messages";
+/// Thread metadata key: persisted agent-state version cursor.
+pub const AGENT_STATE_VERSION_META_KEY: &str = "__agent_state_version";
 
 impl Default for AgentDefinition {
     fn default() -> Self {

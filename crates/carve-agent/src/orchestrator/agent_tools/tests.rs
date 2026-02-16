@@ -50,7 +50,7 @@ fn plugin_filters_agents_by_scope_policy() {
 #[tokio::test]
 async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let doc = json!({});
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "worker",
@@ -169,7 +169,7 @@ async fn agent_run_tool_requires_scope_context() {
         .unwrap();
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
     let doc = json!({});
-    let ctx = crate::contracts::context::Context::new(&doc, "call-1", "tool:agent_run");
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-1", "tool:agent_run");
     let result = tool
         .execute(
             json!({"agent_id":"worker","prompt":"hi","background":false}),
@@ -201,7 +201,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let doc = json!({});
     let mut rt = caller_scope();
     rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-1", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-1", "tool:agent_run").with_scope(Some(&rt));
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
@@ -225,7 +225,7 @@ impl AgentPlugin for SlowSkipPlugin {
         "slow_skip"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
         if phase == Phase::BeforeInference {
             tokio::time::sleep(Duration::from_millis(120)).await;
             step.skip_inference = true;
@@ -277,7 +277,7 @@ async fn background_stop_then_resume_completes() {
 
     let doc = json!({});
     let rt = caller_scope();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -297,7 +297,7 @@ async fn background_stop_then_resume_completes() {
         .to_string();
 
     let stop_ctx =
-        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
+        crate::contracts::context::AgentState::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
     let stopped = stop_tool
         .execute(json!({ "run_id": run_id.clone() }), &stop_ctx)
         .await
@@ -412,7 +412,7 @@ async fn agent_run_tool_persists_run_state_patch() {
 
     let doc = json!({});
     let rt = caller_scope();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -457,7 +457,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
 
     let doc = json!({});
     let rt = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -529,7 +529,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         }
     });
     let rt = caller_scope_with_state(doc.clone());
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
             json!({
@@ -574,7 +574,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         }
     });
     let rt = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
             json!({
@@ -642,7 +642,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         }
     });
     let rt = caller_scope_with_state(doc.clone());
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
+    let ctx = crate::contracts::context::AgentState::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let summary = run_tool
         .execute(
             json!({
@@ -732,7 +732,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
     rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, os_thread.id.clone())
         .unwrap();
     let ctx =
-        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
+        crate::contracts::context::AgentState::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
     let result = stop_tool
         .execute(json!({ "run_id": parent_run_id }), &ctx)
         .await
@@ -793,7 +793,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
@@ -857,7 +857,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     );
 
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
@@ -903,7 +903,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -957,7 +957,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -1007,7 +1007,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -1055,7 +1055,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -1106,7 +1106,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = Context::new(&doc, "test", "test");
+    let ctx = AgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 

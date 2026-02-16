@@ -21,7 +21,7 @@
 //! impl AgentPlugin for MyPlugin {
 //!     fn id(&self) -> &str { "my_plugin" }
 //!
-//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
 //!         match phase {
 //!             Phase::StepStart => {
 //!                 step.system(format!("Time: {}", chrono::Local::now()));
@@ -42,7 +42,7 @@
 
 use crate::extension::phase::{Phase, StepContext};
 use async_trait::async_trait;
-use crate::Context;
+use crate::AgentState;
 
 /// Plugin trait for extending agent behavior.
 ///
@@ -55,7 +55,7 @@ use crate::Context;
 /// Use pattern matching to handle specific phases:
 ///
 /// ```ignore
-/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
 ///     match phase {
 ///         Phase::RunStart => { /* initialize */ }
 ///         Phase::StepStart => { /* prepare context */ }
@@ -91,8 +91,8 @@ pub trait AgentPlugin: Send + Sync {
     ///
     /// - `phase`: The current execution phase
     /// - `step`: Mutable context for the current step
-    /// - `ctx`: State context for typed state access (read/write ops auto-collected)
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>);
+    /// - `ctx`: AgentState for typed state access (read/write ops auto-collected)
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>);
 }
 
 #[cfg(test)]
@@ -124,7 +124,7 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
             match phase {
                 Phase::StepStart => {
                     step.system("Test system context");
@@ -145,7 +145,7 @@ mod tests {
             "noop"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
             // No-op
         }
     }
@@ -158,7 +158,7 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
             match phase {
                 Phase::StepStart => {
                     step.system("Current time: 2024-01-01");
@@ -195,7 +195,7 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -226,7 +226,7 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -267,8 +267,8 @@ mod tests {
         assert_eq!(plugin.id(), "test");
     }
 
-    fn test_ctx(doc: &serde_json::Value) -> Context<'_> {
-        Context::new(doc, "test", "test")
+    fn test_ctx(doc: &serde_json::Value) -> AgentState<'_> {
+        AgentState::new(doc, "test", "test")
     }
 
     #[tokio::test]

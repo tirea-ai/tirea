@@ -14,7 +14,7 @@
 //! use carve_agent::prelude::*;
 //!
 //! // In a tool implementation
-//! async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
+//! async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
 //!     // Allow follow-up tool after this one
 //!     ctx.allow_tool("follow_up_tool");
 //!     Ok(ToolResult::success("my_tool", json!({})))
@@ -22,7 +22,7 @@
 //! ```
 
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::Context;
+use crate::contracts::context::AgentState;
 use crate::contracts::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
 use carve_state_derive::State;
@@ -74,7 +74,7 @@ pub trait PermissionContextExt {
     fn get_default_permission(&self) -> ToolPermissionBehavior;
 }
 
-impl PermissionContextExt for Context<'_> {
+impl PermissionContextExt for AgentState<'_> {
     fn allow_tool(&self, tool_id: impl Into<String>) {
         let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
         state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
@@ -128,7 +128,7 @@ impl AgentPlugin for PermissionPlugin {
         &self,
         phase: crate::contracts::phase::Phase,
         step: &mut crate::contracts::phase::StepContext<'_>,
-        ctx: &Context<'_>,
+        ctx: &AgentState<'_>,
     ) {
         use crate::contracts::phase::Phase;
 
@@ -193,7 +193,7 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::context::Context;
+    use crate::contracts::context::AgentState;
     use serde_json::json;
 
     fn apply_interaction_intents(_step: &mut crate::contracts::phase::StepContext<'_>) {
@@ -233,7 +233,7 @@ mod tests {
                 }
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
         assert_eq!(
             ctx.get_permission("recover_agent_run"),
             ToolPermissionBehavior::Allow
@@ -248,7 +248,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
         assert_eq!(
             ctx.get_permission("unknown_tool"),
             ToolPermissionBehavior::Deny
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn test_get_permission_missing_state_falls_back_to_ask() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
         assert_eq!(
             ctx.get_permission("recover_agent_run"),
             ToolPermissionBehavior::Ask
@@ -273,7 +273,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         ctx.allow_tool("read_file");
         // Note: We can't verify get_permission() returns Allow because
@@ -289,7 +289,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         ctx.deny_tool("delete_file");
         // Note: We can't verify get_permission() returns Deny because
@@ -305,7 +305,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         ctx.ask_tool("write_file");
         // Note: We can't verify get_permission() returns Ask because
@@ -321,7 +321,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         // Tool not in tools map should return default
         assert_eq!(
@@ -338,7 +338,7 @@ mod tests {
                 "tools": { "special_tool": "allow" }
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         assert_eq!(
             ctx.get_permission("special_tool"),
@@ -358,7 +358,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         ctx.set_default_permission(ToolPermissionBehavior::Allow);
         // Note: We can't verify get_default_permission() returns Allow because
@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_allow() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -402,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_deny() {
         let doc = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -428,7 +428,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_ask() {
         let doc = json!({ "permissions": { "default_behavior": "ask", "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -474,7 +474,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         // Should read default_behavior from state
         let default = ctx.get_default_permission();
@@ -489,7 +489,7 @@ mod tests {
                 "tools": {}
             }
         });
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         let default = ctx.get_default_permission();
         assert_eq!(default, ToolPermissionBehavior::Deny);
@@ -499,7 +499,7 @@ mod tests {
     fn test_get_default_permission_fallback() {
         // When state is missing, should return default (Ask)
         let doc = json!({});
-        let ctx = Context::new(&doc, "call_1", "test");
+        let ctx = AgentState::new(&doc, "call_1", "test");
 
         let default = ctx.get_default_permission();
         assert_eq!(default, ToolPermissionBehavior::Ask);
@@ -508,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_allow() {
         let doc = json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -534,7 +534,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_deny() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -560,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_ask() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -586,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_invalid_tool_behavior() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -614,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_invalid_default_behavior() {
         let doc = json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_no_state() {
         let doc = json!({});
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -669,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_tools_is_string_not_object() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -700,7 +700,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_invalid_string() {
         let doc = json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -728,7 +728,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_is_number() {
         let doc = json!({ "permissions": { "default_behavior": 42, "tools": {} } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -757,7 +757,7 @@ mod tests {
     async fn test_permission_plugin_tool_value_is_number() {
         let doc =
             json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -787,7 +787,7 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_permissions_is_array() {
         let doc = json!({ "permissions": [1, 2, 3] });
-        let ctx = Context::new(&doc, "test", "test");
+        let ctx = AgentState::new(&doc, "test", "test");
         use crate::contracts::conversation::Thread;
         use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};

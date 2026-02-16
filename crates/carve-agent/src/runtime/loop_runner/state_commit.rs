@@ -1,26 +1,33 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
 use crate::contracts::conversation::Thread;
+use crate::contracts::context::AgentChangeSet;
 use crate::contracts::storage::{CheckpointReason, ThreadDelta};
 use async_trait::async_trait;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ChannelStateCommitter {
-    tx: tokio::sync::mpsc::UnboundedSender<ThreadDelta>,
+    tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>,
 }
 
 impl ChannelStateCommitter {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<ThreadDelta>) -> Self {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>) -> Self {
         Self { tx }
     }
 }
 
 #[async_trait]
 impl StateCommitter for ChannelStateCommitter {
-    async fn commit(&self, _thread_id: &str, delta: ThreadDelta) -> Result<(), StateCommitError> {
+    async fn commit(
+        &self,
+        _thread_id: &str,
+        changeset: AgentChangeSet,
+    ) -> Result<u64, StateCommitError> {
+        let next_version = changeset.expected_version.saturating_add(1);
         self.tx
-            .send(delta)
-            .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))
+            .send(changeset)
+            .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))?;
+        Ok(next_version)
     }
 }
 
@@ -41,18 +48,23 @@ pub(super) async fn commit_pending_delta(
         return Ok(());
     }
 
-    let delta = ThreadDelta {
-        run_id: run_id.to_string(),
-        parent_run_id: parent_run_id.map(str::to_string),
-        reason,
-        messages: pending.messages,
-        patches: pending.patches,
-        snapshot: None,
+    let changeset = AgentChangeSet {
+        expected_version: super::thread_state_version(thread),
+        delta: ThreadDelta {
+            run_id: run_id.to_string(),
+            parent_run_id: parent_run_id.map(str::to_string),
+            reason,
+            messages: pending.messages,
+            patches: pending.patches,
+            snapshot: None,
+        },
     };
-    committer
-        .commit(&thread.id, delta)
+    let committed_version = committer
+        .commit(&thread.id, changeset)
         .await
-        .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))
+        .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))?;
+    super::set_thread_state_version(thread, committed_version);
+    Ok(())
 }
 
 pub(super) struct PendingDeltaCommitContext<'a> {

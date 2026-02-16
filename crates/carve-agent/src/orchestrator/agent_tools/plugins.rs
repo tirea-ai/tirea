@@ -8,7 +8,7 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+    async fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
         let state = match step.thread.rebuild_state() {
             Ok(v) => v,
             Err(_) => return,
@@ -82,7 +82,7 @@ impl AgentPlugin for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
         match phase {
             Phase::RunStart => self.on_run_start(step, ctx).await,
             Phase::BeforeInference => self.on_before_inference(step).await,
@@ -223,7 +223,7 @@ impl AgentPlugin for AgentToolsPlugin {
         AGENT_TOOLS_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
