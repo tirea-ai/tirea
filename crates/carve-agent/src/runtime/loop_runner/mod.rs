@@ -377,9 +377,14 @@ pub(super) async fn apply_llm_error_cleanup(
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    *thread =
-        emit_cleanup_phases_and_apply(thread.clone(), tool_descriptors, plugins, error_type, message)
-            .await?;
+    *thread = emit_cleanup_phases_and_apply(
+        thread.clone(),
+        tool_descriptors,
+        plugins,
+        error_type,
+        message,
+    )
+    .await?;
     Ok(())
 }
 
@@ -409,7 +414,14 @@ pub(super) async fn complete_step_after_inference(
         ThreadMutationBatch::default().with_message(assistant),
     );
 
-    let pending = emit_phase_block(Phase::StepEnd, &thread_after_message, tool_descriptors, plugins, |_| {}).await?;
+    let pending = emit_phase_block(
+        Phase::StepEnd,
+        &thread_after_message,
+        tool_descriptors,
+        plugins,
+        |_| {},
+    )
+    .await?;
     *thread = apply_pending_patches(thread_after_message, pending);
     Ok(())
 }
@@ -524,12 +536,8 @@ pub async fn run_step(
 
     // Call LLM with unified retry + fallback model strategy.
     let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
-    let attempt_outcome = run_llm_with_retry_and_fallback(
-        config,
-        None,
-        true,
-        "unknown llm error",
-        |model| {
+    let attempt_outcome =
+        run_llm_with_retry_and_fallback(config, None, true, "unknown llm error", |model| {
             let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
             async move {
                 client
@@ -537,9 +545,8 @@ pub async fn run_step(
                     .await
             }
             .instrument(inference_span.clone())
-        },
-    )
-    .await;
+        })
+        .await;
     let response = match attempt_outcome {
         LlmAttemptOutcome::Success { value, .. } => value,
         LlmAttemptOutcome::Cancelled => {

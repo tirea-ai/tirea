@@ -4411,3 +4411,271 @@ async fn test_message_id_end_to_end_multi_step() {
         "stored tool Message.id must match ToolCallDone.message_id"
     );
 }
+
+#[tokio::test]
+async fn test_run_step_skip_inference_returns_empty_result_without_assistant_message() {
+    let (recorder, phases) = RecordAndSkipPlugin::new();
+    let config =
+        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let (next_thread, result) = run_step(&Client::default(), &config, thread, &tools)
+        .await
+        .expect("run_step should skip inference and return empty result");
+
+    assert_eq!(result.text, "");
+    assert!(result.tool_calls.is_empty());
+    assert!(result.usage.is_none());
+    assert_eq!(next_thread.message_count(), 1);
+
+    let recorded = phases.lock().expect("lock poisoned").clone();
+    assert_eq!(recorded, vec![Phase::StepStart, Phase::BeforeInference]);
+}
+
+#[tokio::test]
+async fn test_run_step_skip_inference_with_pending_state_returns_pending_interaction() {
+    struct PendingSkipStepPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for PendingSkipStepPlugin {
+        fn id(&self) -> &str {
+            "pending_skip_step"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let patch = set_agent_pending_interaction(
+                &state,
+                Interaction::new("agent_recovery_step-1", "recover_agent_run")
+                    .with_message("resume step?"),
+            );
+            step.pending_patches.push(patch);
+            step.skip_inference = true;
+        }
+    }
+
+    let config = AgentConfig::new("gpt-4o-mini")
+        .with_plugin(Arc::new(PendingSkipStepPlugin) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let result = run_step(&Client::default(), &config, thread, &tools).await;
+    let (thread, interaction) = match result {
+        Err(AgentLoopError::PendingInteraction {
+            thread,
+            interaction,
+        }) => (thread, interaction),
+        other => panic!("expected PendingInteraction on skip_inference, got: {other:?}"),
+    };
+    assert_eq!(interaction.action, "recover_agent_run");
+    assert_eq!(interaction.message, "resume step?");
+
+    let state = thread.rebuild_state().expect("state should rebuild");
+    assert_eq!(
+        state["agent"]["pending_interaction"]["action"],
+        Value::String("recover_agent_run".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_stream_tool_execution_injects_runtime_context_for_tools() {
+    let responses = vec![
+        MockResponse::text("call runtime").with_tool_call("call_1", "runtime_snapshot", json!({})),
+        MockResponse::text("done"),
+    ];
+    let config = AgentConfig::new("mock");
+    let thread = Thread::with_initial_state("stream-caller", json!({"k":"v"}))
+        .with_message(Message::user("hello"));
+    let tools = tool_map([RuntimeSnapshotTool]);
+
+    let (_events, final_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(responses),
+        config,
+        thread,
+        tools,
+    )
+    .await;
+
+    let tool_msg = final_thread
+        .messages
+        .iter()
+        .find(|m| {
+            m.role == crate::contracts::conversation::Role::Tool
+                && m.tool_call_id.as_deref() == Some("call_1")
+        })
+        .expect("runtime snapshot tool result should exist");
+    let tool_result: ToolResult =
+        serde_json::from_str(&tool_msg.content).expect("tool result json");
+    assert_eq!(
+        tool_result.status,
+        crate::contracts::traits::tool::ToolStatus::Success
+    );
+    assert_eq!(tool_result.data["thread_id"], json!("stream-caller"));
+    assert_eq!(tool_result.data["state"]["k"], json!("v"));
+    assert_eq!(tool_result.data["messages_len"], json!(2));
+}
+
+#[tokio::test]
+async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patch() {
+    struct CleanupOnStartErrorPlugin {
+        phases: Arc<Mutex<Vec<Phase>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for CleanupOnStartErrorPlugin {
+        fn id(&self) -> &str {
+            "cleanup_on_start_error"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+            self.phases.lock().expect("lock poisoned").push(phase);
+            match phase {
+                Phase::AfterInference => {
+                    let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                        crate::contracts::state_types::AGENT_STATE_PATH,
+                    );
+                    let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
+                    assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
+                }
+                Phase::StepEnd => {
+                    step.pending_patches.push(
+                        TrackedPatch::new(Patch::new().with_op(Op::set(
+                            carve_state::path!("debug", "cleanup_ran"),
+                            json!(true),
+                        )))
+                        .with_source("test:cleanup_on_start_error"),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(CleanupOnStartErrorPlugin {
+            phases: phases.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+        });
+
+    let initial_thread =
+        Thread::with_initial_state("test", json!({})).with_message(Message::user("go"));
+    let mut final_thread = initial_thread.clone();
+    let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
+    let run_ctx = RunContext::default()
+        .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
+
+    let events = collect_stream_events(run_loop_stream_impl_with_provider(
+        Arc::new(FailingStartProvider::new(10)),
+        config,
+        initial_thread,
+        HashMap::new(),
+        run_ctx,
+    ))
+    .await;
+
+    while let Some(delta) = checkpoint_rx.recv().await {
+        delta.apply_to(&mut final_thread);
+    }
+
+    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("429"))),
+        "expected stream error event from startup failure, got: {events:?}"
+    );
+
+    let recorded = phases.lock().expect("lock poisoned").clone();
+    assert!(
+        recorded.contains(&Phase::AfterInference),
+        "cleanup should run AfterInference on startup failure, got: {recorded:?}"
+    );
+    assert!(
+        recorded.contains(&Phase::StepEnd),
+        "cleanup should run StepEnd on startup failure, got: {recorded:?}"
+    );
+    assert!(
+        recorded.contains(&Phase::RunEnd),
+        "run should still emit RunEnd on startup failure, got: {recorded:?}"
+    );
+
+    let state = final_thread.rebuild_state().expect("state should rebuild");
+    assert_eq!(state["debug"]["cleanup_ran"], true);
+}
+
+#[tokio::test]
+async fn test_stop_timeout_condition_triggers_on_natural_end_path() {
+    let responses = vec![MockResponse::text("done now")];
+    let config = AgentConfig::new("mock").with_stop_condition(
+        crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)),
+    );
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::TimeoutReached))
+    );
+}
+
+#[tokio::test]
+async fn test_stop_cancellation_token_during_tool_execution_stream() {
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let tool = ActivityGateTool {
+        id: "activity_gate".to_string(),
+        stream_id: "stream_cancel".to_string(),
+        ready: ready.clone(),
+        proceed,
+    };
+
+    let responses = vec![MockResponse::text("running tool").with_tool_call(
+        "call_1",
+        "activity_gate",
+        json!({}),
+    )];
+    let token = CancellationToken::new();
+    let stream = run_loop_stream_impl_with_provider(
+        Arc::new(MockStreamProvider::new(responses)),
+        AgentConfig::new("mock"),
+        Thread::new("test").with_message(Message::user("go")),
+        tool_map([tool]),
+        RunContext {
+            cancellation_token: Some(token.clone()),
+            ..RunContext::default()
+        },
+    );
+
+    let collector = tokio::spawn(async move { collect_stream_events(stream).await });
+    ready.notified().await;
+    token.cancel();
+
+    let events = tokio::time::timeout(std::time::Duration::from_millis(300), collector)
+        .await
+        .expect("stream should stop shortly after cancellation during tool execution")
+        .expect("collector task should not panic");
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Cancelled)
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallDone { .. })),
+        "tool should not report completion after cancellation"
+    );
+}

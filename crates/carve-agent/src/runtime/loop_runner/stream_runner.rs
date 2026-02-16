@@ -1,7 +1,7 @@
+use super::state_commit::PendingDeltaCommitContext;
 use super::stream_core::{
     natural_result_payload, preallocate_tool_result_message_ids, resolve_stream_run_identity,
 };
-use super::state_commit::PendingDeltaCommitContext;
 use super::*;
 
 // Stream adapter layer:
