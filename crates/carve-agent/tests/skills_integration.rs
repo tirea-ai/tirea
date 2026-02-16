@@ -65,10 +65,10 @@ async fn apply_tool_with_scope(
     thread: Thread,
     tool: &dyn Tool,
     call: ToolCall,
-    runtime: &carve_state::ScopeState,
+    scope: &carve_state::ScopeState,
 ) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(runtime)).await;
+    let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(scope)).await;
     let thread = if let Some(patch) = exec.patch.clone() {
         thread.with_patch(patch)
     } else {
@@ -110,12 +110,12 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
 }
 
 #[tokio::test]
-async fn test_skill_activation_respects_runtime_skill_policy() {
+async fn test_skill_activation_respects_scope_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut runtime = carve_state::ScopeState::new();
-    runtime
+    let mut scope = carve_state::ScopeState::new();
+    scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
@@ -123,19 +123,19 @@ async fn test_skill_activation_respects_runtime_skill_policy() {
         thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-        &runtime,
+        &scope,
     )
     .await;
     assert_error_code(&result, "forbidden_skill");
 }
 
 #[tokio::test]
-async fn test_load_skill_resource_respects_runtime_skill_policy() {
+async fn test_load_skill_resource_respects_scope_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let load = LoadSkillResourceTool::new(reg);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut runtime = carve_state::ScopeState::new();
-    runtime
+    let mut scope = carve_state::ScopeState::new();
+    scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
@@ -147,7 +147,7 @@ async fn test_load_skill_resource_respects_runtime_skill_policy() {
             "load_skill_resource",
             json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
         ),
-        &runtime,
+        &scope,
     )
     .await;
     assert_error_code(&result, "forbidden_skill");

@@ -44,37 +44,37 @@ impl Tool for EchoTool {
     }
 }
 
-struct RuntimeSnapshotTool;
+struct ScopeSnapshotTool;
 
 #[async_trait]
-impl Tool for RuntimeSnapshotTool {
+impl Tool for ScopeSnapshotTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "runtime_snapshot",
-            "Runtime Snapshot",
-            "Return tool runtime caller context",
+            "scope_snapshot",
+            "Scope Snapshot",
+            "Return tool scope caller context",
         )
     }
 
     async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let rt = ctx.scope_ref().expect("runtime should exist");
+        let rt = ctx.scope_ref().expect("scope should exist");
         let thread_id = rt
-            .value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY)
+            .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
         let state = rt
-            .value(TOOL_RUNTIME_CALLER_STATE_KEY)
+            .value(TOOL_SCOPE_CALLER_STATE_KEY)
             .cloned()
             .unwrap_or(Value::Null);
         let messages_len = rt
-            .value(TOOL_RUNTIME_CALLER_MESSAGES_KEY)
+            .value(TOOL_SCOPE_CALLER_MESSAGES_KEY)
             .and_then(|v| v.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
 
         Ok(ToolResult::success(
-            "runtime_snapshot",
+            "scope_snapshot",
             json!({
                 "thread_id": thread_id,
                 "state": state,
@@ -310,7 +310,7 @@ fn test_execute_tools_with_calls() {
 }
 
 #[test]
-fn test_execute_tools_injects_caller_runtime_context_for_tools() {
+fn test_execute_tools_injects_caller_scope_context_for_tools() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = Thread::with_initial_state("caller-s", json!({"k":"v"}))
@@ -319,12 +319,12 @@ fn test_execute_tools_injects_caller_runtime_context_for_tools() {
             text: "Calling tool".to_string(),
             tool_calls: vec![crate::contracts::conversation::ToolCall::new(
                 "call_1",
-                "runtime_snapshot",
+                "scope_snapshot",
                 json!({}),
             )],
             usage: None,
         };
-        let tools = tool_map([RuntimeSnapshotTool]);
+        let tools = tool_map([ScopeSnapshotTool]);
 
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
         assert_eq!(thread.message_count(), 2);
@@ -922,7 +922,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
 }
 
 #[tokio::test]
-async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
+async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static VERIFIED: AtomicBool = AtomicBool::new(false);
@@ -938,7 +938,7 @@ async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread.id, "real-thread-42");
-                assert_eq!(step.thread.runtime.value("user_id"), Some(&json!("u-abc")),);
+                assert_eq!(step.thread.scope.value("user_id"), Some(&json!("u-abc")),);
                 VERIFIED.store(true, Ordering::SeqCst);
             }
         }
@@ -1673,7 +1673,7 @@ fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
 }
 
 #[test]
-fn test_execute_tools_with_config_attaches_runtime_run_metadata() {
+fn test_execute_tools_with_config_attaches_scope_run_metadata() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut thread = Thread::new("test").with_message(
@@ -1690,7 +1690,7 @@ fn test_execute_tools_with_config_attaches_runtime_run_metadata() {
                 step_index: Some(7),
             }),
         );
-        thread.runtime.set("run_id", "run-meta-1").unwrap();
+        thread.scope.set("run_id", "run-meta-1").unwrap();
 
         let result = StreamResult {
             text: "Calling tool".to_string(),
@@ -2555,10 +2555,10 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
         .await
         .expect("run_loop should succeed");
     let run_id = final_thread
-        .runtime
+        .scope
         .value("run_id")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| panic!("run_loop must populate runtime run_id"));
+        .unwrap_or_else(|| panic!("run_loop must populate scope run_id"));
 
     let parsed = uuid::Uuid::parse_str(run_id)
         .unwrap_or_else(|_| panic!("run_id must be parseable UUID, got: {run_id}"));
@@ -2753,17 +2753,17 @@ fn test_run_context_clone() {
 }
 
 #[test]
-fn test_runtime_run_id_in_session() {
+fn test_scope_run_id_in_session() {
     let mut thread = Thread::new("test");
-    thread.runtime.set("run_id", "my-run").unwrap();
-    thread.runtime.set("parent_run_id", "parent-run").unwrap();
+    thread.scope.set("run_id", "my-run").unwrap();
+    thread.scope.set("parent_run_id", "parent-run").unwrap();
     assert_eq!(
-        thread.runtime.value("run_id").and_then(|v| v.as_str()),
+        thread.scope.value("run_id").and_then(|v| v.as_str()),
         Some("my-run")
     );
     assert_eq!(
         thread
-            .runtime
+            .scope
             .value("parent_run_id")
             .and_then(|v| v.as_str()),
         Some("parent-run")
@@ -5052,15 +5052,15 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 }
 
 #[tokio::test]
-async fn test_stream_tool_execution_injects_runtime_context_for_tools() {
+async fn test_stream_tool_execution_injects_scope_context_for_tools() {
     let responses = vec![
-        MockResponse::text("call runtime").with_tool_call("call_1", "runtime_snapshot", json!({})),
+        MockResponse::text("call scope").with_tool_call("call_1", "scope_snapshot", json!({})),
         MockResponse::text("done"),
     ];
     let config = AgentConfig::new("mock");
     let thread = Thread::with_initial_state("stream-caller", json!({"k":"v"}))
         .with_message(Message::user("hello"));
-    let tools = tool_map([RuntimeSnapshotTool]);
+    let tools = tool_map([ScopeSnapshotTool]);
 
     let (_events, final_thread) = run_mock_stream_with_final_thread(
         MockStreamProvider::new(responses),
@@ -5077,7 +5077,7 @@ async fn test_stream_tool_execution_injects_runtime_context_for_tools() {
             m.role == crate::contracts::conversation::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
         })
-        .expect("runtime snapshot tool result should exist");
+        .expect("scope snapshot tool result should exist");
     let tool_result: ToolResult =
         serde_json::from_str(&tool_msg.content).expect("tool result json");
     assert_eq!(

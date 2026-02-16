@@ -2,7 +2,7 @@ use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::context::Context;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::engine::tool_filter::{
-    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+    is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::{SkillRegistry, SKILLS_DISCOVERY_PLUGIN_ID};
@@ -50,11 +50,11 @@ impl SkillDiscoveryPlugin {
     ) -> String {
         let mut metas = self.registry.list();
         metas.retain(|m| {
-            is_runtime_allowed(
+            is_scope_allowed(
                 runtime,
                 &m.id,
-                RUNTIME_ALLOWED_SKILLS_KEY,
-                RUNTIME_EXCLUDED_SKILLS_KEY,
+                SCOPE_ALLOWED_SKILLS_KEY,
+                SCOPE_EXCLUDED_SKILLS_KEY,
             )
         });
         if metas.is_empty() {
@@ -138,7 +138,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             .into_iter()
             .collect();
 
-        let rendered = self.render_catalog(&active, Some(&step.thread.runtime));
+        let rendered = self.render_catalog(&active, Some(&step.thread.scope));
         if rendered.is_empty() {
             return;
         }
@@ -348,8 +348,8 @@ mod tests {
         let p = SkillDiscoveryPlugin::new(reg);
         let mut thread = Thread::with_initial_state("s", json!({}));
         thread
-            .runtime
-            .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a-skill"])
+            .scope
+            .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;

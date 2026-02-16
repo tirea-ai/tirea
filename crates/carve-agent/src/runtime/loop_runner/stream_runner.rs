@@ -42,7 +42,7 @@ async fn drain_run_start_outbox_and_replay(
         })?;
 
         let tool = tools.get(&tool_call.name).cloned();
-        let rt_for_replay = runtime_with_tool_caller_context(&thread, &state, Some(config))
+        let rt_for_replay = scope_with_tool_caller_context(&thread, &state, Some(config))
             .map_err(|e| e.to_string())?;
         let replay_result = execute_single_tool_with_phases(
             tool.as_deref(),
@@ -504,7 +504,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     &config.plugins,
                     config.parallel_tools,
                     Some(activity_manager.clone()),
-                    Some(&tool_context.runtime),
+                    Some(&tool_context.scope),
                     &sid_for_tools,
                 ));
             let mut activity_closed = false;

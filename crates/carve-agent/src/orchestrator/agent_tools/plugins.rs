@@ -118,7 +118,7 @@ impl AgentToolsPlugin {
     pub(super) fn render_available_agents(
         &self,
         caller_agent: Option<&str>,
-        runtime: Option<&carve_state::ScopeState>,
+        scope: Option<&carve_state::ScopeState>,
     ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();
@@ -126,11 +126,11 @@ impl AgentToolsPlugin {
             ids.retain(|id| id != caller);
         }
         ids.retain(|id| {
-            is_runtime_allowed(
-                runtime,
+            is_scope_allowed(
+                scope,
                 id,
-                RUNTIME_ALLOWED_AGENTS_KEY,
-                RUNTIME_EXCLUDED_AGENTS_KEY,
+                SCOPE_ALLOWED_AGENTS_KEY,
+                SCOPE_EXCLUDED_AGENTS_KEY,
             )
         });
         if ids.is_empty() {
@@ -228,11 +228,11 @@ impl AgentPlugin for AgentToolsPlugin {
             Phase::BeforeInference => {
                 let caller_agent = step
                     .thread
-                    .runtime
-                    .value(RUNTIME_CALLER_AGENT_ID_KEY)
+                    .scope
+                    .value(SCOPE_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
                 let rendered =
-                    self.render_available_agents(caller_agent, Some(&step.thread.runtime));
+                    self.render_available_agents(caller_agent, Some(&step.thread.scope));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }

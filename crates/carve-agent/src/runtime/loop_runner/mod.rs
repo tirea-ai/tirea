@@ -82,8 +82,8 @@ pub use carve_agent_contract::agent::{
     StateCommitError, StateCommitter,
 };
 pub(crate) use carve_agent_contract::agent::{
-    TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
-    TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
+    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
 #[cfg(test)]
@@ -112,7 +112,7 @@ use tokio_util::sync::CancellationToken;
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    execute_tool_calls_with_phases, next_step_index, runtime_with_tool_caller_context,
+    execute_tool_calls_with_phases, next_step_index, scope_with_tool_caller_context,
     step_metadata, ToolExecutionResult,
 };
 pub use tool_exec::{execute_tools, execute_tools_with_config, execute_tools_with_plugins};
@@ -461,7 +461,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
-    pub(super) runtime: carve_state::ScopeState,
+    pub(super) scope: carve_state::ScopeState,
 }
 
 pub(super) fn prepare_tool_execution_context(
@@ -471,8 +471,8 @@ pub(super) fn prepare_tool_execution_context(
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let runtime = runtime_with_tool_caller_context(thread, &state, config)?;
-    Ok(ToolExecutionContext { state, runtime })
+    let scope = scope_with_tool_caller_context(thread, &state, config)?;
+    Ok(ToolExecutionContext { state, scope })
 }
 
 pub(super) async fn finalize_run_end(
@@ -611,7 +611,7 @@ async fn run_step_with_provider(
     // Add assistant message
     let step_meta = step_metadata(
         thread
-            .runtime
+            .scope
             .value("run_id")
             .and_then(|v| v.as_str().map(String::from)),
         next_step_index(&thread),
@@ -667,12 +667,12 @@ async fn run_loop_with_context_provider(
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let mut last_text = String::new();
     let run_id = thread
-        .runtime
+        .scope
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| {
             let id = uuid_v7();
-            let _ = thread.runtime.set("run_id", &id);
+            let _ = thread.scope.set("run_id", &id);
             id
         });
 
@@ -816,7 +816,7 @@ async fn run_loop_with_context_provider(
             &config.plugins,
             config.parallel_tools,
             None,
-            Some(&tool_context.runtime),
+            Some(&tool_context.scope),
             &thread.id,
         );
         let results = if let Some(ref token) = run_cancellation_token {

@@ -27,7 +27,7 @@ struct NestedConfig {
 // ============================================================================
 
 #[test]
-fn test_runtime_get_typed_read() {
+fn test_scope_get_typed_read() {
     let mut rt = ScopeState::new();
     rt.set("user_id", "u-42").unwrap();
     rt.set("locale", "en-US").unwrap();
@@ -38,7 +38,7 @@ fn test_runtime_get_typed_read() {
 }
 
 #[test]
-fn test_runtime_get_at_typed_read() {
+fn test_scope_get_at_typed_read() {
     let mut rt = ScopeState::new();
     rt.set("config", json!({"timeout_ms": 5000, "retry": true}))
         .unwrap();
@@ -49,7 +49,7 @@ fn test_runtime_get_at_typed_read() {
 }
 
 #[test]
-fn test_runtime_get_missing_field_errors() {
+fn test_scope_get_missing_field_errors() {
     let rt = ScopeState::new();
     // No data set — reading should produce an error from state ref
     let user = rt.get::<UserInfo>();
@@ -58,19 +58,19 @@ fn test_runtime_get_missing_field_errors() {
 
 #[test]
 #[should_panic(expected = "read-only sink")]
-fn test_runtime_get_write_panics() {
+fn test_scope_get_write_panics() {
     let mut rt = ScopeState::new();
     rt.set("user_id", "u-1").unwrap();
     rt.set("locale", "en").unwrap();
 
     let user = rt.get::<UserInfo>();
-    // Attempting to write through a runtime state ref should panic
+    // Attempting to write through a scope state ref should panic
     user.set_user_id("u-2");
 }
 
 #[test]
 #[should_panic(expected = "read-only sink")]
-fn test_runtime_get_at_write_panics() {
+fn test_scope_get_at_write_panics() {
     let mut rt = ScopeState::new();
     rt.set("config", json!({"timeout_ms": 1000, "retry": false}))
         .unwrap();
@@ -124,7 +124,7 @@ fn test_clone_preserves_set_once_and_sensitivity() {
 
     let rt2 = rt.clone();
 
-    // Cloned runtime has same values
+    // Cloned scope has same values
     assert_eq!(rt2.value("a"), Some(&json!(1)));
     assert_eq!(rt2.value("token"), Some(&json!("s3cret")));
     assert!(rt2.is_sensitive("token"));
@@ -150,12 +150,12 @@ fn test_set_once_clone_allows_set_on_clone() {
 }
 
 #[test]
-fn test_runtime_error_display() {
+fn test_scope_error_display() {
     let err = ScopeStateError::AlreadySet("my_key".to_string());
-    assert_eq!(err.to_string(), "runtime key already set: my_key");
+    assert_eq!(err.to_string(), "scope key already set: my_key");
 
     let err = ScopeStateError::SerializationError("bad json".to_string());
-    assert_eq!(err.to_string(), "runtime serialization error: bad json");
+    assert_eq!(err.to_string(), "scope serialization error: bad json");
 }
 
 // ============================================================================
@@ -163,19 +163,19 @@ fn test_runtime_error_display() {
 // ============================================================================
 
 #[test]
-fn test_runtime_is_send() {
+fn test_scope_is_send() {
     fn assert_send<T: Send>() {}
     assert_send::<ScopeState>();
 }
 
 #[test]
-fn test_runtime_is_sync() {
+fn test_scope_is_sync() {
     fn assert_sync<T: Sync>() {}
     assert_sync::<ScopeState>();
 }
 
 #[test]
-fn test_runtime_concurrent_reads() {
+fn test_scope_concurrent_reads() {
     let mut rt = ScopeState::new();
     rt.set("user_id", "u-concurrent").unwrap();
     rt.set("locale", "en").unwrap();
@@ -210,7 +210,7 @@ fn test_runtime_concurrent_reads() {
 }
 
 #[test]
-fn test_runtime_clone_isolation_across_threads() {
+fn test_scope_clone_isolation_across_threads() {
     let mut rt = ScopeState::new();
     rt.set("base", "value").unwrap();
 
@@ -246,7 +246,7 @@ fn test_runtime_clone_isolation_across_threads() {
 // function will become callable where it shouldn't be.
 // We verify this by checking the trait bound does NOT hold.
 #[test]
-fn test_runtime_not_serializable_by_design() {
+fn test_scope_not_serializable_by_design() {
     // We can't directly assert a negative trait bound at compile time,
     // but we verify the intended behavior: serde_json::to_value should
     // not compile for ScopeState. Instead, we verify the Debug output

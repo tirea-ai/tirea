@@ -474,12 +474,12 @@ impl AgentOs {
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        if thread.runtime.value(RUNTIME_CALLER_AGENT_ID_KEY).is_none() {
+        if thread.scope.value(SCOPE_CALLER_AGENT_ID_KEY).is_none() {
             let _ = thread
-                .runtime
-                .set(RUNTIME_CALLER_AGENT_ID_KEY, agent_id.to_string());
+                .scope
+                .set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
-        let _ = set_runtime_filters_from_definition_if_absent(&mut thread.runtime, &def);
+        let _ = set_scope_filters_from_definition_if_absent(&mut thread.scope, &def);
 
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;

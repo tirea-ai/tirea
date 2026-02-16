@@ -29,9 +29,9 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     }
 }
 
-fn runtime_run_id(runtime: Option<&carve_state::ScopeState>) -> Option<String> {
-    runtime
-        .and_then(|rt| rt.value(RUNTIME_RUN_ID_KEY))
+fn scope_run_id(scope: Option<&carve_state::ScopeState>) -> Option<String> {
+    scope
+        .and_then(|scope| scope.value(SCOPE_RUN_ID_KEY))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
@@ -46,13 +46,13 @@ fn bind_child_lineage(
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
     let current_run_id = thread
-        .runtime
-        .value(RUNTIME_RUN_ID_KEY)
+        .scope
+        .value(SCOPE_RUN_ID_KEY)
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let current_parent_run_id = thread
-        .runtime
-        .value(RUNTIME_PARENT_RUN_ID_KEY)
+        .scope
+        .value(SCOPE_PARENT_RUN_ID_KEY)
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
@@ -67,12 +67,12 @@ fn bind_child_lineage(
         thread = thread.with_scope(carve_state::ScopeState::new());
     }
 
-    if thread.runtime.value(RUNTIME_RUN_ID_KEY).is_none() {
-        let _ = thread.runtime.set(RUNTIME_RUN_ID_KEY, run_id);
+    if thread.scope.value(SCOPE_RUN_ID_KEY).is_none() {
+        let _ = thread.scope.set(SCOPE_RUN_ID_KEY, run_id);
     }
     if let Some(parent_run_id) = parent_run_id {
-        if thread.runtime.value(RUNTIME_PARENT_RUN_ID_KEY).is_none() {
-            let _ = thread.runtime.set(RUNTIME_PARENT_RUN_ID_KEY, parent_run_id);
+        if thread.scope.value(SCOPE_PARENT_RUN_ID_KEY).is_none() {
+            let _ = thread.scope.set(SCOPE_PARENT_RUN_ID_KEY, parent_run_id);
         }
     }
     thread
@@ -95,8 +95,8 @@ fn required_string(args: &Value, key: &str, tool_name: &str) -> Result<String, T
         .ok_or_else(|| tool_error(tool_name, "invalid_arguments", format!("missing '{key}'")))
 }
 
-fn parse_caller_messages(runtime: Option<&carve_state::ScopeState>) -> Option<Vec<Message>> {
-    let value = runtime.and_then(|rt| rt.value(RUNTIME_CALLER_MESSAGES_KEY))?;
+fn parse_caller_messages(scope: Option<&carve_state::ScopeState>) -> Option<Vec<Message>> {
+    let value = scope.and_then(|scope| scope.value(SCOPE_CALLER_MESSAGES_KEY))?;
     serde_json::from_value::<Vec<Message>>(value.clone()).ok()
 }
 
@@ -119,16 +119,16 @@ fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
     caller: Option<&str>,
-    runtime: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_state::ScopeState>,
 ) -> bool {
     if caller.is_some_and(|c| c == target) {
         return false;
     }
-    if !is_runtime_allowed(
-        runtime,
+    if !is_scope_allowed(
+        scope,
         target,
-        RUNTIME_ALLOWED_AGENTS_KEY,
-        RUNTIME_EXCLUDED_AGENTS_KEY,
+        SCOPE_ALLOWED_AGENTS_KEY,
+        SCOPE_EXCLUDED_AGENTS_KEY,
     ) {
         return false;
     }
@@ -159,14 +159,14 @@ impl AgentRunTool {
         &self,
         target_agent_id: &str,
         caller_agent_id: Option<&str>,
-        runtime: Option<&carve_state::ScopeState>,
+        scope: Option<&carve_state::ScopeState>,
         tool_name: &str,
     ) -> Result<(), ToolResult> {
         if is_target_agent_visible(
             self.os.agents_registry().as_ref(),
             target_agent_id,
             caller_agent_id,
-            runtime,
+            scope,
         ) {
             return Ok(());
         }
@@ -308,23 +308,23 @@ impl Tool for AgentRunTool {
         let background = required_bool(&args, "background", false);
         let fork_context = required_bool(&args, "fork_context", false);
 
-        let runtime = ctx.scope_ref();
-        let owner_thread_id = runtime
-            .and_then(|rt| rt.value(RUNTIME_CALLER_SESSION_ID_KEY))
+        let scope = ctx.scope_ref();
+        let owner_thread_id = scope
+            .and_then(|scope| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
-                "missing_runtime",
+                "missing_scope",
                 "missing caller thread context",
             ));
         };
-        let caller_agent_id = runtime
-            .and_then(|rt| rt.value(RUNTIME_CALLER_AGENT_ID_KEY))
+        let caller_agent_id = scope
+            .and_then(|scope| scope.value(SCOPE_CALLER_AGENT_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let caller_run_id = runtime_run_id(runtime);
+        let caller_run_id = scope_run_id(scope);
 
         if let Some(run_id) = run_id {
             if let Some(existing) = self
@@ -360,7 +360,7 @@ impl Tool for AgentRunTool {
                         if let Err(error) = self.ensure_target_visible(
                             &record.target_agent_id,
                             caller_agent_id.as_deref(),
-                            runtime,
+                            scope,
                             tool_name,
                         ) {
                             return Ok(error);
@@ -417,7 +417,7 @@ impl Tool for AgentRunTool {
                     if let Err(error) = self.ensure_target_visible(
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
-                        runtime,
+                        scope,
                         tool_name,
                     ) {
                         return Ok(error);
@@ -468,7 +468,7 @@ impl Tool for AgentRunTool {
         if let Err(error) = self.ensure_target_visible(
             &target_agent_id,
             caller_agent_id.as_deref(),
-            runtime,
+            scope,
             tool_name,
         ) {
             return Ok(error);
@@ -478,13 +478,13 @@ impl Tool for AgentRunTool {
         let thread_id = format!("agent-run-{run_id}");
 
         let mut child_thread = if fork_context {
-            let fork_state = runtime
-                .and_then(|rt| rt.value(RUNTIME_CALLER_STATE_KEY))
+            let fork_state = scope
+                .and_then(|scope| scope.value(SCOPE_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let mut forked =
                 crate::contracts::conversation::Thread::with_initial_state(thread_id, fork_state);
-            if let Some(messages) = parse_caller_messages(runtime) {
+            if let Some(messages) = parse_caller_messages(scope) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
@@ -550,13 +550,13 @@ impl Tool for AgentStopTool {
         };
         let owner_thread_id = ctx
             .scope_ref()
-            .and_then(|rt| rt.value(RUNTIME_CALLER_SESSION_ID_KEY))
+            .and_then(|scope| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
-                "missing_runtime",
+                "missing_scope",
                 "missing caller thread context",
             ));
         };

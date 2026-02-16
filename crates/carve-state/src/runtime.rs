@@ -17,10 +17,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ScopeStateError {
     /// Attempted to set a key that was already set.
-    #[error("runtime key already set: {0}")]
+    #[error("scope key already set: {0}")]
     AlreadySet(String),
     /// JSON serialization failed.
-    #[error("runtime serialization error: {0}")]
+    #[error("scope serialization error: {0}")]
     SerializationError(String),
 }
 
@@ -63,7 +63,7 @@ impl ScopeState {
         value: impl serde::Serialize,
     ) -> Result<(), ScopeStateError> {
         let key = key.into();
-        let obj = self.doc.as_object_mut().expect("runtime doc is object");
+        let obj = self.doc.as_object_mut().expect("scope doc is object");
         if obj.contains_key(&key) {
             return Err(ScopeStateError::AlreadySet(key));
         }
@@ -104,7 +104,7 @@ impl ScopeState {
 
     /// Get a typed state reference (same API as `ctx.state::<T>()`).
     ///
-    /// Returns a read-only `StateRef` backed by the runtime document.
+    /// Returns a read-only `StateRef` backed by the scope document.
     /// Any write through this ref will panic (read-only sink).
     pub fn get<T: State>(&self) -> T::Ref<'_> {
         T::state_ref(&self.doc, Path::root(), PatchSink::read_only())
@@ -135,7 +135,7 @@ impl ScopeState {
         self.sensitive_keys.contains(key)
     }
 
-    /// Check if the runtime contains a key.
+    /// Check if the scope contains a key.
     pub fn contains_key(&self, key: &str) -> bool {
         self.doc
             .as_object()
@@ -171,14 +171,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_runtime_new_is_empty() {
+    fn test_scope_new_is_empty() {
         let rt = ScopeState::new();
         assert!(!rt.contains_key("anything"));
         assert!(rt.value("anything").is_none());
     }
 
     #[test]
-    fn test_runtime_default() {
+    fn test_scope_default() {
         let rt = ScopeState::default();
         assert!(!rt.contains_key("x"));
     }

@@ -3,8 +3,8 @@ use crate::contracts::conversation::Thread;
 use crate::contracts::traits::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
-    TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
-    TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
+    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
 use carve_state::apply_patches;
@@ -29,7 +29,7 @@ fn plugin_filters_out_caller_agent() {
 }
 
 #[test]
-fn plugin_filters_agents_by_runtime_policy() {
+fn plugin_filters_agents_by_scope_policy() {
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "writer",
@@ -41,7 +41,7 @@ fn plugin_filters_agents_by_runtime_policy() {
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
     let mut rt = carve_state::ScopeState::new();
-    rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
+    rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
     let rendered = plugin.render_available_agents(None, Some(&rt));
     assert!(rendered.contains("<id>writer</id>"));
     assert!(!rendered.contains("<id>reviewer</id>"));
@@ -159,7 +159,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
 }
 
 #[tokio::test]
-async fn agent_run_tool_requires_runtime_context() {
+async fn agent_run_tool_requires_scope_context() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
@@ -199,8 +199,8 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .unwrap();
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
     let doc = json!({});
-    let mut rt = caller_runtime();
-    rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
+    let mut rt = caller_scope();
+    rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
     let ctx = crate::contracts::context::Context::new(&doc, "call-1", "tool:agent_run").with_scope(Some(&rt));
     let result = tool
         .execute(
@@ -233,18 +233,18 @@ impl AgentPlugin for SlowSkipPlugin {
     }
 }
 
-fn caller_runtime_with_state_and_run(
+fn caller_scope_with_state_and_run(
     state: serde_json::Value,
     run_id: &str,
 ) -> carve_state::ScopeState {
     let mut rt = carve_state::ScopeState::new();
-    rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, "owner-thread")
+    rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
         .unwrap();
-    rt.set(TOOL_RUNTIME_CALLER_AGENT_ID_KEY, "caller").unwrap();
-    rt.set(RUNTIME_RUN_ID_KEY, run_id).unwrap();
-    rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, state).unwrap();
+    rt.set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "caller").unwrap();
+    rt.set(SCOPE_RUN_ID_KEY, run_id).unwrap();
+    rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state).unwrap();
     rt.set(
-        TOOL_RUNTIME_CALLER_MESSAGES_KEY,
+        TOOL_SCOPE_CALLER_MESSAGES_KEY,
         vec![crate::contracts::conversation::Message::user(
             "seed message",
         )],
@@ -253,12 +253,12 @@ fn caller_runtime_with_state_and_run(
     rt
 }
 
-fn caller_runtime_with_state(state: serde_json::Value) -> carve_state::ScopeState {
-    caller_runtime_with_state_and_run(state, "parent-run-default")
+fn caller_scope_with_state(state: serde_json::Value) -> carve_state::ScopeState {
+    caller_scope_with_state_and_run(state, "parent-run-default")
 }
 
-fn caller_runtime() -> carve_state::ScopeState {
-    caller_runtime_with_state(json!({"forked": true}))
+fn caller_scope() -> carve_state::ScopeState {
+    caller_scope_with_state(json!({"forked": true}))
 }
 
 #[tokio::test]
@@ -276,7 +276,7 @@ async fn background_stop_then_resume_completes() {
     let stop_tool = AgentStopTool::new(manager);
 
     let doc = json!({});
-    let rt = caller_runtime();
+    let rt = caller_scope();
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
@@ -411,7 +411,7 @@ async fn agent_run_tool_persists_run_state_patch() {
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
     let doc = json!({});
-    let rt = caller_runtime();
+    let rt = caller_scope();
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
@@ -443,7 +443,7 @@ async fn agent_run_tool_persists_run_state_patch() {
 }
 
 #[tokio::test]
-async fn agent_run_tool_binds_runtime_run_id_and_parent_lineage() {
+async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
@@ -456,7 +456,7 @@ async fn agent_run_tool_binds_runtime_run_id_and_parent_lineage() {
     let run_tool = AgentRunTool::new(os, manager.clone());
 
     let doc = json!({});
-    let rt = caller_runtime_with_state_and_run(json!({"forked": true}), "parent-run-42");
+    let rt = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
@@ -481,15 +481,15 @@ async fn agent_run_tool_binds_runtime_run_id_and_parent_lineage() {
         .expect("child thread should be tracked");
     assert_eq!(
         child_thread
-            .runtime
-            .value(RUNTIME_RUN_ID_KEY)
+            .scope
+            .value(SCOPE_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some(run_id.as_str())
     );
     assert_eq!(
         child_thread
-            .runtime
-            .value(RUNTIME_PARENT_RUN_ID_KEY)
+            .scope
+            .value(SCOPE_PARENT_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("parent-run-42")
     );
@@ -528,7 +528,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
             }
         }
     });
-    let rt = caller_runtime_with_state(doc.clone());
+    let rt = caller_scope_with_state(doc.clone());
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
@@ -573,7 +573,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
             }
         }
     });
-    let rt = caller_runtime_with_state_and_run(doc.clone(), "new-parent-run");
+    let rt = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
@@ -594,15 +594,15 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         .expect("resumed run should be tracked");
     assert_eq!(
         child_thread
-            .runtime
-            .value(RUNTIME_RUN_ID_KEY)
+            .scope
+            .value(SCOPE_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("run-1")
     );
     assert_eq!(
         child_thread
-            .runtime
-            .value(RUNTIME_PARENT_RUN_ID_KEY)
+            .scope
+            .value(SCOPE_PARENT_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("new-parent-run")
     );
@@ -641,7 +641,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
             }
         }
     });
-    let rt = caller_runtime_with_state(doc.clone());
+    let rt = caller_scope_with_state(doc.clone());
     let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let summary = run_tool
         .execute(
@@ -729,7 +729,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
     });
 
     let mut rt = carve_state::ScopeState::new();
-    rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, os_thread.id.clone())
+    rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, os_thread.id.clone())
         .unwrap();
     let ctx =
         crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));

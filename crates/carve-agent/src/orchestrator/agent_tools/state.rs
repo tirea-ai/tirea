@@ -3,7 +3,7 @@ pub(super) fn parent_run_id_from_thread(
     thread: Option<&crate::contracts::conversation::Thread>,
 ) -> Option<String> {
     thread
-        .and_then(|s| s.runtime.value(RUNTIME_PARENT_RUN_ID_KEY))
+        .and_then(|s| s.scope.value(SCOPE_PARENT_RUN_ID_KEY))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }

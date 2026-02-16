@@ -39,12 +39,12 @@ pub async fn execute_single_tool(
     execute_single_tool_with_scope(tool, call, state, None).await
 }
 
-/// Execute a single tool call with an optional runtime context.
+/// Execute a single tool call with an optional scope context.
 pub async fn execute_single_tool_with_scope(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    runtime: Option<&ScopeState>,
+    scope: Option<&ScopeState>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
@@ -55,7 +55,7 @@ pub async fn execute_single_tool_with_scope(
     };
 
     // Create context for this tool call
-    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name)).with_scope(runtime);
+    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name)).with_scope(scope);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {
@@ -402,16 +402,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_runtime_reads() {
+    async fn test_execute_single_tool_with_scope_reads() {
         use carve_state::ScopeState;
 
-        /// Tool that reads user_id from runtime and returns it.
-        struct RuntimeReaderTool;
+        /// Tool that reads user_id from scope and returns it.
+        struct ScopeReaderTool;
 
         #[async_trait]
-        impl Tool for RuntimeReaderTool {
+        impl Tool for ScopeReaderTool {
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor::new("rt_reader", "RuntimeReader", "Reads runtime values")
+                ToolDescriptor::new("scope_reader", "ScopeReader", "Reads scope values")
             }
 
             async fn execute(
@@ -424,34 +424,34 @@ mod tests {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 Ok(ToolResult::success(
-                    "rt_reader",
+                    "scope_reader",
                     json!({"user_id": user_id}),
                 ))
             }
         }
 
-        let mut rt = ScopeState::new();
-        rt.set("user_id", "u-42").unwrap();
+        let mut scope = ScopeState::new();
+        scope.set("user_id", "u-42").unwrap();
 
-        let tool = RuntimeReaderTool;
-        let call = ToolCall::new("call_1", "rt_reader", json!({}));
+        let tool = ScopeReaderTool;
+        let call = ToolCall::new("call_1", "scope_reader", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["user_id"], "u-42");
     }
 
     #[tokio::test]
-    async fn test_execute_single_tool_with_runtime_none() {
-        /// Tool that checks runtime_ref is None.
-        struct RuntimeCheckerTool;
+    async fn test_execute_single_tool_with_scope_none() {
+        /// Tool that checks scope_ref is None.
+        struct ScopeCheckerTool;
 
         #[async_trait]
-        impl Tool for RuntimeCheckerTool {
+        impl Tool for ScopeCheckerTool {
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor::new("rt_checker", "RuntimeChecker", "Checks runtime presence")
+                ToolDescriptor::new("scope_checker", "ScopeChecker", "Checks scope presence")
             }
 
             async fn execute(
@@ -459,33 +459,33 @@ mod tests {
                 _args: Value,
                 ctx: &Context<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let has_runtime = ctx.scope_ref().is_some();
+                let has_scope = ctx.scope_ref().is_some();
                 Ok(ToolResult::success(
-                    "rt_checker",
-                    json!({"has_runtime": has_runtime}),
+                    "scope_checker",
+                    json!({"has_scope": has_scope}),
                 ))
             }
         }
 
-        let tool = RuntimeCheckerTool;
-        let call = ToolCall::new("call_1", "rt_checker", json!({}));
+        let tool = ScopeCheckerTool;
+        let call = ToolCall::new("call_1", "scope_checker", json!({}));
         let state = json!({});
 
-        // Without runtime
+        // Without scope
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, None).await;
-        assert_eq!(exec.result.data["has_runtime"], false);
+        assert_eq!(exec.result.data["has_scope"], false);
 
-        // With runtime
-        let rt = ScopeState::new();
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
-        assert_eq!(exec.result.data["has_runtime"], true);
+        // With scope
+        let scope = ScopeState::new();
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
+        assert_eq!(exec.result.data["has_scope"], true);
     }
 
     #[tokio::test]
-    async fn test_execute_with_runtime_sensitive_key() {
+    async fn test_execute_with_scope_sensitive_key() {
         use carve_state::ScopeState;
 
-        /// Tool that reads a sensitive key from runtime.
+        /// Tool that reads a sensitive key from scope.
         struct SensitiveReaderTool;
 
         #[async_trait]
@@ -499,9 +499,9 @@ mod tests {
                 _args: Value,
                 ctx: &Context<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let rt = ctx.scope_ref().unwrap();
-                let token = rt.value("token").and_then(|v| v.as_str()).unwrap();
-                let is_sensitive = rt.is_sensitive("token");
+                let scope = ctx.scope_ref().unwrap();
+                let token = scope.value("token").and_then(|v| v.as_str()).unwrap();
+                let is_sensitive = scope.is_sensitive("token");
                 Ok(ToolResult::success(
                     "sensitive",
                     json!({"token_len": token.len(), "is_sensitive": is_sensitive}),
@@ -509,14 +509,15 @@ mod tests {
             }
         }
 
-        let mut rt = ScopeState::new();
-        rt.set_sensitive("token", "super-secret-token").unwrap();
+        let mut scope = ScopeState::new();
+        scope.set_sensitive("token", "super-secret-token").unwrap();
 
         let tool = SensitiveReaderTool;
         let call = ToolCall::new("call_1", "sensitive", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
+        let exec =
+            execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["token_len"], 18);

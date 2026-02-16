@@ -13,7 +13,7 @@ use crate::contracts::storage::{
     CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
 };
 use crate::contracts::traits::tool::Tool;
-use crate::engine::tool_filter::set_runtime_filters_from_definition_if_absent;
+use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
 use crate::extensions::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
     SkillSubsystemError,
@@ -33,7 +33,6 @@ mod tests;
 
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
-    RUNTIME_CALLER_AGENT_ID_KEY,
 };
 pub use carve_agent_contract::composition::{
     AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
@@ -240,7 +239,7 @@ pub enum AgentOsRunError {
     ThreadStoreNotConfigured,
 }
 
-/// Run-scoped runtime extensions injected for a single run.
+/// Run-scoped extensions injected for a single run.
 ///
 /// These extensions are merged after static `AgentDefinition` wiring and
 /// affect only the current run.

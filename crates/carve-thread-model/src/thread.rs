@@ -31,7 +31,7 @@ impl PendingDelta {
 /// Thread uses an owned builder pattern: `with_*` methods consume `self`
 /// and return a new `Thread` (e.g., `thread.with_message(msg)`).
 ///
-/// The `runtime` field is an exception — it is transient (not serialized)
+/// The `scope` field is an exception — it is transient (not serialized)
 /// and may be mutated in-place during a run (e.g., setting `run_id`).
 /// ScopeState changes are never persisted to storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,9 +53,9 @@ pub struct Thread {
     /// Metadata.
     #[serde(default)]
     pub metadata: ThreadMetadata,
-    /// Per-run runtime context (not persisted).
+    /// Per-run scope context (not persisted).
     #[serde(skip)]
-    pub runtime: ScopeState,
+    pub scope: ScopeState,
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
@@ -86,7 +86,7 @@ impl Thread {
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            runtime: ScopeState::default(),
+            scope: ScopeState::default(),
             pending: PendingDelta::default(),
         }
     }
@@ -101,7 +101,7 @@ impl Thread {
             state,
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            runtime: ScopeState::default(),
+            scope: ScopeState::default(),
             pending: PendingDelta::default(),
         }
     }
@@ -120,10 +120,10 @@ impl Thread {
         self
     }
 
-    /// Set the runtime (pure function, returns new Thread).
+    /// Set the scope (pure function, returns new Thread).
     #[must_use]
-    pub fn with_scope(mut self, runtime: ScopeState) -> Self {
-        self.runtime = runtime;
+    pub fn with_scope(mut self, scope: ScopeState) -> Self {
+        self.scope = scope;
         self
     }
 
@@ -217,7 +217,7 @@ impl Thread {
             state: current_state,
             patches: Vec::new(),
             metadata: self.metadata,
-            runtime: self.runtime,
+            scope: self.scope,
             pending: self.pending,
         })
     }
@@ -406,16 +406,16 @@ mod tests {
         let mut rt = ScopeState::new();
         rt.set("user_id", "u1").unwrap();
         let thread = Thread::new("t-1").with_scope(rt);
-        assert_eq!(thread.runtime.value("user_id"), Some(&json!("u1")));
+        assert_eq!(thread.scope.value("user_id"), Some(&json!("u1")));
     }
 
     #[test]
-    fn test_runtime_is_set_once() {
+    fn test_scope_is_set_once() {
         let mut thread = Thread::new("t-1");
-        thread.runtime.set("run_id", "run-1").unwrap();
-        let err = thread.runtime.set("run_id", "run-2").unwrap_err();
+        thread.scope.set("run_id", "run-1").unwrap();
+        let err = thread.scope.set("run_id", "run-2").unwrap_err();
         assert!(matches!(err, carve_state::ScopeStateError::AlreadySet(key) if key == "run_id"));
-        assert_eq!(thread.runtime.value("run_id"), Some(&json!("run-1")));
+        assert_eq!(thread.scope.value("run_id"), Some(&json!("run-1")));
     }
 
     #[test]
@@ -509,26 +509,26 @@ mod tests {
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
         // ScopeState is not serialized
-        assert!(!restored.runtime.contains_key("anything"));
+        assert!(!restored.scope.contains_key("anything"));
     }
 
     #[test]
-    fn test_thread_serialization_skips_runtime() {
+    fn test_thread_serialization_skips_scope() {
         let mut rt = ScopeState::new();
         rt.set("token", "secret").unwrap();
         let thread = Thread::new("test-1").with_scope(rt);
 
         let json_str = serde_json::to_string(&thread).unwrap();
         assert!(!json_str.contains("secret"));
-        assert!(!json_str.contains("runtime"));
+        assert!(!json_str.contains("scope"));
 
-        // Deserialized thread has default (empty) runtime
+        // Deserialized thread has default (empty) scope
         let restored: Thread = serde_json::from_str(&json_str).unwrap();
-        assert!(!restored.runtime.contains_key("token"));
+        assert!(!restored.scope.contains_key("token"));
     }
 
     #[test]
-    fn test_state_persists_but_runtime_is_transient_after_serialization() {
+    fn test_state_persists_but_scope_is_transient_after_serialization() {
         let mut rt = ScopeState::new();
         rt.set("run_id", "run-1").unwrap();
 
@@ -547,8 +547,8 @@ mod tests {
             "persisted state should survive serialization"
         );
         assert!(
-            !restored.runtime.contains_key("run_id"),
-            "runtime data must not be persisted"
+            !restored.scope.contains_key("run_id"),
+            "scope data must not be persisted"
         );
     }
 

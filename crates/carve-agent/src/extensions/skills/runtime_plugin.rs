@@ -3,7 +3,7 @@ use crate::contracts::context::Context;
 use crate::contracts::phase::Phase;
 use crate::contracts::phase::StepContext;
 use crate::engine::tool_filter::{
-    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+    is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::SKILLS_RUNTIME_PLUGIN_ID;
@@ -29,11 +29,11 @@ impl SkillRuntimePlugin {
         let mut out = String::new();
         let mut emitted_any = false;
         for skill_id in &state.active {
-            if !is_runtime_allowed(
+            if !is_scope_allowed(
                 runtime,
                 skill_id,
-                RUNTIME_ALLOWED_SKILLS_KEY,
-                RUNTIME_EXCLUDED_SKILLS_KEY,
+                SCOPE_ALLOWED_SKILLS_KEY,
+                SCOPE_EXCLUDED_SKILLS_KEY,
             ) {
                 continue;
             }
@@ -149,7 +149,7 @@ impl AgentPlugin for SkillRuntimePlugin {
             Err(_) => return,
         };
 
-        let rendered = Self::render_context(&parsed, Some(&step.thread.runtime));
+        let rendered = Self::render_context(&parsed, Some(&step.thread.scope));
         if rendered.is_empty() {
             return;
         }
@@ -254,8 +254,8 @@ mod tests {
             }),
         );
         thread
-            .runtime
-            .set(RUNTIME_ALLOWED_SKILLS_KEY, vec!["a"])
+            .scope
+            .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a"])
             .unwrap();
 
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);

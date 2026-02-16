@@ -2,12 +2,12 @@ use carve_agent_contract::agent::AgentDefinition;
 use carve_state::ScopeState;
 use serde_json::Value;
 
-pub(crate) const RUNTIME_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
-pub(crate) const RUNTIME_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
-pub(crate) const RUNTIME_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-pub(crate) const RUNTIME_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-pub(crate) const RUNTIME_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
-pub(crate) const RUNTIME_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
+pub(crate) const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
+pub(crate) const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
+pub(crate) const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
+pub(crate) const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
+pub(crate) const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+pub(crate) const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 pub(crate) fn is_tool_allowed(
     tool_id: &str,
@@ -27,58 +27,58 @@ pub(crate) fn is_tool_allowed(
     true
 }
 
-pub(crate) fn set_runtime_filter_if_absent(
-    runtime: &mut ScopeState,
+pub(crate) fn set_scope_filter_if_absent(
+    scope: &mut ScopeState,
     key: &str,
     values: Option<&[String]>,
 ) -> Result<(), carve_state::ScopeStateError> {
-    if runtime.value(key).is_some() {
+    if scope.value(key).is_some() {
         return Ok(());
     }
     if let Some(values) = values {
-        runtime.set(key, values.to_vec())?;
+        scope.set(key, values.to_vec())?;
     }
     Ok(())
 }
 
-pub(crate) fn set_runtime_filters_from_definition_if_absent(
-    runtime: &mut ScopeState,
+pub(crate) fn set_scope_filters_from_definition_if_absent(
+    scope: &mut ScopeState,
     def: &AgentDefinition,
 ) -> Result<(), carve_state::ScopeStateError> {
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_ALLOWED_TOOLS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_ALLOWED_TOOLS_KEY,
         def.allowed_tools.as_deref(),
     )?;
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_EXCLUDED_TOOLS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_EXCLUDED_TOOLS_KEY,
         def.excluded_tools.as_deref(),
     )?;
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_ALLOWED_SKILLS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_ALLOWED_SKILLS_KEY,
         def.allowed_skills.as_deref(),
     )?;
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_EXCLUDED_SKILLS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_EXCLUDED_SKILLS_KEY,
         def.excluded_skills.as_deref(),
     )?;
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_ALLOWED_AGENTS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_ALLOWED_AGENTS_KEY,
         def.allowed_agents.as_deref(),
     )?;
-    set_runtime_filter_if_absent(
-        runtime,
-        RUNTIME_EXCLUDED_AGENTS_KEY,
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_EXCLUDED_AGENTS_KEY,
         def.excluded_agents.as_deref(),
     )?;
     Ok(())
 }
 
-fn parse_runtime_filter(values: Option<&Value>) -> Option<Vec<String>> {
+fn parse_scope_filter(values: Option<&Value>) -> Option<Vec<String>> {
     let arr = values?.as_array()?;
     let parsed: Vec<String> = arr
         .iter()
@@ -90,14 +90,14 @@ fn parse_runtime_filter(values: Option<&Value>) -> Option<Vec<String>> {
     Some(parsed)
 }
 
-pub(crate) fn is_runtime_allowed(
-    runtime: Option<&ScopeState>,
+pub(crate) fn is_scope_allowed(
+    scope: Option<&ScopeState>,
     id: &str,
     allowed_key: &str,
     excluded_key: &str,
 ) -> bool {
-    let allowed = parse_runtime_filter(runtime.and_then(|rt| rt.value(allowed_key)));
-    let excluded = parse_runtime_filter(runtime.and_then(|rt| rt.value(excluded_key)));
+    let allowed = parse_scope_filter(scope.and_then(|s| s.value(allowed_key)));
+    let excluded = parse_scope_filter(scope.and_then(|s| s.value(excluded_key)));
     is_tool_allowed(id, allowed.as_deref(), excluded.as_deref())
 }
 
@@ -134,32 +134,32 @@ mod tests {
     }
 
     #[test]
-    fn test_is_runtime_allowed() {
+    fn test_is_scope_allowed() {
         let mut rt = ScopeState::new();
-        rt.set(RUNTIME_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
-        rt.set(RUNTIME_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
-        assert!(is_runtime_allowed(
+        rt.set(SCOPE_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
+        rt.set(SCOPE_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
+        assert!(is_scope_allowed(
             Some(&rt),
             "a",
-            RUNTIME_ALLOWED_TOOLS_KEY,
-            RUNTIME_EXCLUDED_TOOLS_KEY
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
         ));
-        assert!(!is_runtime_allowed(
+        assert!(!is_scope_allowed(
             Some(&rt),
             "b",
-            RUNTIME_ALLOWED_TOOLS_KEY,
-            RUNTIME_EXCLUDED_TOOLS_KEY
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
         ));
-        assert!(!is_runtime_allowed(
+        assert!(!is_scope_allowed(
             Some(&rt),
             "c",
-            RUNTIME_ALLOWED_TOOLS_KEY,
-            RUNTIME_EXCLUDED_TOOLS_KEY
+            SCOPE_ALLOWED_TOOLS_KEY,
+            SCOPE_EXCLUDED_TOOLS_KEY
         ));
     }
 
     #[test]
-    fn test_set_runtime_filters_from_definition_if_absent() {
+    fn test_set_scope_filters_from_definition_if_absent() {
         let mut rt = ScopeState::new();
         let def = AgentDefinition::default()
             .with_allowed_tools(vec!["a".to_string()])
@@ -169,30 +169,30 @@ mod tests {
             .with_allowed_agents(vec!["agent_a".to_string()])
             .with_excluded_agents(vec!["agent_b".to_string()]);
 
-        set_runtime_filters_from_definition_if_absent(&mut rt, &def).unwrap();
+        set_scope_filters_from_definition_if_absent(&mut rt, &def).unwrap();
 
         assert_eq!(
-            rt.value(RUNTIME_ALLOWED_TOOLS_KEY),
+            rt.value(SCOPE_ALLOWED_TOOLS_KEY),
             Some(&serde_json::json!(["a"]))
         );
         assert_eq!(
-            rt.value(RUNTIME_EXCLUDED_TOOLS_KEY),
+            rt.value(SCOPE_EXCLUDED_TOOLS_KEY),
             Some(&serde_json::json!(["b"]))
         );
         assert_eq!(
-            rt.value(RUNTIME_ALLOWED_SKILLS_KEY),
+            rt.value(SCOPE_ALLOWED_SKILLS_KEY),
             Some(&serde_json::json!(["s1"]))
         );
         assert_eq!(
-            rt.value(RUNTIME_EXCLUDED_SKILLS_KEY),
+            rt.value(SCOPE_EXCLUDED_SKILLS_KEY),
             Some(&serde_json::json!(["s2"]))
         );
         assert_eq!(
-            rt.value(RUNTIME_ALLOWED_AGENTS_KEY),
+            rt.value(SCOPE_ALLOWED_AGENTS_KEY),
             Some(&serde_json::json!(["agent_a"]))
         );
         assert_eq!(
-            rt.value(RUNTIME_EXCLUDED_AGENTS_KEY),
+            rt.value(SCOPE_EXCLUDED_AGENTS_KEY),
             Some(&serde_json::json!(["agent_b"]))
         );
     }

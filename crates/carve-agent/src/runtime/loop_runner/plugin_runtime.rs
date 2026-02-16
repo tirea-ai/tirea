@@ -123,7 +123,7 @@ where
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let ctx =
-        Context::new(&current_state, "phase", "plugin:phase").with_scope(Some(&thread.runtime));
+        Context::new(&current_state, "phase", "plugin:phase").with_scope(Some(&thread.scope));
     let mut step = StepContext::new(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
@@ -213,7 +213,7 @@ pub(super) async fn emit_run_end_phase(
             }
         };
         let ctx = Context::new(&current_state, "phase", "plugin:run_end")
-            .with_scope(Some(&thread.runtime));
+            .with_scope(Some(&thread.scope));
         let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
         if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {
             tracing::warn!(error = %e, "RunEndPhase(RunEnd) plugin phase validation failed");

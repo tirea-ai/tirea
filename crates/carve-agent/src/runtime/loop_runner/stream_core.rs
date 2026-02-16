@@ -15,16 +15,16 @@ pub(super) struct StreamRunIdentity {
 
 pub(super) fn resolve_stream_run_identity(thread: &mut Thread) -> StreamRunIdentity {
     let run_id = thread
-        .runtime
+        .scope
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| {
             let id = uuid_v7();
-            let _ = thread.runtime.set("run_id", &id);
+            let _ = thread.scope.set("run_id", &id);
             id
         });
     let parent_run_id = thread
-        .runtime
+        .scope
         .value("parent_run_id")
         .and_then(|v| v.as_str().map(String::from));
     StreamRunIdentity {

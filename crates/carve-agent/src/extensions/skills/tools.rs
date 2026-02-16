@@ -1,7 +1,7 @@
 use crate::contracts::state_types::{AgentState, AGENT_STATE_PATH};
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use crate::engine::tool_filter::{
-    is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
+    is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
@@ -63,11 +63,11 @@ impl Tool for SkillActivateTool {
             Ok(m) => m,
             Err(r) => return Ok(r),
         };
-        if !is_runtime_allowed(
+        if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
-            RUNTIME_ALLOWED_SKILLS_KEY,
-            RUNTIME_EXCLUDED_SKILLS_KEY,
+            SCOPE_ALLOWED_SKILLS_KEY,
+            SCOPE_EXCLUDED_SKILLS_KEY,
         ) {
             return Ok(tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
@@ -228,11 +228,11 @@ impl Tool for LoadSkillResourceTool {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
-        if !is_runtime_allowed(
+        if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
-            RUNTIME_ALLOWED_SKILLS_KEY,
-            RUNTIME_EXCLUDED_SKILLS_KEY,
+            SCOPE_ALLOWED_SKILLS_KEY,
+            SCOPE_EXCLUDED_SKILLS_KEY,
         ) {
             return Ok(tool_error(
                 tool_name,
@@ -373,11 +373,11 @@ impl Tool for SkillScriptTool {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
-        if !is_runtime_allowed(
+        if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
-            RUNTIME_ALLOWED_SKILLS_KEY,
-            RUNTIME_EXCLUDED_SKILLS_KEY,
+            SCOPE_ALLOWED_SKILLS_KEY,
+            SCOPE_EXCLUDED_SKILLS_KEY,
         ) {
             return Ok(tool_error(
                 SKILL_SCRIPT_TOOL_ID,

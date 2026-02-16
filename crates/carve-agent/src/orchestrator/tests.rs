@@ -525,27 +525,27 @@ fn resolve_sets_runtime_caller_agent_id() {
     let (_client, _cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(
         thread
-            .runtime
-            .value(RUNTIME_CALLER_AGENT_ID_KEY)
+            .scope
+            .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("a1")
     );
     assert_eq!(
         thread
-            .runtime
-            .value(crate::engine::tool_filter::RUNTIME_ALLOWED_SKILLS_KEY),
+            .scope
+            .value(crate::engine::tool_filter::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
         thread
-            .runtime
-            .value(crate::engine::tool_filter::RUNTIME_ALLOWED_AGENTS_KEY),
+            .scope
+            .value(crate::engine::tool_filter::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
         thread
-            .runtime
-            .value(crate::engine::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY),
+            .scope
+            .value(crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
 }
@@ -1171,11 +1171,11 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     assert_eq!(prepared.thread_id, "t-prepare");
     assert_eq!(prepared.run_id, "run-prepare");
     assert_eq!(
-        prepared.thread.runtime.value("run_id"),
+        prepared.thread.scope.value("run_id"),
         Some(&json!("run-prepare"))
     );
     assert_eq!(
-        prepared.thread.runtime.value("parent_run_id"),
+        prepared.thread.scope.value("parent_run_id"),
         Some(&json!("run-parent"))
     );
 

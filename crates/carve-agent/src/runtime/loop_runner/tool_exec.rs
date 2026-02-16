@@ -4,8 +4,8 @@ use super::core::{
 };
 use super::plugin_runtime::emit_phase_checked;
 use super::{
-    AgentConfig, AgentLoopError, TOOL_RUNTIME_CALLER_MESSAGES_KEY, TOOL_RUNTIME_CALLER_STATE_KEY,
-    TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
+    AgentConfig, AgentLoopError, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
+    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
@@ -232,7 +232,7 @@ pub(super) fn apply_tool_results_impl(
 
 fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
     let run_id = thread
-        .runtime
+        .scope
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .or_else(|| {
@@ -292,8 +292,8 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<Thread, AgentLoopError> {
-    crate::engine::tool_filter::set_runtime_filters_from_definition_if_absent(
-        &mut thread.runtime,
+    crate::engine::tool_filter::set_scope_filters_from_definition_if_absent(
+        &mut thread.scope,
         config,
     )
     .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -308,26 +308,26 @@ pub async fn execute_tools_with_config(
     .await
 }
 
-pub(super) fn runtime_with_tool_caller_context(
+pub(super) fn scope_with_tool_caller_context(
     thread: &Thread,
     state: &Value,
     config: Option<&AgentConfig>,
 ) -> Result<carve_state::ScopeState, AgentLoopError> {
-    let mut rt = thread.runtime.clone();
-    if rt.value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY).is_none() {
-        rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, thread.id.clone())
+    let mut rt = thread.scope.clone();
+    if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
+        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, thread.id.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
-    if rt.value(TOOL_RUNTIME_CALLER_STATE_KEY).is_none() {
-        rt.set(TOOL_RUNTIME_CALLER_STATE_KEY, state.clone())
+    if rt.value(TOOL_SCOPE_CALLER_STATE_KEY).is_none() {
+        rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
-    if rt.value(TOOL_RUNTIME_CALLER_MESSAGES_KEY).is_none() {
-        rt.set(TOOL_RUNTIME_CALLER_MESSAGES_KEY, thread.messages.clone())
+    if rt.value(TOOL_SCOPE_CALLER_MESSAGES_KEY).is_none() {
+        rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, thread.messages.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if let Some(cfg) = config {
-        crate::engine::tool_filter::set_runtime_filters_from_definition_if_absent(&mut rt, cfg)
+        crate::engine::tool_filter::set_scope_filters_from_definition_if_absent(&mut rt, cfg)
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)
@@ -351,7 +351,7 @@ pub async fn execute_tools_with_plugins(
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let rt_for_tools = runtime_with_tool_caller_context(&thread, &state, None)?;
+    let rt_for_tools = scope_with_tool_caller_context(&thread, &state, None)?;
     let results = execute_tool_calls_with_phases(
         tools,
         &result.tool_calls,
@@ -384,7 +384,7 @@ pub(super) async fn execute_tool_calls_with_phases(
     plugins: &[Arc<dyn AgentPlugin>],
     parallel: bool,
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     if parallel {
@@ -395,7 +395,7 @@ pub(super) async fn execute_tool_calls_with_phases(
             tool_descriptors,
             plugins,
             activity_manager,
-            runtime,
+            scope,
             thread_id,
         )
         .await
@@ -407,7 +407,7 @@ pub(super) async fn execute_tool_calls_with_phases(
             tool_descriptors,
             plugins,
             activity_manager,
-            runtime,
+            scope,
             thread_id,
         )
         .await
@@ -422,13 +422,13 @@ pub(super) async fn execute_tools_parallel_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
-    // Clone runtime for parallel tasks (ScopeState is Clone).
-    let runtime_owned = runtime.cloned();
+    // Clone scope state for parallel tasks (ScopeState is Clone).
+    let scope_owned = scope.cloned();
     let thread_id = thread_id.to_string();
 
     let futures = calls.iter().map(|call| {
@@ -438,7 +438,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let plugins = plugins.to_vec();
         let tool_descriptors = tool_descriptors.to_vec();
         let activity_manager = activity_manager.clone();
-        let rt = runtime_owned.clone();
+        let rt = scope_owned.clone();
         let sid = thread_id.clone();
 
         async move {
@@ -468,7 +468,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
@@ -485,7 +485,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
             tool_descriptors,
             plugins,
             activity_manager.clone(),
-            runtime,
+            scope,
             thread_id,
         )
         .await?;
@@ -545,17 +545,17 @@ pub(super) async fn execute_single_tool_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
-    // Create a thread stub so plugins see the real thread id and runtime.
+    // Create a thread stub so plugins see the real thread id and scope.
     let mut temp_thread = Thread::with_initial_state(thread_id, state.clone());
-    if let Some(rt) = runtime {
-        temp_thread.runtime = rt.clone();
+    if let Some(rt) = scope {
+        temp_thread.scope = rt.clone();
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_scope(runtime);
+    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_scope(scope);
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
@@ -565,11 +565,11 @@ pub(super) async fn execute_single_tool_with_phases(
     emit_phase_checked(Phase::BeforeToolExecute, &mut step, &plugin_ctx, plugins).await?;
 
     // Check if blocked or pending
-    let (execution, pending_interaction) = if !crate::engine::tool_filter::is_runtime_allowed(
-        runtime,
+    let (execution, pending_interaction) = if !crate::engine::tool_filter::is_scope_allowed(
+        scope,
         &call.name,
-        crate::engine::tool_filter::RUNTIME_ALLOWED_TOOLS_KEY,
-        crate::engine::tool_filter::RUNTIME_EXCLUDED_TOOLS_KEY,
+        crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY,
+        crate::engine::tool_filter::SCOPE_EXCLUDED_TOOLS_KEY,
     ) {
         (
             ToolExecution {
@@ -627,7 +627,7 @@ pub(super) async fn execute_single_tool_with_phases(
             format!("tool:{}", call.name),
             activity_manager,
         )
-        .with_scope(runtime);
+        .with_scope(scope);
         let result = async {
             match tool
                 .unwrap()
