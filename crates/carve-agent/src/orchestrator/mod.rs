@@ -6,6 +6,7 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::events::{AgentEvent, RunRequest};
 use crate::contracts::traits::tool::Tool;
 use crate::engine::tool_filter::set_runtime_filters_from_definition_if_absent;
 use crate::extensions::skills::{
@@ -16,7 +17,6 @@ use crate::runtime::loop_runner::{
     run_loop_stream, AgentConfig, AgentDefinition, AgentLoopError, RunContext, StateCommitError,
     StateCommitter,
 };
-use crate::runtime::streaming::AgentEvent;
 use crate::thread::Thread;
 use crate::thread_store::{
     CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
@@ -24,23 +24,19 @@ use crate::thread_store::{
 use crate::types::Message;
 
 pub(crate) mod agent_tools;
-mod bundle;
-mod registry;
 
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
     RUNTIME_CALLER_AGENT_ID_KEY,
 };
-pub use bundle::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
-    RegistryBundle, RegistrySet, ToolPluginBundle,
-};
-pub use registry::{
-    AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
+pub use carve_agent_contract::composition::{
+    AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
+    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
     CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
     InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
     InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
-    PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
+    PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle, RegistrySet,
+    ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
 type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
@@ -237,8 +233,6 @@ pub enum AgentOsRunError {
     #[error("thread store not configured")]
     ThreadStoreNotConfigured,
 }
-
-pub use carve_agent_contract::RunRequest;
 
 /// Run-scoped runtime extensions injected for a single run.
 ///

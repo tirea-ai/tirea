@@ -599,9 +599,9 @@ fn inference_error_from_state(ctx: &Context<'_>) -> Option<AgentInferenceError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::events::StreamResult;
     use crate::contracts::phase::ToolContext as PhaseToolContext;
     use crate::contracts::traits::tool::ToolResult;
-    use crate::runtime::streaming::StreamResult;
     use crate::thread::Thread;
     use crate::types::ToolCall;
     use carve_state::Context;

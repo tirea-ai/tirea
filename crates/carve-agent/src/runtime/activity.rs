@@ -1,6 +1,6 @@
 //! Activity state manager and event emission.
 
-use crate::runtime::streaming::AgentEvent;
+use crate::contracts::events::AgentEvent;
 use carve_state::{apply_patch, ActivityManager, Op, Patch, Value};
 use serde_json::json;
 use std::collections::HashMap;
@@ -74,7 +74,7 @@ impl ActivityManager for ActivityHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::streaming::AgentEvent;
+    use crate::contracts::events::AgentEvent;
     use carve_state::{Op, Path};
     use serde_json::json;
     use std::sync::Arc;

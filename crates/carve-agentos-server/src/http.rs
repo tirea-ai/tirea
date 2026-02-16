@@ -6,11 +6,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agent::contracts::conversation::{Thread, Visibility};
+use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::storage::{
     MessagePage, MessageQuery, SortOrder, ThreadListPage, ThreadListQuery, ThreadReader,
 };
 use carve_agent::orchestrator::{AgentOs, AgentOsRunError, RunStream};
-use carve_agent::runtime::streaming::AgentEvent;
 use carve_protocol_ag_ui::{
     AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
 };

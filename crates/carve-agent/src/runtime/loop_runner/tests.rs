@@ -272,7 +272,7 @@ fn test_execute_tools_injects_caller_runtime_context_for_tools() {
 
 #[tokio::test]
 async fn test_activity_event_emitted_before_tool_completion() {
-    use crate::runtime::streaming::AgentEvent;
+    use crate::contracts::events::AgentEvent;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(tx));
@@ -325,7 +325,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
 
 #[tokio::test]
 async fn test_parallel_tools_emit_activity_before_completion() {
-    use crate::runtime::streaming::AgentEvent;
+    use crate::contracts::events::AgentEvent;
     use std::collections::HashSet;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

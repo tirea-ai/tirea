@@ -1,6 +1,6 @@
-use carve_agent::orchestrator::{AgentOs, RunRequest};
+use carve_agent::contracts::events::{AgentEvent, RunRequest};
+use carve_agent::orchestrator::AgentOs;
 use carve_agent::runtime::loop_runner::AgentDefinition;
-use carve_agent::runtime::streaming::AgentEvent;
 use carve_agent::types::Message;
 use futures::StreamExt;
 use std::collections::HashSet;

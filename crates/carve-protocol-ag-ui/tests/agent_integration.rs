@@ -592,9 +592,9 @@ async fn test_tool_provider_reminder_integration() {
 // Thread and Agent Loop Integration Tests
 // ============================================================================
 
+use carve_agent::contracts::events::StreamResult;
 use carve_agent::contracts::storage::{ThreadReader, ThreadWriter};
 use carve_agent::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
-use carve_agent::runtime::streaming::StreamResult;
 use carve_agent::thread::Thread;
 use carve_agent::types::{Message, Role};
 use carve_state::{path, Op, Patch, TrackedPatch};
@@ -2051,7 +2051,7 @@ async fn test_execute_tools_empty_result() {
 
 #[test]
 fn test_agent_event_all_variants() {
-    use carve_agent::runtime::streaming::AgentEvent;
+    use carve_agent::contracts::events::AgentEvent;
 
     // TextDelta
     let text_delta = AgentEvent::TextDelta {
@@ -2173,7 +2173,7 @@ fn test_agent_event_all_variants() {
 
 #[tokio::test]
 async fn test_activity_context_emits_snapshot_on_update() {
-    use carve_agent::runtime::streaming::AgentEvent;
+    use carve_agent::contracts::events::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2239,7 +2239,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
 #[tokio::test]
 async fn test_activity_context_multiple_streams_emit_separately() {
-    use carve_agent::runtime::streaming::AgentEvent;
+    use carve_agent::contracts::events::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -4521,8 +4521,8 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
+use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::state_types::Interaction;
-use carve_agent::runtime::streaming::AgentEvent;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
@@ -12209,11 +12209,11 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::contracts::agent_plugin::AgentPlugin;
+    use carve_agent::contracts::events::StreamResult;
     use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
     use carve_agent::contracts::traits::tool::ToolResult;
     use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use carve_agent::prelude::Context;
-    use carve_agent::runtime::streaming::StreamResult;
     use carve_agent::thread::Thread;
     use carve_agent::types::ToolCall;
     use serde_json::json;

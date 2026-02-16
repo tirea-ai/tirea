@@ -38,12 +38,12 @@
 //! SessionEnd (once)
 //! ```
 
-mod config;
 mod core;
 mod outcome;
 mod plugin_runtime;
 
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::events::{AgentEvent, StreamResult};
 use crate::contracts::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
@@ -53,7 +53,7 @@ use crate::engine::stop_conditions::{
 };
 use crate::engine::tool_execution::{collect_patches, ToolExecution};
 use crate::runtime::activity::ActivityHub;
-use crate::runtime::streaming::{AgentEvent, StreamCollector, StreamResult};
+use crate::runtime::streaming::StreamCollector;
 use crate::thread::Thread;
 use crate::thread_store::{CheckpointReason, ThreadDelta};
 use crate::types::{gen_message_id, Message, MessageMetadata};
@@ -72,11 +72,11 @@ use std::time::Instant;
 use tracing::Instrument;
 use uuid::Uuid;
 
-pub use config::{
+pub use carve_agent_contract::agent::{
     AgentConfig, AgentDefinition, RunCancellationToken, RunContext, StateCommitError,
     StateCommitter,
 };
-pub(crate) use config::{
+pub(crate) use carve_agent_contract::agent::{
     TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };

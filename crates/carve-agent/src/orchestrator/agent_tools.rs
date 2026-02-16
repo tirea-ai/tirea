@@ -1,5 +1,6 @@
 use super::{AgentOs, AgentRegistry};
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::events::AgentEvent;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::{
     AgentRunState, AgentRunStatus, AgentState, Interaction, ToolPermissionBehavior,
@@ -326,12 +327,12 @@ async fn execute_target_agent(
 
     while let Some(ev) = events.next().await {
         match ev {
-            crate::runtime::streaming::AgentEvent::Error { message } => {
+            AgentEvent::Error { message } => {
                 if saw_error.is_none() {
                     saw_error = Some(message);
                 }
             }
-            crate::runtime::streaming::AgentEvent::RunFinish {
+            AgentEvent::RunFinish {
                 stop_reason: reason,
                 ..
             } => {

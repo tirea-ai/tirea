@@ -9,6 +9,7 @@
 //! - `carve_protocol_ai_sdk_v6::AiSdkEncoder::on_agent_event()`: AI SDK v6 events
 
 use crate::types::ToolCall;
+use carve_agent_contract::StreamResult;
 use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,13 +202,10 @@ pub enum StreamOutput {
     ToolCallDelta { id: String, args_delta: String },
 }
 
-pub use carve_agent_contract::StreamResult;
-
-pub use carve_agent_contract::AgentEvent;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::events::AgentEvent;
     use crate::contracts::traits::tool::ToolResult;
     use serde_json::json;
 

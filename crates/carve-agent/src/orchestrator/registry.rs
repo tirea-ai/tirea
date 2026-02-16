@@ -1,9 +1,0 @@
-//! Registry contracts re-exported from `carve-agent-contract`.
-
-pub use carve_agent_contract::composition::{
-    AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
-    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
-    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
-    PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
-};
