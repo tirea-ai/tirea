@@ -142,6 +142,19 @@ pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_patch()
 }
 
+pub(super) fn pending_interaction_from_thread(thread: &Thread) -> Option<Interaction> {
+    thread
+        .rebuild_state()
+        .ok()
+        .and_then(|state| {
+            state
+                .get(AGENT_STATE_PATH)?
+                .get("pending_interaction")
+                .cloned()
+        })
+        .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
+}
+
 pub(super) fn set_agent_inference_error(state: &Value, error: AgentInferenceError) -> TrackedPatch {
     let ctx = Context::new(state, "agent_inference_error_set", "agent_loop");
     let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);

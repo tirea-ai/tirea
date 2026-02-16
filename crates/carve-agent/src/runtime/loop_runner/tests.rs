@@ -2474,6 +2474,71 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
 }
 
 #[tokio::test]
+async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interaction() {
+    struct PendingSkipPlugin {
+        phases: Arc<Mutex<Vec<Phase>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for PendingSkipPlugin {
+        fn id(&self) -> &str {
+            "pending_skip_non_stream"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+            self.phases.lock().unwrap().push(phase);
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let patch = set_agent_pending_interaction(
+                &state,
+                Interaction::new("agent_recovery_run-1", "recover_agent_run")
+                    .with_message("resume?"),
+            );
+            step.pending_patches.push(patch);
+            step.skip_inference = true;
+        }
+    }
+
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingSkipPlugin {
+        phases: phases.clone(),
+    }) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let tools = HashMap::new();
+    let client = Client::default();
+
+    let result = run_loop(&client, &config, thread, &tools).await;
+    let (thread, interaction) = match result {
+        Err(AgentLoopError::PendingInteraction {
+            thread,
+            interaction,
+        }) => (thread, interaction),
+        other => panic!("expected PendingInteraction on skip_inference, got: {other:?}"),
+    };
+    assert_eq!(interaction.action, "recover_agent_run");
+    assert_eq!(interaction.message, "resume?");
+
+    let state = thread.rebuild_state().expect("state should rebuild");
+    assert_eq!(
+        state["agent"]["pending_interaction"]["action"],
+        Value::String("recover_agent_run".to_string())
+    );
+
+    let recorded = phases.lock().unwrap().clone();
+    assert_eq!(
+        recorded.last(),
+        Some(&Phase::RunEnd),
+        "RunEnd should be last phase, got: {:?}",
+        recorded
+    );
+    let run_end_count = recorded.iter().filter(|p| **p == Phase::RunEnd).count();
+    assert_eq!(run_end_count, 1, "RunEnd should be emitted exactly once");
+}
+
+#[tokio::test]
 async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let (recorder, _phases) = RecordAndSkipPlugin::new();
     let config =

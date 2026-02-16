@@ -51,7 +51,9 @@ use crate::contracts::conversation::Thread;
 use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::events::{AgentEvent, StreamResult, TerminationReason};
 use crate::contracts::phase::Phase;
-use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
+use crate::contracts::state_types::Interaction;
+#[cfg(test)]
+use crate::contracts::state_types::AGENT_STATE_PATH;
 use crate::contracts::storage::CheckpointReason;
 use crate::contracts::traits::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
@@ -90,8 +92,8 @@ use core::build_messages;
 use core::set_agent_pending_interaction;
 use core::{
     apply_pending_patches, build_request_for_filtered_tools, clear_agent_pending_interaction,
-    drain_agent_outbox, inference_inputs_from_step, reduce_thread_mutations,
-    tool_descriptors_for_config, ThreadMutationBatch,
+    drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_thread,
+    reduce_thread_mutations, tool_descriptors_for_config, ThreadMutationBatch,
 };
 pub use outcome::{run_step_cycle, tool_map, tool_map_from_arc, AgentLoopError, StepResult};
 #[cfg(test)]
@@ -561,6 +563,12 @@ pub async fn run_loop_with_context(
         thread = apply_pending_patches(thread, pending);
 
         if skip_inference {
+            if let Some(interaction) = pending_interaction_from_thread(&thread) {
+                terminate_run!(move |thread: Thread| AgentLoopError::PendingInteraction {
+                    thread: Box::new(thread),
+                    interaction: Box::new(interaction),
+                });
+            }
             break;
         }
 
@@ -730,10 +738,8 @@ pub async fn run_loop_with_context(
         ) {
             Ok(a) => a,
             Err(e) => {
-                let _finalized =
-                    emit_run_end_phase(thread_before_apply, &tool_descriptors, &config.plugins)
-                        .await;
-                return Err(e);
+                thread = thread_before_apply;
+                terminate_run!(move |_| e);
             }
         };
         thread = applied.thread;

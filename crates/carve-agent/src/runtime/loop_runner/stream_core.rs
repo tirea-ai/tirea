@@ -33,19 +33,6 @@ pub(super) fn resolve_stream_run_identity(thread: &mut Thread) -> StreamRunIdent
     }
 }
 
-pub(super) fn pending_interaction_from_thread(thread: &Thread) -> Option<Interaction> {
-    thread
-        .rebuild_state()
-        .ok()
-        .and_then(|state| {
-            state
-                .get(AGENT_STATE_PATH)?
-                .get("pending_interaction")
-                .cloned()
-        })
-        .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
-}
-
 pub(super) fn natural_result_payload(text: &str) -> Option<Value> {
     if text.is_empty() {
         None
