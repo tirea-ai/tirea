@@ -1,6 +1,7 @@
 use super::stream_core::{
     natural_result_payload, preallocate_tool_result_message_ids, resolve_stream_run_identity,
 };
+use super::state_commit::PendingDeltaCommitContext;
 use super::*;
 
 // Stream adapter layer:
@@ -164,18 +165,17 @@ pub(super) fn run_loop_stream_impl_with_provider(
         let run_identity = resolve_stream_run_identity(&mut thread);
         let run_id = run_identity.run_id;
         let parent_run_id = run_identity.parent_run_id;
+        let pending_delta_commit = PendingDeltaCommitContext::new(
+            &run_id,
+            parent_run_id.as_deref(),
+            state_committer.as_ref(),
+        );
 
         macro_rules! emit_run_finished_delta {
             () => {
-                if let Err(e) = commit_pending_delta(
-                    &mut thread,
-                    CheckpointReason::RunFinished,
-                    true,
-                    &run_id,
-                    parent_run_id.as_deref(),
-                    state_committer.as_ref(),
-                )
-                .await
+                if let Err(e) = pending_delta_commit
+                    .commit(&mut thread, CheckpointReason::RunFinished, true)
+                    .await
                 {
                     tracing::warn!(error = %e, "failed to commit run-finished delta");
                 }
@@ -184,15 +184,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
         macro_rules! ensure_run_finished_delta_or_error {
             () => {
-                if let Err(e) = commit_pending_delta(
-                    &mut thread,
-                    CheckpointReason::RunFinished,
-                    true,
-                    &run_id,
-                    parent_run_id.as_deref(),
-                    state_committer.as_ref(),
-                )
-                .await
+                if let Err(e) = pending_delta_commit
+                    .commit(&mut thread, CheckpointReason::RunFinished, true)
+                    .await
                 {
                     yield AgentEvent::Error {
                         message: e.to_string(),
@@ -296,24 +290,23 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 finish_run!(TerminationReason::Cancelled, None);
             }
 
-            // Phase: StepStart and BeforeInference (collect messages and tools filter)
-            let (messages, filtered_tools, skip_inference, tracing_span, pending) =
-                match run_step_prepare_phases(&thread, &tool_descriptors, &config).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        terminate_stream_error!(e.to_string());
-                    }
-                };
-            thread = apply_pending_patches(thread, pending);
+            let prepared = match prepare_step_execution(&thread, &tool_descriptors, &config).await {
+                Ok(v) => v,
+                Err(e) => {
+                    terminate_stream_error!(e.to_string());
+                }
+            };
+            thread = apply_pending_patches(thread, prepared.pending_patches);
+            let messages = prepared.messages;
+            let filtered_tools = prepared.filtered_tools;
 
             // Skip inference if requested
-            if skip_inference {
+            if prepared.skip_inference {
                 let pending_interaction = pending_interaction_from_thread(&thread);
                 if let Some(interaction) = pending_interaction.clone() {
-                    yield AgentEvent::InteractionRequested {
-                        interaction: interaction.clone(),
-                    };
-                    yield AgentEvent::Pending { interaction };
+                    for event in interaction_requested_pending_events(&interaction) {
+                        yield event;
+                    }
                 }
                 finish_run!(
                     if pending_interaction.is_some() {
@@ -330,7 +323,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             yield AgentEvent::StepStart { message_id: assistant_msg_id.clone() };
 
             // Stream LLM response with unified retry + fallback model strategy.
-            let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
+            let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
             let chat_options = config.chat_options.clone();
             let attempt_outcome = run_llm_with_retry_and_fallback(
                 &config,
@@ -359,8 +352,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 }
                 LlmAttemptOutcome::Exhausted { last_error } => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                    match emit_cleanup_phases_and_apply(
-                        thread.clone(),
+                    match apply_llm_error_cleanup(
+                        &mut thread,
                         &tool_descriptors,
                         &config.plugins,
                         "llm_stream_start_error",
@@ -368,9 +361,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     )
                     .await
                     {
-                        Ok(next_thread) => {
-                            thread = next_thread;
-                        }
+                        Ok(()) => {}
                         Err(phase_error) => {
                             terminate_stream_error!(phase_error.to_string());
                         }
@@ -418,8 +409,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     }
                     Err(e) => {
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                        match emit_cleanup_phases_and_apply(
-                            thread.clone(),
+                        match apply_llm_error_cleanup(
+                            &mut thread,
                             &tool_descriptors,
                             &config.plugins,
                             "llm_stream_event_error",
@@ -427,9 +418,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         )
                         .await
                         {
-                            Ok(next_thread) => {
-                                thread = next_thread;
-                            }
+                            Ok(()) => {}
                             Err(phase_error) => {
                                 terminate_stream_error!(phase_error.to_string());
                             }
@@ -449,62 +438,23 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 duration_ms: inference_duration_ms,
             };
 
-            // Phase: AfterInference (with new context)
-            match emit_phase_block(
-                Phase::AfterInference,
-                &thread,
-                &tool_descriptors,
-                &config.plugins,
-                |step| {
-                    step.response = Some(result.clone());
-                },
-            )
-            .await
-            {
-                Ok(pending) => {
-                    thread = apply_pending_patches(thread, pending);
-                }
-                Err(e) => {
-                    terminate_stream_error!(e.to_string());
-                }
-            }
-
-            // Add assistant message with run/step metadata.
             let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-            let assistant_msg =
-                assistant_turn_message(&result, step_meta.clone(), Some(assistant_msg_id.clone()));
-            thread = reduce_thread_mutations(
-                thread,
-                ThreadMutationBatch::default().with_message(assistant_msg),
-            );
-
-            // Phase: StepEnd (with new context) — run plugin cleanup before yielding StepEnd
-            match emit_phase_block(
-                Phase::StepEnd,
-                &thread,
+            if let Err(e) = complete_step_after_inference(
+                &mut thread,
+                &result,
+                step_meta.clone(),
+                Some(assistant_msg_id.clone()),
                 &tool_descriptors,
                 &config.plugins,
-                |_| {},
             )
             .await
             {
-                Ok(pending) => {
-                    thread = apply_pending_patches(thread, pending);
-                }
-                Err(e) => {
-                    terminate_stream_error!(e.to_string());
-                }
+                terminate_stream_error!(e.to_string());
             }
 
-            if let Err(e) = commit_pending_delta(
-                &mut thread,
-                CheckpointReason::AssistantTurnCommitted,
-                false,
-                &run_id,
-                parent_run_id.as_deref(),
-                state_committer.as_ref(),
-            )
-            .await
+            if let Err(e) = pending_delta_commit
+                .commit(&mut thread, CheckpointReason::AssistantTurnCommitted, false)
+                .await
             {
                 terminate_stream_error!(e.to_string());
             }
@@ -538,16 +488,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             // Execute tools with phase hooks
-            let state = match thread.rebuild_state() {
-                Ok(s) => s,
-                Err(e) => {
-                    terminate_stream_error!(e.to_string());
-                }
-            };
-
-            let rt_for_tools =
-                match runtime_with_tool_caller_context(&thread, &state, Some(&config)) {
-                Ok(rt) => rt,
+            let tool_context = match prepare_tool_execution_context(&thread, Some(&config)) {
+                Ok(ctx) => ctx,
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
                 }
@@ -557,12 +499,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 Box::pin(execute_tool_calls_with_phases(
                     &tools,
                     &result.tool_calls,
-                    &state,
+                    &tool_context.state,
                     &tool_descriptors,
                     &config.plugins,
                     config.parallel_tools,
                     Some(activity_manager.clone()),
-                    Some(&rt_for_tools),
+                    Some(&tool_context.runtime),
                     &sid_for_tools,
                 ));
             let mut activity_closed = false;
@@ -635,15 +577,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
             };
             thread = applied.thread;
 
-            if let Err(e) = commit_pending_delta(
-                &mut thread,
-                CheckpointReason::ToolResultsCommitted,
-                false,
-                &run_id,
-                parent_run_id.as_deref(),
-                state_committer.as_ref(),
-            )
-            .await
+            if let Err(e) = pending_delta_commit
+                .commit(&mut thread, CheckpointReason::ToolResultsCommitted, false)
+                .await
             {
                 terminate_stream_error!(e.to_string());
             }

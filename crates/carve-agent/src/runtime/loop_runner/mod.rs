@@ -103,7 +103,6 @@ use plugin_runtime::{
     prepare_stream_error_termination, run_phase_block,
 };
 use run_state::{effective_stop_conditions, RunState};
-use state_commit::commit_pending_delta;
 pub use state_commit::ChannelStateCommitter;
 #[cfg(test)]
 use stream_runner::run_loop_stream_impl_with_provider;
@@ -347,6 +346,101 @@ async fn run_step_prepare_phases(
     ))
 }
 
+pub(super) struct PreparedStep {
+    pub(super) messages: Vec<Message>,
+    pub(super) filtered_tools: Vec<String>,
+    pub(super) skip_inference: bool,
+    pub(super) pending_patches: Vec<TrackedPatch>,
+    pub(super) tracing_span: Option<tracing::Span>,
+}
+
+pub(super) async fn prepare_step_execution(
+    thread: &Thread,
+    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    config: &AgentConfig,
+) -> Result<PreparedStep, AgentLoopError> {
+    let (messages, filtered_tools, skip_inference, tracing_span, pending) =
+        run_step_prepare_phases(thread, tool_descriptors, config).await?;
+    Ok(PreparedStep {
+        messages,
+        filtered_tools,
+        skip_inference,
+        pending_patches: pending,
+        tracing_span,
+    })
+}
+
+pub(super) async fn apply_llm_error_cleanup(
+    thread: &mut Thread,
+    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+    error_type: &'static str,
+    message: String,
+) -> Result<(), AgentLoopError> {
+    *thread =
+        emit_cleanup_phases_and_apply(thread.clone(), tool_descriptors, plugins, error_type, message)
+            .await?;
+    Ok(())
+}
+
+pub(super) async fn complete_step_after_inference(
+    thread: &mut Thread,
+    result: &StreamResult,
+    step_meta: MessageMetadata,
+    assistant_message_id: Option<String>,
+    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+) -> Result<(), AgentLoopError> {
+    let pending = emit_phase_block(
+        Phase::AfterInference,
+        thread,
+        tool_descriptors,
+        plugins,
+        |step| {
+            step.response = Some(result.clone());
+        },
+    )
+    .await?;
+    let thread_after_after_inference = apply_pending_patches(thread.clone(), pending);
+
+    let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
+    let thread_after_message = reduce_thread_mutations(
+        thread_after_after_inference,
+        ThreadMutationBatch::default().with_message(assistant),
+    );
+
+    let pending = emit_phase_block(Phase::StepEnd, &thread_after_message, tool_descriptors, plugins, |_| {}).await?;
+    *thread = apply_pending_patches(thread_after_message, pending);
+    Ok(())
+}
+
+pub(super) fn interaction_requested_pending_events(interaction: &Interaction) -> [AgentEvent; 2] {
+    [
+        AgentEvent::InteractionRequested {
+            interaction: interaction.clone(),
+        },
+        AgentEvent::Pending {
+            interaction: interaction.clone(),
+        },
+    ]
+}
+
+pub(super) struct ToolExecutionContext {
+    pub(super) state: serde_json::Value,
+    pub(super) runtime: carve_state::Runtime,
+}
+
+pub(super) fn prepare_tool_execution_context(
+    thread: &Thread,
+    config: Option<&AgentConfig>,
+) -> Result<ToolExecutionContext, AgentLoopError> {
+    let state = thread
+        .rebuild_state()
+        .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let runtime = runtime_with_tool_caller_context(thread, &state, config)?;
+    Ok(ToolExecutionContext { state, runtime })
+}
+
 fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> StreamResult {
     let text = response
         .first_text()
@@ -404,13 +498,20 @@ pub async fn run_step(
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Thread, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
-
-    let (messages, filtered_tools, skip_inference, tracing_span, pending) =
-        run_step_prepare_phases(&thread, &tool_descriptors, config).await?;
-    let thread = apply_pending_patches(thread, pending);
+    let mut thread = thread;
+    let prepared = prepare_step_execution(&thread, &tool_descriptors, config).await?;
+    thread = apply_pending_patches(thread, prepared.pending_patches);
+    let messages = prepared.messages;
+    let filtered_tools = prepared.filtered_tools;
 
     // Skip inference if requested
-    if skip_inference {
+    if prepared.skip_inference {
+        if let Some(interaction) = pending_interaction_from_thread(&thread) {
+            return Err(AgentLoopError::PendingInteraction {
+                thread: Box::new(thread),
+                interaction: Box::new(interaction),
+            });
+        }
         return Ok((
             thread,
             StreamResult {
@@ -421,48 +522,45 @@ pub async fn run_step(
         ));
     }
 
-    // Build request with filtered tools
-    let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
-
-    // Call LLM (instrumented with tracing span for context propagation)
-    let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
-    let response_res = async {
-        client
-            .exec_chat(&config.model, request, config.chat_options.as_ref())
-            .await
-    }
-    .instrument(inference_span)
+    // Call LLM with unified retry + fallback model strategy.
+    let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
+    let attempt_outcome = run_llm_with_retry_and_fallback(
+        config,
+        None,
+        true,
+        "unknown llm error",
+        |model| {
+            let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
+            async move {
+                client
+                    .exec_chat(&model, request, config.chat_options.as_ref())
+                    .await
+            }
+            .instrument(inference_span.clone())
+        },
+    )
     .await;
-    let response = match response_res {
-        Ok(r) => r,
-        Err(e) => {
-            // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-            let _thread = emit_cleanup_phases_and_apply(
-                thread,
+    let response = match attempt_outcome {
+        LlmAttemptOutcome::Success { value, .. } => value,
+        LlmAttemptOutcome::Cancelled => {
+            return Err(AgentLoopError::Cancelled {
+                thread: Box::new(thread),
+            });
+        }
+        LlmAttemptOutcome::Exhausted { last_error } => {
+            apply_llm_error_cleanup(
+                &mut thread,
                 &tool_descriptors,
                 &config.plugins,
                 "llm_exec_error",
-                e.to_string(),
+                last_error.clone(),
             )
             .await?;
-            return Err(AgentLoopError::LlmError(e.to_string()));
+            return Err(AgentLoopError::LlmError(last_error));
         }
     };
 
     let result = stream_result_from_chat_response(&response);
-
-    // Phase: AfterInference (with new context)
-    let pending = emit_phase_block(
-        Phase::AfterInference,
-        &thread,
-        &tool_descriptors,
-        &config.plugins,
-        |step| {
-            step.response = Some(result.clone());
-        },
-    )
-    .await?;
-    let thread = apply_pending_patches(thread, pending);
 
     // Add assistant message
     let step_meta = step_metadata(
@@ -472,18 +570,15 @@ pub async fn run_step(
             .and_then(|v| v.as_str().map(String::from)),
         next_step_index(&thread),
     );
-    let thread = thread.with_message(assistant_turn_message(&result, step_meta, None));
-
-    // Phase: StepEnd (with new context)
-    let pending = emit_phase_block(
-        Phase::StepEnd,
-        &thread,
+    complete_step_after_inference(
+        &mut thread,
+        &result,
+        step_meta,
+        None,
         &tool_descriptors,
         &config.plugins,
-        |_| {},
     )
     .await?;
-    let thread = apply_pending_patches(thread, pending);
 
     Ok((thread, result))
 }
@@ -552,17 +647,15 @@ pub async fn run_loop_with_context(
             });
         }
 
-        // Phase: StepStart and BeforeInference
-        let (messages, filtered_tools, skip_inference, tracing_span, pending) =
-            match run_step_prepare_phases(&thread, &tool_descriptors, config).await {
-                Ok(v) => v,
-                Err(e) => {
-                    terminate_run!(move |_| e);
-                }
-            };
-        thread = apply_pending_patches(thread, pending);
+        let prepared = match prepare_step_execution(&thread, &tool_descriptors, config).await {
+            Ok(v) => v,
+            Err(e) => {
+                terminate_run!(move |_| e);
+            }
+        };
+        thread = apply_pending_patches(thread, prepared.pending_patches);
 
-        if skip_inference {
+        if prepared.skip_inference {
             if let Some(interaction) = pending_interaction_from_thread(&thread) {
                 terminate_run!(move |thread: Thread| AgentLoopError::PendingInteraction {
                     thread: Box::new(thread),
@@ -573,7 +666,9 @@ pub async fn run_loop_with_context(
         }
 
         // Call LLM with unified retry + fallback model strategy.
-        let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
+        let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
+        let messages = prepared.messages;
+        let filtered_tools = prepared.filtered_tools;
         let attempt_outcome = run_llm_with_retry_and_fallback(
             config,
             run_cancellation_token.as_ref(),
@@ -600,8 +695,8 @@ pub async fn run_loop_with_context(
             }
             LlmAttemptOutcome::Exhausted { last_error } => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                thread = match emit_cleanup_phases_and_apply(
-                    thread.clone(),
+                if let Err(phase_error) = apply_llm_error_cleanup(
+                    &mut thread,
                     &tool_descriptors,
                     &config.plugins,
                     "llm_exec_error",
@@ -609,11 +704,8 @@ pub async fn run_loop_with_context(
                 )
                 .await
                 {
-                    Ok(s) => s,
-                    Err(phase_error) => {
-                        terminate_run!(move |_| phase_error);
-                    }
-                };
+                    terminate_run!(move |_| phase_error);
+                }
                 terminate_run!(move |_| AgentLoopError::LlmError(last_error));
             }
         };
@@ -622,52 +714,20 @@ pub async fn run_loop_with_context(
         run_state.update_from_response(&result);
         last_text = result.text.clone();
 
-        // Phase: AfterInference
-        match emit_phase_block(
-            Phase::AfterInference,
-            &thread,
-            &tool_descriptors,
-            &config.plugins,
-            |step| {
-                step.response = Some(result.clone());
-            },
-        )
-        .await
-        {
-            Ok(pending) => {
-                thread = apply_pending_patches(thread, pending);
-            }
-            Err(e) => {
-                terminate_run!(move |_| e);
-            }
-        }
-
         // Add assistant message
         let assistant_msg_id = gen_message_id();
         let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
-        let assistant_msg =
-            assistant_turn_message(&result, step_meta.clone(), Some(assistant_msg_id.clone()));
-        thread = reduce_thread_mutations(
-            thread,
-            ThreadMutationBatch::default().with_message(assistant_msg),
-        );
-
-        // Phase: StepEnd
-        match emit_phase_block(
-            Phase::StepEnd,
-            &thread,
+        if let Err(e) = complete_step_after_inference(
+            &mut thread,
+            &result,
+            step_meta.clone(),
+            Some(assistant_msg_id.clone()),
             &tool_descriptors,
             &config.plugins,
-            |_| {},
         )
         .await
         {
-            Ok(pending) => {
-                thread = apply_pending_patches(thread, pending);
-            }
-            Err(e) => {
-                terminate_run!(move |_| e);
-            }
+            terminate_run!(move |_| e);
         }
 
         mark_step_completed(&mut run_state);
@@ -685,14 +745,8 @@ pub async fn run_loop_with_context(
         }
 
         // Execute tools with phase hooks (respect config.parallel_tools).
-        let state = match thread.rebuild_state() {
-            Ok(s) => s,
-            Err(e) => {
-                terminate_run!(move |_| AgentLoopError::StateError(e.to_string()));
-            }
-        };
-        let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
-            Ok(rt) => rt,
+        let tool_context = match prepare_tool_execution_context(&thread, Some(config)) {
+            Ok(ctx) => ctx,
             Err(e) => {
                 terminate_run!(move |_| e);
             }
@@ -701,12 +755,12 @@ pub async fn run_loop_with_context(
         let tool_exec_future = execute_tool_calls_with_phases(
             tools,
             &result.tool_calls,
-            &state,
+            &tool_context.state,
             &tool_descriptors,
             &config.plugins,
             config.parallel_tools,
             None,
-            Some(&rt_for_tools),
+            Some(&tool_context.runtime),
             &thread.id,
         );
         let results = if let Some(ref token) = run_cancellation_token {

@@ -54,3 +54,40 @@ pub(super) async fn commit_pending_delta(
         .await
         .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))
 }
+
+pub(super) struct PendingDeltaCommitContext<'a> {
+    run_id: &'a str,
+    parent_run_id: Option<&'a str>,
+    state_committer: Option<&'a Arc<dyn StateCommitter>>,
+}
+
+impl<'a> PendingDeltaCommitContext<'a> {
+    pub(super) fn new(
+        run_id: &'a str,
+        parent_run_id: Option<&'a str>,
+        state_committer: Option<&'a Arc<dyn StateCommitter>>,
+    ) -> Self {
+        Self {
+            run_id,
+            parent_run_id,
+            state_committer,
+        }
+    }
+
+    pub(super) async fn commit(
+        &self,
+        thread: &mut Thread,
+        reason: CheckpointReason,
+        force: bool,
+    ) -> Result<(), AgentLoopError> {
+        commit_pending_delta(
+            thread,
+            reason,
+            force,
+            self.run_id,
+            self.parent_run_id,
+            self.state_committer,
+        )
+        .await
+    }
+}
