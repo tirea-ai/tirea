@@ -30,7 +30,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         // Resolve run_id: from runtime if pre-set, otherwise generate.
         // NOTE: runtime is mutated in-place here. This is intentional —
         // runtime is transient (not persisted) and the owned-builder pattern
-        // (`with_runtime`) is impractical inside the loop where `session` is
+        // (`with_runtime`) is impractical inside the loop where `thread` is
         // borrowed across yield points.
         let run_identity = resolve_stream_run_identity(&mut thread);
         let run_id = run_identity.run_id;
@@ -91,6 +91,22 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }};
         }
 
+        macro_rules! finish_run {
+            ($termination_expr:expr, $result_expr:expr) => {{
+                let final_result = $result_expr;
+                let final_termination = $termination_expr;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
+                ensure_run_finished_delta_or_error!();
+                yield AgentEvent::RunFinish {
+                    thread_id: thread.id.clone(),
+                    run_id: run_id.clone(),
+                    result: final_result,
+                    termination: final_termination,
+                };
+                return;
+            }};
+        }
+
         // Phase: RunStart (use scoped block to manage borrow)
         match emit_phase_block(
             Phase::RunStart,
@@ -133,7 +149,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
         // Resume pending tool execution via plugin mechanism.
         // Plugins request replay by writing AgentState.replay_tool_calls.
-        // The loop executes those calls at session start.
+        // The loop executes those calls at run start.
         let replay_calls = outbox.replay_tool_calls;
         if !replay_calls.is_empty() {
             let mut replay_state_changed = false;
@@ -266,23 +282,13 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
             if !outbox.replay_tool_calls.is_empty() {
                 terminate_stream_error!(
-                    "unexpected replay_tool_calls outside session start".to_string()
+                    "unexpected replay_tool_calls outside run start".to_string()
                 );
             }
 
             // Check cancellation at the top of each iteration.
-            if let Some(ref token) = run_cancellation_token {
-                if token.is_cancelled() {
-                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                    ensure_run_finished_delta_or_error!();
-                    yield AgentEvent::RunFinish {
-                        thread_id: thread.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        termination: TerminationReason::Cancelled,
-                    };
-                    return;
-                }
+            if is_run_cancelled(run_cancellation_token.as_ref()) {
+                finish_run!(TerminationReason::Cancelled, None);
             }
 
             // Phase: StepStart and BeforeInference (collect messages and tools filter)
@@ -304,19 +310,14 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     };
                     yield AgentEvent::Pending { interaction };
                 }
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                ensure_run_finished_delta_or_error!();
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: None,
-                    termination: if pending_interaction.is_some() {
+                finish_run!(
+                    if pending_interaction.is_some() {
                         TerminationReason::PendingInteraction
                     } else {
                         TerminationReason::PluginRequested
                     },
-                };
-                return;
+                    None
+                );
             }
 
             // Step boundary: starting LLM call
@@ -349,15 +350,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let (chat_stream_events, inference_model) = match attempt_outcome {
                 LlmAttemptOutcome::Success { value, model } => (value, model),
                 LlmAttemptOutcome::Cancelled => {
-                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                    ensure_run_finished_delta_or_error!();
-                    yield AgentEvent::RunFinish {
-                        thread_id: thread.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        termination: TerminationReason::Cancelled,
-                    };
-                    return;
+                    finish_run!(TerminationReason::Cancelled, None);
                 }
                 LlmAttemptOutcome::Exhausted { last_error } => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
@@ -390,15 +383,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 let next_event = if let Some(ref token) = run_cancellation_token {
                     tokio::select! {
                         _ = token.cancelled() => {
-                            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                            ensure_run_finished_delta_or_error!();
-                            yield AgentEvent::RunFinish {
-                                thread_id: thread.id.clone(),
-                                run_id: run_id.clone(),
-                                result: None,
-                                termination: TerminationReason::Cancelled,
-                            };
-                            return;
+                            finish_run!(TerminationReason::Cancelled, None);
                         }
                         ev = chat_stream.next() => ev,
                     }
@@ -522,43 +507,20 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // Step boundary: finished LLM call
             yield AgentEvent::StepEnd;
 
+            mark_step_completed(&mut run_state);
+
             // Check if we need to execute tools
             if !result.needs_tools() {
-                if let Some(ref token) = run_cancellation_token {
-                    if token.is_cancelled() {
-                        thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                        ensure_run_finished_delta_or_error!();
-                        yield AgentEvent::RunFinish {
-                            thread_id: thread.id.clone(),
-                            run_id: run_id.clone(),
-                            result: None,
-                            termination: TerminationReason::Cancelled,
-                        };
-                        return;
-                    }
+                if is_run_cancelled(run_cancellation_token.as_ref()) {
+                    finish_run!(TerminationReason::Cancelled, None);
                 }
-                let stop_ctx = run_state.to_check_context(&result, &thread);
-                if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                    ensure_run_finished_delta_or_error!();
-                    yield AgentEvent::RunFinish {
-                        thread_id: thread.id.clone(),
-                        run_id: run_id.clone(),
-                        result: None,
-                        termination: TerminationReason::Stopped(reason),
-                    };
-                    return;
+                if let Some(reason) =
+                    stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+                {
+                    finish_run!(TerminationReason::Stopped(reason), None);
                 }
                 let result_value = natural_result_payload(&result.text);
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                ensure_run_finished_delta_or_error!();
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: result_value,
-                    termination: TerminationReason::NaturalEnd,
-                };
-                return;
+                finish_run!(TerminationReason::NaturalEnd, result_value);
             }
 
             // Emit ToolCallReady for each finalized tool call
@@ -608,15 +570,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                             futures::future::pending::<()>().await;
                         }
                     } => {
-                        thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                        ensure_run_finished_delta_or_error!();
-                        yield AgentEvent::RunFinish {
-                            thread_id: thread.id.clone(),
-                            run_id: run_id.clone(),
-                            result: None,
-                            termination: TerminationReason::Cancelled,
-                        };
-                        return;
+                        finish_run!(TerminationReason::Cancelled, None);
                     }
                     activity = activity_rx.recv(), if !activity_closed => {
                         match activity {
@@ -709,15 +663,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                ensure_run_finished_delta_or_error!();
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: None,
-                    termination: TerminationReason::PendingInteraction,
-                };
-                return;
+                finish_run!(TerminationReason::PendingInteraction, None);
             }
 
             // Track tool step metrics for stop condition evaluation.
@@ -726,20 +672,11 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 .filter(|r| r.execution.result.is_error())
                 .count();
             run_state.record_tool_step(&result.tool_calls, error_count);
-            run_state.completed_steps += 1;
 
             // Check stop conditions.
-            let stop_ctx = run_state.to_check_context(&result, &thread);
-            if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                ensure_run_finished_delta_or_error!();
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: None,
-                    termination: TerminationReason::Stopped(reason),
-                };
-                return;
+            if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+            {
+                finish_run!(TerminationReason::Stopped(reason), None);
             }
         }
     })

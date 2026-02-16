@@ -212,6 +212,24 @@ pub(super) enum LlmAttemptOutcome<T> {
     Exhausted { last_error: String },
 }
 
+fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
+    token.is_some_and(|t| t.is_cancelled())
+}
+
+fn mark_step_completed(run_state: &mut RunState) {
+    run_state.completed_steps += 1;
+}
+
+fn stop_reason_for_step(
+    run_state: &RunState,
+    result: &StreamResult,
+    thread: &Thread,
+    stop_conditions: &[Arc<dyn crate::engine::stop_conditions::StopCondition>],
+) -> Option<StopReason> {
+    let stop_ctx = run_state.to_check_context(result, thread);
+    check_stop_conditions(stop_conditions, &stop_ctx)
+}
+
 pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
     config: &AgentConfig,
     run_cancellation_token: Option<&RunCancellationToken>,
@@ -507,6 +525,13 @@ pub async fn run_loop_with_context(
 
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
+    macro_rules! terminate_run {
+        ($builder:expr) => {{
+            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
+            return Err(($builder)(thread));
+        }};
+    }
+
     // Phase: RunStart
     let pending = emit_phase_block(
         Phase::RunStart,
@@ -519,13 +544,10 @@ pub async fn run_loop_with_context(
     thread = apply_pending_patches(thread, pending);
 
     loop {
-        if let Some(ref token) = run_cancellation_token {
-            if token.is_cancelled() {
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::Cancelled {
-                    thread: Box::new(thread),
-                });
-            }
+        if is_run_cancelled(run_cancellation_token.as_ref()) {
+            terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
+                thread: Box::new(thread),
+            });
         }
 
         // Phase: StepStart and BeforeInference
@@ -533,9 +555,7 @@ pub async fn run_loop_with_context(
             match run_step_prepare_phases(&thread, &tool_descriptors, config).await {
                 Ok(v) => v,
                 Err(e) => {
-                    let _finalized =
-                        emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                    return Err(e);
+                    terminate_run!(move |_| e);
                 }
             };
         thread = apply_pending_patches(thread, pending);
@@ -566,8 +586,7 @@ pub async fn run_loop_with_context(
         let response = match attempt_outcome {
             LlmAttemptOutcome::Success { value, .. } => value,
             LlmAttemptOutcome::Cancelled => {
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::Cancelled {
+                terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
                     thread: Box::new(thread),
                 });
             }
@@ -584,14 +603,10 @@ pub async fn run_loop_with_context(
                 {
                     Ok(s) => s,
                     Err(phase_error) => {
-                        let _finalized =
-                            emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                        return Err(phase_error);
+                        terminate_run!(move |_| phase_error);
                     }
                 };
-                let _finalized =
-                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::LlmError(last_error));
+                terminate_run!(move |_| AgentLoopError::LlmError(last_error));
             }
         };
 
@@ -615,9 +630,7 @@ pub async fn run_loop_with_context(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized =
-                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(e);
+                terminate_run!(move |_| e);
             }
         }
 
@@ -645,17 +658,17 @@ pub async fn run_loop_with_context(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized =
-                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(e);
+                terminate_run!(move |_| e);
             }
         }
 
+        mark_step_completed(&mut run_state);
+
         if !result.needs_tools() {
-            let stop_ctx = run_state.to_check_context(&result, &thread);
-            if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::Stopped {
+            if let Some(reason) =
+                stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+            {
+                terminate_run!(move |thread: Thread| AgentLoopError::Stopped {
                     thread: Box::new(thread),
                     reason,
                 });
@@ -667,15 +680,13 @@ pub async fn run_loop_with_context(
         let state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::StateError(e.to_string()));
+                terminate_run!(move |_| AgentLoopError::StateError(e.to_string()));
             }
         };
         let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
-                emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(e);
+                terminate_run!(move |_| e);
             }
         };
 
@@ -693,8 +704,7 @@ pub async fn run_loop_with_context(
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
-                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                    return Err(AgentLoopError::Cancelled {
+                    terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
                         thread: Box::new(thread),
                     });
                 }
@@ -707,9 +717,7 @@ pub async fn run_loop_with_context(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                let _finalized =
-                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-                return Err(e);
+                terminate_run!(move |_| e);
             }
         };
 
@@ -732,26 +740,22 @@ pub async fn run_loop_with_context(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-            return Err(AgentLoopError::PendingInteraction {
+            terminate_run!(move |thread: Thread| AgentLoopError::PendingInteraction {
                 thread: Box::new(thread),
                 interaction: Box::new(interaction),
             });
         }
 
-        // Track tool round metrics for stop condition evaluation.
+        // Track tool-step metrics for post-tool stop condition evaluation.
         let error_count = results
             .iter()
             .filter(|r| r.execution.result.is_error())
             .count();
         run_state.record_tool_step(&result.tool_calls, error_count);
-        run_state.completed_steps += 1;
 
         // Check stop conditions.
-        let stop_ctx = run_state.to_check_context(&result, &thread);
-        if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
-            return Err(AgentLoopError::Stopped {
+        if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions) {
+            terminate_run!(move |thread: Thread| AgentLoopError::Stopped {
                 thread: Box::new(thread),
                 reason,
             });

@@ -2067,6 +2067,8 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
         "RunEnd should be last phase, got: {:?}",
         recorded
     );
+    let run_end_count = recorded.iter().filter(|p| **p == Phase::RunEnd).count();
+    assert_eq!(run_end_count, 1, "RunEnd should be emitted exactly once");
 }
 
 #[tokio::test]
@@ -2467,6 +2469,8 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
         "RunEnd should be last phase, got: {:?}",
         recorded
     );
+    let run_end_count = recorded.iter().filter(|p| **p == Phase::RunEnd).count();
+    assert_eq!(run_end_count, 1, "RunEnd should be emitted exactly once");
 }
 
 #[tokio::test]
@@ -3722,6 +3726,22 @@ async fn test_stop_default_max_rounds_from_config() {
 }
 
 #[tokio::test]
+async fn test_stop_max_rounds_counts_no_tool_step() {
+    // Single no-tool step should still count toward MaxRounds.
+    let responses = vec![MockResponse::text("done")];
+    let config =
+        AgentConfig::new("mock").with_stop_condition(crate::engine::stop_conditions::MaxRounds(1));
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = tool_map([EchoTool]);
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
+    );
+}
+
+#[tokio::test]
 async fn test_termination_in_run_finish_event() {
     // Verify RunFinish event structure when stop condition triggers.
     let responses =
@@ -3792,7 +3812,7 @@ async fn test_run_state_tracks_completed_steps() {
         json!({}),
     )];
     state.record_tool_step(&tool_calls, 0);
-    state.completed_steps += 1;
+    mark_step_completed(&mut state);
     assert_eq!(state.completed_steps, 1);
     assert_eq!(state.consecutive_errors, 0);
     assert_eq!(state.tool_call_history.len(), 1);
