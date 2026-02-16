@@ -75,24 +75,7 @@ pub(super) fn collect_descendant_run_ids_from_state(
                 .push(run_id.clone());
         }
     }
-
-    let mut queue = VecDeque::from([root_run_id.to_string()]);
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
-    while let Some(id) = queue.pop_front() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if include_root || id != root_run_id {
-            out.push(id.clone());
-        }
-        if let Some(children) = children_by_parent.get(&id) {
-            for child_id in children {
-                queue.push_back(child_id.clone());
-            }
-        }
-    }
-    out
+    super::collect_descendant_run_ids(&children_by_parent, root_run_id, include_root)
 }
 
 pub(super) fn recovery_interaction_id(run_id: &str) -> String {
@@ -140,7 +123,7 @@ pub(super) fn set_pending_interaction_patch(
     interaction: Interaction,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = Context::new(state, call_id, "agent_recovery");
+    let ctx = Context::new(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
     let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
     agent.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
@@ -156,7 +139,7 @@ pub(super) fn set_replay_tool_calls_patch(
     replay_calls: Vec<ToolCall>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = Context::new(state, call_id, "agent_recovery");
+    let ctx = Context::new(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
     let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
     agent.set_replay_tool_calls(replay_calls);
     let patch = ctx.take_patch();
@@ -171,7 +154,7 @@ pub(super) fn schedule_recovery_replay(state: &Value, step: &mut StepContext<'_>
     let mut replay_calls = parse_replay_tool_calls_from_state(state);
 
     let exists = replay_calls.iter().any(|call| {
-        call.name == "agent_run"
+        call.name == AGENT_RUN_TOOL_ID
             && call
                 .arguments
                 .get("run_id")
@@ -184,7 +167,7 @@ pub(super) fn schedule_recovery_replay(state: &Value, step: &mut StepContext<'_>
 
     replay_calls.push(ToolCall::new(
         format!("agent_recovery_resume_{run_id}"),
-        "agent_run",
+        AGENT_RUN_TOOL_ID,
         json!({
             "run_id": run_id,
             "background": false
@@ -210,7 +193,7 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     next_runs: HashMap<String, AgentRunState>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = Context::new(state, call_id, "agent_tools");
+    let ctx = Context::new(state, call_id, AGENT_TOOLS_PLUGIN_ID);
     let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
     agent.set_agent_runs(next_runs);
     let patch = ctx.take_patch();

@@ -2,6 +2,7 @@
 //!
 //! Handles client responses to pending interactions (approvals/denials).
 
+use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::{
@@ -179,7 +180,7 @@ impl InteractionResponsePlugin {
 
             let replay_call = crate::types::ToolCall::new(
                 format!("recovery_resume_{run_id}"),
-                "agent_run",
+                RECOVERY_RESUME_TOOL_ID,
                 json!({
                     "run_id": run_id,
                     "background": false
@@ -257,7 +258,7 @@ impl InteractionResponsePlugin {
 #[async_trait]
 impl AgentPlugin for InteractionResponsePlugin {
     fn id(&self) -> &str {
-        "interaction_response"
+        INTERACTION_RESPONSE_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
@@ -622,7 +623,7 @@ mod tests {
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_calls = replay_calls_from_state(&updated);
         assert_eq!(replay_calls.len(), 1);
-        assert_eq!(replay_calls[0].name, "agent_run");
+        assert_eq!(replay_calls[0].name, RECOVERY_RESUME_TOOL_ID);
         assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
         assert_eq!(replay_calls[0].arguments["background"], false);
     }

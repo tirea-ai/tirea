@@ -1,6 +1,6 @@
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use crate::orchestrator::ToolRegistry;
 use async_trait::async_trait;
+use carve_agent_contract::composition::ToolRegistry;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::transport_factory::TransportFactory;
 use mcp::McpToolDefinition;

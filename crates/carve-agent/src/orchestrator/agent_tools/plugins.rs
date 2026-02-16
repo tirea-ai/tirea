@@ -79,7 +79,7 @@ impl AgentRecoveryPlugin {
 #[async_trait]
 impl AgentPlugin for AgentRecoveryPlugin {
     fn id(&self) -> &str {
-        "agent_recovery"
+        AGENT_RECOVERY_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
@@ -220,7 +220,7 @@ impl AgentToolsPlugin {
 #[async_trait]
 impl AgentPlugin for AgentToolsPlugin {
     fn id(&self) -> &str {
-        "agent_tools"
+        AGENT_TOOLS_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {

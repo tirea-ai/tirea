@@ -5,6 +5,7 @@ use crate::engine::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
+use crate::extensions::skills::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
 use carve_state::Context;
 
@@ -36,6 +37,18 @@ impl SkillRuntimePlugin {
             ) {
                 continue;
             }
+
+            // instructions
+            if let Some(instruction) = state.instructions.get(skill_id) {
+                let text = instruction.trim_end();
+                if !text.is_empty() {
+                    out.push_str(&format!("<skill_instructions skill=\"{}\">\n", skill_id));
+                    out.push_str(text);
+                    out.push_str("\n</skill_instructions>\n");
+                    emitted_any = true;
+                }
+            }
+
             // references
             let prefix = format!("{skill_id}:");
             let mut refs: Vec<_> = state
@@ -114,7 +127,7 @@ impl SkillRuntimePlugin {
 #[async_trait]
 impl AgentPlugin for SkillRuntimePlugin {
     fn id(&self) -> &str {
-        "skills_runtime"
+        SKILLS_RUNTIME_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
@@ -155,7 +168,7 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn plugin_does_not_inject_skill_instructions_from_state() {
+    async fn plugin_injects_skill_instructions_from_state() {
         let doc = json!({});
         let ctx = Context::new(&doc, "test", "test");
         let thread = Thread::with_initial_state(
@@ -172,7 +185,9 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let p = SkillRuntimePlugin::new();
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
-        assert!(step.system_context.is_empty());
+        assert_eq!(step.system_context.len(), 1);
+        assert!(step.system_context[0].contains("<skill_instructions skill=\"a\">"));
+        assert!(step.system_context[0].contains("Do X"));
     }
 
     #[tokio::test]

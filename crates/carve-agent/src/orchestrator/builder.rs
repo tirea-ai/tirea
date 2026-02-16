@@ -1,4 +1,29 @@
 use super::*;
+
+fn merge_registry<R: ?Sized, M>(
+    memory: M,
+    mut external: Vec<Arc<R>>,
+    is_memory_empty: impl Fn(&M) -> bool,
+    into_memory_registry: impl FnOnce(M) -> Arc<R>,
+    compose: impl FnOnce(Vec<Arc<R>>) -> Result<Arc<R>, AgentOsBuildError>,
+) -> Result<Arc<R>, AgentOsBuildError> {
+    if external.is_empty() {
+        return Ok(into_memory_registry(memory));
+    }
+
+    let mut registries: Vec<Arc<R>> = Vec::new();
+    if !is_memory_empty(&memory) {
+        registries.push(into_memory_registry(memory));
+    }
+    registries.append(&mut external);
+
+    if registries.len() == 1 {
+        Ok(registries.pop().expect("single registry must exist"))
+    } else {
+        compose(registries)
+    }
+}
+
 impl std::fmt::Debug for AgentOs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentOs")
@@ -196,40 +221,24 @@ impl AgentOsBuilder {
         let mut base_tools = InMemoryToolRegistry::new();
         base_tools.extend_named(base_tools_defs)?;
 
-        let base_tools: Arc<dyn ToolRegistry> = match base_tool_registries.len() {
-            0 => Arc::new(base_tools),
-            _ => {
-                let mut regs: Vec<Arc<dyn ToolRegistry>> = Vec::new();
-                if !base_tools.is_empty() {
-                    regs.push(Arc::new(base_tools));
-                }
-                regs.extend(base_tool_registries);
-                if regs.len() == 1 {
-                    regs.pop().unwrap()
-                } else {
-                    Arc::new(CompositeToolRegistry::try_new(regs)?)
-                }
-            }
-        };
+        let base_tools: Arc<dyn ToolRegistry> = merge_registry(
+            base_tools,
+            base_tool_registries,
+            |reg: &InMemoryToolRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositeToolRegistry::try_new(regs)?)),
+        )?;
 
         let mut plugins = InMemoryPluginRegistry::new();
         plugins.extend_named(plugin_defs)?;
 
-        let plugins: Arc<dyn PluginRegistry> = match plugin_registries.len() {
-            0 => Arc::new(plugins),
-            _ => {
-                let mut regs: Vec<Arc<dyn PluginRegistry>> = Vec::new();
-                if !plugins.is_empty() {
-                    regs.push(Arc::new(plugins));
-                }
-                regs.extend(plugin_registries);
-                if regs.len() == 1 {
-                    regs.pop().unwrap()
-                } else {
-                    Arc::new(CompositePluginRegistry::try_new(regs)?)
-                }
-            }
-        };
+        let plugins: Arc<dyn PluginRegistry> = merge_registry(
+            plugins,
+            plugin_registries,
+            |reg: &InMemoryPluginRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositePluginRegistry::try_new(regs)?)),
+        )?;
 
         // Fail-fast for builder-provided agents (external registries may be dynamic).
         {
@@ -268,40 +277,24 @@ impl AgentOsBuilder {
         let mut providers = InMemoryProviderRegistry::new();
         providers.extend(provider_defs)?;
 
-        let providers: Arc<dyn ProviderRegistry> = match provider_registries.len() {
-            0 => Arc::new(providers),
-            _ => {
-                let mut regs: Vec<Arc<dyn ProviderRegistry>> = Vec::new();
-                if !providers.is_empty() {
-                    regs.push(Arc::new(providers));
-                }
-                regs.extend(provider_registries);
-                if regs.len() == 1 {
-                    regs.pop().unwrap()
-                } else {
-                    Arc::new(CompositeProviderRegistry::try_new(regs)?)
-                }
-            }
-        };
+        let providers: Arc<dyn ProviderRegistry> = merge_registry(
+            providers,
+            provider_registries,
+            |reg: &InMemoryProviderRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositeProviderRegistry::try_new(regs)?)),
+        )?;
 
         let mut models = InMemoryModelRegistry::new();
         models.extend(model_defs.clone())?;
 
-        let models: Arc<dyn ModelRegistry> = match model_registries.len() {
-            0 => Arc::new(models),
-            _ => {
-                let mut regs: Vec<Arc<dyn ModelRegistry>> = Vec::new();
-                if !models.is_empty() {
-                    regs.push(Arc::new(models));
-                }
-                regs.extend(model_registries);
-                if regs.len() == 1 {
-                    regs.pop().unwrap()
-                } else {
-                    Arc::new(CompositeModelRegistry::try_new(regs)?)
-                }
-            }
-        };
+        let models: Arc<dyn ModelRegistry> = merge_registry(
+            models,
+            model_registries,
+            |reg: &InMemoryModelRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositeModelRegistry::try_new(regs)?)),
+        )?;
 
         if !models.is_empty() && providers.is_empty() {
             return Err(AgentOsBuildError::ProvidersNotConfigured);
@@ -319,21 +312,13 @@ impl AgentOsBuilder {
         let mut agents = InMemoryAgentRegistry::new();
         agents.extend_upsert(agents_defs);
 
-        let agents: Arc<dyn AgentRegistry> = match agent_registries.len() {
-            0 => Arc::new(agents),
-            _ => {
-                let mut regs: Vec<Arc<dyn AgentRegistry>> = Vec::new();
-                if !agents.is_empty() {
-                    regs.push(Arc::new(agents));
-                }
-                regs.extend(agent_registries);
-                if regs.len() == 1 {
-                    regs.pop().unwrap()
-                } else {
-                    Arc::new(CompositeAgentRegistry::try_new(regs)?)
-                }
-            }
-        };
+        let agents: Arc<dyn AgentRegistry> = merge_registry(
+            agents,
+            agent_registries,
+            |reg: &InMemoryAgentRegistry| reg.is_empty(),
+            |reg| Arc::new(reg),
+            |regs| Ok(Arc::new(CompositeAgentRegistry::try_new(regs)?)),
+        )?;
 
         let registries = RegistrySet::new(
             agents,

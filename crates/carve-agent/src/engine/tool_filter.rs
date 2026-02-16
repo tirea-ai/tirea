@@ -1,4 +1,4 @@
-use crate::runtime::loop_runner::AgentDefinition;
+use carve_agent_contract::agent::AgentDefinition;
 use carve_state::Runtime;
 use serde_json::Value;
 

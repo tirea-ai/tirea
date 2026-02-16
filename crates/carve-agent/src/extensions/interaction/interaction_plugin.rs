@@ -3,6 +3,7 @@
 //! This plugin is strategy-agnostic: it applies static interaction responses.
 
 use super::interaction_response::InteractionResponsePlugin;
+use super::INTERACTION_PLUGIN_ID;
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::phase::{Phase, StepContext};
 use async_trait::async_trait;
@@ -60,7 +61,7 @@ impl Default for InteractionPlugin {
 #[async_trait]
 impl AgentPlugin for InteractionPlugin {
     fn id(&self) -> &str {
-        "interaction"
+        INTERACTION_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {

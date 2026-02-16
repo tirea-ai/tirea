@@ -18,6 +18,15 @@ pub mod state;
 mod subsystem;
 mod tools;
 
+pub const SKILLS_PLUGIN_ID: &str = "skills";
+pub const SKILLS_BUNDLE_ID: &str = SKILLS_PLUGIN_ID;
+pub const SKILLS_DISCOVERY_PLUGIN_ID: &str = "skills_discovery";
+pub const SKILLS_RUNTIME_PLUGIN_ID: &str = "skills_runtime";
+
+pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
+pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";
+pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
+
 pub use carve_agent_contract::skills::{
     CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset, LoadedReference,
     ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,

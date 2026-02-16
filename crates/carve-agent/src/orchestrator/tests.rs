@@ -177,8 +177,10 @@ async fn wire_skills_inserts_tools_and_plugin() {
     cfg.plugins[0]
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
-    assert_eq!(step.system_context.len(), 1);
-    assert!(step.system_context[0].contains("<available_skills>"));
+    let merged = step.system_context.join("\n");
+    assert!(merged.contains("<available_skills>"));
+    assert!(merged.contains("<skill_instructions skill=\"s1\">"));
+    assert!(merged.contains("Do X"));
 }
 
 #[tokio::test]
@@ -217,7 +219,10 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     cfg.plugins[0]
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
-    assert!(step.system_context.is_empty());
+    let merged = step.system_context.join("\n");
+    assert!(!merged.contains("<available_skills>"));
+    assert!(merged.contains("<skill_instructions skill=\"s1\">"));
+    assert!(merged.contains("Do X"));
 }
 
 #[test]

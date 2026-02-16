@@ -1,4 +1,9 @@
+use super::agent_tools::{AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID};
 use super::*;
+use crate::extensions::skills::{
+    SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
+};
+
 impl AgentOs {
     pub fn builder() -> AgentOsBuilder {
         AgentOsBuilder::new()
@@ -26,16 +31,20 @@ impl AgentOs {
 
     pub(super) fn reserved_plugin_ids() -> &'static [&'static str] {
         &[
-            "skills",
-            "skills_discovery",
-            "skills_runtime",
-            "agent_tools",
-            "agent_recovery",
+            SKILLS_PLUGIN_ID,
+            SKILLS_DISCOVERY_PLUGIN_ID,
+            SKILLS_RUNTIME_PLUGIN_ID,
+            AGENT_TOOLS_PLUGIN_ID,
+            AGENT_RECOVERY_PLUGIN_ID,
         ]
     }
 
     fn reserved_skills_plugin_ids() -> &'static [&'static str] {
-        &["skills", "skills_discovery", "skills_runtime"]
+        &[
+            SKILLS_PLUGIN_ID,
+            SKILLS_DISCOVERY_PLUGIN_ID,
+            SKILLS_RUNTIME_PLUGIN_ID,
+        ]
     }
 
     fn resolve_plugin_id_list(
@@ -107,12 +116,12 @@ impl AgentOs {
         plugins: &[Arc<dyn AgentPlugin>],
     ) -> Result<(), AgentOsWiringError> {
         for existing in plugins.iter().map(|p| p.id()) {
-            if existing == "agent_tools" {
+            if existing == AGENT_TOOLS_PLUGIN_ID {
                 return Err(AgentOsWiringError::AgentToolsPluginAlreadyInstalled(
                     existing.to_string(),
                 ));
             }
-            if existing == "agent_recovery" {
+            if existing == AGENT_RECOVERY_PLUGIN_ID {
                 return Err(AgentOsWiringError::AgentRecoveryPluginAlreadyInstalled(
                     existing.to_string(),
                 ));
@@ -165,7 +174,7 @@ impl AgentOs {
                 }
             })?;
 
-        let mut bundle = ToolPluginBundle::new("skills").with_tools(tool_defs);
+        let mut bundle = ToolPluginBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
         for plugin in self.build_skills_plugins(reg) {
             bundle = bundle.with_plugin(plugin);
         }
@@ -190,13 +199,13 @@ impl AgentOs {
         let recovery_plugin = AgentRecoveryPlugin::new(self.agent_runs.clone());
 
         let tools_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolPluginBundle::new("agent_tools")
+            ToolPluginBundle::new(AGENT_TOOLS_PLUGIN_ID)
                 .with_tool(run_tool)
                 .with_tool(stop_tool)
                 .with_plugin(Arc::new(tools_plugin)),
         );
         let recovery_bundle: Arc<dyn RegistryBundle> = Arc::new(
-            ToolPluginBundle::new("agent_recovery").with_plugin(Arc::new(recovery_plugin)),
+            ToolPluginBundle::new(AGENT_RECOVERY_PLUGIN_ID).with_plugin(Arc::new(recovery_plugin)),
         );
 
         Ok(vec![tools_bundle, recovery_bundle])
@@ -334,18 +343,23 @@ impl AgentOs {
     fn wiring_tool_conflict(scope: WiringScope, bundle_id: &str, id: String) -> AgentOsWiringError {
         match scope {
             WiringScope::RunExtension => AgentOsWiringError::RunExtensionToolIdConflict(id),
-            WiringScope::System => match bundle_id {
-                "skills" => AgentOsWiringError::SkillsToolIdConflict(id),
-                "agent_tools" | "agent_recovery" => AgentOsWiringError::AgentToolIdConflict(id),
-                _ => AgentOsWiringError::BundleToolIdConflict {
+            WiringScope::System => {
+                if bundle_id == SKILLS_BUNDLE_ID {
+                    return AgentOsWiringError::SkillsToolIdConflict(id);
+                }
+                if bundle_id == AGENT_TOOLS_PLUGIN_ID || bundle_id == AGENT_RECOVERY_PLUGIN_ID {
+                    return AgentOsWiringError::AgentToolIdConflict(id);
+                }
+                AgentOsWiringError::BundleToolIdConflict {
                     bundle_id: bundle_id.to_string(),
                     id,
-                },
-            },
+                }
+            }
         }
     }
 
-    pub fn wire_plugins_into(
+    #[cfg(test)]
+    pub(crate) fn wire_plugins_into(
         &self,
         mut config: AgentConfig,
     ) -> Result<AgentConfig, AgentOsWiringError> {
@@ -407,7 +421,8 @@ impl AgentOs {
         Ok(client)
     }
 
-    pub fn wire_skills_into(
+    #[cfg(test)]
+    pub(crate) fn wire_skills_into(
         &self,
         mut config: AgentConfig,
         tools: &mut HashMap<String, Arc<dyn Tool>>,

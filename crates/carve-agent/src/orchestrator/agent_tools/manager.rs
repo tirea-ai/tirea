@@ -350,39 +350,24 @@ pub(super) fn collect_descendant_run_ids_by_parent(
     root_run_id: &str,
     include_root: bool,
 ) -> Vec<String> {
-    let owned = runs
-        .iter()
-        .filter(|(_, rec)| rec.owner_thread_id == owner_thread_id)
-        .collect::<Vec<_>>();
-    if !owned.iter().any(|(id, _)| id.as_str() == root_run_id) {
+    if !runs
+        .get(root_run_id)
+        .is_some_and(|rec| rec.owner_thread_id == owner_thread_id)
+    {
         return Vec::new();
     }
 
     let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
-    for (run_id, rec) in owned.iter() {
+    for (run_id, rec) in runs.iter() {
+        if rec.owner_thread_id != owner_thread_id {
+            continue;
+        }
         if let Some(parent_run_id) = &rec.parent_run_id {
             children_by_parent
                 .entry(parent_run_id.clone())
                 .or_default()
-                .push((*run_id).clone());
+                .push(run_id.clone());
         }
     }
-
-    let mut queue = VecDeque::from([root_run_id.to_string()]);
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
-    while let Some(id) = queue.pop_front() {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if include_root || id != root_run_id {
-            out.push(id.clone());
-        }
-        if let Some(children) = children_by_parent.get(&id) {
-            for child_id in children {
-                queue.push_back(child_id.clone());
-            }
-        }
-    }
-    out
+    super::collect_descendant_run_ids(&children_by_parent, root_run_id, include_root)
 }

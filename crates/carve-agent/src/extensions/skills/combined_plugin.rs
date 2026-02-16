@@ -1,6 +1,6 @@
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::phase::{Phase, StepContext};
-use crate::extensions::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin};
+use crate::extensions::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_state::Context;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ impl SkillPlugin {
 #[async_trait]
 impl AgentPlugin for SkillPlugin {
     fn id(&self) -> &str {
-        "skills"
+        SKILLS_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {

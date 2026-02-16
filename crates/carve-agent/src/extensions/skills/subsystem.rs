@@ -70,9 +70,9 @@ impl SkillSubsystem {
     /// Construct the skills tools map.
     ///
     /// Tool ids:
-    /// - `skill`
-    /// - `load_skill_resource`
-    /// - `skill_script`
+    /// - `SKILL_ACTIVATE_TOOL_ID`
+    /// - `SKILL_LOAD_RESOURCE_TOOL_ID`
+    /// - `SKILL_SCRIPT_TOOL_ID`
     pub fn tools(&self) -> HashMap<String, Arc<dyn Tool>> {
         let mut out: HashMap<String, Arc<dyn Tool>> = HashMap::new();
         // These inserts cannot conflict inside an empty map.
@@ -127,7 +127,9 @@ mod tests {
     use crate::contracts::phase::{Phase, StepContext};
     use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::engine::tool_execution::execute_single_tool;
-    use crate::extensions::skills::FsSkillRegistry;
+    use crate::extensions::skills::{
+        FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+    };
     use crate::thread::Thread;
     use crate::types::{Message, ToolCall};
     use async_trait::async_trait;
@@ -144,7 +146,7 @@ mod tests {
     #[async_trait]
     impl Tool for DummyTool {
         fn descriptor(&self) -> crate::contracts::traits::tool::ToolDescriptor {
-            crate::contracts::traits::tool::ToolDescriptor::new("skill", "x", "x")
+            crate::contracts::traits::tool::ToolDescriptor::new(SKILL_ACTIVATE_TOOL_ID, "x", "x")
                 .with_parameters(json!({}))
         }
 
@@ -157,7 +159,7 @@ mod tests {
             crate::contracts::traits::tool::ToolError,
         > {
             Ok(crate::contracts::traits::tool::ToolResult::success(
-                "skill",
+                SKILL_ACTIVATE_TOOL_ID,
                 json!({}),
             ))
         }
@@ -176,7 +178,7 @@ mod tests {
 
         let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
-        tools.insert("skill".to_string(), Arc::new(DummyTool));
+        tools.insert(SKILL_ACTIVATE_TOOL_ID.to_string(), Arc::new(DummyTool));
         let err = sys.extend_tools(&mut tools).unwrap_err();
         assert!(err.to_string().contains("tool id already registered"));
     }
@@ -194,9 +196,9 @@ mod tests {
 
         let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
         let tools = sys.tools();
-        assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_resource"));
-        assert!(tools.contains_key("skill_script"));
+        assert!(tools.contains_key(SKILL_ACTIVATE_TOOL_ID));
+        assert!(tools.contains_key(SKILL_LOAD_RESOURCE_TOOL_ID));
+        assert!(tools.contains_key(SKILL_SCRIPT_TOOL_ID));
         assert_eq!(tools.len(), 3);
     }
 
@@ -216,9 +218,9 @@ mod tests {
         tools.insert("other".to_string(), Arc::new(DummyOtherTool));
         sys.extend_tools(&mut tools).unwrap();
         assert!(tools.contains_key("other"));
-        assert!(tools.contains_key("skill"));
-        assert!(tools.contains_key("load_skill_resource"));
-        assert!(tools.contains_key("skill_script"));
+        assert!(tools.contains_key(SKILL_ACTIVATE_TOOL_ID));
+        assert!(tools.contains_key(SKILL_LOAD_RESOURCE_TOOL_ID));
+        assert!(tools.contains_key(SKILL_SCRIPT_TOOL_ID));
         assert_eq!(tools.len(), 4);
     }
 
@@ -265,8 +267,8 @@ mod tests {
         // Activate the skill via the registered "skill" tool.
         let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
         let state = thread.rebuild_state().unwrap();
-        let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
-        let activate_tool = tools.get("skill").unwrap().as_ref();
+        let call = ToolCall::new("call_1", SKILL_ACTIVATE_TOOL_ID, json!({"skill": "docx"}));
+        let activate_tool = tools.get(SKILL_ACTIVATE_TOOL_ID).unwrap().as_ref();
         let exec = execute_single_tool(Some(activate_tool), &call, &state).await;
         assert!(exec.result.is_success());
         let thread = thread.with_patch(exec.patch.unwrap());
@@ -274,10 +276,10 @@ mod tests {
         let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new(
             "call_2",
-            "load_skill_resource",
+            SKILL_LOAD_RESOURCE_TOOL_ID,
             json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
         );
-        let load_resource_tool = tools.get("load_skill_resource").unwrap().as_ref();
+        let load_resource_tool = tools.get(SKILL_LOAD_RESOURCE_TOOL_ID).unwrap().as_ref();
         let exec = execute_single_tool(Some(load_resource_tool), &call, &state).await;
         assert!(exec.result.is_success());
         let thread = thread.with_patch(exec.patch.unwrap());

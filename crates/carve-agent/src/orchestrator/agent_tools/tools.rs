@@ -1,4 +1,5 @@
 use super::*;
+
 fn to_tool_result(tool_name: &str, summary: AgentRunSummary) -> ToolResult {
     ToolResult::success(
         tool_name,
@@ -140,9 +141,140 @@ pub struct AgentRunTool {
     manager: Arc<AgentRunManager>,
 }
 
+#[derive(Debug, Clone)]
+struct RunLaunch {
+    run_id: String,
+    owner_thread_id: String,
+    target_agent_id: String,
+    parent_run_id: Option<String>,
+    thread: crate::thread::Thread,
+}
+
 impl AgentRunTool {
     pub fn new(os: AgentOs, manager: Arc<AgentRunManager>) -> Self {
         Self { os, manager }
+    }
+
+    fn ensure_target_visible(
+        &self,
+        target_agent_id: &str,
+        caller_agent_id: Option<&str>,
+        runtime: Option<&carve_state::Runtime>,
+        tool_name: &str,
+    ) -> Result<(), ToolResult> {
+        if is_target_agent_visible(
+            self.os.agents_registry().as_ref(),
+            target_agent_id,
+            caller_agent_id,
+            runtime,
+        ) {
+            return Ok(());
+        }
+
+        Err(tool_error(
+            tool_name,
+            "unknown_agent",
+            format!("Unknown or unavailable agent_id: {target_agent_id}"),
+        ))
+    }
+
+    async fn persist_existing_live_summary(
+        &self,
+        ctx: &carve_state::Context<'_>,
+        owner_thread_id: &str,
+        run_id: &str,
+        summary: AgentRunSummary,
+        tool_name: &str,
+    ) -> ToolResult {
+        let thread = self.manager.owned_record(owner_thread_id, run_id).await;
+        set_persisted_run(ctx, run_id, as_agent_run_state(&summary, thread));
+        to_tool_result(tool_name, summary)
+    }
+
+    async fn launch_run(
+        &self,
+        ctx: &carve_state::Context<'_>,
+        launch: RunLaunch,
+        background: bool,
+        tool_name: &str,
+    ) -> ToolResult {
+        let RunLaunch {
+            run_id,
+            owner_thread_id,
+            target_agent_id,
+            parent_run_id,
+            thread,
+        } = launch;
+
+        if background {
+            let token = RunCancellationToken::new();
+            let epoch = self
+                .manager
+                .put_running(
+                    &run_id,
+                    owner_thread_id,
+                    target_agent_id.clone(),
+                    parent_run_id.clone(),
+                    thread.clone(),
+                    Some(token.clone()),
+                )
+                .await;
+            let manager = self.manager.clone();
+            let os = self.os.clone();
+            let run_id_bg = run_id.clone();
+            let target_agent_id_bg = target_agent_id.clone();
+            let child_thread_bg = thread.clone();
+            tokio::spawn(async move {
+                let completion =
+                    execute_target_agent(os, target_agent_id_bg, child_thread_bg, Some(token))
+                        .await;
+                let _ = manager
+                    .update_after_completion(&run_id_bg, epoch, completion)
+                    .await;
+            });
+
+            let running = AgentRunState {
+                run_id: run_id.clone(),
+                parent_run_id,
+                target_agent_id,
+                status: AgentRunStatus::Running,
+                assistant: None,
+                error: None,
+                thread: Some(thread),
+            };
+            set_persisted_run(ctx, &run_id, running.clone());
+            return to_tool_result(tool_name, as_agent_run_summary(&run_id, &running));
+        }
+
+        let epoch = self
+            .manager
+            .put_running(
+                &run_id,
+                owner_thread_id,
+                target_agent_id.clone(),
+                parent_run_id.clone(),
+                thread.clone(),
+                None,
+            )
+            .await;
+        let completion =
+            execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
+        let completion_state = AgentRunState {
+            run_id: run_id.clone(),
+            parent_run_id,
+            target_agent_id,
+            status: completion.status,
+            assistant: completion.assistant.clone(),
+            error: completion.error.clone(),
+            thread: Some(completion.thread.clone()),
+        };
+        let summary = self
+            .manager
+            .update_after_completion(&run_id, epoch, completion)
+            .await
+            .unwrap_or_else(|| as_agent_run_summary(&run_id, &completion_state));
+        set_persisted_run(ctx, &run_id, completion_state);
+        to_tool_result(tool_name, summary)
     }
 }
 
@@ -150,7 +282,7 @@ impl AgentRunTool {
 impl Tool for AgentRunTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "agent_run",
+            AGENT_RUN_TOOL_ID,
             "Agent Run",
             "Run or resume a registry agent; can run in background",
         )
@@ -171,7 +303,7 @@ impl Tool for AgentRunTool {
         args: Value,
         ctx: &carve_state::Context<'_>,
     ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
-        let tool_name = "agent_run";
+        let tool_name = AGENT_RUN_TOOL_ID;
         let run_id = optional_string(&args, "run_id");
         let background = required_bool(&args, "background", false);
         let fork_context = required_bool(&args, "fork_context", false);
@@ -204,12 +336,19 @@ impl Tool for AgentRunTool {
                     AgentRunStatus::Running
                     | AgentRunStatus::Completed
                     | AgentRunStatus::Failed => {
-                        let thread = self.manager.owned_record(&owner_thread_id, &run_id).await;
-                        set_persisted_run(ctx, &run_id, as_agent_run_state(&existing, thread));
-                        return Ok(to_tool_result(tool_name, existing));
+                        let result = self
+                            .persist_existing_live_summary(
+                                ctx,
+                                &owner_thread_id,
+                                &run_id,
+                                existing,
+                                tool_name,
+                            )
+                            .await;
+                        return Ok(result);
                     }
                     AgentRunStatus::Stopped => {
-                        let mut record = match self
+                        let record = match self
                             .manager
                             .record_for_resume(&owner_thread_id, &run_id)
                             .await
@@ -218,115 +357,33 @@ impl Tool for AgentRunTool {
                             Err(e) => return Ok(tool_error(tool_name, "unknown_run", e)),
                         };
 
-                        if !is_target_agent_visible(
-                            self.os.agents_registry().as_ref(),
+                        if let Err(error) = self.ensure_target_visible(
                             &record.target_agent_id,
                             caller_agent_id.as_deref(),
                             runtime,
+                            tool_name,
                         ) {
-                            return Ok(tool_error(
-                                tool_name,
-                                "unknown_agent",
-                                format!(
-                                    "Unknown or unavailable agent_id: {}",
-                                    record.target_agent_id
-                                ),
-                            ));
+                            return Ok(error);
                         }
 
-                        record.thread = bind_child_lineage(
+                        let mut child_thread = bind_child_lineage(
                             record.thread,
                             &run_id,
                             caller_run_id.as_deref(),
                             Some(&owner_thread_id),
                         );
-
                         if let Some(prompt) = optional_string(&args, "prompt") {
-                            record.thread = record.thread.with_message(Message::user(prompt));
+                            child_thread = child_thread.with_message(Message::user(prompt));
                         }
 
-                        if background {
-                            let token = RunCancellationToken::new();
-                            let epoch = self
-                                .manager
-                                .put_running(
-                                    &run_id,
-                                    owner_thread_id.clone(),
-                                    record.target_agent_id.clone(),
-                                    caller_run_id.clone(),
-                                    record.thread.clone(),
-                                    Some(token.clone()),
-                                )
-                                .await;
-                            let manager = self.manager.clone();
-                            let os = self.os.clone();
-                            let run_id_bg = run_id.clone();
-                            let agent_id_bg = record.target_agent_id.clone();
-                            let thread_bg = record.thread.clone();
-                            tokio::spawn(async move {
-                                let completion =
-                                    execute_target_agent(os, agent_id_bg, thread_bg, Some(token))
-                                        .await;
-                                let _ = manager
-                                    .update_after_completion(&run_id_bg, epoch, completion)
-                                    .await;
-                            });
-
-                            let summary = self
-                                .manager
-                                .get_owned_summary(&owner_thread_id, &run_id)
-                                .await
-                                .expect("summary must exist right after put_running");
-                            set_persisted_run(
-                                ctx,
-                                &run_id,
-                                AgentRunState {
-                                    run_id: run_id.clone(),
-                                    parent_run_id: caller_run_id.clone(),
-                                    target_agent_id: record.target_agent_id.clone(),
-                                    status: AgentRunStatus::Running,
-                                    assistant: None,
-                                    error: None,
-                                    thread: Some(record.thread),
-                                },
-                            );
-                            return Ok(to_tool_result(tool_name, summary));
-                        }
-
-                        let epoch = self
-                            .manager
-                            .put_running(
-                                &run_id,
-                                owner_thread_id.clone(),
-                                record.target_agent_id.clone(),
-                                caller_run_id.clone(),
-                                record.thread.clone(),
-                                None,
-                            )
-                            .await;
-                        let completion = execute_target_agent(
-                            self.os.clone(),
-                            record.target_agent_id.clone(),
-                            record.thread.clone(),
-                            None,
-                        )
-                        .await;
-                        let completion_state = AgentRunState {
-                            run_id: run_id.clone(),
-                            parent_run_id: caller_run_id.clone(),
+                        let launch = RunLaunch {
+                            run_id,
+                            owner_thread_id,
                             target_agent_id: record.target_agent_id,
-                            status: completion.status,
-                            assistant: completion.assistant.clone(),
-                            error: completion.error.clone(),
-                            thread: Some(completion.thread.clone()),
+                            parent_run_id: caller_run_id,
+                            thread: child_thread,
                         };
-                        let summary = self
-                            .manager
-                            .update_after_completion(&run_id, epoch, completion)
-                            .await
-                            .expect("summary must exist after completion update");
-                        set_persisted_run(ctx, &run_id, completion_state);
-                        return Ok(to_tool_result(tool_name, summary));
+                        return Ok(self.launch_run(ctx, launch, background, tool_name).await);
                     }
                 }
             }
@@ -357,20 +414,13 @@ impl Tool for AgentRunTool {
                     ));
                 }
                 AgentRunStatus::Stopped => {
-                    if !is_target_agent_visible(
-                        self.os.agents_registry().as_ref(),
+                    if let Err(error) = self.ensure_target_visible(
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
                         runtime,
+                        tool_name,
                     ) {
-                        return Ok(tool_error(
-                            tool_name,
-                            "unknown_agent",
-                            format!(
-                                "Unknown or unavailable agent_id: {}",
-                                persisted.target_agent_id
-                            ),
-                        ));
+                        return Ok(error);
                     }
 
                     let mut child_thread = match persisted.thread {
@@ -394,87 +444,14 @@ impl Tool for AgentRunTool {
                         child_thread = child_thread.with_message(Message::user(prompt));
                     }
 
-                    if background {
-                        let token = RunCancellationToken::new();
-                        let epoch = self
-                            .manager
-                            .put_running(
-                                &run_id,
-                                owner_thread_id.clone(),
-                                persisted.target_agent_id.clone(),
-                                caller_run_id.clone(),
-                                child_thread.clone(),
-                                Some(token.clone()),
-                            )
-                            .await;
-                        let manager = self.manager.clone();
-                        let os = self.os.clone();
-                        let run_id_bg = run_id.clone();
-                        let agent_id_bg = persisted.target_agent_id.clone();
-                        tokio::spawn(async move {
-                            let completion =
-                                execute_target_agent(os, agent_id_bg, child_thread, Some(token))
-                                    .await;
-                            let _ = manager
-                                .update_after_completion(&run_id_bg, epoch, completion)
-                                .await;
-                        });
-
-                        let summary = self
-                            .manager
-                            .get_owned_summary(&owner_thread_id, &run_id)
-                            .await
-                            .expect("summary must exist right after put_running");
-                        set_persisted_run(
-                            ctx,
-                            &run_id,
-                            AgentRunState {
-                                run_id: run_id.clone(),
-                                parent_run_id: caller_run_id.clone(),
-                                target_agent_id: persisted.target_agent_id,
-                                status: AgentRunStatus::Running,
-                                assistant: None,
-                                error: None,
-                                thread: self.manager.owned_record(&owner_thread_id, &run_id).await,
-                            },
-                        );
-                        return Ok(to_tool_result(tool_name, summary));
-                    }
-
-                    let epoch = self
-                        .manager
-                        .put_running(
-                            &run_id,
-                            owner_thread_id.clone(),
-                            persisted.target_agent_id.clone(),
-                            caller_run_id.clone(),
-                            child_thread.clone(),
-                            None,
-                        )
-                        .await;
-                    let completion = execute_target_agent(
-                        self.os.clone(),
-                        persisted.target_agent_id.clone(),
-                        child_thread,
-                        None,
-                    )
-                    .await;
-                    let completion_state = AgentRunState {
-                        run_id: run_id.clone(),
-                        parent_run_id: caller_run_id.clone(),
+                    let launch = RunLaunch {
+                        run_id,
+                        owner_thread_id,
                         target_agent_id: persisted.target_agent_id,
-                        status: completion.status,
-                        assistant: completion.assistant.clone(),
-                        error: completion.error.clone(),
-                        thread: Some(completion.thread.clone()),
+                        parent_run_id: caller_run_id,
+                        thread: child_thread,
                     };
-                    let summary = self
-                        .manager
-                        .update_after_completion(&run_id, epoch, completion)
-                        .await
-                        .expect("summary must exist after completion update");
-                    set_persisted_run(ctx, &run_id, completion_state);
-                    return Ok(to_tool_result(tool_name, summary));
+                    return Ok(self.launch_run(ctx, launch, background, tool_name).await);
                 }
             }
         }
@@ -488,17 +465,13 @@ impl Tool for AgentRunTool {
             Err(r) => return Ok(r),
         };
 
-        if !is_target_agent_visible(
-            self.os.agents_registry().as_ref(),
+        if let Err(error) = self.ensure_target_visible(
             &target_agent_id,
             caller_agent_id.as_deref(),
             runtime,
+            tool_name,
         ) {
-            return Ok(tool_error(
-                tool_name,
-                "unknown_agent",
-                format!("Unknown or unavailable agent_id: {target_agent_id}"),
-            ));
+            return Ok(error);
         }
 
         let run_id = uuid::Uuid::now_v7().to_string();
@@ -525,84 +498,14 @@ impl Tool for AgentRunTool {
             Some(&owner_thread_id),
         );
 
-        if background {
-            let token = RunCancellationToken::new();
-            let epoch = self
-                .manager
-                .put_running(
-                    &run_id,
-                    owner_thread_id.clone(),
-                    target_agent_id.clone(),
-                    caller_run_id.clone(),
-                    child_thread.clone(),
-                    Some(token.clone()),
-                )
-                .await;
-            let manager = self.manager.clone();
-            let os = self.os.clone();
-            let run_id_bg = run_id.clone();
-            let target_agent_id_bg = target_agent_id.clone();
-            let child_thread_bg = child_thread.clone();
-            tokio::spawn(async move {
-                let completion =
-                    execute_target_agent(os, target_agent_id_bg, child_thread_bg, Some(token))
-                        .await;
-                let _ = manager
-                    .update_after_completion(&run_id_bg, epoch, completion)
-                    .await;
-            });
-
-            let summary = self
-                .manager
-                .get_owned_summary(&owner_thread_id, &run_id)
-                .await
-                .expect("summary must exist right after put_running");
-            set_persisted_run(
-                ctx,
-                &run_id,
-                AgentRunState {
-                    run_id: run_id.clone(),
-                    parent_run_id: caller_run_id.clone(),
-                    target_agent_id: target_agent_id.clone(),
-                    status: AgentRunStatus::Running,
-                    assistant: None,
-                    error: None,
-                    thread: Some(child_thread),
-                },
-            );
-            return Ok(to_tool_result(tool_name, summary));
-        }
-
-        let epoch = self
-            .manager
-            .put_running(
-                &run_id,
-                owner_thread_id.clone(),
-                target_agent_id.clone(),
-                caller_run_id.clone(),
-                child_thread.clone(),
-                None,
-            )
-            .await;
-        let completion =
-            execute_target_agent(self.os.clone(), target_agent_id.clone(), child_thread, None)
-                .await;
-        let completion_state = AgentRunState {
-            run_id: run_id.clone(),
-            parent_run_id: caller_run_id,
+        let launch = RunLaunch {
+            run_id,
+            owner_thread_id,
             target_agent_id,
-            status: completion.status,
-            assistant: completion.assistant.clone(),
-            error: completion.error.clone(),
-            thread: Some(completion.thread.clone()),
+            parent_run_id: caller_run_id,
+            thread: child_thread,
         };
-        let summary = self
-            .manager
-            .update_after_completion(&run_id, epoch, completion)
-            .await
-            .expect("summary must exist after completion update");
-        set_persisted_run(ctx, &run_id, completion_state);
-        Ok(to_tool_result(tool_name, summary))
+        Ok(self.launch_run(ctx, launch, background, tool_name).await)
     }
 }
 
@@ -621,7 +524,7 @@ impl AgentStopTool {
 impl Tool for AgentStopTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "agent_stop",
+            AGENT_STOP_TOOL_ID,
             "Agent Stop",
             "Stop a background agent run by run_id",
         )
@@ -639,7 +542,7 @@ impl Tool for AgentStopTool {
         args: Value,
         ctx: &carve_state::Context<'_>,
     ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
-        let tool_name = "agent_stop";
+        let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id", tool_name) {
             Ok(v) => v,
             Err(r) => return Ok(r),

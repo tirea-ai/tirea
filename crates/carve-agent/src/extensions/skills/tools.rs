@@ -8,6 +8,7 @@ use crate::extensions::skills::skill_md::{parse_allowed_tool_token, parse_skill_
 use crate::extensions::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::{
     SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
+    SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use carve_state::Context;
 use serde_json::{json, Value};
@@ -31,7 +32,7 @@ impl SkillActivateTool {
 impl Tool for SkillActivateTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "skill",
+            SKILL_ACTIVATE_TOOL_ID,
             "Skill",
             "Activate a skill and persist its instructions",
         )
@@ -46,15 +47,18 @@ impl Tool for SkillActivateTool {
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let key = match required_string_arg(&args, "skill", "skill") {
+        let key = match required_string_arg(&args, "skill", SKILL_ACTIVATE_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
 
-        let meta = self
-            .registry
-            .resolve(&key)
-            .ok_or_else(|| tool_error("skill", "unknown_skill", format!("Unknown skill: {key}")));
+        let meta = self.registry.resolve(&key).ok_or_else(|| {
+            tool_error(
+                SKILL_ACTIVATE_TOOL_ID,
+                "unknown_skill",
+                format!("Unknown skill: {key}"),
+            )
+        });
         let meta = match meta {
             Ok(m) => m,
             Err(r) => return Ok(r),
@@ -66,7 +70,7 @@ impl Tool for SkillActivateTool {
             RUNTIME_EXCLUDED_SKILLS_KEY,
         ) {
             return Ok(tool_error(
-                "skill",
+                SKILL_ACTIVATE_TOOL_ID,
                 "forbidden_skill",
                 format!("Skill '{}' is not allowed by current policy", meta.id),
             ));
@@ -76,7 +80,7 @@ impl Tool for SkillActivateTool {
             .registry
             .read_skill_md(&meta.id)
             .await
-            .map_err(|e| map_registry_error("skill", e));
+            .map_err(|e| map_registry_error(SKILL_ACTIVATE_TOOL_ID, e));
         let raw = match raw {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -84,7 +88,7 @@ impl Tool for SkillActivateTool {
 
         let doc = parse_skill_md(&raw).map_err(|e| {
             tool_error(
-                "skill",
+                SKILL_ACTIVATE_TOOL_ID,
                 "invalid_skill_md",
                 format!("invalid SKILL.md: {e}"),
             )
@@ -156,7 +160,7 @@ impl Tool for SkillActivateTool {
         }
 
         let result = ToolResult::success(
-            "skill",
+            SKILL_ACTIVATE_TOOL_ID,
             json!({
                 "activated": true,
                 "skill_id": meta.id,
@@ -186,7 +190,7 @@ impl LoadSkillResourceTool {
 impl Tool for LoadSkillResourceTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "load_skill_resource",
+            SKILL_LOAD_RESOURCE_TOOL_ID,
             "Load Skill Resource",
             "Load a skill resource file (references/** or assets/**) into persisted state",
         )
@@ -202,7 +206,7 @@ impl Tool for LoadSkillResourceTool {
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let tool_name = "load_skill_resource";
+        let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
         let key = match required_string_arg(&args, "skill", tool_name) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -324,7 +328,7 @@ impl SkillScriptTool {
 impl Tool for SkillScriptTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::new(
-            "skill_script",
+            SKILL_SCRIPT_TOOL_ID,
             "Skill Script",
             "Run a skill script (scripts/**) and persist its result",
         )
@@ -340,11 +344,11 @@ impl Tool for SkillScriptTool {
     }
 
     async fn execute(&self, args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let key = match required_string_arg(&args, "skill", "skill_script") {
+        let key = match required_string_arg(&args, "skill", SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
-        let script = match required_string_arg(&args, "script", "skill_script") {
+        let script = match required_string_arg(&args, "script", SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
@@ -360,7 +364,7 @@ impl Tool for SkillScriptTool {
 
         let meta = self.registry.resolve(&key).ok_or_else(|| {
             tool_error(
-                "skill_script",
+                SKILL_SCRIPT_TOOL_ID,
                 "unknown_skill",
                 format!("Unknown skill: {key}"),
             )
@@ -376,7 +380,7 @@ impl Tool for SkillScriptTool {
             RUNTIME_EXCLUDED_SKILLS_KEY,
         ) {
             return Ok(tool_error(
-                "skill_script",
+                SKILL_SCRIPT_TOOL_ID,
                 "forbidden_skill",
                 format!("Skill '{}' is not allowed by current policy", meta.id),
             ));
@@ -386,7 +390,7 @@ impl Tool for SkillScriptTool {
             .registry
             .run_script(&meta.id, &script, &argv)
             .await
-            .map_err(|e| map_registry_error("skill_script", e));
+            .map_err(|e| map_registry_error(SKILL_SCRIPT_TOOL_ID, e));
         let res = match res {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -407,7 +411,7 @@ impl Tool for SkillScriptTool {
         );
 
         Ok(ToolResult::success(
-            "skill_script",
+            SKILL_SCRIPT_TOOL_ID,
             json!({
                 "ok": res.exit_code == 0,
                 "skill_id": meta.id,
@@ -433,7 +437,7 @@ fn required_string_arg(args: &Value, key: &str, tool_name: &str) -> Result<Strin
 }
 
 fn parse_resource_kind(kind: Option<&Value>, path: &str) -> Result<SkillResourceKind, ToolResult> {
-    let tool_name = "load_skill_resource";
+    let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
     let from_kind = kind.and_then(|v| v.as_str()).map(str::trim);
 
     if is_obviously_invalid_relative_path(path) {

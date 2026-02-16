@@ -83,7 +83,7 @@ fn assert_error_code(result: &ToolResult, expected_code: &str) {
 }
 
 #[tokio::test]
-async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
+async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
@@ -104,10 +104,9 @@ async fn test_skill_runtime_plugin_does_not_repeat_skill_instructions() {
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
-    assert!(
-        step.system_context.is_empty(),
-        "skill instructions should not be reinjected by runtime plugin"
-    );
+    let injected = step.system_context.join("\n");
+    assert!(injected.contains("<skill_instructions skill=\"docx\">"));
+    assert!(injected.contains("Use docx-js for new documents"));
 }
 
 #[tokio::test]

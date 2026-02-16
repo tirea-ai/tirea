@@ -31,6 +31,34 @@ const RUNTIME_CALLER_STATE_KEY: &str = TOOL_RUNTIME_CALLER_STATE_KEY;
 const RUNTIME_CALLER_MESSAGES_KEY: &str = TOOL_RUNTIME_CALLER_MESSAGES_KEY;
 const RUNTIME_RUN_ID_KEY: &str = "run_id";
 const RUNTIME_PARENT_RUN_ID_KEY: &str = "parent_run_id";
+pub(crate) const AGENT_TOOLS_PLUGIN_ID: &str = "agent_tools";
+pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";
+pub(crate) const AGENT_RUN_TOOL_ID: &str = "agent_run";
+pub(crate) const AGENT_STOP_TOOL_ID: &str = "agent_stop";
+
+fn collect_descendant_run_ids(
+    children_by_parent: &HashMap<String, Vec<String>>,
+    root_run_id: &str,
+    include_root: bool,
+) -> Vec<String> {
+    let mut queue = VecDeque::from([root_run_id.to_string()]);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if include_root || id != root_run_id {
+            out.push(id.clone());
+        }
+        if let Some(children) = children_by_parent.get(&id) {
+            for child_id in children {
+                queue.push_back(child_id.clone());
+            }
+        }
+    }
+    out
+}
 
 mod manager;
 mod plugins;

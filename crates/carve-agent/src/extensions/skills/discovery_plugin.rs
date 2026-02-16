@@ -4,7 +4,7 @@ use crate::engine::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
 };
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
-use crate::extensions::skills::SkillRegistry;
+use crate::extensions::skills::{SkillRegistry, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_state::Context;
 use std::collections::HashSet;
@@ -121,7 +121,7 @@ impl SkillDiscoveryPlugin {
 #[async_trait]
 impl AgentPlugin for SkillDiscoveryPlugin {
     fn id(&self) -> &str {
-        "skills_discovery"
+        SKILLS_DISCOVERY_PLUGIN_ID
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
