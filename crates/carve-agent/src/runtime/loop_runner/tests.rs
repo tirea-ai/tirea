@@ -960,7 +960,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
 }
 
 #[tokio::test]
-async fn test_run_phase_block_executes_phases_extracts_output_and_commits_side_effects() {
+async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pending_patches() {
     struct PhaseBlockPlugin {
         phases: Arc<Mutex<Vec<Phase>>>,
     }

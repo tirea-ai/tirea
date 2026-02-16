@@ -102,7 +102,7 @@ pub(super) async fn emit_phase_checked(
     Ok(())
 }
 
-fn take_step_side_effects(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
+fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
     std::mem::take(&mut step.pending_patches)
 }
 
@@ -133,7 +133,7 @@ where
         step.pending_patches.push(plugin_patch);
     }
     let output = extract(&mut step);
-    let pending = take_step_side_effects(&mut step);
+    let pending = take_step_pending_patches(&mut step);
     Ok((output, pending))
 }
 
@@ -221,7 +221,7 @@ pub(super) async fn emit_session_end(
         if !plugin_patch.patch().is_empty() {
             step.pending_patches.push(plugin_patch);
         }
-        take_step_side_effects(&mut step)
+        take_step_pending_patches(&mut step)
     };
     apply_pending_patches(thread, pending)
 }
