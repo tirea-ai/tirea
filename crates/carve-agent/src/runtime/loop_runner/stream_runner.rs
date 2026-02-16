@@ -8,6 +8,136 @@ use super::*;
 // - emits AgentEvent stream
 // - delegates deterministic state-machine helpers to `stream_core`
 
+async fn drain_run_start_outbox_and_replay(
+    mut thread: Thread,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    config: &AgentConfig,
+    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+) -> Result<(Thread, Vec<AgentEvent>), String> {
+    let (next_thread, outbox) =
+        drain_agent_outbox(thread.clone(), "agent_outbox_run_start").map_err(|e| e.to_string())?;
+    thread = next_thread;
+
+    let mut events = Vec::new();
+    for resolution in outbox.interaction_resolutions {
+        events.push(AgentEvent::InteractionResolved {
+            interaction_id: resolution.interaction_id,
+            result: resolution.result,
+        });
+    }
+
+    let replay_calls = outbox.replay_tool_calls;
+    if replay_calls.is_empty() {
+        return Ok((thread, events));
+    }
+
+    let mut replay_state_changed = false;
+    for tool_call in &replay_calls {
+        let state = thread.rebuild_state().map_err(|e| {
+            format!(
+                "failed to rebuild state before replaying tool '{}': {e}",
+                tool_call.id
+            )
+        })?;
+
+        let tool = tools.get(&tool_call.name).cloned();
+        let rt_for_replay = runtime_with_tool_caller_context(&thread, &state, Some(config))
+            .map_err(|e| e.to_string())?;
+        let replay_result = execute_single_tool_with_phases(
+            tool.as_deref(),
+            tool_call,
+            &state,
+            tool_descriptors,
+            &config.plugins,
+            None,
+            Some(&rt_for_replay),
+            &thread.id,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+        if replay_result.pending_interaction.is_some() {
+            return Err(format!(
+                "replayed tool '{}' requested pending interaction",
+                tool_call.id
+            ));
+        }
+
+        // Append real replay tool result as a new tool message (append-only log).
+        let replay_msg_id = gen_message_id();
+        let mut replay_mutations = ThreadMutationBatch::default().with_message(
+            tool_response(&tool_call.id, &replay_result.execution.result)
+                .with_id(replay_msg_id.clone()),
+        );
+
+        // Preserve reminder emission semantics for replayed tool calls.
+        if !replay_result.reminders.is_empty() {
+            let msgs = replay_result.reminders.iter().map(|reminder| {
+                Message::internal_system(format!("<system-reminder>{}</system-reminder>", reminder))
+            });
+            replay_mutations = replay_mutations.with_messages(msgs);
+        }
+
+        if let Some(patch) = replay_result.execution.patch.clone() {
+            replay_state_changed = true;
+            replay_mutations = replay_mutations.with_patch(patch);
+        }
+        if !replay_result.pending_patches.is_empty() {
+            replay_state_changed = true;
+            replay_mutations = replay_mutations.with_patches(replay_result.pending_patches.clone());
+        }
+        thread = reduce_thread_mutations(thread, replay_mutations);
+
+        events.push(AgentEvent::ToolCallDone {
+            id: tool_call.id.clone(),
+            result: replay_result.execution.result,
+            patch: replay_result.execution.patch,
+            message_id: replay_msg_id,
+        });
+    }
+
+    // Clear pending_interaction state after replaying tools.
+    let state = thread
+        .rebuild_state()
+        .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
+    let clear_patch = clear_agent_pending_interaction(&state);
+    if !clear_patch.patch().is_empty() {
+        replay_state_changed = true;
+        thread = reduce_thread_mutations(
+            thread,
+            ThreadMutationBatch::default().with_patch(clear_patch),
+        );
+    }
+
+    if replay_state_changed {
+        let snapshot = thread
+            .rebuild_state()
+            .map_err(|e| format!("failed to rebuild replay snapshot: {e}"))?;
+        events.push(AgentEvent::StateSnapshot { snapshot });
+    }
+
+    Ok((thread, events))
+}
+
+fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), String> {
+    let (next_thread, outbox) =
+        drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
+
+    if !outbox.replay_tool_calls.is_empty() {
+        return Err("unexpected replay_tool_calls outside run start".to_string());
+    }
+
+    let events = outbox
+        .interaction_resolutions
+        .into_iter()
+        .map(|resolution| AgentEvent::InteractionResolved {
+            interaction_id: resolution.interaction_id,
+            result: resolution.result,
+        })
+        .collect::<Vec<_>>();
+    Ok((next_thread, events))
+}
+
 pub(super) fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
@@ -130,159 +260,35 @@ pub(super) fn run_loop_stream_impl_with_provider(
             parent_run_id: parent_run_id.clone(),
         };
 
-        let (next_thread, outbox) =
-            match drain_agent_outbox(thread.clone(), "agent_outbox_run_start")
+        // Resume pending tool execution requested by plugins at run start.
+        let (next_thread, run_start_events) = match drain_run_start_outbox_and_replay(
+            thread.clone(),
+            &tools,
+            &config,
+            &tool_descriptors,
+        )
+        .await
         {
             Ok(v) => v,
             Err(e) => {
-                terminate_stream_error!(e.to_string());
+                terminate_stream_error!(e);
             }
         };
         thread = next_thread;
-        for resolution in outbox.interaction_resolutions {
-            yield AgentEvent::InteractionResolved {
-                interaction_id: resolution.interaction_id,
-                result: resolution.result,
-            };
-        }
-
-        // Resume pending tool execution via plugin mechanism.
-        // Plugins request replay by writing AgentState.replay_tool_calls.
-        // The loop executes those calls at run start.
-        let replay_calls = outbox.replay_tool_calls;
-        if !replay_calls.is_empty() {
-            let mut replay_state_changed = false;
-            for tool_call in &replay_calls {
-                let state = match thread.rebuild_state() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        terminate_stream_error!(format!(
-                            "failed to rebuild state before replaying tool '{}': {e}",
-                            tool_call.id
-                        ));
-                    }
-                };
-
-                let tool = tools.get(&tool_call.name).cloned();
-                let rt_for_replay =
-                    match runtime_with_tool_caller_context(&thread, &state, Some(&config)) {
-                    Ok(rt) => rt,
-                    Err(e) => {
-                        terminate_stream_error!(e.to_string());
-                    }
-                };
-                let replay_result = match execute_single_tool_with_phases(
-                    tool.as_deref(),
-                    tool_call,
-                    &state,
-                    &tool_descriptors,
-                    &config.plugins,
-                    None,
-                    Some(&rt_for_replay),
-                    &thread.id,
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(e) => {
-                        terminate_stream_error!(e.to_string());
-                    }
-                };
-
-                if replay_result.pending_interaction.is_some() {
-                    terminate_stream_error!(format!(
-                        "replayed tool '{}' requested pending interaction",
-                        tool_call.id
-                    ));
-                }
-
-                // Append real replay tool result as a new tool message (append-only log).
-                let replay_msg_id = gen_message_id();
-                let mut replay_mutations = ThreadMutationBatch::default().with_message(
-                    tool_response(&tool_call.id, &replay_result.execution.result)
-                        .with_id(replay_msg_id.clone()),
-                );
-
-                // Preserve reminder emission semantics for replayed tool calls.
-                if !replay_result.reminders.is_empty() {
-                    let msgs = replay_result.reminders.iter().map(|reminder| {
-                        Message::internal_system(format!(
-                            "<system-reminder>{}</system-reminder>",
-                            reminder
-                        ))
-                    });
-                    replay_mutations = replay_mutations.with_messages(msgs);
-                }
-
-                if let Some(patch) = replay_result.execution.patch.clone() {
-                    replay_state_changed = true;
-                    replay_mutations = replay_mutations.with_patch(patch);
-                }
-                if !replay_result.pending_patches.is_empty() {
-                    replay_state_changed = true;
-                    replay_mutations =
-                        replay_mutations.with_patches(replay_result.pending_patches.clone());
-                }
-                thread = reduce_thread_mutations(thread, replay_mutations);
-
-                yield AgentEvent::ToolCallDone {
-                    id: tool_call.id.clone(),
-                    result: replay_result.execution.result,
-                    patch: replay_result.execution.patch,
-                    message_id: replay_msg_id,
-                };
-            }
-
-            // Clear pending_interaction state after replaying tools.
-            let state = match thread.rebuild_state() {
-                Ok(s) => s,
-                Err(e) => {
-                    terminate_stream_error!(format!("failed to rebuild state after replay: {e}"));
-                }
-            };
-
-            let clear_patch = clear_agent_pending_interaction(&state);
-            if !clear_patch.patch().is_empty() {
-                replay_state_changed = true;
-                thread = reduce_thread_mutations(
-                    thread,
-                    ThreadMutationBatch::default().with_patch(clear_patch),
-                );
-            }
-
-            if replay_state_changed {
-                let snapshot = match thread.rebuild_state() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        terminate_stream_error!(format!("failed to rebuild replay snapshot: {e}"));
-                    }
-                };
-                yield AgentEvent::StateSnapshot {
-                    snapshot,
-                };
-            }
+        for event in run_start_events {
+            yield event;
         }
 
         loop {
-            let (next_thread, outbox) =
-                match drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick")
-            {
+            let (next_thread, loop_tick_events) = match drain_loop_tick_outbox(thread.clone()) {
                 Ok(v) => v,
                 Err(e) => {
-                    terminate_stream_error!(e.to_string());
+                    terminate_stream_error!(e);
                 }
             };
             thread = next_thread;
-            for resolution in outbox.interaction_resolutions {
-                yield AgentEvent::InteractionResolved {
-                    interaction_id: resolution.interaction_id,
-                    result: resolution.result,
-                };
-            }
-            if !outbox.replay_tool_calls.is_empty() {
-                terminate_stream_error!(
-                    "unexpected replay_tool_calls outside run start".to_string()
-                );
+            for event in loop_tick_events {
+                yield event;
             }
 
             // Check cancellation at the top of each iteration.
