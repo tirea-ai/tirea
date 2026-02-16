@@ -218,7 +218,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ($termination_expr:expr, $result_expr:expr) => {{
                 let final_result = $result_expr;
                 let final_termination = $termination_expr;
-                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
+                thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),

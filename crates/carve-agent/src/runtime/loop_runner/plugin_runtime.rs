@@ -233,7 +233,7 @@ pub(super) async fn prepare_stream_error_termination(
     run_id: &str,
     message: String,
 ) -> (Thread, AgentEvent, AgentEvent) {
-    let thread = emit_run_end_phase(thread, tool_descriptors, plugins).await;
+    let thread = super::finalize_run_end(thread, tool_descriptors, plugins).await;
     let error = AgentEvent::Error { message };
     let finish = AgentEvent::RunFinish {
         thread_id: thread.id.clone(),

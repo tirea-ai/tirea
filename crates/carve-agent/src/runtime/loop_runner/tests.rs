@@ -2769,6 +2769,168 @@ fn test_runtime_run_id_in_session() {
 }
 
 // ========================================================================
+// Mock ChatProvider for non-stream stop condition/retry tests
+// ========================================================================
+
+struct MockChatProvider {
+    responses: Mutex<Vec<genai::Result<genai::chat::ChatResponse>>>,
+    models_seen: Mutex<Vec<String>>,
+}
+
+impl MockChatProvider {
+    fn new(responses: Vec<genai::Result<genai::chat::ChatResponse>>) -> Self {
+        Self {
+            responses: Mutex::new(responses),
+            models_seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn seen_models(&self) -> Vec<String> {
+        self.models_seen.lock().expect("lock poisoned").clone()
+    }
+}
+
+fn text_chat_response(text: &str) -> genai::chat::ChatResponse {
+    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
+    genai::chat::ChatResponse {
+        content: MessageContent::from_text(text.to_string()),
+        reasoning_content: None,
+        model_iden: model_iden.clone(),
+        provider_model_iden: model_iden,
+        usage: Usage::default(),
+        captured_raw_body: None,
+    }
+}
+
+#[async_trait]
+impl ChatProvider for MockChatProvider {
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        _chat_req: genai::chat::ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        self.models_seen
+            .lock()
+            .expect("lock poisoned")
+            .push(model.to_string());
+        let mut responses = self.responses.lock().expect("lock poisoned");
+        if responses.is_empty() {
+            Ok(text_chat_response("done"))
+        } else {
+            responses.remove(0)
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_nonstream_uses_fallback_model_after_primary_failures() {
+    let provider = MockChatProvider::new(vec![
+        Err(genai::Error::Internal("429 rate limit".to_string())),
+        Err(genai::Error::Internal("429 rate limit".to_string())),
+        Ok(text_chat_response("ok")),
+    ]);
+    let config = AgentConfig::new("primary")
+        .with_fallback_model("fallback")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 2,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+        });
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let (final_thread, last_text) =
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+            .await
+            .expect("non-stream run should succeed with fallback model");
+
+    assert_eq!(last_text, "ok");
+    assert_eq!(
+        provider.seen_models(),
+        vec![
+            "primary".to_string(),
+            "primary".to_string(),
+            "fallback".to_string()
+        ]
+    );
+    assert!(
+        final_thread.messages.iter().any(|m| m.role
+            == crate::contracts::conversation::Role::Assistant
+            && m.content == "ok"),
+        "assistant response should be stored in thread"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
+    struct CleanupOnLlmErrorPlugin {
+        phases: Arc<Mutex<Vec<Phase>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for CleanupOnLlmErrorPlugin {
+        fn id(&self) -> &str {
+            "cleanup_on_llm_error_nonstream"
+        }
+
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &Context<'_>) {
+            self.phases.lock().expect("lock poisoned").push(phase);
+            if phase != Phase::AfterInference {
+                return;
+            }
+
+            let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                crate::contracts::state_types::AGENT_STATE_PATH,
+            );
+            let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
+            assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
+        }
+    }
+
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let config = AgentConfig::new("mock")
+        .with_plugin(Arc::new(CleanupOnLlmErrorPlugin {
+            phases: phases.clone(),
+        }) as Arc<dyn AgentPlugin>)
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 1,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 1,
+            retry_stream_start: true,
+        });
+    let provider = MockChatProvider::new(vec![Err(genai::Error::Internal(
+        "429 rate limit".to_string(),
+    ))]);
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let err =
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+            .await
+            .expect_err("non-stream run should fail when provider always errors");
+    assert!(
+        matches!(err, AgentLoopError::LlmError(ref message) if message.contains("429")),
+        "expected llm error with source message, got: {err:?}"
+    );
+
+    let recorded = phases.lock().expect("lock poisoned").clone();
+    assert!(
+        recorded.contains(&Phase::AfterInference),
+        "cleanup should run AfterInference on llm error, got: {recorded:?}"
+    );
+    assert!(
+        recorded.contains(&Phase::StepEnd),
+        "cleanup should run StepEnd on llm error, got: {recorded:?}"
+    );
+    assert!(
+        recorded.contains(&Phase::RunEnd),
+        "run should still emit RunEnd on llm error, got: {recorded:?}"
+    );
+}
+
+// ========================================================================
 // Mock ChatStreamProvider for stop condition integration tests
 // ========================================================================
 

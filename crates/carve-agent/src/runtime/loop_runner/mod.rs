@@ -300,6 +300,28 @@ trait ChatStreamProvider: Send + Sync {
 }
 
 #[async_trait]
+trait ChatProvider: Send + Sync {
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse>;
+}
+
+#[async_trait]
+impl ChatProvider for Client {
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        self.exec_chat(model, chat_req, options).await
+    }
+}
+
+#[async_trait]
 impl ChatStreamProvider for Client {
     async fn exec_chat_stream_events(
         &self,
@@ -453,6 +475,14 @@ pub(super) fn prepare_tool_execution_context(
     Ok(ToolExecutionContext { state, runtime })
 }
 
+pub(super) async fn finalize_run_end(
+    thread: Thread,
+    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+) -> Thread {
+    emit_run_end_phase(thread, tool_descriptors, plugins).await
+}
+
 fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> StreamResult {
     let text = response
         .first_text()
@@ -509,6 +539,15 @@ pub async fn run_step(
     thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Thread, StreamResult), AgentLoopError> {
+    run_step_with_provider(client, config, thread, tools).await
+}
+
+async fn run_step_with_provider(
+    provider: &dyn ChatProvider,
+    config: &AgentConfig,
+    thread: Thread,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+) -> Result<(Thread, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
     let mut thread = thread;
     let prepared = prepare_step_execution(&thread, &tool_descriptors, config).await?;
@@ -540,8 +579,8 @@ pub async fn run_step(
         run_llm_with_retry_and_fallback(config, None, true, "unknown llm error", |model| {
             let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
             async move {
-                client
-                    .exec_chat(&model, request, config.chat_options.as_ref())
+                provider
+                    .exec_chat_response(&model, request, config.chat_options.as_ref())
                     .await
             }
             .instrument(inference_span.clone())
@@ -609,6 +648,16 @@ pub async fn run_loop(
 pub async fn run_loop_with_context(
     client: &Client,
     config: &AgentConfig,
+    thread: Thread,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+) -> Result<(Thread, String), AgentLoopError> {
+    run_loop_with_context_provider(client, config, thread, tools, run_ctx).await
+}
+
+async fn run_loop_with_context_provider(
+    provider: &dyn ChatProvider,
+    config: &AgentConfig,
     mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
@@ -631,7 +680,7 @@ pub async fn run_loop_with_context(
 
     macro_rules! terminate_run {
         ($builder:expr) => {{
-            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
+            thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
             return Err(($builder)(thread));
         }};
     }
@@ -684,8 +733,8 @@ pub async fn run_loop_with_context(
             |model| {
                 let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
                 async move {
-                    client
-                        .exec_chat(&model, request, config.chat_options.as_ref())
+                    provider
+                        .exec_chat_response(&model, request, config.chat_options.as_ref())
                         .await
                 }
                 .instrument(inference_span.clone())
@@ -830,7 +879,7 @@ pub async fn run_loop_with_context(
     }
 
     // Phase: RunEnd
-    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
+    thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
 
     Ok((thread, last_text))
 }
