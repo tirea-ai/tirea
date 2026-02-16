@@ -62,7 +62,7 @@ use crate::runtime::activity::ActivityHub;
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use async_trait::async_trait;
-use carve_state::ActivityManager;
+use crate::contracts::context::ActivityManager;
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;

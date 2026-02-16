@@ -8,17 +8,7 @@ use crate::runtime::Runtime;
 use crate::state::{PatchSink, State};
 use crate::{CarveError, CarveResult, Op, Patch, Path, TrackedPatch};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
-
-/// Manager for activity state updates.
-///
-/// Implementations can apply activity operations and emit external events.
-pub trait ActivityManager: Send + Sync {
-    /// Get the current activity snapshot for a stream.
-    fn snapshot(&self, stream_id: &str) -> Value;
-    /// Handle an activity operation for a stream.
-    fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op);
-}
+use std::sync::Mutex;
 
 /// Context provides state access with automatic patch collection.
 ///
@@ -55,7 +45,6 @@ pub struct Context<'a> {
     call_id: String,
     source: String,
     ops: Mutex<Vec<Op>>,
-    activity_manager: Option<Arc<dyn ActivityManager>>,
     /// Per-run runtime context (user_id, tokens, etc.).
     runtime: Option<&'a Runtime>,
 }
@@ -69,24 +58,11 @@ impl<'a> Context<'a> {
     /// - `call_id`: Current call ID (for call_state path)
     /// - `source`: Source identifier for patch tracking
     pub fn new(doc: &'a Value, call_id: impl Into<String>, source: impl Into<String>) -> Self {
-        Self::new_with_activity_manager(doc, call_id, source, None)
-    }
-
-    /// Create a new context with an activity manager.
-    ///
-    /// This enables activity state updates with immediate event emission.
-    pub fn new_with_activity_manager(
-        doc: &'a Value,
-        call_id: impl Into<String>,
-        source: impl Into<String>,
-        activity_manager: Option<Arc<dyn ActivityManager>>,
-    ) -> Self {
         Self {
             doc,
             call_id: call_id.into(),
             source: source.into(),
             ops: Mutex::new(Vec::new()),
-            activity_manager,
             runtime: None,
         }
     }
@@ -162,31 +138,6 @@ impl<'a> Context<'a> {
         self.state::<T>(&path)
     }
 
-    /// Create an activity context for a specific stream.
-    ///
-    /// The activity context uses its own state snapshot and emits activity updates
-    /// immediately via the activity manager (if configured).
-    pub fn activity(
-        &self,
-        stream_id: impl Into<String>,
-        activity_type: impl Into<String>,
-    ) -> ActivityContext {
-        let stream_id = stream_id.into();
-        let activity_type = activity_type.into();
-        let snapshot = self
-            .activity_manager
-            .as_ref()
-            .map(|manager| manager.snapshot(&stream_id))
-            .unwrap_or_else(|| Value::Object(Default::default()));
-
-        ActivityContext::new(
-            snapshot,
-            stream_id,
-            activity_type,
-            self.activity_manager.clone(),
-        )
-    }
-
     /// Extract all collected operations as a tracked patch.
     ///
     /// This is called by the framework after execution.
@@ -204,50 +155,6 @@ impl<'a> Context<'a> {
     /// Get the number of operations collected.
     pub fn ops_count(&self) -> usize {
         self.ops.lock().unwrap().len()
-    }
-}
-
-/// Activity context that mirrors state operations with immediate event emission.
-pub struct ActivityContext {
-    doc: Value,
-    stream_id: String,
-    activity_type: String,
-    ops: Mutex<Vec<Op>>,
-    manager: Option<Arc<dyn ActivityManager>>,
-}
-
-impl ActivityContext {
-    fn new(
-        doc: Value,
-        stream_id: String,
-        activity_type: String,
-        manager: Option<Arc<dyn ActivityManager>>,
-    ) -> Self {
-        Self {
-            doc,
-            stream_id,
-            activity_type,
-            ops: Mutex::new(Vec::new()),
-            manager,
-        }
-    }
-
-    /// Get a typed activity state reference at the specified path.
-    ///
-    /// All modifications are automatically collected and immediately reported
-    /// to the activity manager (if configured).
-    pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        let base = parse_path(path);
-        if let Some(manager) = self.manager.clone() {
-            let stream_id = self.stream_id.clone();
-            let activity_type = self.activity_type.clone();
-            let hook = Arc::new(move |op: &Op| {
-                manager.on_activity_op(&stream_id, &activity_type, op);
-            });
-            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
-        } else {
-            T::state_ref(&self.doc, base, PatchSink::new(&self.ops))
-        }
     }
 }
 

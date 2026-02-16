@@ -6,7 +6,7 @@ use crate::contracts::traits::tool::ToolDescriptor;
 use crate::contracts::traits::tool::{ToolError, ToolResult};
 use crate::extensions::skills::FsSkillRegistry;
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::contracts::context::Context;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -428,7 +428,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("base_tool", json!({"ok": true})))
         }
@@ -564,7 +564,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("skill", json!({"ok": true})))
         }
@@ -623,7 +623,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("agent_run", json!({"ok": true})))
         }

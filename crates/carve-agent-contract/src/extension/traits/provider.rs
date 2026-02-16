@@ -4,7 +4,7 @@
 //! based on the current state.
 
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::Context;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.

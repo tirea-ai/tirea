@@ -1,4 +1,5 @@
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::engine::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_SKILLS_KEY, RUNTIME_EXCLUDED_SKILLS_KEY,
@@ -6,7 +7,6 @@ use crate::engine::tool_filter::{
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::{SkillRegistry, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
-use carve_state::Context;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -154,7 +154,7 @@ mod tests {
     use crate::contracts::conversation::Thread;
     use crate::contracts::traits::tool::ToolDescriptor;
     use crate::extensions::skills::FsSkillRegistry;
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use serde_json::json;
     use std::fs;
     use std::io::Write;

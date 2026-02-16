@@ -22,9 +22,9 @@
 //! ```
 
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
-use carve_state::Context;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -128,7 +128,7 @@ impl AgentPlugin for PermissionPlugin {
         &self,
         phase: crate::contracts::phase::Phase,
         step: &mut crate::contracts::phase::StepContext<'_>,
-        ctx: &carve_state::Context<'_>,
+        ctx: &Context<'_>,
     ) {
         use crate::contracts::phase::Phase;
 
@@ -193,7 +193,7 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use serde_json::json;
 
     fn apply_interaction_intents(_step: &mut crate::contracts::phase::StepContext<'_>) {

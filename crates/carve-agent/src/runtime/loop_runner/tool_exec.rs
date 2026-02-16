@@ -9,6 +9,7 @@ use super::{
 };
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
+use crate::contracts::context::{ActivityManager, Context};
 use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::events::StreamResult;
 use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -16,7 +17,7 @@ use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::{collect_patches, ToolExecution};
-use carve_state::{ActivityManager, Context, PatchExt, TrackedPatch};
+use carve_state::{PatchExt, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -620,7 +621,7 @@ pub(super) async fn execute_single_tool_with_phases(
     } else {
         // Execute the tool with its own Context (instrumented with tracing span)
         let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
-        let tool_ctx = carve_state::Context::new_with_activity_manager(
+        let tool_ctx = Context::new_with_activity_manager(
             state,
             &call.id,
             format!("tool:{}", call.name),

@@ -1,5 +1,6 @@
 //! Shared agent contracts for runtime events, extension SPI, and composition wiring.
 
+mod context;
 mod event;
 mod interaction;
 mod run;
@@ -13,6 +14,7 @@ pub mod extension;
 pub mod skills;
 pub mod stop_conditions;
 
+pub use context::{ActivityContext, ActivityManager, AgentContext, Context};
 pub use event::AgentEvent;
 pub use interaction::{Interaction, InteractionResponse};
 pub use run::RunRequest;

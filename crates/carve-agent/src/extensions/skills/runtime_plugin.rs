@@ -1,4 +1,5 @@
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::phase::Phase;
 use crate::contracts::phase::StepContext;
 use crate::engine::tool_filter::{
@@ -7,7 +8,6 @@ use crate::engine::tool_filter::{
 use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
-use carve_state::Context;
 
 /// Injects activated skills (instructions + loaded materials) into the LLM context.
 ///
@@ -164,7 +164,7 @@ mod tests {
     use super::*;
     use crate::contracts::conversation::Thread;
     use crate::contracts::traits::tool::ToolDescriptor;
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use serde_json::json;
 
     #[tokio::test]

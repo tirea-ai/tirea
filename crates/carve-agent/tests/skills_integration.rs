@@ -1,6 +1,7 @@
 use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::conversation::Thread;
 use carve_agent::contracts::conversation::{Message, ToolCall};
+use carve_agent::contracts::context::Context;
 use carve_agent::contracts::phase::{Phase, StepContext};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_runtime};
@@ -8,7 +9,6 @@ use carve_agent::extensions::skills::{
     FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
     SkillScriptTool,
 };
-use carve_state::Context;
 use serde_json::json;
 use std::fs;
 use std::io::Write;

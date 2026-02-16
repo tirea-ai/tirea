@@ -9,10 +9,10 @@ pub mod research {
 }
 
 use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agent::prelude::Tool;
 use carve_agent::runtime::loop_runner::{tool_map_from_arc, AgentDefinition};
-use carve_agent::thread_store::{ThreadReader, ThreadStore};
 use carve_agentos_server::http::{self, AppState};
 use carve_thread_store_adapters::FileStore;
 use clap::Parser;

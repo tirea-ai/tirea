@@ -4,10 +4,10 @@
 //! forwarding them to a pluggable [`MetricsSink`].
 
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::{AgentInferenceError, AgentState, AGENT_STATE_PATH};
 use async_trait::async_trait;
-use carve_state::Context;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -604,7 +604,7 @@ mod tests {
     use crate::contracts::events::StreamResult;
     use crate::contracts::phase::ToolContext as PhaseToolContext;
     use crate::contracts::traits::tool::ToolResult;
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;
     use serde_json::json;

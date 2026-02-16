@@ -1,4 +1,5 @@
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::context::Context;
 use async_trait::async_trait;
 use carve_agent_contract::composition::ToolRegistry;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
@@ -87,7 +88,7 @@ impl Tool for McpTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_state::Context<'_>,
+        _ctx: &Context<'_>,
     ) -> Result<ToolResult, ToolError> {
         let res = self
             .transport
@@ -306,7 +307,7 @@ mod tests {
         let res = tool
             .execute(
                 serde_json::json!({"a": 1}),
-                &carve_state::Context::new(&serde_json::json!({}), "call", "test"),
+                &crate::contracts::context::Context::new(&serde_json::json!({}), "call", "test"),
             )
             .await
             .unwrap();

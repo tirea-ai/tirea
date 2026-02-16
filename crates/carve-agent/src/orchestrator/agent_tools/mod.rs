@@ -18,7 +18,7 @@ use crate::runtime::loop_runner::{
     TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::contracts::context::Context;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};

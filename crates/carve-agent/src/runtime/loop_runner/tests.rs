@@ -5,7 +5,8 @@ use crate::contracts::storage::CheckpointReason;
 use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use carve_state::{ActivityManager, Context, Op, Patch};
+use crate::contracts::context::{ActivityManager, Context};
+use carve_state::{Op, Patch};
 use carve_state_derive::State;
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
@@ -127,7 +128,7 @@ fn skill_activation_result(
 ) -> ToolExecutionResult {
     let patch = instruction.map(|text| {
         let base = json!({});
-        let ctx = carve_state::Context::new(&base, call_id, "skill_test");
+        let ctx = Context::new(&base, call_id, "skill_test");
         let agent = ctx.state::<crate::contracts::state_types::AgentState>(
             crate::contracts::state_types::AGENT_STATE_PATH,
         );

@@ -28,7 +28,7 @@ impl MetricsSink for LoggingSink {
         );
     }
 
-    fn on_session_end(&self, metrics: &AgentMetrics) {
+    fn on_run_end(&self, metrics: &AgentMetrics) {
         eprintln!(
             "\n=== Session Metrics ({:.1}s) ===",
             metrics.session_duration_ms as f64 / 1000.0

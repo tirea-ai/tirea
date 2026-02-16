@@ -133,7 +133,7 @@ mod tests {
         FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
     };
     use async_trait::async_trait;
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
@@ -153,7 +153,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<
             crate::contracts::traits::tool::ToolResult,
             crate::contracts::traits::tool::ToolError,
@@ -237,7 +237,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }

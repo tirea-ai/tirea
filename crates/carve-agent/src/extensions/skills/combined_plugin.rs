@@ -1,8 +1,8 @@
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::extensions::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
-use carve_state::Context;
 use std::sync::Arc;
 
 /// Single plugin wrapper that injects both:
@@ -53,7 +53,7 @@ mod tests {
     use crate::contracts::conversation::Thread;
     use crate::contracts::traits::tool::ToolDescriptor;
     use crate::extensions::skills::{FsSkillRegistry, SkillRegistry};
-    use carve_state::Context;
+    use crate::contracts::context::Context;
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;

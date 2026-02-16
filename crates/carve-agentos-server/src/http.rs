@@ -283,9 +283,10 @@ where
 
     tokio::spawn(async move {
         let tx_events = tx.clone();
+        let event_cancel_token = cancellation_token.clone();
         pump_encoded_stream(run.events, encoder, move |event| {
             let tx = tx_events.clone();
-            let token = cancellation_token.clone();
+            let token = event_cancel_token.clone();
             async move {
                 let json = match serde_json::to_string(&event) {
                     Ok(json) => json,

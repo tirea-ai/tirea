@@ -9,8 +9,8 @@ use crate::contracts::state_types::{
     AgentState, Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
+use crate::contracts::context::Context;
 use async_trait::async_trait;
-use carve_state::Context;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -337,7 +337,8 @@ mod tests {
     use super::*;
     use crate::contracts::conversation::Thread;
     use crate::contracts::conversation::{Message, ToolCall};
-    use carve_state::{apply_patches, Context};
+    use crate::contracts::context::Context;
+    use carve_state::apply_patches;
     use serde_json::json;
 
     fn apply_ctx_patch(thread: &Thread, ctx: &Context<'_>) -> serde_json::Value {

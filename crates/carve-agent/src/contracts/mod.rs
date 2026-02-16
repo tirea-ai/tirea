@@ -2,6 +2,7 @@
 
 pub mod agent_plugin;
 pub mod conversation;
+pub mod context;
 pub mod events;
 pub mod phase;
 pub mod plugin;

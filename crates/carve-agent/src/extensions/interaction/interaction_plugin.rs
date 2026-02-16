@@ -5,9 +5,9 @@
 use super::interaction_response::InteractionResponsePlugin;
 use super::INTERACTION_PLUGIN_ID;
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::context::Context;
 use crate::contracts::phase::{Phase, StepContext};
 use async_trait::async_trait;
-use carve_state::Context;
 
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {

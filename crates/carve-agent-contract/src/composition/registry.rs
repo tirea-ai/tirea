@@ -792,7 +792,7 @@ mod tests {
     use crate::extension::phase::{Phase, StepContext};
     use crate::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use async_trait::async_trait;
-    use carve_state::Context;
+    use crate::Context;
     use serde_json::json;
 
     #[derive(Debug)]
@@ -807,7 +807,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &carve_state::Context<'_>,
+            _ctx: &Context<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success(self.0, json!({})))
         }

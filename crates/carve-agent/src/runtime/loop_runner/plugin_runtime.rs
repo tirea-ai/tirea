@@ -5,11 +5,12 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
+use crate::contracts::context::Context;
 use crate::contracts::events::{AgentEvent, TerminationReason};
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::AgentInferenceError;
 use crate::contracts::traits::tool::ToolDescriptor;
-use carve_state::{Context, TrackedPatch};
+use carve_state::TrackedPatch;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

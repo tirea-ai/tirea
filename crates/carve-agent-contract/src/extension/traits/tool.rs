@@ -4,7 +4,7 @@
 
 pub use crate::{ToolResult, ToolStatus};
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;

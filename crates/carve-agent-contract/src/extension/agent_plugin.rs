@@ -42,7 +42,7 @@
 
 use crate::extension::phase::{Phase, StepContext};
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::Context;
 
 /// Plugin trait for extending agent behavior.
 ///

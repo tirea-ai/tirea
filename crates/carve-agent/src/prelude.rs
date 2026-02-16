@@ -33,8 +33,10 @@ pub use async_trait::async_trait;
 // Re-export serde_json for tool implementations
 pub use serde_json::{json, Value};
 
-// Core types from carve-state
-pub use carve_state::Context;
+// Core execution context (state + activity wiring)
+pub use crate::contracts::context::Context;
+// Raw state-only context for lower-level integrations
+pub use carve_state::Context as StateContext;
 
 // Tool trait and types
 pub use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};

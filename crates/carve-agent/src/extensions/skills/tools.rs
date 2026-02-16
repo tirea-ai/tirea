@@ -10,7 +10,7 @@ use crate::extensions::skills::{
     SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
     SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
-use carve_state::Context;
+use crate::contracts::context::Context;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};

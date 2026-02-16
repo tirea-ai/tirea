@@ -114,7 +114,7 @@ pub use path::{Path, Seg};
 pub use writer::JsonWriter;
 
 // State types
-pub use context::{parse_path, ActivityContext, ActivityManager, Context};
+pub use context::{parse_path, Context};
 pub use manager::{ApplyResult, StateError, StateManager};
 pub use runtime::{Runtime, RuntimeError};
 pub use state::{PatchSink, State, StateExt};

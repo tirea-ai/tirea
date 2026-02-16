@@ -4,7 +4,7 @@
 //! the agent about important information.
 
 use async_trait::async_trait;
-use carve_state::Context;
+use crate::Context;
 
 /// System reminder for generating reminder messages.
 ///
