@@ -1,10 +1,10 @@
 use super::*;
 
-/// Single round execution for fine-grained control.
+/// Single step-cycle execution for fine-grained control.
 ///
 /// This allows callers to control the loop manually.
 #[derive(Debug)]
-pub enum RoundResult {
+pub enum StepResult {
     /// LLM responded with text, no tools needed.
     Done { thread: Thread, response: String },
     /// LLM requested tool calls, tools have been executed.
@@ -15,20 +15,20 @@ pub enum RoundResult {
     },
 }
 
-/// Run a single round of the agent loop.
+/// Run a single step-cycle of the agent loop.
 ///
 /// This gives you fine-grained control over the loop.
-pub async fn run_round(
+pub async fn run_step_cycle(
     client: &Client,
     config: &AgentConfig,
     thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<RoundResult, AgentLoopError> {
+) -> Result<StepResult, AgentLoopError> {
     // Run one step
     let (thread, result) = run_step(client, config, thread, tools).await?;
 
     if !result.needs_tools() {
-        return Ok(RoundResult::Done {
+        return Ok(StepResult::Done {
             thread,
             response: result.text,
         });
@@ -37,7 +37,7 @@ pub async fn run_round(
     // Execute tools
     let thread = execute_tools_with_config(thread, &result, tools, config).await?;
 
-    Ok(RoundResult::ToolsExecuted {
+    Ok(StepResult::ToolsExecuted {
         thread,
         text: result.text,
         tool_calls: result.tool_calls,
@@ -53,7 +53,7 @@ pub enum AgentLoopError {
     StateError(String),
     /// The agent loop terminated normally due to a stop condition.
     ///
-    /// This is not an error but a structured stop with a reason. The session
+    /// This is not an error but a structured stop with a reason. The run thread
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
@@ -62,7 +62,7 @@ pub enum AgentLoopError {
     },
     /// Pending user interaction; execution should pause until the client responds.
     ///
-    /// The returned `session` includes any patches applied up to the point where the
+    /// The returned thread includes any patches applied up to the point where the
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {

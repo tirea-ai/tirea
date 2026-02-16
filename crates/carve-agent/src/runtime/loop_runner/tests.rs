@@ -542,27 +542,27 @@ fn test_execute_tools_with_state_changes() {
 }
 
 #[test]
-fn test_round_result_variants() {
+fn test_step_result_variants() {
     let thread = Thread::new("test");
 
-    let done = RoundResult::Done {
+    let done = StepResult::Done {
         thread: thread.clone(),
         response: "Hello".to_string(),
     };
 
-    let tools_executed = RoundResult::ToolsExecuted {
+    let tools_executed = StepResult::ToolsExecuted {
         thread,
         text: "Calling tools".to_string(),
         tool_calls: vec![],
     };
 
     match done {
-        RoundResult::Done { response, .. } => assert_eq!(response, "Hello"),
+        StepResult::Done { response, .. } => assert_eq!(response, "Hello"),
         _ => panic!("Expected Done"),
     }
 
     match tools_executed {
-        RoundResult::ToolsExecuted { text, .. } => assert_eq!(text, "Calling tools"),
+        StepResult::ToolsExecuted { text, .. } => assert_eq!(text, "Calling tools"),
         _ => panic!("Expected ToolsExecuted"),
     }
 }
@@ -3788,25 +3788,25 @@ async fn test_consecutive_errors_resets_on_success() {
 }
 
 #[tokio::test]
-async fn test_loop_state_tracks_rounds() {
-    let mut state = LoopState::new();
-    assert_eq!(state.rounds, 0);
+async fn test_run_state_tracks_completed_steps() {
+    let mut state = RunState::new();
+    assert_eq!(state.completed_steps, 0);
 
     let tool_calls = vec![crate::contracts::conversation::ToolCall::new(
         "c1",
         "echo",
         json!({}),
     )];
-    state.record_tool_round(&tool_calls, 0);
-    state.rounds += 1;
-    assert_eq!(state.rounds, 1);
+    state.record_tool_step(&tool_calls, 0);
+    state.completed_steps += 1;
+    assert_eq!(state.completed_steps, 1);
     assert_eq!(state.consecutive_errors, 0);
     assert_eq!(state.tool_call_history.len(), 1);
 }
 
 #[tokio::test]
-async fn test_loop_state_tracks_token_usage() {
-    let mut state = LoopState::new();
+async fn test_run_state_tracks_token_usage() {
+    let mut state = RunState::new();
     let result = StreamResult {
         text: "hello".to_string(),
         tool_calls: vec![],
@@ -3828,15 +3828,15 @@ async fn test_loop_state_tracks_token_usage() {
 }
 
 #[tokio::test]
-async fn test_loop_state_caps_history_at_20() {
-    let mut state = LoopState::new();
+async fn test_run_state_caps_history_at_20() {
+    let mut state = RunState::new();
     for i in 0..25 {
         let tool_calls = vec![crate::contracts::conversation::ToolCall::new(
             &format!("c{i}"),
             &format!("tool_{i}"),
             json!({}),
         )];
-        state.record_tool_round(&tool_calls, 0);
+        state.record_tool_step(&tool_calls, 0);
     }
     assert_eq!(state.tool_call_history.len(), 20);
 }

@@ -6,21 +6,21 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Internal state tracked across loop iterations for stop condition evaluation.
-pub(super) struct LoopState {
-    pub(super) rounds: usize,
+/// Internal state tracked across run steps for stop condition evaluation.
+pub(super) struct RunState {
+    pub(super) completed_steps: usize,
     pub(super) total_input_tokens: usize,
     pub(super) total_output_tokens: usize,
     pub(super) consecutive_errors: usize,
     start_time: Instant,
-    /// Tool call names per round (most recent last), capped at 20 entries.
+    /// Tool call names per step (most recent last), capped at 20 entries.
     pub(super) tool_call_history: VecDeque<Vec<String>>,
 }
 
-impl LoopState {
+impl RunState {
     pub(super) fn new() -> Self {
         Self {
-            rounds: 0,
+            completed_steps: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             consecutive_errors: 0,
@@ -36,7 +36,7 @@ impl LoopState {
         }
     }
 
-    pub(super) fn record_tool_round(
+    pub(super) fn record_tool_step(
         &mut self,
         tool_calls: &[crate::contracts::conversation::ToolCall],
         error_count: usize,
@@ -61,7 +61,7 @@ impl LoopState {
         thread: &'a Thread,
     ) -> StopCheckContext<'a> {
         StopCheckContext {
-            rounds: self.rounds,
+            rounds: self.completed_steps,
             total_input_tokens: self.total_input_tokens,
             total_output_tokens: self.total_output_tokens,
             consecutive_errors: self.consecutive_errors,

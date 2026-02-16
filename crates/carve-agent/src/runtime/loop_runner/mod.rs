@@ -39,9 +39,9 @@
 //! ```
 
 mod core;
-mod loop_state;
 mod outcome;
 mod plugin_runtime;
+mod run_state;
 mod state_commit;
 mod stream_core;
 mod stream_runner;
@@ -93,14 +93,14 @@ use core::{
     drain_agent_outbox, inference_inputs_from_step, reduce_thread_mutations,
     tool_descriptors_for_config, ThreadMutationBatch,
 };
-use loop_state::{effective_stop_conditions, LoopState};
-pub use outcome::{run_round, tool_map, tool_map_from_arc, AgentLoopError, RoundResult};
+pub use outcome::{run_step_cycle, tool_map, tool_map_from_arc, AgentLoopError, StepResult};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
 use plugin_runtime::{
-    emit_cleanup_phases_and_apply, emit_phase_block, emit_session_end,
+    emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase,
     prepare_stream_error_termination, run_phase_block,
 };
+use run_state::{effective_stop_conditions, RunState};
 use state_commit::commit_pending_delta;
 pub use state_commit::ChannelStateCommitter;
 #[cfg(test)]
@@ -240,10 +240,7 @@ where
 
             match response_res {
                 Ok(value) => {
-                    return LlmAttemptOutcome::Success {
-                        value,
-                        model,
-                    };
+                    return LlmAttemptOutcome::Success { value, model };
                 }
                 Err(e) => {
                     let message = e.to_string();
@@ -379,7 +376,7 @@ fn assistant_turn_message(
 /// 3. Send messages to LLM
 /// 4. Emit AfterInference phase
 /// 5. Emit StepEnd phase
-/// 6. Return the session and result (caller handles tool execution)
+/// 6. Return the thread and result (caller handles tool execution)
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
@@ -420,7 +417,7 @@ pub async fn run_step(
         Ok(r) => r,
         Err(e) => {
             // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-            let _session = emit_cleanup_phases_and_apply(
+            let _thread = emit_cleanup_phases_and_apply(
                 thread,
                 &tool_descriptors,
                 &config.plugins,
@@ -473,7 +470,7 @@ pub async fn run_step(
 
 /// Run the full agent loop until completion or a stop condition is met.
 ///
-/// Returns the final session and the last response text.
+/// Returns the final thread and the last response text.
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
@@ -494,7 +491,7 @@ pub async fn run_loop_with_context(
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Result<(Thread, String), AgentLoopError> {
-    let mut loop_state = LoopState::new();
+    let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let mut last_text = String::new();
@@ -524,7 +521,7 @@ pub async fn run_loop_with_context(
     loop {
         if let Some(ref token) = run_cancellation_token {
             if token.is_cancelled() {
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::Cancelled {
                     thread: Box::new(thread),
                 });
@@ -537,7 +534,7 @@ pub async fn run_loop_with_context(
                 Ok(v) => v,
                 Err(e) => {
                     let _finalized =
-                        emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                        emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                     return Err(e);
                 }
             };
@@ -569,7 +566,7 @@ pub async fn run_loop_with_context(
         let response = match attempt_outcome {
             LlmAttemptOutcome::Success { value, .. } => value,
             LlmAttemptOutcome::Cancelled => {
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::Cancelled {
                     thread: Box::new(thread),
                 });
@@ -588,17 +585,18 @@ pub async fn run_loop_with_context(
                     Ok(s) => s,
                     Err(phase_error) => {
                         let _finalized =
-                            emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                            emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                         return Err(phase_error);
                     }
                 };
-                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                let _finalized =
+                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::LlmError(last_error));
             }
         };
 
         let result = stream_result_from_chat_response(&response);
-        loop_state.update_from_response(&result);
+        run_state.update_from_response(&result);
         last_text = result.text.clone();
 
         // Phase: AfterInference
@@ -617,14 +615,15 @@ pub async fn run_loop_with_context(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                let _finalized =
+                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         }
 
         // Add assistant message
         let assistant_msg_id = gen_message_id();
-        let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
+        let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
         let assistant_msg =
             assistant_turn_message(&result, step_meta.clone(), Some(assistant_msg_id.clone()));
         thread = reduce_thread_mutations(
@@ -646,15 +645,16 @@ pub async fn run_loop_with_context(
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                let _finalized =
+                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         }
 
         if !result.needs_tools() {
-            let stop_ctx = loop_state.to_check_context(&result, &thread);
+            let stop_ctx = run_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::Stopped {
                     thread: Box::new(thread),
                     reason,
@@ -667,14 +667,14 @@ pub async fn run_loop_with_context(
         let state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(AgentLoopError::StateError(e.to_string()));
             }
         };
         let rt_for_tools = match runtime_with_tool_caller_context(&thread, &state, Some(config)) {
             Ok(rt) => rt,
             Err(e) => {
-                emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
@@ -693,7 +693,7 @@ pub async fn run_loop_with_context(
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
-                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                     return Err(AgentLoopError::Cancelled {
                         thread: Box::new(thread),
                     });
@@ -707,12 +707,13 @@ pub async fn run_loop_with_context(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                let _finalized =
+                    emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 return Err(e);
             }
         };
 
-        let session_before_apply = thread.clone();
+        let thread_before_apply = thread.clone();
         let applied = match apply_tool_results_to_session(
             thread,
             &results,
@@ -722,7 +723,7 @@ pub async fn run_loop_with_context(
             Ok(a) => a,
             Err(e) => {
                 let _finalized =
-                    emit_session_end(session_before_apply, &tool_descriptors, &config.plugins)
+                    emit_run_end_phase(thread_before_apply, &tool_descriptors, &config.plugins)
                         .await;
                 return Err(e);
             }
@@ -731,7 +732,7 @@ pub async fn run_loop_with_context(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::PendingInteraction {
                 thread: Box::new(thread),
                 interaction: Box::new(interaction),
@@ -743,13 +744,13 @@ pub async fn run_loop_with_context(
             .iter()
             .filter(|r| r.execution.result.is_error())
             .count();
-        loop_state.record_tool_round(&result.tool_calls, error_count);
-        loop_state.rounds += 1;
+        run_state.record_tool_step(&result.tool_calls, error_count);
+        run_state.completed_steps += 1;
 
         // Check stop conditions.
-        let stop_ctx = loop_state.to_check_context(&result, &thread);
+        let stop_ctx = run_state.to_check_context(&result, &thread);
         if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
             return Err(AgentLoopError::Stopped {
                 thread: Box::new(thread),
                 reason,
@@ -758,7 +759,7 @@ pub async fn run_loop_with_context(
     }
 
     // Phase: SessionEnd
-    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
 
     Ok((thread, last_text))
 }

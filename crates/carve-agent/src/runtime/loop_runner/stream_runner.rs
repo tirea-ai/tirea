@@ -18,7 +18,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut thread = thread;
-    let mut loop_state = LoopState::new();
+    let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let state_committer = run_ctx.state_committer().cloned();
@@ -273,7 +273,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // Check cancellation at the top of each iteration.
             if let Some(ref token) = run_cancellation_token {
                 if token.is_cancelled() {
-                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                     ensure_run_finished_delta_or_error!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
@@ -304,7 +304,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     };
                     yield AgentEvent::Pending { interaction };
                 }
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -349,7 +349,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let (chat_stream_events, inference_model) = match attempt_outcome {
                 LlmAttemptOutcome::Success { value, model } => (value, model),
                 LlmAttemptOutcome::Cancelled => {
-                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                     ensure_run_finished_delta_or_error!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
@@ -390,7 +390,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 let next_event = if let Some(ref token) = run_cancellation_token {
                     tokio::select! {
                         _ = token.cancelled() => {
-                            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                            thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                             ensure_run_finished_delta_or_error!();
                             yield AgentEvent::RunFinish {
                                 thread_id: thread.id.clone(),
@@ -450,7 +450,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             let result = collector.finish();
-            loop_state.update_from_response(&result);
+            run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
 
             yield AgentEvent::InferenceComplete {
@@ -480,7 +480,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             // Add assistant message with run/step metadata.
-            let step_meta = step_metadata(Some(run_id.clone()), loop_state.rounds as u32);
+            let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
             let assistant_msg =
                 assistant_turn_message(&result, step_meta.clone(), Some(assistant_msg_id.clone()));
             thread = reduce_thread_mutations(
@@ -526,7 +526,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             if !result.needs_tools() {
                 if let Some(ref token) = run_cancellation_token {
                     if token.is_cancelled() {
-                        thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                        thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                         ensure_run_finished_delta_or_error!();
                         yield AgentEvent::RunFinish {
                             thread_id: thread.id.clone(),
@@ -537,9 +537,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         return;
                     }
                 }
-                let stop_ctx = loop_state.to_check_context(&result, &thread);
+                let stop_ctx = run_state.to_check_context(&result, &thread);
                 if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                     ensure_run_finished_delta_or_error!();
                     yield AgentEvent::RunFinish {
                         thread_id: thread.id.clone(),
@@ -550,7 +550,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     return;
                 }
                 let result_value = natural_result_payload(&result.text);
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -608,7 +608,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                             futures::future::pending::<()>().await;
                         }
                     } => {
-                        thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                        thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                         ensure_run_finished_delta_or_error!();
                         yield AgentEvent::RunFinish {
                             thread_id: thread.id.clone(),
@@ -656,7 +656,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     };
                 }
             }
-            let session_before_apply = thread.clone();
+            let thread_before_apply = thread.clone();
             // Pre-generate message IDs for tool results so streaming events
             // and stored Messages share the same ID.
             let tool_msg_ids = preallocate_tool_result_message_ids(&results);
@@ -670,7 +670,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    thread = session_before_apply;
+                    thread = thread_before_apply;
                     terminate_stream_error!(e.to_string());
                 }
             };
@@ -709,7 +709,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // If there are pending interactions, pause the loop.
             // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -720,18 +720,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 return;
             }
 
-            // Track tool round metrics for stop condition evaluation.
+            // Track tool step metrics for stop condition evaluation.
             let error_count = results
                 .iter()
                 .filter(|r| r.execution.result.is_error())
                 .count();
-            loop_state.record_tool_round(&result.tool_calls, error_count);
-            loop_state.rounds += 1;
+            run_state.record_tool_step(&result.tool_calls, error_count);
+            run_state.completed_steps += 1;
 
             // Check stop conditions.
-            let stop_ctx = loop_state.to_check_context(&result, &thread);
+            let stop_ctx = run_state.to_check_context(&result, &thread);
             if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
-                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
