@@ -599,11 +599,11 @@ fn inference_error_from_state(ctx: &Context<'_>) -> Option<AgentInferenceError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::conversation::Thread;
+    use crate::contracts::conversation::ToolCall;
     use crate::contracts::events::StreamResult;
     use crate::contracts::phase::ToolContext as PhaseToolContext;
     use crate::contracts::traits::tool::ToolResult;
-    use crate::thread::Thread;
-    use crate::types::ToolCall;
     use carve_state::Context;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;

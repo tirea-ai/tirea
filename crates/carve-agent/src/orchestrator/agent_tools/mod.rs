@@ -1,5 +1,6 @@
 use super::{AgentOs, AgentRegistry};
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::conversation::{Message, Role, ToolCall};
 use crate::contracts::events::AgentEvent;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::{
@@ -17,7 +18,6 @@ use crate::runtime::loop_runner::{
     ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
     TOOL_RUNTIME_CALLER_STATE_KEY, TOOL_RUNTIME_CALLER_THREAD_ID_KEY,
 };
-use crate::types::{Message, Role, ToolCall};
 use async_trait::async_trait;
 use carve_state::Context;
 use futures::StreamExt;

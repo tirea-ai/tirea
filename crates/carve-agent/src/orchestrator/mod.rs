@@ -6,7 +6,12 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::conversation::Message;
+use crate::contracts::conversation::Thread;
 use crate::contracts::events::{AgentEvent, RunRequest};
+use crate::contracts::storage::{
+    CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
+};
 use crate::contracts::traits::tool::Tool;
 use crate::engine::tool_filter::set_runtime_filters_from_definition_if_absent;
 use crate::extensions::skills::{
@@ -17,11 +22,6 @@ use crate::runtime::loop_runner::{
     run_loop_stream, AgentConfig, AgentDefinition, AgentLoopError, RunContext, StateCommitError,
     StateCommitter,
 };
-use crate::thread::Thread;
-use crate::thread_store::{
-    CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
-};
-use crate::types::Message;
 
 pub(crate) mod agent_tools;
 mod builder;

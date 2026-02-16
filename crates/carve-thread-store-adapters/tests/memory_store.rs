@@ -1,9 +1,10 @@
-use super::*;
-use crate::thread::Thread;
-use crate::types::Message;
-use crate::types::Visibility;
 use carve_state::{path, Op, Patch, TrackedPatch};
+use carve_thread_model::{Message, MessageMetadata, Role, Thread};
 use carve_thread_store_adapters::MemoryStore;
+use carve_thread_store_contract::{
+    CheckpointReason, MessageQuery, ThreadDelta, ThreadListQuery, ThreadReader, ThreadStore,
+    ThreadStoreError, ThreadSync, ThreadWriter,
+};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -132,16 +133,6 @@ async fn test_memory_storage_concurrent_access() {
     assert_eq!(ids.len(), 10);
 }
 
-#[test]
-fn test_storage_error_display() {
-    let err = ThreadStoreError::NotFound("thread-1".to_string());
-    assert!(err.to_string().contains("not found"));
-    assert!(err.to_string().contains("thread-1"));
-
-    let err = ThreadStoreError::Serialization("invalid json".to_string());
-    assert!(err.to_string().contains("Serialization"));
-}
-
 // ========================================================================
 // Pagination tests
 // ========================================================================
@@ -159,132 +150,6 @@ fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
         thread = thread.with_message((*msg).clone());
     }
     thread
-}
-
-#[test]
-fn test_paginate_in_memory_basic() {
-    let msgs = make_messages(10);
-    let query = MessageQuery {
-        limit: 3,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 3);
-    assert!(page.has_more);
-    assert_eq!(page.messages[0].cursor, 0);
-    assert_eq!(page.messages[1].cursor, 1);
-    assert_eq!(page.messages[2].cursor, 2);
-    assert_eq!(page.next_cursor, Some(2));
-    assert_eq!(page.prev_cursor, Some(0));
-}
-
-#[test]
-fn test_paginate_in_memory_cursor_forward() {
-    let msgs = make_messages(10);
-    let query = MessageQuery {
-        after: Some(2),
-        limit: 3,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 3);
-    assert!(page.has_more);
-    assert_eq!(page.messages[0].cursor, 3);
-    assert_eq!(page.messages[1].cursor, 4);
-    assert_eq!(page.messages[2].cursor, 5);
-}
-
-#[test]
-fn test_paginate_in_memory_cursor_backward() {
-    let msgs = make_messages(10);
-    let query = MessageQuery {
-        before: Some(8),
-        limit: 3,
-        order: SortOrder::Desc,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 3);
-    assert!(page.has_more);
-    // Desc order: highest cursors first
-    assert_eq!(page.messages[0].cursor, 7);
-    assert_eq!(page.messages[1].cursor, 6);
-    assert_eq!(page.messages[2].cursor, 5);
-}
-
-#[test]
-fn test_paginate_in_memory_empty() {
-    let msgs: Vec<std::sync::Arc<Message>> = Vec::new();
-    let query = MessageQuery::default();
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert!(page.messages.is_empty());
-    assert!(!page.has_more);
-    assert_eq!(page.next_cursor, None);
-    assert_eq!(page.prev_cursor, None);
-}
-
-#[test]
-fn test_paginate_in_memory_beyond_end() {
-    let msgs = make_messages(5);
-    let query = MessageQuery {
-        after: Some(10),
-        limit: 3,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert!(page.messages.is_empty());
-    assert!(!page.has_more);
-}
-
-#[test]
-fn test_paginate_in_memory_exact_fit() {
-    let msgs = make_messages(3);
-    let query = MessageQuery {
-        limit: 3,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 3);
-    assert!(!page.has_more);
-}
-
-#[test]
-fn test_paginate_in_memory_last_page() {
-    let msgs = make_messages(10);
-    let query = MessageQuery {
-        after: Some(7),
-        limit: 5,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 2);
-    assert!(!page.has_more);
-    assert_eq!(page.messages[0].cursor, 8);
-    assert_eq!(page.messages[1].cursor, 9);
-}
-
-#[test]
-fn test_paginate_in_memory_after_and_before() {
-    let msgs = make_messages(10);
-    let query = MessageQuery {
-        after: Some(2),
-        before: Some(7),
-        limit: 10,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&msgs, &query);
-
-    assert_eq!(page.messages.len(), 4);
-    assert!(!page.has_more);
-    assert_eq!(page.messages[0].cursor, 3);
-    assert_eq!(page.messages[3].cursor, 6);
 }
 
 #[tokio::test]
@@ -331,23 +196,6 @@ async fn test_memory_storage_message_count_not_found() {
     assert!(matches!(result, Err(ThreadStoreError::NotFound(_))));
 }
 
-#[test]
-fn test_message_page_serialization() {
-    let page = MessagePage {
-        messages: vec![MessageWithCursor {
-            cursor: 0,
-            message: Message::user("hello"),
-        }],
-        has_more: true,
-        next_cursor: Some(0),
-        prev_cursor: Some(0),
-    };
-    let json = serde_json::to_string(&page).unwrap();
-    assert!(json.contains("\"cursor\":0"));
-    assert!(json.contains("\"has_more\":true"));
-    assert!(json.contains("\"next_cursor\":0"));
-}
-
 // ========================================================================
 // Visibility tests
 // ========================================================================
@@ -360,114 +208,6 @@ fn make_mixed_visibility_thread(thread_id: &str) -> Thread {
         .with_message(Message::user("user-3"))
         .with_message(Message::internal_system("reminder-4"))
         .with_message(Message::assistant("assistant-5"))
-}
-
-#[test]
-fn test_paginate_visibility_all_default() {
-    let thread = make_mixed_visibility_thread("t");
-    // Default query filters to Visibility::All (user-visible only).
-    let query = MessageQuery {
-        limit: 50,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    // Should exclude 2 internal messages (at indices 2 and 4).
-    assert_eq!(page.messages.len(), 4);
-    assert_eq!(page.messages[0].message.content, "user-0");
-    assert_eq!(page.messages[1].message.content, "assistant-1");
-    assert_eq!(page.messages[2].message.content, "user-3");
-    assert_eq!(page.messages[3].message.content, "assistant-5");
-}
-
-#[test]
-fn test_paginate_visibility_internal_only() {
-    let thread = make_mixed_visibility_thread("t");
-    let query = MessageQuery {
-        limit: 50,
-        visibility: Some(Visibility::Internal),
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    assert_eq!(page.messages.len(), 2);
-    assert_eq!(page.messages[0].message.content, "reminder-2");
-    assert_eq!(page.messages[1].message.content, "reminder-4");
-}
-
-#[test]
-fn test_paginate_visibility_none_returns_all() {
-    let thread = make_mixed_visibility_thread("t");
-    let query = MessageQuery {
-        limit: 50,
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    // Should return all 6 messages.
-    assert_eq!(page.messages.len(), 6);
-}
-
-#[test]
-fn test_paginate_visibility_cursors_stable() {
-    let thread = make_mixed_visibility_thread("t");
-    // With visibility=All, cursors should correspond to original indices.
-    let query = MessageQuery {
-        limit: 50,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    // Cursors should be 0, 1, 3, 5 (original indices, skipping internal at 2, 4).
-    assert_eq!(page.messages[0].cursor, 0);
-    assert_eq!(page.messages[1].cursor, 1);
-    assert_eq!(page.messages[2].cursor, 3);
-    assert_eq!(page.messages[3].cursor, 5);
-}
-
-#[test]
-fn test_paginate_visibility_with_cursor_pagination() {
-    let thread = make_mixed_visibility_thread("t");
-    // Start after cursor 1 (assistant-1), visibility=All.
-    let query = MessageQuery {
-        after: Some(1),
-        limit: 2,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    // Should return user-3 (cursor 3) and assistant-5 (cursor 5).
-    assert_eq!(page.messages.len(), 2);
-    assert_eq!(page.messages[0].cursor, 3);
-    assert_eq!(page.messages[0].message.content, "user-3");
-    assert_eq!(page.messages[1].cursor, 5);
-    assert_eq!(page.messages[1].message.content, "assistant-5");
-    assert!(!page.has_more);
-}
-
-#[test]
-fn test_internal_system_message_serialization() {
-    let msg = Message::internal_system("a reminder");
-    let json = serde_json::to_string(&msg).unwrap();
-    assert!(json.contains("\"visibility\":\"internal\""));
-
-    // Round-trip
-    let parsed: Message = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.visibility, Visibility::Internal);
-    assert_eq!(parsed.content, "a reminder");
-}
-
-#[test]
-fn test_user_message_omits_visibility_in_json() {
-    let msg = Message::user("hello");
-    let json = serde_json::to_string(&msg).unwrap();
-    // Default visibility should be skipped in serialization.
-    assert!(!json.contains("visibility"));
-
-    // Deserializing without visibility field should default to All.
-    let parsed: Message = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.visibility, Visibility::All);
 }
 
 #[tokio::test]
@@ -496,8 +236,6 @@ async fn test_memory_storage_load_messages_filters_visibility() {
 // ========================================================================
 // Run ID filtering tests
 // ========================================================================
-
-use crate::types::MessageMetadata;
 
 fn make_multi_run_thread(thread_id: &str) -> Thread {
     Thread::new(thread_id)
@@ -530,67 +268,6 @@ fn make_multi_run_thread(thread_id: &str) -> Thread {
         }))
 }
 
-#[test]
-fn test_paginate_filter_by_run_id() {
-    let thread = make_multi_run_thread("t");
-
-    // Filter to run-a only
-    let query = MessageQuery {
-        run_id: Some("run-a".to_string()),
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-    assert_eq!(page.messages.len(), 3);
-    assert_eq!(page.messages[0].message.content, "thinking...");
-    assert_eq!(page.messages[2].message.content, "done");
-
-    // Filter to run-b only
-    let query = MessageQuery {
-        run_id: Some("run-b".to_string()),
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-    assert_eq!(page.messages.len(), 1);
-    assert_eq!(page.messages[0].message.content, "ok");
-
-    // No run filter: returns all 6
-    let query = MessageQuery {
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-    assert_eq!(page.messages.len(), 6);
-}
-
-#[test]
-fn test_paginate_run_id_with_cursor() {
-    let thread = make_multi_run_thread("t");
-
-    // Filter run-a, after cursor 1 (skip first run-a msg at cursor 1)
-    let query = MessageQuery {
-        run_id: Some("run-a".to_string()),
-        after: Some(1),
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-    assert_eq!(page.messages.len(), 2); // tool (cursor 2) + final (cursor 3)
-}
-
-#[test]
-fn test_paginate_nonexistent_run_id() {
-    let thread = make_multi_run_thread("t");
-    let query = MessageQuery {
-        run_id: Some("run-z".to_string()),
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-    assert!(page.messages.is_empty());
-}
-
 #[tokio::test]
 async fn test_memory_storage_load_messages_by_run_id() {
     let storage = MemoryStore::new();
@@ -606,22 +283,6 @@ async fn test_memory_storage_load_messages_by_run_id() {
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 3);
-}
-
-#[test]
-fn test_message_metadata_preserved_in_pagination() {
-    let thread = make_multi_run_thread("t");
-    let query = MessageQuery {
-        run_id: Some("run-a".to_string()),
-        visibility: None,
-        ..Default::default()
-    };
-    let page = paginate_in_memory(&thread.messages, &query);
-
-    // Metadata should be preserved on the returned messages.
-    let meta = page.messages[0].message.metadata.as_ref().unwrap();
-    assert_eq!(meta.run_id.as_deref(), Some("run-a"));
-    assert_eq!(meta.step_index, Some(0));
 }
 
 // ========================================================================
@@ -1254,9 +915,5 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     assert!(head.thread.patches.is_empty());
     assert_eq!(head.thread.rebuild_state().unwrap(), frontend_state);
     // User message was also persisted
-    assert!(head
-        .thread
-        .messages
-        .iter()
-        .any(|m| m.role == crate::types::Role::User));
+    assert!(head.thread.messages.iter().any(|m| m.role == Role::User));
 }

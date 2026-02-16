@@ -82,8 +82,8 @@
 //!
 //! ```ignore
 //! use carve_agent::contracts::storage::ThreadWriter;
-//! use carve_agent::thread::Thread;
-//! use carve_agent::types::Message;
+//! use carve_agent::contracts::conversation::Thread;
+//! use carve_agent::contracts::conversation::Message;
 //! use carve_thread_store_adapters::FileStore;
 //!
 //! // Create or load session
@@ -103,6 +103,3 @@ pub mod orchestrator;
 pub mod runtime;
 
 pub mod prelude;
-pub mod thread;
-pub mod thread_store;
-pub mod types;

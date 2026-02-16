@@ -47,17 +47,17 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
+use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::events::{AgentEvent, StreamResult};
 use crate::contracts::phase::Phase;
 use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
+use crate::contracts::storage::CheckpointReason;
 use crate::contracts::traits::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
 use crate::runtime::activity::ActivityHub;
 use crate::runtime::streaming::StreamCollector;
-use crate::thread::Thread;
-use crate::thread_store::CheckpointReason;
-use crate::types::{gen_message_id, Message, MessageMetadata};
 use async_stream::stream;
 use async_trait::async_trait;
 use carve_state::ActivityManager;
@@ -184,10 +184,16 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
         .first_text()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    let tool_calls: Vec<crate::types::ToolCall> = response
+    let tool_calls: Vec<crate::contracts::conversation::ToolCall> = response
         .tool_calls()
         .into_iter()
-        .map(|tc| crate::types::ToolCall::new(&tc.call_id, &tc.fn_name, tc.fn_arguments.clone()))
+        .map(|tc| {
+            crate::contracts::conversation::ToolCall::new(
+                &tc.call_id,
+                &tc.fn_name,
+                tc.fn_arguments.clone(),
+            )
+        })
         .collect();
 
     StreamResult {

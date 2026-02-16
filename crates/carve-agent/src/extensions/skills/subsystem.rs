@@ -124,14 +124,14 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::conversation::Thread;
+    use crate::contracts::conversation::{Message, ToolCall};
     use crate::contracts::phase::{Phase, StepContext};
     use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::engine::tool_execution::execute_single_tool;
     use crate::extensions::skills::{
         FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
     };
-    use crate::thread::Thread;
-    use crate::types::{Message, ToolCall};
     use async_trait::async_trait;
     use carve_state::Context;
     use serde_json::json;

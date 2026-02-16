@@ -1,11 +1,11 @@
 use super::AgentLoopError;
+use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::phase::StepContext;
 use crate::contracts::state_types::{
     AgentInferenceError, AgentState, Interaction, InteractionResponse, AGENT_STATE_PATH,
 };
 use crate::contracts::traits::tool::{Tool, ToolDescriptor};
-use crate::thread::Thread;
-use crate::types::{Message, MessageMetadata};
 use carve_state::{Context, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -159,7 +159,7 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
 #[derive(Default)]
 pub(super) struct AgentOutboxDrain {
     pub(super) interaction_resolutions: Vec<InteractionResponse>,
-    pub(super) replay_tool_calls: Vec<crate::types::ToolCall>,
+    pub(super) replay_tool_calls: Vec<crate::contracts::conversation::ToolCall>,
 }
 
 pub(super) fn drain_agent_outbox(
@@ -187,7 +187,8 @@ pub(super) fn drain_agent_outbox(
         .and_then(|agent| agent.get("replay_tool_calls"))
         .cloned()
     {
-        Some(raw) => serde_json::from_value::<Vec<crate::types::ToolCall>>(raw).map_err(|e| {
+        Some(raw) => serde_json::from_value::<Vec<crate::contracts::conversation::ToolCall>>(raw)
+            .map_err(|e| {
             AgentLoopError::StateError(format!("failed to parse agent.replay_tool_calls: {e}"))
         })?,
         None => Vec::new(),

@@ -11,6 +11,8 @@
 //! ```
 
 use async_trait::async_trait;
+use carve_agent::contracts::conversation::Message;
+use carve_agent::contracts::conversation::Thread;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
@@ -18,8 +20,6 @@ use carve_agent::prelude::Context;
 use carve_agent::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
 };
-use carve_agent::thread::Thread;
-use carve_agent::types::Message;
 use carve_state_derive::State;
 use futures::StreamExt;
 use genai::Client;

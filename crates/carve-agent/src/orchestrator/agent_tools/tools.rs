@@ -37,11 +37,11 @@ fn runtime_run_id(runtime: Option<&carve_state::Runtime>) -> Option<String> {
 }
 
 fn bind_child_lineage(
-    mut thread: crate::thread::Thread,
+    mut thread: crate::contracts::conversation::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
-) -> crate::thread::Thread {
+) -> crate::contracts::conversation::Thread {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
@@ -103,7 +103,7 @@ fn parse_caller_messages(runtime: Option<&carve_state::Runtime>) -> Option<Vec<M
 fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
-        .filter(|m| m.visibility == crate::types::Visibility::All)
+        .filter(|m| m.visibility == crate::contracts::conversation::Visibility::All)
         .filter(|m| matches!(m.role, Role::System | Role::User | Role::Assistant))
         .map(|mut m| {
             if m.role == Role::Assistant {
@@ -147,7 +147,7 @@ struct RunLaunch {
     owner_thread_id: String,
     target_agent_id: String,
     parent_run_id: Option<String>,
-    thread: crate::thread::Thread,
+    thread: crate::contracts::conversation::Thread,
 }
 
 impl AgentRunTool {
@@ -482,13 +482,14 @@ impl Tool for AgentRunTool {
                 .and_then(|rt| rt.value(RUNTIME_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut forked = crate::thread::Thread::with_initial_state(thread_id, fork_state);
+            let mut forked =
+                crate::contracts::conversation::Thread::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(runtime) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::thread::Thread::new(thread_id)
+            crate::contracts::conversation::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(

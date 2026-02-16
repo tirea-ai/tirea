@@ -1,10 +1,10 @@
 use super::*;
+use crate::contracts::conversation::Thread;
 use crate::contracts::phase::{Phase, StepContext};
+use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::traits::tool::ToolDescriptor;
 use crate::contracts::traits::tool::{ToolError, ToolResult};
 use crate::extensions::skills::FsSkillRegistry;
-use crate::thread::Thread;
-use crate::thread_store::{ThreadReader, ThreadWriter};
 use async_trait::async_trait;
 use carve_state::Context;
 use serde_json::json;
@@ -47,13 +47,15 @@ impl FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::thread_store::ThreadReader for FailOnNthAppendStorage {
+impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
     async fn load(
         &self,
         thread_id: &str,
-    ) -> Result<Option<crate::thread_store::ThreadHead>, crate::thread_store::ThreadStoreError>
-    {
-        <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadReader>::load(
+    ) -> Result<
+        Option<crate::contracts::storage::ThreadHead>,
+        crate::contracts::storage::ThreadStoreError,
+    > {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::load(
             self.inner.as_ref(),
             thread_id,
         )
@@ -62,9 +64,12 @@ impl crate::thread_store::ThreadReader for FailOnNthAppendStorage {
 
     async fn list_threads(
         &self,
-        query: &crate::thread_store::ThreadListQuery,
-    ) -> Result<crate::thread_store::ThreadListPage, crate::thread_store::ThreadStoreError> {
-        <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadReader>::list_threads(
+        query: &crate::contracts::storage::ThreadListQuery,
+    ) -> Result<
+        crate::contracts::storage::ThreadListPage,
+        crate::contracts::storage::ThreadStoreError,
+    > {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::list_threads(
             self.inner.as_ref(),
             query,
         )
@@ -73,12 +78,13 @@ impl crate::thread_store::ThreadReader for FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::thread_store::ThreadWriter for FailOnNthAppendStorage {
+impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     async fn create(
         &self,
         thread: &Thread,
-    ) -> Result<crate::thread_store::Committed, crate::thread_store::ThreadStoreError> {
-        <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::create(
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
+    {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::create(
             self.inner.as_ref(),
             thread,
         )
@@ -88,15 +94,16 @@ impl crate::thread_store::ThreadWriter for FailOnNthAppendStorage {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &crate::thread_store::ThreadDelta,
-    ) -> Result<crate::thread_store::Committed, crate::thread_store::ThreadStoreError> {
+        delta: &crate::contracts::storage::ThreadDelta,
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
+    {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if append_idx == self.fail_on_nth_append {
-            return Err(crate::thread_store::ThreadStoreError::Serialization(
+            return Err(crate::contracts::storage::ThreadStoreError::Serialization(
                 format!("injected append failure on call {append_idx}"),
             ));
         }
-        <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::append(
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::append(
             self.inner.as_ref(),
             thread_id,
             delta,
@@ -104,8 +111,11 @@ impl crate::thread_store::ThreadWriter for FailOnNthAppendStorage {
         .await
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), crate::thread_store::ThreadStoreError> {
-        <carve_thread_store_adapters::MemoryStore as crate::thread_store::ThreadWriter>::delete(
+    async fn delete(
+        &self,
+        thread_id: &str,
+    ) -> Result<(), crate::contracts::storage::ThreadStoreError> {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::delete(
             self.inner.as_ref(),
             thread_id,
         )
@@ -975,7 +985,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -999,7 +1009,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"counter": 42, "new_field": true})),
-        messages: vec![crate::types::Message::user("hello")],
+        messages: vec![crate::contracts::conversation::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1034,7 +1044,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1050,7 +1060,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"initial": true})),
-        messages: vec![crate::types::Message::user("hello")],
+        messages: vec![crate::contracts::conversation::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1084,7 +1094,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1104,7 +1114,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         parent_run_id: None,
         resource_id: None,
         state: None,
-        messages: vec![crate::types::Message::user("hello")],
+        messages: vec![crate::contracts::conversation::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1137,7 +1147,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1153,7 +1163,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
             parent_run_id: Some("run-parent".to_string()),
             resource_id: None,
             state: Some(json!({"count": 1})),
-            messages: vec![crate::types::Message::user("hello")],
+            messages: vec![crate::contracts::conversation::Message::user("hello")],
         })
         .await
         .unwrap();
@@ -1171,7 +1181,10 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
     let head = storage.load("t-prepare").await.unwrap().unwrap();
     assert_eq!(head.thread.messages.len(), 1);
-    assert_eq!(head.thread.messages[0].role, crate::types::Role::User);
+    assert_eq!(
+        head.thread.messages[0].role,
+        crate::contracts::conversation::Role::User
+    );
     assert_eq!(head.thread.messages[0].content, "hello");
 }
 
@@ -1197,7 +1210,7 @@ async fn execute_prepared_runs_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1213,7 +1226,7 @@ async fn execute_prepared_runs_stream() {
             parent_run_id: None,
             resource_id: None,
             state: None,
-            messages: vec![crate::types::Message::user("hello")],
+            messages: vec![crate::contracts::conversation::Message::user("hello")],
         })
         .await
         .unwrap();
@@ -1240,7 +1253,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 
     let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1256,7 +1269,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"base": 1})),
-        messages: vec![crate::types::Message::user("hello")],
+        messages: vec![crate::contracts::conversation::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1296,7 +1309,10 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         1,
         "only user message delta should be persisted before checkpoint failure"
     );
-    assert_eq!(head.thread.messages[0].role, crate::types::Role::User);
+    assert_eq!(
+        head.thread.messages[0].role,
+        crate::contracts::conversation::Role::User
+    );
     assert_eq!(
         head.thread.messages[0].content.as_str(),
         "hello",
@@ -1319,7 +1335,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::thread_store::ThreadStore>)
+        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini")
@@ -1392,7 +1408,7 @@ fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
 #[test]
 fn builder_with_thread_store_exposes_thread_store_accessor() {
     let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new())
-        as Arc<dyn crate::thread_store::ThreadStore>;
+        as Arc<dyn crate::contracts::storage::ThreadStore>;
     let os = AgentOs::builder()
         .with_thread_store(thread_store)
         .build()

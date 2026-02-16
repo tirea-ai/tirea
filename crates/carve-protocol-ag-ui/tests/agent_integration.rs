@@ -592,11 +592,11 @@ async fn test_tool_provider_reminder_integration() {
 // Thread and Agent Loop Integration Tests
 // ============================================================================
 
+use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::{Message, Role};
 use carve_agent::contracts::events::StreamResult;
 use carve_agent::contracts::storage::{ThreadReader, ThreadWriter};
 use carve_agent::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
-use carve_agent::thread::Thread;
-use carve_agent::types::{Message, Role};
 use carve_state::{path, Op, Patch, TrackedPatch};
 use carve_thread_store_adapters::{FileStore, MemoryStore};
 use std::sync::Arc;
@@ -2886,9 +2886,9 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
+    use carve_agent::contracts::conversation::Thread;
     use carve_agent::contracts::state_types::Interaction;
     use carve_agent::runtime::loop_runner::AgentLoopError;
-    use carve_agent::thread::Thread;
 
     // LlmError
     let llm_err = AgentLoopError::LlmError("API rate limit exceeded".to_string());
@@ -4721,8 +4721,8 @@ fn test_scenario_various_interaction_types() {
 // ============================================================================
 
 use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::conversation::ToolCall;
 use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
-use carve_agent::types::ToolCall;
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
 use std::collections::HashSet;
 
@@ -6369,7 +6369,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agent::types::ToolCall::new(
+        tool_calls: vec![carve_agent::contracts::conversation::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6439,7 +6439,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agent::types::ToolCall::new(
+        tool_calls: vec![carve_agent::contracts::conversation::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6479,7 +6479,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
-        tool_calls: vec![carve_agent::types::ToolCall::new(
+        tool_calls: vec![carve_agent::contracts::conversation::ToolCall::new(
             &interaction.id,
             "increment",
             json!({"path": "counter"}),
@@ -6504,7 +6504,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         "Blocked tool should produce a message"
     );
     let msg = &resumed_thread.messages[1];
-    assert_eq!(msg.role, carve_agent::types::Role::Tool);
+    assert_eq!(msg.role, carve_agent::contracts::conversation::Role::Tool);
     assert!(
         msg.content.contains("denied")
             || msg.content.contains("blocked")
@@ -6534,7 +6534,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agent::types::ToolCall::new(
+        tool_calls: vec![carve_agent::contracts::conversation::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6574,7 +6574,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
-        tool_calls: vec![carve_agent::types::ToolCall::new(
+        tool_calls: vec![carve_agent::contracts::conversation::ToolCall::new(
             &interaction.id,
             "increment",
             json!({"path": "counter"}),
@@ -6599,7 +6599,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         "Tool response message should be present after approval"
     );
     let msg = &resumed_thread.messages[1];
-    assert_eq!(msg.role, carve_agent::types::Role::Tool);
+    assert_eq!(msg.role, carve_agent::contracts::conversation::Role::Tool);
     assert!(
         msg.content.contains("new_value"),
         "Tool result should contain new_value, got: {}",
@@ -12209,13 +12209,13 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::contracts::agent_plugin::AgentPlugin;
+    use carve_agent::contracts::conversation::Thread;
+    use carve_agent::contracts::conversation::ToolCall;
     use carve_agent::contracts::events::StreamResult;
     use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
     use carve_agent::contracts::traits::tool::ToolResult;
     use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use carve_agent::prelude::Context;
-    use carve_agent::thread::Thread;
-    use carve_agent::types::ToolCall;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt;
@@ -12483,15 +12483,17 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new(
-            pending_id,
-            "add_trips",
-            json!({"destination": "Beijing"}),
-        )],
-    ))
-    .with_message(carve_agent::types::Message::tool(
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                pending_id,
+                "add_trips",
+                json!({"destination": "Beijing"}),
+            )],
+        ),
+    )
+    .with_message(carve_agent::contracts::conversation::Message::tool(
         pending_id,
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
@@ -12526,10 +12528,12 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new(pending_id, "add_trips", json!({}))],
-    ));
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(pending_id, "add_trips", json!({}))],
+        ),
+    );
 
     // Plugin with this interaction denied (not approved)
     let plugin = InteractionPlugin::with_responses(
@@ -12577,7 +12581,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
+    .with_message(carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
         "",
         vec![ToolCall::new("permission_x", "some_tool", json!({}))],
     ));
@@ -12608,7 +12612,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
         "test",
         json!({ "agent": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
-    .with_message(carve_agent::types::Message::assistant(
+    .with_message(carve_agent::contracts::conversation::Message::assistant(
         "I need to call a tool",
     ));
 
@@ -12671,15 +12675,17 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
             }
         }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new(
-            &interaction.id,
-            "add_trips",
-            json!({"destination": "Beijing"}),
-        )],
-    ))
-    .with_message(carve_agent::types::Message::tool(
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(
+                &interaction.id,
+                "add_trips",
+                json!({"destination": "Beijing"}),
+            )],
+        ),
+    )
+    .with_message(carve_agent::contracts::conversation::Message::tool(
         &interaction.id,
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
@@ -12726,10 +12732,12 @@ async fn test_hitl_replay_denial_does_not_schedule() {
             }
         }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new(pending_id, "add_trips", json!({}))],
-    ));
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(pending_id, "add_trips", json!({}))],
+        ),
+    );
 
     // Client denies
     let deny_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -12768,13 +12776,15 @@ async fn test_hitl_replay_picks_first_tool_call() {
             }
         }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![
-            ToolCall::new(pending_id, "tool_a", json!({"a": 1})),
-            ToolCall::new("other_id", "tool_b", json!({"b": 2})),
-        ],
-    ));
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![
+                ToolCall::new(pending_id, "tool_a", json!({"a": 1})),
+                ToolCall::new("other_id", "tool_b", json!({"b": 2})),
+            ],
+        ),
+    );
 
     let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", pending_id));
@@ -12809,10 +12819,12 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
             }
         }),
     )
-    .with_message(carve_agent::types::Message::assistant_with_tool_calls(
-        "",
-        vec![ToolCall::new(pending_id, "some_tool", json!({}))],
-    ));
+    .with_message(
+        carve_agent::contracts::conversation::Message::assistant_with_tool_calls(
+            "",
+            vec![ToolCall::new(pending_id, "some_tool", json!({}))],
+        ),
+    );
 
     let approve_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
         .with_message(AGUIMessage::tool("true", pending_id));

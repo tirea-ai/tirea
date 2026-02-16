@@ -1,10 +1,10 @@
+use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::ToolCall;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::ToolDescriptor;
 use carve_agent::engine::tool_execution::execute_single_tool;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 use carve_agent::prelude::Context;
-use carve_agent::thread::Thread;
-use carve_agent::types::ToolCall;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;

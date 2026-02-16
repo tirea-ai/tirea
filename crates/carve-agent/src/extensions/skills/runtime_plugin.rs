@@ -162,8 +162,8 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::conversation::Thread;
     use crate::contracts::traits::tool::ToolDescriptor;
-    use crate::thread::Thread;
     use carve_state::Context;
     use serde_json::json;
 

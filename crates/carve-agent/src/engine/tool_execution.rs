@@ -1,7 +1,7 @@
 //! Tool execution utilities.
 
+use crate::contracts::conversation::ToolCall;
 use crate::contracts::traits::tool::{Tool, ToolResult};
-use crate::types::ToolCall;
 use carve_state::{Context, Runtime, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;

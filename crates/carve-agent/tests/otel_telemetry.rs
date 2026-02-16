@@ -1,4 +1,6 @@
 use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::{Message, ToolCall};
 use carve_agent::contracts::events::{AgentEvent, StreamResult};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
@@ -6,8 +8,6 @@ use carve_agent::prelude::Context;
 use carve_agent::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
-use carve_agent::thread::Thread;
-use carve_agent::types::{Message, ToolCall};
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};

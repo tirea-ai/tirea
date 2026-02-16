@@ -247,8 +247,8 @@ mod tests {
     async fn test_reminder_plugin_before_inference() {
         let doc = json!({ "reminders": { "items": ["Test reminder"] } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
         use crate::contracts::phase::{Phase, StepContext};
-        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
         let thread = Thread::with_initial_state(
@@ -269,8 +269,8 @@ mod tests {
     async fn test_reminder_plugin_generates_clear_patch() {
         let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
         use crate::contracts::phase::{Phase, StepContext};
-        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
         let thread = Thread::with_initial_state(
@@ -298,8 +298,8 @@ mod tests {
     async fn test_reminder_plugin_no_clear_when_disabled() {
         let doc = json!({ "reminders": { "items": ["Reminder"] } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
         use crate::contracts::phase::{Phase, StepContext};
-        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         let thread =
@@ -319,8 +319,8 @@ mod tests {
     async fn test_reminder_plugin_empty_reminders() {
         let doc = json!({ "reminders": { "items": [] } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
         use crate::contracts::phase::{Phase, StepContext};
-        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
         let thread = Thread::with_initial_state("test", json!({ "reminders": { "items": [] } }));
@@ -338,8 +338,8 @@ mod tests {
     async fn test_reminder_plugin_no_state() {
         let doc = json!({});
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
         use crate::contracts::phase::{Phase, StepContext};
-        use crate::thread::Thread;
 
         let plugin = ReminderPlugin::new();
         let thread = Thread::new("test");

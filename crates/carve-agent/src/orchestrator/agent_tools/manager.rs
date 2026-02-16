@@ -15,7 +15,7 @@ pub(super) struct AgentRunRecord {
     pub(super) target_agent_id: String,
     pub(super) parent_run_id: Option<String>,
     pub(super) status: AgentRunStatus,
-    pub(super) thread: crate::thread::Thread,
+    pub(super) thread: crate::contracts::conversation::Thread,
     pub(super) assistant: Option<String>,
     pub(super) error: Option<String>,
     pub(super) run_cancellation_requested: bool,
@@ -103,7 +103,7 @@ impl AgentRunManager {
         &self,
         owner_thread_id: &str,
         run_id: &str,
-    ) -> Option<crate::thread::Thread> {
+    ) -> Option<crate::contracts::conversation::Thread> {
         let runs = self.runs.lock().await;
         let rec = runs.get(run_id)?;
         if rec.owner_thread_id != owner_thread_id {
@@ -174,7 +174,7 @@ impl AgentRunManager {
         owner_thread_id: String,
         target_agent_id: String,
         parent_run_id: Option<String>,
-        thread: crate::thread::Thread,
+        thread: crate::contracts::conversation::Thread,
         cancellation_token: Option<RunCancellationToken>,
     ) -> u64 {
         let mut runs = self.runs.lock().await;
@@ -248,13 +248,13 @@ impl AgentRunManager {
 
 #[derive(Debug)]
 pub(super) struct AgentRunCompletion {
-    pub(super) thread: crate::thread::Thread,
+    pub(super) thread: crate::contracts::conversation::Thread,
     pub(super) status: AgentRunStatus,
     pub(super) assistant: Option<String>,
     pub(super) error: Option<String>,
 }
 
-fn last_assistant_message(thread: &crate::thread::Thread) -> Option<String> {
+fn last_assistant_message(thread: &crate::contracts::conversation::Thread) -> Option<String> {
     thread
         .messages
         .iter()
@@ -266,7 +266,7 @@ fn last_assistant_message(thread: &crate::thread::Thread) -> Option<String> {
 pub(super) async fn execute_target_agent(
     os: AgentOs,
     target_agent_id: String,
-    thread: crate::thread::Thread,
+    thread: crate::contracts::conversation::Thread,
     cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
     let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();

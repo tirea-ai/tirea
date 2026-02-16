@@ -40,7 +40,7 @@ pub use carve_state::Context;
 pub use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Message types
-pub use crate::types::{Message, Role, ToolCall};
+pub use crate::contracts::conversation::{Message, Role, ToolCall};
 
 // Plugin trait
 pub use crate::contracts::agent_plugin::AgentPlugin;

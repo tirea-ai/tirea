@@ -123,7 +123,7 @@ impl InteractionResponsePlugin {
         agent.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
-    fn queue_replay_call(ctx: &Context<'_>, call: crate::types::ToolCall) {
+    fn queue_replay_call(ctx: &Context<'_>, call: crate::contracts::conversation::ToolCall) {
         let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
         agent.replay_tool_calls_push(call);
     }
@@ -178,7 +178,7 @@ impl InteractionResponsePlugin {
                 return;
             };
 
-            let replay_call = crate::types::ToolCall::new(
+            let replay_call = crate::contracts::conversation::ToolCall::new(
                 format!("recovery_resume_{run_id}"),
                 RECOVERY_RESUME_TOOL_ID,
                 json!({
@@ -194,25 +194,24 @@ impl InteractionResponsePlugin {
             .parameters
             .get("origin_tool_call")
             .cloned()
-            .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
+            .and_then(|v| {
+                serde_json::from_value::<crate::contracts::conversation::ToolCall>(v).ok()
+            })
         {
             Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
-        if let Some(replay_call) = pending
-            .parameters
-            .get("tool_call")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<crate::types::ToolCall>(v).ok())
-        {
+        if let Some(replay_call) = pending.parameters.get("tool_call").cloned().and_then(|v| {
+            serde_json::from_value::<crate::contracts::conversation::ToolCall>(v).ok()
+        }) {
             Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
         if !pending_id_owned.starts_with("permission_") {
             if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let replay_call = crate::types::ToolCall::new(
+                let replay_call = crate::contracts::conversation::ToolCall::new(
                     pending_id_owned.clone(),
                     tool_name,
                     pending.parameters.clone(),
@@ -228,7 +227,9 @@ impl InteractionResponsePlugin {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == crate::types::Role::Assistant && m.tool_calls.is_some())
+            .find(|m| {
+                m.role == crate::contracts::conversation::Role::Assistant && m.tool_calls.is_some()
+            })
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.
@@ -334,8 +335,8 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thread::Thread;
-    use crate::types::{Message, ToolCall};
+    use crate::contracts::conversation::Thread;
+    use crate::contracts::conversation::{Message, ToolCall};
     use carve_state::{apply_patches, Context};
     use serde_json::json;
 

@@ -11,7 +11,7 @@ pub enum RoundResult {
     ToolsExecuted {
         thread: Thread,
         text: String,
-        tool_calls: Vec<crate::types::ToolCall>,
+        tool_calls: Vec<crate::contracts::conversation::ToolCall>,
     },
 }
 

@@ -1,7 +1,7 @@
 use super::AgentConfig;
+use crate::contracts::conversation::Thread;
 use crate::contracts::events::StreamResult;
 use crate::engine::stop_conditions::{StopCheckContext, StopCondition};
-use crate::thread::Thread;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -38,7 +38,7 @@ impl LoopState {
 
     pub(super) fn record_tool_round(
         &mut self,
-        tool_calls: &[crate::types::ToolCall],
+        tool_calls: &[crate::contracts::conversation::ToolCall],
         error_count: usize,
     ) {
         let mut names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();

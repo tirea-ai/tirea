@@ -376,9 +376,9 @@ mod tests {
     async fn test_permission_plugin_allow() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -403,9 +403,9 @@ mod tests {
     async fn test_permission_plugin_deny() {
         let doc = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -429,9 +429,9 @@ mod tests {
     async fn test_permission_plugin_ask() {
         let doc = json!({ "permissions": { "default_behavior": "ask", "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -509,9 +509,9 @@ mod tests {
     async fn test_permission_plugin_tool_specific_allow() {
         let doc = json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -535,9 +535,9 @@ mod tests {
     async fn test_permission_plugin_tool_specific_deny() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -561,9 +561,9 @@ mod tests {
     async fn test_permission_plugin_tool_specific_ask() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -587,9 +587,9 @@ mod tests {
     async fn test_permission_plugin_invalid_tool_behavior() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -615,9 +615,9 @@ mod tests {
     async fn test_permission_plugin_invalid_default_behavior() {
         let doc = json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         let thread = Thread::with_initial_state(
             "test",
@@ -642,9 +642,9 @@ mod tests {
     async fn test_permission_plugin_no_state() {
         let doc = json!({});
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // Thread with no permission state at all — should default to Ask
         let thread = Thread::new("test");
@@ -670,9 +670,9 @@ mod tests {
     async fn test_permission_plugin_tools_is_string_not_object() {
         let doc = json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // "tools" is a string instead of an object — should not panic,
         // falls back to default_behavior.
@@ -701,9 +701,9 @@ mod tests {
     async fn test_permission_plugin_default_behavior_invalid_string() {
         let doc = json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // "default_behavior" is an unrecognized string — should fall back to Ask
         let thread = Thread::with_initial_state(
@@ -729,9 +729,9 @@ mod tests {
     async fn test_permission_plugin_default_behavior_is_number() {
         let doc = json!({ "permissions": { "default_behavior": 42, "tools": {} } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // "default_behavior" is a number instead of string — should fall back to Ask
         let thread = Thread::with_initial_state(
@@ -758,9 +758,9 @@ mod tests {
         let doc =
             json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // Tool permission value is a number — should fall back to default_behavior
         let thread = Thread::with_initial_state(
@@ -788,9 +788,9 @@ mod tests {
     async fn test_permission_plugin_permissions_is_array() {
         let doc = json!({ "permissions": [1, 2, 3] });
         let ctx = Context::new(&doc, "test", "test");
+        use crate::contracts::conversation::Thread;
+        use crate::contracts::conversation::ToolCall;
         use crate::contracts::phase::{Phase, StepContext, ToolContext};
-        use crate::thread::Thread;
-        use crate::types::ToolCall;
 
         // "permissions" is an array instead of object — should fall back to Ask
         let thread = Thread::with_initial_state("test", json!({ "permissions": [1, 2, 3] }));

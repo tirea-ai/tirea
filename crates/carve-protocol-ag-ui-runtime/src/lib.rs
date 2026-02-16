@@ -132,9 +132,9 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use carve_agent::contracts::conversation::Thread;
+    use carve_agent::contracts::conversation::ToolCall;
     use carve_agent::contracts::phase::{Phase, ToolContext};
-    use carve_agent::thread::Thread;
-    use carve_agent::types::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 

@@ -1,6 +1,6 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::thread::Thread;
-use crate::thread_store::{CheckpointReason, ThreadDelta};
+use crate::contracts::conversation::Thread;
+use crate::contracts::storage::{CheckpointReason, ThreadDelta};
 use async_trait::async_trait;
 use std::sync::Arc;
 
