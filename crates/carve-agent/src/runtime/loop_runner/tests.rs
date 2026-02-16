@@ -1,6 +1,7 @@
 use super::*;
 use crate::contracts::events::TerminationReason;
 use crate::contracts::phase::Phase;
+use crate::contracts::storage::CheckpointReason;
 use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
@@ -2802,6 +2803,23 @@ fn text_chat_response(text: &str) -> genai::chat::ChatResponse {
     }
 }
 
+fn tool_call_chat_response(call_id: &str, name: &str, args: Value) -> genai::chat::ChatResponse {
+    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
+    genai::chat::ChatResponse {
+        content: MessageContent::from_tool_calls(vec![genai::chat::ToolCall {
+            call_id: call_id.to_string(),
+            fn_name: name.to_string(),
+            fn_arguments: Value::String(args.to_string()),
+            thought_signatures: None,
+        }]),
+        reasoning_content: None,
+        model_iden: model_iden.clone(),
+        provider_model_iden: model_iden,
+        usage: Usage::default(),
+        captured_raw_body: None,
+    }
+}
+
 #[async_trait]
 impl ChatProvider for MockChatProvider {
     async fn exec_chat_response(
@@ -2820,6 +2838,26 @@ impl ChatProvider for MockChatProvider {
         } else {
             responses.remove(0)
         }
+    }
+}
+
+struct HangingChatProvider {
+    ready: Arc<Notify>,
+    proceed: Arc<Notify>,
+    response: genai::chat::ChatResponse,
+}
+
+#[async_trait]
+impl ChatProvider for HangingChatProvider {
+    async fn exec_chat_response(
+        &self,
+        _model: &str,
+        _chat_req: genai::chat::ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        self.ready.notify_one();
+        self.proceed.notified().await;
+        Ok(self.response.clone())
     }
 }
 
@@ -2927,6 +2965,139 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     assert!(
         recorded.contains(&Phase::RunEnd),
         "run should still emit RunEnd on llm error, got: {recorded:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
+    let provider = MockChatProvider::new(vec![Ok(text_chat_response("done now"))]);
+    let config = AgentConfig::new("mock").with_stop_condition(
+        crate::engine::stop_conditions::Timeout(std::time::Duration::from_secs(0)),
+    );
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let err =
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+            .await
+            .expect_err("timeout stop condition should stop non-stream run");
+
+    match err {
+        AgentLoopError::Stopped { thread, reason } => {
+            assert_eq!(reason, StopReason::TimeoutReached);
+            assert!(
+                thread
+                    .messages
+                    .iter()
+                    .any(|m| m.role == crate::contracts::conversation::Role::Assistant),
+                "assistant turn should still be committed before stop check"
+            );
+        }
+        other => panic!("expected Stopped(TimeoutReached), got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_nonstream_cancellation_token_during_inference() {
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let provider = HangingChatProvider {
+        ready: ready.clone(),
+        proceed: proceed.clone(),
+        response: text_chat_response("never"),
+    };
+    let token = CancellationToken::new();
+    let token_for_run = token.clone();
+
+    let handle = tokio::spawn(async move {
+        run_loop_with_context_provider(
+            &provider,
+            &AgentConfig::new("mock"),
+            Thread::new("test").with_message(Message::user("go")),
+            &HashMap::new(),
+            RunContext {
+                cancellation_token: Some(token_for_run),
+                ..RunContext::default()
+            },
+        )
+        .await
+    });
+
+    ready.notified().await;
+    token.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("non-stream run should stop shortly after cancellation during inference")
+        .expect("run task should not panic");
+    proceed.notify_waiters();
+
+    assert!(
+        matches!(result, Err(AgentLoopError::Cancelled { .. })),
+        "expected cancellation during inference, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_nonstream_cancellation_token_during_tool_execution() {
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let tool = ActivityGateTool {
+        id: "activity_gate".to_string(),
+        stream_id: "nonstream_cancel".to_string(),
+        ready: ready.clone(),
+        proceed,
+    };
+    let provider = MockChatProvider::new(vec![
+        Ok(tool_call_chat_response(
+            "call_1",
+            "activity_gate",
+            json!({}),
+        )),
+        Ok(text_chat_response("done")),
+    ]);
+    let token = CancellationToken::new();
+    let token_for_run = token.clone();
+
+    let handle = tokio::spawn(async move {
+        run_loop_with_context_provider(
+            &provider,
+            &AgentConfig::new("mock"),
+            Thread::new("test").with_message(Message::user("go")),
+            &tool_map([tool]),
+            RunContext {
+                cancellation_token: Some(token_for_run),
+                ..RunContext::default()
+            },
+        )
+        .await
+    });
+
+    ready.notified().await;
+    token.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("non-stream run should stop shortly after cancellation during tool execution")
+        .expect("run task should not panic");
+
+    let thread = match result {
+        Err(AgentLoopError::Cancelled { thread }) => thread,
+        other => panic!("expected Cancelled during tool execution, got: {other:?}"),
+    };
+    assert!(
+        thread
+            .messages
+            .iter()
+            .any(|m| m.role == crate::contracts::conversation::Role::Assistant),
+        "assistant tool_call turn should be committed before cancellation"
+    );
+    assert!(
+        !thread
+            .messages
+            .iter()
+            .any(|m| m.role == crate::contracts::conversation::Role::Tool),
+        "tool results should not be committed after cancellation"
     );
 }
 
@@ -3190,6 +3361,51 @@ async fn run_mock_stream_with_final_thread(
     (events, final_thread)
 }
 
+#[derive(Clone)]
+struct RecordingStateCommitter {
+    reasons: Arc<Mutex<Vec<CheckpointReason>>>,
+    fail_on: Option<CheckpointReason>,
+}
+
+impl RecordingStateCommitter {
+    fn new(fail_on: Option<CheckpointReason>) -> Self {
+        Self {
+            reasons: Arc::new(Mutex::new(Vec::new())),
+            fail_on,
+        }
+    }
+
+    fn reasons(&self) -> Vec<CheckpointReason> {
+        self.reasons.lock().expect("lock poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl StateCommitter for RecordingStateCommitter {
+    async fn commit(
+        &self,
+        _thread_id: &str,
+        delta: crate::contracts::storage::ThreadDelta,
+    ) -> Result<(), StateCommitError> {
+        self.reasons
+            .lock()
+            .expect("lock poisoned")
+            .push(delta.reason.clone());
+
+        if self
+            .fail_on
+            .as_ref()
+            .is_some_and(|reason| *reason == delta.reason)
+        {
+            return Err(StateCommitError::new(format!(
+                "forced commit failure at {:?}",
+                delta.reason
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Extract the termination from the RunFinish event.
 fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     events.iter().find_map(|e| match e {
@@ -3203,6 +3419,130 @@ fn extract_inference_model(events: &[AgentEvent]) -> Option<String> {
         AgentEvent::InferenceComplete { model, .. } => Some(model.clone()),
         _ => None,
     })
+}
+
+#[tokio::test]
+async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_finish() {
+    let committer = Arc::new(RecordingStateCommitter::new(Some(
+        CheckpointReason::AssistantTurnCommitted,
+    )));
+    let stream = run_loop_stream_impl_with_provider(
+        Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])),
+        AgentConfig::new("mock"),
+        Thread::new("test").with_message(Message::user("go")),
+        HashMap::new(),
+        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("state commit failed"))),
+        "expected state commit error event, got: {events:?}"
+    );
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_tool_done() {
+    let committer = Arc::new(RecordingStateCommitter::new(Some(
+        CheckpointReason::ToolResultsCommitted,
+    )));
+    let stream = run_loop_stream_impl_with_provider(
+        Arc::new(MockStreamProvider::new(vec![
+            MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"}))
+        ])),
+        AgentConfig::new("mock"),
+        Thread::new("test").with_message(Message::user("go")),
+        tool_map([EchoTool]),
+        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(extract_termination(&events), Some(TerminationReason::Error));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallReady { id, .. } if id == "call_1")),
+        "tool round should begin before commit failure"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolCallDone { .. })),
+        "tool result events must not be emitted after tool commit failure"
+    );
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::ToolResultsCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_event() {
+    let committer = Arc::new(RecordingStateCommitter::new(Some(
+        CheckpointReason::RunFinished,
+    )));
+    let stream = run_loop_stream_impl_with_provider(
+        Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])),
+        AgentConfig::new("mock"),
+        Thread::new("test").with_message(Message::user("go")),
+        HashMap::new(),
+        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message } if message.contains("state commit failed"))),
+        "expected run-finished commit error event, got: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::RunFinish { .. })),
+        "run finish event should be suppressed when final force-commit fails"
+    );
+    assert_eq!(
+        committer.reasons(),
+        vec![
+            CheckpointReason::AssistantTurnCommitted,
+            CheckpointReason::RunFinished
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_skip_inference_force_commits_run_finished_delta() {
+    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let committer = Arc::new(RecordingStateCommitter::new(None));
+    let stream = run_loop_stream_impl_with_provider(
+        Arc::new(MockStreamProvider::new(vec![])),
+        AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>),
+        Thread::new("test").with_message(Message::user("go")),
+        HashMap::new(),
+        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PluginRequested)
+    );
+    assert_eq!(committer.reasons(), vec![CheckpointReason::RunFinished]);
 }
 
 #[tokio::test]
@@ -4235,6 +4575,71 @@ fn test_sequential_tools_partial_failure() {
             contents
         );
     });
+}
+
+#[tokio::test]
+async fn test_sequential_tools_stop_after_first_pending_interaction() {
+    struct PendingEveryToolPlugin {
+        seen_calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl AgentPlugin for PendingEveryToolPlugin {
+        fn id(&self) -> &str {
+            "pending_every_tool"
+        }
+
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
+            if phase != Phase::BeforeToolExecute {
+                return;
+            }
+            if let Some(call_id) = step.tool_call_id() {
+                self.seen_calls
+                    .lock()
+                    .expect("lock poisoned")
+                    .push(call_id.to_string());
+                step.pending(
+                    Interaction::new(format!("confirm_{call_id}"), "confirm")
+                        .with_message("needs confirmation"),
+                );
+            }
+        }
+    }
+
+    let seen_calls = Arc::new(Mutex::new(Vec::new()));
+    let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PendingEveryToolPlugin {
+        seen_calls: seen_calls.clone(),
+    }) as Arc<dyn AgentPlugin>];
+
+    let thread = Thread::new("test");
+    let result = StreamResult {
+        text: "Call both".to_string(),
+        tool_calls: vec![
+            crate::contracts::conversation::ToolCall::new("call_1", "echo", json!({"message":"a"})),
+            crate::contracts::conversation::ToolCall::new("call_2", "echo", json!({"message":"b"})),
+        ],
+        usage: None,
+    };
+    let tools = tool_map([EchoTool]);
+
+    let err = execute_tools_with_plugins(thread, &result, &tools, false, &plugins)
+        .await
+        .expect_err("sequential mode should pause on first pending interaction");
+    let (thread, interaction) = match err {
+        AgentLoopError::PendingInteraction {
+            thread,
+            interaction,
+        } => (thread, interaction),
+        other => panic!("expected PendingInteraction, got: {other:?}"),
+    };
+    assert_eq!(interaction.id, "confirm_call_1");
+    assert_eq!(
+        seen_calls.lock().expect("lock poisoned").clone(),
+        vec!["call_1".to_string()],
+        "second tool must not execute after first pending interaction in sequential mode"
+    );
+    assert_eq!(thread.message_count(), 1);
+    assert_eq!(thread.messages[0].tool_call_id.as_deref(), Some("call_1"));
 }
 
 // ========================================================================
