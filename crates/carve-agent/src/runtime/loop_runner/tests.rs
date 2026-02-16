@@ -201,6 +201,38 @@ fn test_agent_loop_error_display() {
 }
 
 #[test]
+fn test_agent_loop_error_termination_reason_mapping() {
+    let stopped = AgentLoopError::Stopped {
+        thread: Box::new(Thread::new("test")),
+        reason: StopReason::MaxRoundsReached,
+    };
+    assert_eq!(
+        stopped.termination_reason(),
+        TerminationReason::Stopped(StopReason::MaxRoundsReached)
+    );
+
+    let cancelled = AgentLoopError::Cancelled {
+        thread: Box::new(Thread::new("test")),
+    };
+    assert_eq!(cancelled.termination_reason(), TerminationReason::Cancelled);
+
+    let pending = AgentLoopError::PendingInteraction {
+        thread: Box::new(Thread::new("test")),
+        interaction: Box::new(Interaction::new("int_1", "confirm")),
+    };
+    assert_eq!(
+        pending.termination_reason(),
+        TerminationReason::PendingInteraction
+    );
+
+    let llm = AgentLoopError::LlmError("offline".to_string());
+    assert_eq!(llm.termination_reason(), TerminationReason::Error);
+
+    let state = AgentLoopError::StateError("broken".to_string());
+    assert_eq!(state.termination_reason(), TerminationReason::Error);
+}
+
+#[test]
 fn test_execute_tools_empty() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -3440,6 +3472,54 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     assert_eq!(
         extract_termination(&events),
         Some(TerminationReason::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn test_stop_condition_applies_on_natural_end_without_tools() {
+    let responses = vec![MockResponse::text("done now")];
+    let config = AgentConfig::new("mock").with_stop_condition(
+        crate::engine::stop_conditions::ContentMatch("done".to_string()),
+    );
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::ContentMatched(
+            "done".to_string()
+        )))
+    );
+}
+
+#[tokio::test]
+async fn test_run_loop_with_context_cancellation_token() {
+    let (recorder, _phases) = RecordAndSkipPlugin::new();
+    let config =
+        AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
+    let thread =
+        Thread::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let tools = HashMap::new();
+    let client = Client::default();
+    let token = CancellationToken::new();
+    token.cancel();
+
+    let result = run_loop_with_context(
+        &client,
+        &config,
+        thread,
+        &tools,
+        RunContext {
+            cancellation_token: Some(token),
+            ..RunContext::default()
+        },
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(AgentLoopError::Cancelled { .. })),
+        "expected cancellation, got: {result:?}"
     );
 }
 

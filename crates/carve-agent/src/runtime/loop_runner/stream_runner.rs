@@ -503,6 +503,31 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
+                if let Some(ref token) = run_cancellation_token {
+                    if token.is_cancelled() {
+                        thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                        ensure_run_finished_delta_or_error!();
+                        yield AgentEvent::RunFinish {
+                            thread_id: thread.id.clone(),
+                            run_id: run_id.clone(),
+                            result: None,
+                            termination: TerminationReason::Cancelled,
+                        };
+                        return;
+                    }
+                }
+                let stop_ctx = loop_state.to_check_context(&result, &thread);
+                if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
+                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    ensure_run_finished_delta_or_error!();
+                    yield AgentEvent::RunFinish {
+                        thread_id: thread.id.clone(),
+                        run_id: run_id.clone(),
+                        result: None,
+                        termination: TerminationReason::Stopped(reason),
+                    };
+                    return;
+                }
                 let result_value = natural_result_payload(&result.text);
                 thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();

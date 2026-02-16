@@ -11,6 +11,7 @@ use carve_agent::contracts::storage::{
     MessagePage, MessageQuery, SortOrder, ThreadListPage, ThreadListQuery, ThreadReader,
 };
 use carve_agent::orchestrator::{AgentOs, AgentOsRunError, RunStream};
+use carve_agent::runtime::loop_runner::RunCancellationToken;
 use carve_protocol_ag_ui::{
     AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
 };
@@ -271,6 +272,7 @@ async fn get_thread_messages_ai_sdk(
 fn encoded_sse_body<E>(
     run: RunStream,
     encoder: E,
+    cancellation_token: RunCancellationToken,
     trailer: Option<&'static str>,
 ) -> impl futures::Stream<Item = Result<Bytes, Infallible>> + Send + 'static
 where
@@ -283,23 +285,31 @@ where
         let tx_events = tx.clone();
         pump_encoded_stream(run.events, encoder, move |event| {
             let tx = tx_events.clone();
+            let token = cancellation_token.clone();
             async move {
                 let json = match serde_json::to_string(&event) {
                     Ok(json) => json,
                     Err(err) => {
                         warn!(error = %err, "failed to serialize SSE protocol event");
+                        token.cancel();
                         return Err(());
                     }
                 };
                 tx.send(Bytes::from(format!("data: {json}\n\n")))
                     .await
-                    .map_err(|_| ())
+                    .map_err(|_| {
+                        // Receiver dropped (client disconnected / aborted request).
+                        // Cancel run cooperatively so loop/runtime are transport-agnostic.
+                        token.cancel();
+                    })
             }
         })
         .await;
 
         if let Some(trailer) = trailer {
-            let _ = tx.send(Bytes::from(trailer)).await;
+            if tx.send(Bytes::from(trailer)).await.is_err() {
+                cancellation_token.cancel();
+            }
         }
     });
 
@@ -325,9 +335,12 @@ async fn run_ai_sdk_sse(
     }
 
     let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
-    let run = st.os.run_stream(run_request).await?;
+    let cancellation_token = RunCancellationToken::new();
+    let prepared = st.os.prepare_run(run_request).await?;
+    let run =
+        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
-    let body_stream = encoded_sse_body(run, enc, Some("data: [DONE]\n\n"));
+    let body_stream = encoded_sse_body(run, enc, cancellation_token, Some("data: [DONE]\n\n"));
 
     Ok(ai_sdk_sse_response(body_stream))
 }
@@ -342,12 +355,15 @@ async fn run_ag_ui_sse(
 
     let extensions = build_agui_extensions(&req);
     let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
-    let run = st
+    let cancellation_token = RunCancellationToken::new();
+    let prepared = st
         .os
-        .run_stream_with_extensions(run_request, extensions)
+        .prepare_run_with_extensions(run_request, extensions)
         .await?;
+    let run =
+        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
-    let body_stream = encoded_sse_body(run, enc, None);
+    let body_stream = encoded_sse_body(run, enc, cancellation_token, None);
 
     Ok(sse_response(body_stream))
 }

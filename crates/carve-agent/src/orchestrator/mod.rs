@@ -297,6 +297,21 @@ pub struct PreparedRun {
     run_ctx: RunContext,
 }
 
+impl PreparedRun {
+    /// Attach a cooperative cancellation token for this prepared run.
+    ///
+    /// This keeps loop cancellation wiring outside protocol/UI layers:
+    /// transport code can own token lifecycle and inject it before execution.
+    #[must_use]
+    pub fn with_cancellation_token(
+        mut self,
+        token: crate::runtime::loop_runner::RunCancellationToken,
+    ) -> Self {
+        self.run_ctx.cancellation_token = Some(token);
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentOs {
     default_client: Client,

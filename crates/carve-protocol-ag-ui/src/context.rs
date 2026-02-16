@@ -1,5 +1,5 @@
 use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent};
-use carve_agent_contract::AgentEvent;
+use carve_agent_contract::{AgentEvent, TerminationReason};
 use serde_json::Value;
 use std::collections::HashMap;
 use tracing::warn;
@@ -166,13 +166,29 @@ impl AGUIContext {
                 thread_id,
                 run_id,
                 result,
-                ..
+                termination,
             } => {
                 let mut events = vec![];
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
-                events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+                match termination {
+                    TerminationReason::Cancelled => {
+                        events.push(AGUIEvent::run_error(
+                            "Run cancelled",
+                            Some("CANCELLED".to_string()),
+                        ));
+                    }
+                    TerminationReason::Error => {
+                        events.push(AGUIEvent::run_error(
+                            "Run terminated with error",
+                            Some("ERROR".to_string()),
+                        ));
+                    }
+                    _ => {
+                        events.push(AGUIEvent::run_finished(thread_id, run_id, result.clone()));
+                    }
+                }
                 events
             }
 

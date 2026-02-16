@@ -326,11 +326,26 @@ pub async fn run_step(
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
+    thread: Thread,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+) -> Result<(Thread, String), AgentLoopError> {
+    run_loop_with_context(client, config, thread, tools, RunContext::default()).await
+}
+
+/// Run the full agent loop with explicit run context.
+///
+/// This is the non-streaming counterpart of `run_loop_stream(..., run_ctx)`,
+/// allowing cooperative cancellation via `run_ctx.cancellation_token`.
+pub async fn run_loop_with_context(
+    client: &Client,
+    config: &AgentConfig,
     mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
 ) -> Result<(Thread, String), AgentLoopError> {
     let mut loop_state = LoopState::new();
     let stop_conditions = effective_stop_conditions(config);
+    let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let mut last_text = String::new();
     let run_id = thread
         .runtime
@@ -356,6 +371,15 @@ pub async fn run_loop(
     thread = apply_pending_patches(thread, pending);
 
     loop {
+        if let Some(ref token) = run_cancellation_token {
+            if token.is_cancelled() {
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                return Err(AgentLoopError::Cancelled {
+                    thread: Box::new(thread),
+                });
+            }
+        }
+
         // Phase: StepStart and BeforeInference
         let (messages, filtered_tools, skip_inference, tracing_span, pending) =
             match run_step_prepare_phases(&thread, &tool_descriptors, config).await {
@@ -377,13 +401,25 @@ pub async fn run_loop(
 
         // Call LLM (instrumented with tracing span)
         let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
-        let response_res = async {
+        let llm_future = async {
             client
                 .exec_chat(&config.model, request, config.chat_options.as_ref())
                 .await
         }
-        .instrument(inference_span)
-        .await;
+        .instrument(inference_span);
+        let response_res = if let Some(ref token) = run_cancellation_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    return Err(AgentLoopError::Cancelled {
+                        thread: Box::new(thread),
+                    });
+                }
+                resp = llm_future => resp,
+            }
+        } else {
+            llm_future.await
+        };
         let response = match response_res {
             Ok(r) => r,
             Err(e) => {
@@ -464,6 +500,14 @@ pub async fn run_loop(
         }
 
         if !result.needs_tools() {
+            let stop_ctx = loop_state.to_check_context(&result, &thread);
+            if let Some(reason) = check_stop_conditions(&stop_conditions, &stop_ctx) {
+                thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                return Err(AgentLoopError::Stopped {
+                    thread: Box::new(thread),
+                    reason,
+                });
+            }
             break;
         }
 
@@ -483,7 +527,7 @@ pub async fn run_loop(
             }
         };
 
-        let results = execute_tool_calls_with_phases(
+        let tool_exec_future = execute_tool_calls_with_phases(
             tools,
             &result.tool_calls,
             &state,
@@ -493,8 +537,20 @@ pub async fn run_loop(
             None,
             Some(&rt_for_tools),
             &thread.id,
-        )
-        .await;
+        );
+        let results = if let Some(ref token) = run_cancellation_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                    return Err(AgentLoopError::Cancelled {
+                        thread: Box::new(thread),
+                    });
+                }
+                results = tool_exec_future => results,
+            }
+        } else {
+            tool_exec_future.await
+        };
 
         let results = match results {
             Ok(r) => r,

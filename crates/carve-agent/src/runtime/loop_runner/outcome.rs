@@ -69,6 +69,21 @@ pub enum AgentLoopError {
         thread: Box<Thread>,
         interaction: Box<Interaction>,
     },
+    /// External cancellation signal requested run termination.
+    #[error("Run cancelled")]
+    Cancelled { thread: Box<Thread> },
+}
+
+impl AgentLoopError {
+    /// Normalize loop errors into lifecycle termination semantics.
+    pub fn termination_reason(&self) -> TerminationReason {
+        match self {
+            Self::Stopped { reason, .. } => TerminationReason::Stopped(reason.clone()),
+            Self::Cancelled { .. } => TerminationReason::Cancelled,
+            Self::PendingInteraction { .. } => TerminationReason::PendingInteraction,
+            Self::LlmError(_) | Self::StateError(_) => TerminationReason::Error,
+        }
+    }
 }
 
 /// Helper to create a tool map from an iterator of tools.
