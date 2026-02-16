@@ -91,9 +91,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }};
         }
 
-        // Phase: SessionStart (use scoped block to manage borrow)
+        // Phase: RunStart (use scoped block to manage borrow)
         match emit_phase_block(
-            Phase::SessionStart,
+            Phase::RunStart,
             &thread,
             &tool_descriptors,
             &config.plugins,
@@ -116,7 +116,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         };
 
         let (next_thread, outbox) =
-            match drain_agent_outbox(thread.clone(), "agent_outbox_session_start")
+            match drain_agent_outbox(thread.clone(), "agent_outbox_run_start")
         {
             Ok(v) => v,
             Err(e) => {

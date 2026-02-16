@@ -11,7 +11,7 @@
 //! Each phase emits events to all plugins via `on_phase()`:
 //!
 //! ```text
-//! SessionStart (once)
+//! RunStart (once)
 //!     │
 //!     ▼
 //! ┌─────────────────────────┐
@@ -35,7 +35,7 @@
 //! └─────────────────────────┘
 //!     │
 //!     ▼
-//! SessionEnd (once)
+//! RunEnd (once)
 //! ```
 
 mod core;
@@ -507,9 +507,9 @@ pub async fn run_loop_with_context(
 
     let tool_descriptors = tool_descriptors_for_config(tools, config);
 
-    // Phase: SessionStart
+    // Phase: RunStart
     let pending = emit_phase_block(
-        Phase::SessionStart,
+        Phase::RunStart,
         &thread,
         &tool_descriptors,
         &config.plugins,
@@ -758,7 +758,7 @@ pub async fn run_loop_with_context(
         }
     }
 
-    // Phase: SessionEnd
+    // Phase: RunEnd
     thread = emit_run_end_phase(thread, &tool_descriptors, &config.plugins).await;
 
     Ok((thread, last_text))

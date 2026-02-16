@@ -128,8 +128,8 @@ impl InteractionResponsePlugin {
         agent.replay_tool_calls_push(call);
     }
 
-    /// During SessionStart, detect pending_interaction and schedule tool replay if approved.
-    fn on_session_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
+    /// During RunStart, detect pending_interaction and schedule tool replay if approved.
+    fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         let agent = ctx.state::<AgentState>(AGENT_STATE_PATH);
         let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
@@ -264,8 +264,8 @@ impl AgentPlugin for InteractionResponsePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         match phase {
-            Phase::SessionStart => {
-                self.on_session_start(step, ctx);
+            Phase::RunStart => {
+                self.on_run_start(step, ctx);
                 return;
             }
             Phase::BeforeToolExecute => {}
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_replays_tool_matching_pending_interaction() {
+    async fn run_start_replays_tool_matching_pending_interaction() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -395,7 +395,7 @@ mod tests {
         ));
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_calls = replay_calls_from_state(&updated);
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_replay_does_not_require_prior_intent_channel() {
+    async fn run_start_replay_does_not_require_prior_intent_channel() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -439,7 +439,7 @@ mod tests {
         ));
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_after = replay_calls_from_state(&updated);
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_frontend_interaction_replay_works_without_prior_channel() {
+    async fn run_start_frontend_interaction_replay_works_without_prior_channel() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -481,7 +481,7 @@ mod tests {
         ));
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_after = replay_calls_from_state(&updated);
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_frontend_interaction_replay_without_history_uses_pending_payload() {
+    async fn run_start_frontend_interaction_replay_without_history_uses_pending_payload() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -506,7 +506,7 @@ mod tests {
         let thread = Thread::with_initial_state("s1", doc.clone());
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_after = replay_calls_from_state(&updated);
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_permission_replay_without_history_uses_embedded_tool_call() {
+    async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -541,7 +541,7 @@ mod tests {
         let thread = Thread::with_initial_state("s1", doc.clone());
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_after = replay_calls_from_state(&updated);
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_permission_replay_prefers_origin_tool_call_mapping() {
+    async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -576,7 +576,7 @@ mod tests {
         let thread = Thread::with_initial_state("s1", doc.clone());
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_after = replay_calls_from_state(&updated);
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_recovery_approval_schedules_agent_run_replay() {
+    async fn run_start_recovery_approval_schedules_agent_run_replay() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -619,7 +619,7 @@ mod tests {
         );
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         let updated = apply_ctx_patch(&thread, &ctx);
         let replay_calls = replay_calls_from_state(&updated);
@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_start_recovery_denial_clears_pending_interaction() {
+    async fn run_start_recovery_denial_clears_pending_interaction() {
         let doc = json!({
             "agent": {
                 "pending_interaction": {
@@ -662,7 +662,7 @@ mod tests {
         );
 
         let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         // Plugin ops are collected in ctx; flush them
         assert!(

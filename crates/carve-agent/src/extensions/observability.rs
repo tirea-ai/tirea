@@ -244,7 +244,7 @@ pub trait MetricsSink: Send + Sync {
     fn on_tool(&self, span: &ToolSpan);
 
     /// Called when a session ends with aggregated metrics.
-    fn on_session_end(&self, metrics: &AgentMetrics);
+    fn on_run_end(&self, metrics: &AgentMetrics);
 }
 
 // =============================================================================
@@ -277,7 +277,7 @@ impl MetricsSink for InMemorySink {
         self.inner.lock().unwrap().tools.push(span.clone());
     }
 
-    fn on_session_end(&self, metrics: &AgentMetrics) {
+    fn on_run_end(&self, metrics: &AgentMetrics) {
         let mut inner = self.inner.lock().unwrap();
         inner.session_duration_ms = metrics.session_duration_ms;
     }
@@ -304,7 +304,7 @@ impl MetricsSink for InMemorySink {
 /// ```
 pub struct LLMMetryPlugin {
     sink: Arc<dyn MetricsSink>,
-    session_start: Mutex<Option<Instant>>,
+    run_start: Mutex<Option<Instant>>,
     metrics: Mutex<AgentMetrics>,
     /// Inference timing: set at BeforeInference, consumed at AfterInference.
     inference_start: Mutex<Option<Instant>>,
@@ -326,7 +326,7 @@ impl LLMMetryPlugin {
     pub fn new(sink: impl MetricsSink + 'static) -> Self {
         Self {
             sink: Arc::new(sink),
-            session_start: Mutex::new(None),
+            run_start: Mutex::new(None),
             metrics: Mutex::new(AgentMetrics::default()),
             inference_start: Mutex::new(None),
             tool_start: Mutex::new(HashMap::new()),
@@ -357,8 +357,8 @@ impl AgentPlugin for LLMMetryPlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
         match phase {
-            Phase::SessionStart => {
-                *lock_unpoison(&self.session_start) = Some(Instant::now());
+            Phase::RunStart => {
+                *lock_unpoison(&self.run_start) = Some(Instant::now());
             }
             Phase::BeforeInference => {
                 *lock_unpoison(&self.inference_start) = Some(Instant::now());
@@ -550,9 +550,9 @@ impl AgentPlugin for LLMMetryPlugin {
                 self.sink.on_tool(&span);
                 lock_unpoison(&self.metrics).tools.push(span);
             }
-            Phase::SessionEnd => {
+            Phase::RunEnd => {
                 let session_duration_ms = self
-                    .session_start
+                    .run_start
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .take()
@@ -566,7 +566,7 @@ impl AgentPlugin for LLMMetryPlugin {
 
                 let mut metrics = lock_unpoison(&self.metrics).clone();
                 metrics.session_duration_ms = session_duration_ms;
-                self.sink.on_session_end(&metrics);
+                self.sink.on_run_end(&metrics);
             }
             _ => {}
         }
@@ -736,13 +736,13 @@ mod tests {
     }
 
     #[test]
-    fn test_in_memory_sink_session_end() {
+    fn test_in_memory_sink_run_end() {
         let sink = InMemorySink::new();
         let metrics = AgentMetrics {
             session_duration_ms: 999,
             ..Default::default()
         };
-        sink.on_session_end(&metrics);
+        sink.on_run_end(&metrics);
         assert_eq!(sink.metrics().session_duration_ms, 999);
     }
 
@@ -887,11 +887,11 @@ mod tests {
         let thread = mock_thread();
         let mut step = StepContext::new(&thread, vec![]);
 
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunEnd, &mut step, &ctx).await;
 
         let m = sink.metrics();
         assert!(m.session_duration_ms >= 10);

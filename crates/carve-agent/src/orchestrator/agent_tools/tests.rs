@@ -795,7 +795,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
         !step.pending_patches.is_empty(),
         "expected reconciliation + pending patches for orphan running entry"
@@ -859,7 +859,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
         !step.skip_inference,
         "existing pending interaction should not be replaced"
@@ -905,7 +905,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let updated = thread
         .clone()
@@ -959,7 +959,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let updated = thread
         .clone()
@@ -1009,7 +1009,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let updated = thread
         .clone()
@@ -1057,7 +1057,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let updated = thread
         .clone()
@@ -1108,7 +1108,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let doc = thread.rebuild_state().unwrap();
     let ctx = Context::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let updated = thread
         .clone()

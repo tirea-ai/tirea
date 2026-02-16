@@ -1185,7 +1185,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
             match phase {
-                Phase::SessionStart => {
+                Phase::RunStart => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                         carve_state::path!("debug", "temp_counter"),
                         json!(1),
@@ -1212,7 +1212,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     .with_source("test:run_scoped_state");
                     step.pending_patches.push(patch);
                 }
-                Phase::SessionEnd => {
+                Phase::RunEnd => {
                     let Ok(state) = step.thread.rebuild_state() else {
                         return;
                     };
@@ -1278,7 +1278,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
     assert_eq!(second_state["debug"]["run_count"], 2);
     assert_eq!(
         second_state["debug"]["last_temp_counter"], 2,
-        "run-local state should be recreated each run and cleaned on SessionEnd"
+        "run-local state should be recreated each run and cleaned on RunEnd"
     );
     assert_eq!(second_state["debug"]["temp_counter"], Value::Null);
 }
@@ -2022,7 +2022,7 @@ async fn collect_stream_events(
 }
 
 #[tokio::test]
-async fn test_stream_skip_inference_emits_session_end_phase() {
+async fn test_stream_skip_inference_emits_run_end_phase() {
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
@@ -2052,22 +2052,19 @@ async fn test_stream_skip_inference_emits_session_end_phase() {
         events.last()
     );
 
-    // Verify phase lifecycle: SessionStart → StepStart → BeforeInference → SessionEnd
+    // Verify phase lifecycle: RunStart → StepStart → BeforeInference → RunEnd
     let recorded = phases.lock().unwrap().clone();
     assert!(
-        recorded.contains(&Phase::SessionStart),
-        "Missing SessionStart phase"
+        recorded.contains(&Phase::RunStart),
+        "Missing RunStart phase"
     );
-    assert!(
-        recorded.contains(&Phase::SessionEnd),
-        "Missing SessionEnd phase"
-    );
+    assert!(recorded.contains(&Phase::RunEnd), "Missing RunEnd phase");
 
-    // SessionEnd must be last
+    // RunEnd must be last
     assert_eq!(
         recorded.last(),
-        Some(&Phase::SessionEnd),
-        "SessionEnd should be last phase, got: {:?}",
+        Some(&Phase::RunEnd),
+        "RunEnd should be last phase, got: {:?}",
         recorded
     );
 }
@@ -2445,7 +2442,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 }
 
 #[tokio::test]
-async fn test_run_loop_skip_inference_emits_session_end_phase() {
+async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
@@ -2460,17 +2457,14 @@ async fn test_run_loop_skip_inference_emits_session_end_phase() {
 
     let recorded = phases.lock().unwrap().clone();
     assert!(
-        recorded.contains(&Phase::SessionStart),
-        "Missing SessionStart phase"
+        recorded.contains(&Phase::RunStart),
+        "Missing RunStart phase"
     );
-    assert!(
-        recorded.contains(&Phase::SessionEnd),
-        "Missing SessionEnd phase"
-    );
+    assert!(recorded.contains(&Phase::RunEnd), "Missing RunEnd phase");
     assert_eq!(
         recorded.last(),
-        Some(&Phase::SessionEnd),
-        "SessionEnd should be last phase, got: {:?}",
+        Some(&Phase::RunEnd),
+        "RunEnd should be last phase, got: {:?}",
         recorded
     );
 }
@@ -2511,7 +2505,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
 
 #[tokio::test]
 async fn test_run_loop_phase_sequence_on_skip_inference() {
-    // Verify the full phase sequence: SessionStart → StepStart → BeforeInference → SessionEnd
+    // Verify the full phase sequence: RunStart → StepStart → BeforeInference → RunEnd
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
@@ -2528,10 +2522,10 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     assert_eq!(
         recorded,
         vec![
-            Phase::SessionStart,
+            Phase::RunStart,
             Phase::StepStart,
             Phase::BeforeInference,
-            Phase::SessionEnd,
+            Phase::RunEnd,
         ],
         "Unexpected phase sequence: {:?}",
         recorded
@@ -2991,7 +2985,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
-            if phase == Phase::SessionStart {
+            if phase == Phase::RunStart {
                 step.pending_patches.push(
                     carve_state::TrackedPatch::new(Patch::new().with_op(Op::set(
                         carve_state::path!("agent", "replay_tool_calls"),
@@ -3054,7 +3048,7 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
         }
 
         async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &Context<'_>) {
-            if phase == Phase::SessionStart {
+            if phase == Phase::RunStart {
                 let agent = ctx.state::<crate::contracts::state_types::AgentState>(
                     crate::contracts::state_types::AGENT_STATE_PATH,
                 );
@@ -3117,7 +3111,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
             match phase {
-                Phase::SessionStart => {
+                Phase::RunStart => {
                     let agent = ctx.state::<crate::contracts::state_types::AgentState>(
                         crate::contracts::state_types::AGENT_STATE_PATH,
                     );
@@ -3184,7 +3178,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
         }
 
         async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &Context<'_>) {
-            if phase == Phase::SessionStart {
+            if phase == Phase::RunStart {
                 let agent = ctx.state::<crate::contracts::state_types::AgentState>(
                     crate::contracts::state_types::AGENT_STATE_PATH,
                 );
@@ -3230,17 +3224,17 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
 }
 
 #[tokio::test]
-async fn test_stream_apply_error_still_runs_session_end_phase() {
+async fn test_stream_apply_error_still_runs_run_end_phase() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static SESSION_END_RAN: AtomicBool = AtomicBool::new(false);
 
-    struct PendingAndSessionEndPlugin;
+    struct PendingAndRunEndPlugin;
 
     #[async_trait]
-    impl AgentPlugin for PendingAndSessionEndPlugin {
+    impl AgentPlugin for PendingAndRunEndPlugin {
         fn id(&self) -> &str {
-            "pending_and_session_end"
+            "pending_and_run_end"
         }
 
         async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
@@ -3253,7 +3247,7 @@ async fn test_stream_apply_error_still_runs_session_end_phase() {
                         );
                     }
                 }
-                Phase::SessionEnd => {
+                Phase::RunEnd => {
                     SESSION_END_RAN.store(true, Ordering::SeqCst);
                 }
                 _ => {}
@@ -3264,7 +3258,7 @@ async fn test_stream_apply_error_still_runs_session_end_phase() {
     SESSION_END_RAN.store(false, Ordering::SeqCst);
 
     let config = AgentConfig::new("mock")
-        .with_plugin(Arc::new(PendingAndSessionEndPlugin) as Arc<dyn AgentPlugin>)
+        .with_plugin(Arc::new(PendingAndRunEndPlugin) as Arc<dyn AgentPlugin>)
         .with_parallel_tools(true);
     let thread = Thread::new("test").with_message(Message::user("run tools"));
     let responses = vec![MockResponse::text("run both")
@@ -3284,7 +3278,7 @@ async fn test_stream_apply_error_still_runs_session_end_phase() {
     );
     assert!(
         SESSION_END_RAN.load(Ordering::SeqCst),
-        "SessionEnd phase must run on apply_tool_results failure"
+        "RunEnd phase must run on apply_tool_results failure"
     );
 }
 

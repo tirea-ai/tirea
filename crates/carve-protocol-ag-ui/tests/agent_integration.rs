@@ -12391,7 +12391,7 @@ mod llmmetry_tracing {
         let mut step = StepContext::new(&thread, vec![]);
 
         // Thread start
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
         // Inference
         plugin
@@ -12419,7 +12419,7 @@ mod llmmetry_tracing {
             .await;
 
         // Thread end
-        plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunEnd, &mut step, &ctx).await;
 
         let new_spans: Vec<CapturedSpan> = {
             let spans = captured.lock().unwrap();
@@ -12443,7 +12443,7 @@ mod llmmetry_tracing {
 }
 
 // ============================================================================
-// InteractionPlugin SessionStart / replay_tool_calls state tests
+// InteractionPlugin RunStart / replay_tool_calls state tests
 // ============================================================================
 
 fn replay_calls_after_ctx_changes(thread: &Thread, ctx: &Context<'_>) -> Vec<ToolCall> {
@@ -12467,9 +12467,9 @@ fn replay_calls_after_ctx_changes(thread: &Thread, ctx: &Context<'_>) -> Vec<Too
         .unwrap_or_default()
 }
 
-/// Test: on_session_start sets replay_tool_calls when pending_interaction is approved
+/// Test: on_run_start sets replay_tool_calls when pending_interaction is approved
 #[tokio::test]
-async fn test_interaction_response_session_start_sets_replay_on_approval() {
+async fn test_interaction_response_run_start_sets_replay_on_approval() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12506,8 +12506,8 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
 
     let mut step = StepContext::new(&thread, vec![]);
 
-    // Run SessionStart phase
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    // Run RunStart phase
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     // Should have set replay_tool_calls state
     let calls = replay_calls_after_ctx_changes(&thread, &ctx);
@@ -12516,9 +12516,9 @@ async fn test_interaction_response_session_start_sets_replay_on_approval() {
     assert_eq!(calls[0].id, pending_id);
 }
 
-/// Test: on_session_start does NOT set replay_tool_calls when interaction is denied
+/// Test: on_run_start does NOT set replay_tool_calls when interaction is denied
 #[tokio::test]
-async fn test_interaction_response_session_start_no_replay_on_denial() {
+async fn test_interaction_response_run_start_no_replay_on_denial() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12542,7 +12542,7 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
     );
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let replay = replay_calls_after_ctx_changes(&thread, &ctx);
     assert!(
@@ -12551,9 +12551,9 @@ async fn test_interaction_response_session_start_no_replay_on_denial() {
     );
 }
 
-/// Test: on_session_start does nothing when no pending_interaction exists
+/// Test: on_run_start does nothing when no pending_interaction exists
 #[tokio::test]
-async fn test_interaction_response_session_start_no_pending() {
+async fn test_interaction_response_run_start_no_pending() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12562,7 +12562,7 @@ async fn test_interaction_response_session_start_no_pending() {
     let plugin = InteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let replay = replay_calls_after_ctx_changes(&thread, &ctx);
     assert!(
@@ -12571,9 +12571,9 @@ async fn test_interaction_response_session_start_no_pending() {
     );
 }
 
-/// Test: on_session_start does nothing when approved ID doesn't match pending
+/// Test: on_run_start does nothing when approved ID doesn't match pending
 #[tokio::test]
-async fn test_interaction_response_session_start_mismatched_id() {
+async fn test_interaction_response_run_start_mismatched_id() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12590,7 +12590,7 @@ async fn test_interaction_response_session_start_mismatched_id() {
     let plugin = InteractionPlugin::with_responses(vec!["permission_y".to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let replay = replay_calls_after_ctx_changes(&thread, &ctx);
     assert!(
@@ -12599,9 +12599,9 @@ async fn test_interaction_response_session_start_mismatched_id() {
     );
 }
 
-/// Test: on_session_start does nothing when no assistant message with tool_calls
+/// Test: on_run_start does nothing when no assistant message with tool_calls
 #[tokio::test]
-async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
+async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12619,7 +12619,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
     let plugin = InteractionPlugin::with_responses(vec![pending_id.to_string()], vec![]);
 
     let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
     let replay = replay_calls_after_ctx_changes(&thread, &ctx);
     assert!(
@@ -12633,7 +12633,7 @@ async fn test_interaction_response_session_start_no_tool_calls_in_messages() {
 // ============================================================================
 
 /// Test: Full HITL flow — PermissionPlugin suspends → client approves →
-/// InteractionPlugin detects approval in SessionStart →
+/// InteractionPlugin detects approval in RunStart →
 /// schedules replay_tool_calls with correct tool call data
 #[tokio::test]
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
@@ -12698,11 +12698,11 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         .iter()
         .any(|id| id == &interaction.id));
 
-    // Phase 4: InteractionPlugin processes approval in SessionStart
+    // Phase 4: InteractionPlugin processes approval in RunStart
     let response_plugin = interaction_plugin_from_request(&approve_request);
     let mut step2 = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step2, &ctx)
+        .on_phase(Phase::RunStart, &mut step2, &ctx)
         .await;
 
     // Verify: replay_tool_calls is set with correct tool call
@@ -12750,7 +12750,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     let response_plugin = interaction_plugin_from_request(&deny_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step, &ctx)
+        .on_phase(Phase::RunStart, &mut step, &ctx)
         .await;
 
     let replay = replay_calls_after_ctx_changes(&persisted_thread, &ctx);
@@ -12792,7 +12792,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
     let response_plugin = interaction_plugin_from_request(&approve_request);
     let mut step = StepContext::new(&persisted_thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step, &ctx)
+        .on_phase(Phase::RunStart, &mut step, &ctx)
         .await;
 
     let replay = replay_calls_after_ctx_changes(&persisted_thread, &ctx);
@@ -12800,9 +12800,9 @@ async fn test_hitl_replay_picks_first_tool_call() {
     assert_eq!(replay[0].name, "tool_a");
 }
 
-/// Test: HITL replay — SessionStart + BeforeToolExecute phases are independent
+/// Test: HITL replay — RunStart + BeforeToolExecute phases are independent
 #[tokio::test]
-async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
+async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let doc = json!({});
     let ctx = Context::new(&doc, "test", "test");
 
@@ -12830,10 +12830,10 @@ async fn test_hitl_replay_session_start_does_not_affect_before_tool_execute() {
         .with_message(AGUIMessage::tool("true", pending_id));
     let response_plugin = interaction_plugin_from_request(&approve_request);
 
-    // SessionStart sets replay_tool_calls
+    // RunStart sets replay_tool_calls
     let mut step1 = StepContext::new(&thread, vec![]);
     response_plugin
-        .on_phase(Phase::SessionStart, &mut step1, &ctx)
+        .on_phase(Phase::RunStart, &mut step1, &ctx)
         .await;
     let replay = replay_calls_after_ctx_changes(&thread, &ctx);
     assert!(!replay.is_empty());

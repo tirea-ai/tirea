@@ -5,7 +5,7 @@
 //!
 //! # Phases
 //!
-//! - `SessionStart` / `SessionEnd` - Thread lifecycle (called once)
+//! - `RunStart` / `RunEnd` - Thread lifecycle (called once)
 //! - `StepStart` / `StepEnd` - Step lifecycle
 //! - `BeforeInference` / `AfterInference` - LLM call lifecycle
 //! - `BeforeToolExecute` / `AfterToolExecute` - Tool execution lifecycle
@@ -57,14 +57,14 @@ use carve_state::Context;
 /// ```ignore
 /// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &Context<'_>) {
 ///     match phase {
-///         Phase::SessionStart => { /* initialize */ }
+///         Phase::RunStart => { /* initialize */ }
 ///         Phase::StepStart => { /* prepare context */ }
 ///         Phase::BeforeInference => { /* inject context, filter tools */ }
 ///         Phase::AfterInference => { /* process response */ }
 ///         Phase::BeforeToolExecute => { /* check permissions */ }
 ///         Phase::AfterToolExecute => { /* add reminders */ }
 ///         Phase::StepEnd => { /* cleanup */ }
-///         Phase::SessionEnd => { /* finalize */ }
+///         Phase::RunEnd => { /* finalize */ }
 ///     }
 /// }
 /// ```
@@ -450,7 +450,7 @@ mod tests {
         let ctx = test_ctx(&doc);
 
         // All phases should be callable without panic or side effects
-        plugin.on_phase(Phase::SessionStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
         plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
         plugin
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
@@ -465,7 +465,7 @@ mod tests {
             .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
             .await;
         plugin.on_phase(Phase::StepEnd, &mut step, &ctx).await;
-        plugin.on_phase(Phase::SessionEnd, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunEnd, &mut step, &ctx).await;
 
         // Context should be unchanged
         assert!(step.system_context.is_empty());

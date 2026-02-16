@@ -16,7 +16,7 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
     /// Thread started (called once).
-    SessionStart,
+    RunStart,
     /// Step started - prepare context.
     StepStart,
     /// Before LLM inference - build messages, filter tools.
@@ -30,20 +30,20 @@ pub enum Phase {
     /// Step ended.
     StepEnd,
     /// Thread ended (called once).
-    SessionEnd,
+    RunEnd,
 }
 
 impl std::fmt::Display for Phase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Phase::SessionStart => write!(f, "SessionStart"),
+            Phase::RunStart => write!(f, "RunStart"),
             Phase::StepStart => write!(f, "StepStart"),
             Phase::BeforeInference => write!(f, "BeforeInference"),
             Phase::AfterInference => write!(f, "AfterInference"),
             Phase::BeforeToolExecute => write!(f, "BeforeToolExecute"),
             Phase::AfterToolExecute => write!(f, "AfterToolExecute"),
             Phase::StepEnd => write!(f, "StepEnd"),
-            Phase::SessionEnd => write!(f, "SessionEnd"),
+            Phase::RunEnd => write!(f, "RunEnd"),
         }
     }
 }
@@ -348,20 +348,20 @@ mod tests {
 
     #[test]
     fn test_phase_display() {
-        assert_eq!(Phase::SessionStart.to_string(), "SessionStart");
+        assert_eq!(Phase::RunStart.to_string(), "RunStart");
         assert_eq!(Phase::StepStart.to_string(), "StepStart");
         assert_eq!(Phase::BeforeInference.to_string(), "BeforeInference");
         assert_eq!(Phase::AfterInference.to_string(), "AfterInference");
         assert_eq!(Phase::BeforeToolExecute.to_string(), "BeforeToolExecute");
         assert_eq!(Phase::AfterToolExecute.to_string(), "AfterToolExecute");
         assert_eq!(Phase::StepEnd.to_string(), "StepEnd");
-        assert_eq!(Phase::SessionEnd.to_string(), "SessionEnd");
+        assert_eq!(Phase::RunEnd.to_string(), "RunEnd");
     }
 
     #[test]
     fn test_phase_equality() {
-        assert_eq!(Phase::SessionStart, Phase::SessionStart);
-        assert_ne!(Phase::SessionStart, Phase::SessionEnd);
+        assert_eq!(Phase::RunStart, Phase::RunStart);
+        assert_ne!(Phase::RunStart, Phase::RunEnd);
     }
 
     #[test]
@@ -692,14 +692,14 @@ mod tests {
     #[test]
     fn test_phase_all_8_values() {
         let phases = [
-            Phase::SessionStart,
+            Phase::RunStart,
             Phase::StepStart,
             Phase::BeforeInference,
             Phase::AfterInference,
             Phase::BeforeToolExecute,
             Phase::AfterToolExecute,
             Phase::StepEnd,
-            Phase::SessionEnd,
+            Phase::RunEnd,
         ];
 
         assert_eq!(phases.len(), 8);

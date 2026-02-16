@@ -207,15 +207,15 @@ pub(super) async fn emit_run_end_phase(
         let current_state = match thread.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(error = %e, "RunEndPhase(SessionEnd): failed to rebuild state");
+                tracing::warn!(error = %e, "RunEndPhase(RunEnd): failed to rebuild state");
                 return thread;
             }
         };
         let ctx = Context::new(&current_state, "phase", "plugin:run_end")
             .with_runtime(Some(&thread.runtime));
         let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
-        if let Err(e) = emit_phase_checked(Phase::SessionEnd, &mut step, &ctx, plugins).await {
-            tracing::warn!(error = %e, "RunEndPhase(SessionEnd) plugin phase validation failed");
+        if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {
+            tracing::warn!(error = %e, "RunEndPhase(RunEnd) plugin phase validation failed");
         }
         let plugin_patch = ctx.take_patch();
         if !plugin_patch.patch().is_empty() {

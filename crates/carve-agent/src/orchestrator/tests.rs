@@ -124,23 +124,23 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
 }
 
 #[derive(Debug)]
-struct SkipWithSessionEndPatchPlugin;
+struct SkipWithRunEndPatchPlugin;
 
 #[async_trait]
-impl AgentPlugin for SkipWithSessionEndPatchPlugin {
+impl AgentPlugin for SkipWithRunEndPatchPlugin {
     fn id(&self) -> &str {
-        "skip_with_session_end_patch"
+        "skip_with_run_end_patch"
     }
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &Context<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
-        if phase == Phase::SessionEnd {
+        if phase == Phase::RunEnd {
             let patch = carve_state::TrackedPatch::new(carve_state::Patch::new().with_op(
-                carve_state::Op::set(carve_state::path!("session_end_marker"), json!(true)),
+                carve_state::Op::set(carve_state::path!("run_end_marker"), json!(true)),
             ))
-            .with_source("test:session_end_marker");
+            .with_source("test:run_end_marker");
             step.pending_patches.push(patch);
         }
     }
@@ -1256,8 +1256,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SkipWithSessionEndPatchPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
         )
         .build()
         .unwrap();
@@ -1338,8 +1337,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
         .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
         .with_agent(
             "a1",
-            AgentDefinition::new("gpt-4o-mini")
-                .with_plugin(Arc::new(SkipWithSessionEndPatchPlugin)),
+            AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
         )
         .build()
         .unwrap();
@@ -1382,8 +1380,8 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
         "existing state must stay unchanged when first checkpoint append fails"
     );
     assert!(
-        head.thread.state.get("session_end_marker").is_none(),
-        "failed checkpoint must not persist SessionEnd patch"
+        head.thread.state.get("run_end_marker").is_none(),
+        "failed checkpoint must not persist RunEnd patch"
     );
     assert_eq!(head.version, 0, "failed append must not advance version");
     assert_eq!(storage.append_call_count(), 1);
