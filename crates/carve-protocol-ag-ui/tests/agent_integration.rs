@@ -2161,7 +2161,7 @@ fn test_agent_event_all_variants() {
         thread_id: "t1".to_string(),
         run_id: "r1".to_string(),
         result: Some(serde_json::json!({"response": "Final response"})),
-        stop_reason: None,
+        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
     };
     match finish {
         AgentEvent::RunFinish { result, .. } => {
@@ -9168,7 +9168,7 @@ fn test_multiple_text_messages() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "First message"})),
-        stop_reason: None,
+        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish1));
 
@@ -10107,7 +10107,7 @@ fn test_run_started_is_first_event() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Hello"})),
-        stop_reason: None,
+        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish));
 
@@ -10292,7 +10292,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: Some(serde_json::json!({"response": "Hello"})),
-            stop_reason: None,
+            termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
         },
     ]
     .iter()
@@ -11889,7 +11889,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(json!({"ok": true})),
-        stop_reason: None,
+        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 
@@ -11937,7 +11937,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Response"})),
-        stop_reason: None,
+        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 

@@ -96,7 +96,7 @@ pub struct RunContext {
     ///
     /// When cancelled, this is the **run cancellation signal**:
     /// the loop stops at the next check point and emits `RunFinish` with
-    /// `StopReason::Cancelled`.
+    /// `TerminationReason::Cancelled`.
     pub cancellation_token: Option<RunCancellationToken>,
     /// Optional state committer for durable thread deltas.
     ///

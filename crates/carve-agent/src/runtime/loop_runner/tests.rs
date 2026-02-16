@@ -1,4 +1,5 @@
 use super::*;
+use crate::contracts::events::TerminationReason;
 use crate::contracts::phase::Phase;
 use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::runtime::activity::ActivityHub;
@@ -2094,7 +2095,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     assert!(matches!(
         events.get(3),
         Some(AgentEvent::RunFinish {
-            stop_reason: None,
+            termination: TerminationReason::PendingInteraction,
             ..
         })
     ));
@@ -2781,10 +2782,10 @@ async fn run_mock_stream_with_final_thread(
     (events, final_thread)
 }
 
-/// Extract the stop_reason from the RunFinish event.
-fn extract_stop_reason(events: &[AgentEvent]) -> Option<StopReason> {
+/// Extract the termination from the RunFinish event.
+fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     events.iter().find_map(|e| match e {
-        AgentEvent::RunFinish { stop_reason, .. } => stop_reason.clone(),
+        AgentEvent::RunFinish { termination, .. } => Some(termination.clone()),
         _ => None,
     })
 }
@@ -2837,7 +2838,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
         matches!(
             events.last(),
             Some(AgentEvent::RunFinish {
-                stop_reason: None,
+                termination: TerminationReason::Error,
                 ..
             })
         ),
@@ -3122,8 +3123,8 @@ async fn test_stop_max_rounds_via_stop_condition() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::MaxRoundsReached)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
     );
 }
 
@@ -3136,7 +3137,10 @@ async fn test_stop_natural_end_no_tools() {
     let tools = HashMap::new();
 
     let events = run_mock_stream(provider, config, thread, tools).await;
-    assert_eq!(extract_stop_reason(&events), Some(StopReason::NaturalEnd));
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
 }
 
 #[test]
@@ -3208,8 +3212,8 @@ async fn test_stop_plugin_requested() {
     let provider = MockStreamProvider::new(vec![]);
     let events = run_mock_stream(provider, config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::PluginRequested)
+        extract_termination(&events),
+        Some(TerminationReason::PluginRequested)
     );
 }
 
@@ -3243,8 +3247,10 @@ async fn test_stop_on_tool_condition() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::ToolCalled("finish_tool".to_string()))
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::ToolCalled(
+            "finish_tool".to_string(),
+        )))
     );
 }
 
@@ -3270,8 +3276,10 @@ async fn test_stop_content_match_condition() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::ContentMatched("FINAL_ANSWER".to_string()))
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::ContentMatched(
+            "FINAL_ANSWER".to_string(),
+        )))
     );
 }
 
@@ -3295,8 +3303,8 @@ async fn test_stop_token_budget_condition() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::TokenBudgetExceeded)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::TokenBudgetExceeded))
     );
 }
 
@@ -3321,8 +3329,10 @@ async fn test_stop_consecutive_errors_condition() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::ConsecutiveErrorsExceeded)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(
+            StopReason::ConsecutiveErrorsExceeded,
+        ))
     );
 }
 
@@ -3346,7 +3356,10 @@ async fn test_stop_loop_detection_condition() {
     let tools = tool_map([EchoTool]);
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
-    assert_eq!(extract_stop_reason(&events), Some(StopReason::LoopDetected));
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::LoopDetected))
+    );
 }
 
 #[tokio::test]
@@ -3371,7 +3384,10 @@ async fn test_stop_cancellation_token() {
         },
     );
     let events = collect_stream_events(stream).await;
-    assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Cancelled)
+    );
 }
 
 #[tokio::test]
@@ -3421,7 +3437,10 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         .expect("stream should stop shortly after cancellation")
         .expect("collector task should not panic");
 
-    assert_eq!(extract_stop_reason(&events), Some(StopReason::Cancelled));
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Cancelled)
+    );
 }
 
 #[tokio::test]
@@ -3441,8 +3460,8 @@ async fn test_stop_first_condition_wins() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     // MaxRounds listed first → wins
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::MaxRoundsReached)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
     );
 }
 
@@ -3465,13 +3484,13 @@ async fn test_stop_default_max_rounds_from_config() {
 
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::MaxRoundsReached)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
     );
 }
 
 #[tokio::test]
-async fn test_stop_reason_in_run_finish_event() {
+async fn test_termination_in_run_finish_event() {
     // Verify RunFinish event structure when stop condition triggers.
     let responses =
         vec![MockResponse::text("r1").with_tool_call("c1", "echo", json!({"message": "a"}))];
@@ -3489,12 +3508,15 @@ async fn test_stop_reason_in_run_finish_event() {
     assert!(finish.is_some());
     if let Some(AgentEvent::RunFinish {
         thread_id,
-        stop_reason,
+        termination,
         ..
     }) = finish
     {
         assert_eq!(thread_id, "test-thread");
-        assert_eq!(*stop_reason, Some(StopReason::MaxRoundsReached));
+        assert_eq!(
+            *termination,
+            TerminationReason::Stopped(StopReason::MaxRoundsReached)
+        );
     }
 }
 
@@ -3522,8 +3544,8 @@ async fn test_consecutive_errors_resets_on_success() {
     let events = run_mock_stream(MockStreamProvider::new(responses), config, thread, tools).await;
     // Should hit MaxRounds(3), not ConsecutiveErrors
     assert_eq!(
-        extract_stop_reason(&events),
-        Some(StopReason::MaxRoundsReached)
+        extract_termination(&events),
+        Some(TerminationReason::Stopped(StopReason::MaxRoundsReached))
     );
 }
 

@@ -354,7 +354,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final response"})),
-            stop_reason: None,
+            termination: crate::contracts::events::TerminationReason::NaturalEnd,
         };
         if let AgentEvent::RunFinish { result, .. } = &event {
             assert_eq!(AgentEvent::extract_response(result), "Final response");

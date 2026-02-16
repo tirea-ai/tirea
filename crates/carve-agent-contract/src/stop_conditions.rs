@@ -651,8 +651,6 @@ mod tests {
     #[test]
     fn stop_reason_serialization_roundtrip() {
         let reasons = vec![
-            StopReason::NaturalEnd,
-            StopReason::PluginRequested,
             StopReason::MaxRoundsReached,
             StopReason::TimeoutReached,
             StopReason::TokenBudgetExceeded,
@@ -660,7 +658,6 @@ mod tests {
             StopReason::ContentMatched("DONE".to_string()),
             StopReason::ConsecutiveErrorsExceeded,
             StopReason::LoopDetected,
-            StopReason::Cancelled,
             StopReason::Custom("my_reason".to_string()),
         ];
         for reason in reasons {

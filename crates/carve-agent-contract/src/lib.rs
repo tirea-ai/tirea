@@ -16,6 +16,6 @@ pub mod stop_conditions;
 pub use event::AgentEvent;
 pub use interaction::{Interaction, InteractionResponse};
 pub use run::RunRequest;
-pub use stop::StopReason;
+pub use stop::{StopReason, TerminationReason};
 pub use stream::StreamResult;
 pub use tool::{ToolResult, ToolStatus};

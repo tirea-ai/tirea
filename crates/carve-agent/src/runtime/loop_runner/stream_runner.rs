@@ -279,7 +279,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         thread_id: thread.id.clone(),
                         run_id: run_id.clone(),
                         result: None,
-                        stop_reason: Some(StopReason::Cancelled),
+                        termination: TerminationReason::Cancelled,
                     };
                     return;
                 }
@@ -310,10 +310,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
-                    stop_reason: if pending_interaction.is_some() {
-                        None
+                    termination: if pending_interaction.is_some() {
+                        TerminationReason::PendingInteraction
                     } else {
-                        Some(StopReason::PluginRequested)
+                        TerminationReason::PluginRequested
                     },
                 };
                 return;
@@ -375,7 +375,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                                 thread_id: thread.id.clone(),
                                 run_id: run_id.clone(),
                                 result: None,
-                                stop_reason: Some(StopReason::Cancelled),
+                                termination: TerminationReason::Cancelled,
                             };
                             return;
                         }
@@ -510,7 +510,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: result_value,
-                    stop_reason: Some(StopReason::NaturalEnd),
+                    termination: TerminationReason::NaturalEnd,
                 };
                 return;
             }
@@ -568,7 +568,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                             thread_id: thread.id.clone(),
                             run_id: run_id.clone(),
                             result: None,
-                            stop_reason: Some(StopReason::Cancelled),
+                            termination: TerminationReason::Cancelled,
                         };
                         return;
                     }
@@ -669,7 +669,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
-                    stop_reason: None, // Pause, not a stop
+                    termination: TerminationReason::PendingInteraction,
                 };
                 return;
             }
@@ -691,7 +691,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     thread_id: thread.id.clone(),
                     run_id: run_id.clone(),
                     result: None,
-                    stop_reason: Some(reason),
+                    termination: TerminationReason::Stopped(reason),
                 };
                 return;
             }

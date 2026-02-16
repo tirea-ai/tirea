@@ -288,7 +288,7 @@ pub(super) async fn execute_target_agent(
     };
 
     let mut saw_error: Option<String> = None;
-    let mut stop_reason: Option<StopReason> = None;
+    let mut termination: Option<crate::contracts::events::TerminationReason> = None;
     let mut final_thread = thread.clone();
     let mut checkpoints_open = true;
 
@@ -300,10 +300,10 @@ pub(super) async fn execute_target_agent(
                 }
             }
             AgentEvent::RunFinish {
-                stop_reason: reason,
+                termination: reason,
                 ..
             } => {
-                stop_reason = reason;
+                termination = Some(reason);
             }
             _ => {}
         }
@@ -331,8 +331,8 @@ pub(super) async fn execute_target_agent(
         };
     }
 
-    let status = match stop_reason {
-        Some(StopReason::Cancelled) => AgentRunStatus::Stopped,
+    let status = match termination {
+        Some(crate::contracts::events::TerminationReason::Cancelled) => AgentRunStatus::Stopped,
         _ => AgentRunStatus::Completed,
     };
 

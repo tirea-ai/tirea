@@ -1,4 +1,4 @@
-use carve_agent_contract::{AgentEvent, StopReason};
+use carve_agent_contract::{AgentEvent, StopReason, TerminationReason};
 use carve_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
 use carve_protocol_contract::ProtocolOutputEncoder;
 
@@ -45,7 +45,7 @@ fn protocol_encoder_closes_text_before_tool_and_maps_finish_reason() {
         thread_id: "thread_1".to_string(),
         run_id: "run_1".to_string(),
         result: None,
-        stop_reason: Some(StopReason::MaxRoundsReached),
+        termination: TerminationReason::Stopped(StopReason::MaxRoundsReached),
     });
     assert_eq!(finish_events.len(), 1);
     assert!(matches!(

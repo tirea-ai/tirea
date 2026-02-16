@@ -8,7 +8,6 @@ use crate::contracts::state_types::{
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
-use crate::engine::stop_conditions::StopReason;
 use crate::engine::tool_filter::{
     is_runtime_allowed, RUNTIME_ALLOWED_AGENTS_KEY, RUNTIME_EXCLUDED_AGENTS_KEY,
 };

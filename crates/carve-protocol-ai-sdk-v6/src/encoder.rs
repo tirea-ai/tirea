@@ -1,5 +1,5 @@
 use super::UIStreamEvent;
-use carve_agent_contract::{AgentEvent, StopReason};
+use carve_agent_contract::{AgentEvent, StopReason, TerminationReason};
 use tracing::warn;
 
 /// Data event name for a full state snapshot payload.
@@ -136,13 +136,13 @@ impl AiSdkEncoder {
                 vec![UIStreamEvent::tool_output_available(id, result.to_json())]
             }
 
-            AgentEvent::RunFinish { stop_reason, .. } => {
+            AgentEvent::RunFinish { termination, .. } => {
                 self.finished = true;
                 let mut events = Vec::new();
                 if self.text_open {
                     events.push(self.close_text());
                 }
-                let finish_reason = Self::map_stop_reason(stop_reason.as_ref());
+                let finish_reason = Self::map_termination(termination);
                 events.push(UIStreamEvent::finish_with_reason(finish_reason));
                 events
             }
@@ -263,19 +263,22 @@ impl AiSdkEncoder {
         }
     }
 
-    fn map_stop_reason(reason: Option<&StopReason>) -> &'static str {
+    fn map_termination(reason: &TerminationReason) -> &'static str {
         match reason {
-            Some(StopReason::NaturalEnd)
-            | Some(StopReason::ContentMatched(_))
-            | Some(StopReason::PluginRequested) => "stop",
-            Some(StopReason::MaxRoundsReached)
-            | Some(StopReason::TimeoutReached)
-            | Some(StopReason::TokenBudgetExceeded) => "length",
-            Some(StopReason::ToolCalled(_)) => "tool-calls",
-            Some(StopReason::Cancelled) => "other",
-            Some(StopReason::ConsecutiveErrorsExceeded) | Some(StopReason::LoopDetected) => "error",
-            Some(StopReason::Custom(_)) => "other",
-            None => "stop",
+            TerminationReason::NaturalEnd
+            | TerminationReason::PluginRequested
+            | TerminationReason::PendingInteraction => "stop",
+            TerminationReason::Cancelled => "other",
+            TerminationReason::Error => "error",
+            TerminationReason::Stopped(stop_reason) => match stop_reason {
+                StopReason::MaxRoundsReached
+                | StopReason::TimeoutReached
+                | StopReason::TokenBudgetExceeded => "length",
+                StopReason::ToolCalled(_) => "tool-calls",
+                StopReason::ContentMatched(_) => "stop",
+                StopReason::ConsecutiveErrorsExceeded | StopReason::LoopDetected => "error",
+                StopReason::Custom(_) => "other",
+            },
         }
     }
 }

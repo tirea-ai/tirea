@@ -49,7 +49,7 @@ mod tool_exec;
 
 use crate::contracts::conversation::Thread;
 use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::events::{AgentEvent, StreamResult};
+use crate::contracts::events::{AgentEvent, StreamResult, TerminationReason};
 use crate::contracts::phase::Phase;
 use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
 use crate::contracts::storage::CheckpointReason;

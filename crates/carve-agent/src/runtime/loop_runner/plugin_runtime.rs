@@ -5,7 +5,7 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Thread;
-use crate::contracts::events::AgentEvent;
+use crate::contracts::events::{AgentEvent, TerminationReason};
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::AgentInferenceError;
 use crate::contracts::traits::tool::ToolDescriptor;
@@ -239,7 +239,7 @@ pub(super) async fn prepare_stream_error_termination(
         thread_id: thread.id.clone(),
         run_id: run_id.to_string(),
         result: None,
-        stop_reason: None,
+        termination: TerminationReason::Error,
     };
     (thread, error, finish)
 }

@@ -1,4 +1,4 @@
-use crate::{Interaction, StopReason, ToolResult};
+use crate::{Interaction, TerminationReason, ToolResult};
 use carve_state::TrackedPatch;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
@@ -21,9 +21,8 @@ pub enum AgentEvent {
         run_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
-        /// Why the agent loop stopped.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        stop_reason: Option<StopReason>,
+        /// Why this run terminated.
+        termination: TerminationReason,
     },
 
     /// LLM text delta.
