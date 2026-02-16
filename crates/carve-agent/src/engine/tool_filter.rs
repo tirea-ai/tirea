@@ -1,5 +1,5 @@
 use carve_agent_contract::agent::AgentDefinition;
-use carve_state::Runtime;
+use carve_state::ScopeState;
 use serde_json::Value;
 
 pub(crate) const RUNTIME_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
@@ -28,10 +28,10 @@ pub(crate) fn is_tool_allowed(
 }
 
 pub(crate) fn set_runtime_filter_if_absent(
-    runtime: &mut Runtime,
+    runtime: &mut ScopeState,
     key: &str,
     values: Option<&[String]>,
-) -> Result<(), carve_state::RuntimeError> {
+) -> Result<(), carve_state::ScopeStateError> {
     if runtime.value(key).is_some() {
         return Ok(());
     }
@@ -42,9 +42,9 @@ pub(crate) fn set_runtime_filter_if_absent(
 }
 
 pub(crate) fn set_runtime_filters_from_definition_if_absent(
-    runtime: &mut Runtime,
+    runtime: &mut ScopeState,
     def: &AgentDefinition,
-) -> Result<(), carve_state::RuntimeError> {
+) -> Result<(), carve_state::ScopeStateError> {
     set_runtime_filter_if_absent(
         runtime,
         RUNTIME_ALLOWED_TOOLS_KEY,
@@ -91,7 +91,7 @@ fn parse_runtime_filter(values: Option<&Value>) -> Option<Vec<String>> {
 }
 
 pub(crate) fn is_runtime_allowed(
-    runtime: Option<&Runtime>,
+    runtime: Option<&ScopeState>,
     id: &str,
     allowed_key: &str,
     excluded_key: &str,
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_is_runtime_allowed() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set(RUNTIME_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
         rt.set(RUNTIME_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
         assert!(is_runtime_allowed(
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn test_set_runtime_filters_from_definition_if_absent() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         let def = AgentDefinition::default()
             .with_allowed_tools(vec!["a".to_string()])
             .with_excluded_tools(vec!["b".to_string()])

@@ -57,7 +57,7 @@ impl Tool for RuntimeSnapshotTool {
     }
 
     async fn execute(&self, _args: Value, ctx: &Context<'_>) -> Result<ToolResult, ToolError> {
-        let rt = ctx.runtime_ref().expect("runtime should exist");
+        let rt = ctx.scope_ref().expect("runtime should exist");
         let thread_id = rt
             .value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY)
             .and_then(|v| v.as_str())
@@ -953,7 +953,7 @@ async fn test_plugin_sees_real_session_id_and_runtime_in_tool_phase() {
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(SessionCheckPlugin)];
 
-    let mut rt = carve_state::Runtime::new();
+    let mut rt = carve_state::ScopeState::new();
     rt.set("user_id", "u-abc").unwrap();
 
     let result = execute_single_tool_with_phases(

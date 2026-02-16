@@ -3,7 +3,7 @@
 //! A `Thread` represents a conversation with messages and state history.
 
 use crate::types::Message;
-use carve_state::{apply_patches, CarveError, CarveResult, Runtime, TrackedPatch};
+use carve_state::{apply_patches, CarveError, CarveResult, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ impl PendingDelta {
 ///
 /// The `runtime` field is an exception — it is transient (not serialized)
 /// and may be mutated in-place during a run (e.g., setting `run_id`).
-/// Runtime changes are never persisted to storage.
+/// ScopeState changes are never persisted to storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     /// Unique thread identifier.
@@ -55,7 +55,7 @@ pub struct Thread {
     pub metadata: ThreadMetadata,
     /// Per-run runtime context (not persisted).
     #[serde(skip)]
-    pub runtime: Runtime,
+    pub runtime: ScopeState,
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
@@ -86,7 +86,7 @@ impl Thread {
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            runtime: Runtime::default(),
+            runtime: ScopeState::default(),
             pending: PendingDelta::default(),
         }
     }
@@ -101,7 +101,7 @@ impl Thread {
             state,
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            runtime: Runtime::default(),
+            runtime: ScopeState::default(),
             pending: PendingDelta::default(),
         }
     }
@@ -122,7 +122,7 @@ impl Thread {
 
     /// Set the runtime (pure function, returns new Thread).
     #[must_use]
-    pub fn with_runtime(mut self, runtime: Runtime) -> Self {
+    pub fn with_scope(mut self, runtime: ScopeState) -> Self {
         self.runtime = runtime;
         self
     }
@@ -402,10 +402,10 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_with_runtime() {
-        let mut rt = Runtime::new();
+    fn test_thread_with_scope() {
+        let mut rt = ScopeState::new();
         rt.set("user_id", "u1").unwrap();
-        let thread = Thread::new("t-1").with_runtime(rt);
+        let thread = Thread::new("t-1").with_scope(rt);
         assert_eq!(thread.runtime.value("user_id"), Some(&json!("u1")));
     }
 
@@ -414,7 +414,7 @@ mod tests {
         let mut thread = Thread::new("t-1");
         thread.runtime.set("run_id", "run-1").unwrap();
         let err = thread.runtime.set("run_id", "run-2").unwrap_err();
-        assert!(matches!(err, carve_state::RuntimeError::AlreadySet(key) if key == "run_id"));
+        assert!(matches!(err, carve_state::ScopeStateError::AlreadySet(key) if key == "run_id"));
         assert_eq!(thread.runtime.value("run_id"), Some(&json!("run-1")));
     }
 
@@ -508,15 +508,15 @@ mod tests {
 
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
-        // Runtime is not serialized
+        // ScopeState is not serialized
         assert!(!restored.runtime.contains_key("anything"));
     }
 
     #[test]
     fn test_thread_serialization_skips_runtime() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("token", "secret").unwrap();
-        let thread = Thread::new("test-1").with_runtime(rt);
+        let thread = Thread::new("test-1").with_scope(rt);
 
         let json_str = serde_json::to_string(&thread).unwrap();
         assert!(!json_str.contains("secret"));
@@ -529,11 +529,11 @@ mod tests {
 
     #[test]
     fn test_state_persists_but_runtime_is_transient_after_serialization() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("run_id", "run-1").unwrap();
 
         let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
-            .with_runtime(rt)
+            .with_scope(rt)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));

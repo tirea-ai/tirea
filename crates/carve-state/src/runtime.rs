@@ -1,21 +1,21 @@
-//! Runtime context for per-run data with set-once semantics.
+//! Scope state for ephemeral, non-persistent key/value data.
 //!
-//! `Runtime` holds ephemeral, per-run data (user_id, tokens, locale, etc.)
-//! that tools need but shouldn't persist. Each key can only be set once;
-//! subsequent writes return an error.
+//! `ScopeState` stores transient data with set-once semantics.
+//! It is suitable for temporary execution context, policy filters,
+//! and sensitive values that must not be persisted.
 //!
 //! Sensitive keys are tracked separately and redacted in `Debug` output.
 //! `Serialize` is intentionally **not** implemented to prevent accidental persistence.
 
 use crate::state::{PatchSink, State};
-use crate::{context::parse_path, get_at_path, Path};
+use crate::{get_at_path, parse_path, Path};
 use serde_json::Value;
 use std::collections::HashSet;
 use thiserror::Error;
 
-/// Errors from `Runtime` operations.
+/// Errors from `ScopeState` operations.
 #[derive(Debug, Error)]
-pub enum RuntimeError {
+pub enum ScopeStateError {
     /// Attempted to set a key that was already set.
     #[error("runtime key already set: {0}")]
     AlreadySet(String),
@@ -24,12 +24,12 @@ pub enum RuntimeError {
     SerializationError(String),
 }
 
-/// Per-run context with set-once semantics.
+/// Ephemeral context with set-once semantics.
 ///
-/// Each key can be written exactly once via `set()` or `set_sensitive()`.
-/// After that, the key is immutable for the lifetime of this `Runtime`.
+/// Each key can be written exactly once via `put_once()` or `put_sensitive_once()`.
+/// After that, the key is immutable for the lifetime of this scope.
 ///
-/// Tools receive `&Runtime` (read-only), so the Rust borrow checker
+/// Consumers generally receive `&ScopeState` (read-only), so the Rust borrow checker
 /// guarantees no writes occur during execution.
 ///
 /// # Sensitive keys
@@ -39,16 +39,16 @@ pub enum RuntimeError {
 ///
 /// # No `Serialize`
 ///
-/// `Runtime` intentionally does **not** implement `Serialize`,
+/// `ScopeState` intentionally does **not** implement `Serialize`,
 /// preventing accidental persistence. This is enforced at compile time.
 #[derive(Clone)]
-pub struct Runtime {
+pub struct ScopeState {
     doc: Value,
     sensitive_keys: HashSet<String>,
 }
 
-impl Runtime {
-    /// Create an empty runtime.
+impl ScopeState {
+    /// Create an empty scope state.
     pub fn new() -> Self {
         Self {
             doc: Value::Object(Default::default()),
@@ -56,32 +56,50 @@ impl Runtime {
         }
     }
 
-    /// Set a key (set-once). Returns error if key already exists.
-    pub fn set(
+    /// Set a key once. Returns error if key already exists.
+    pub fn put_once(
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), ScopeStateError> {
         let key = key.into();
         let obj = self.doc.as_object_mut().expect("runtime doc is object");
         if obj.contains_key(&key) {
-            return Err(RuntimeError::AlreadySet(key));
+            return Err(ScopeStateError::AlreadySet(key));
         }
         let v = serde_json::to_value(value)
-            .map_err(|e| RuntimeError::SerializationError(e.to_string()))?;
+            .map_err(|e| ScopeStateError::SerializationError(e.to_string()))?;
         obj.insert(key, v);
         Ok(())
     }
 
-    /// Set a sensitive key (set-once + redacted in Debug).
+    /// Set a sensitive key once (redacted in `Debug`).
+    pub fn put_sensitive_once(
+        &mut self,
+        key: impl Into<String>,
+        value: impl serde::Serialize,
+    ) -> Result<(), ScopeStateError> {
+        let key = key.into();
+        self.sensitive_keys.insert(key.clone());
+        self.put_once(key, value)
+    }
+
+    /// Backward-compatible alias for `put_once`.
+    pub fn set(
+        &mut self,
+        key: impl Into<String>,
+        value: impl serde::Serialize,
+    ) -> Result<(), ScopeStateError> {
+        self.put_once(key, value)
+    }
+
+    /// Backward-compatible alias for `put_sensitive_once`.
     pub fn set_sensitive(
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), RuntimeError> {
-        let key = key.into();
-        self.sensitive_keys.insert(key.clone());
-        self.set(key, value)
+    ) -> Result<(), ScopeStateError> {
+        self.put_sensitive_once(key, value)
     }
 
     /// Get a typed state reference (same API as `ctx.state::<T>()`).
@@ -125,13 +143,13 @@ impl Runtime {
     }
 }
 
-impl Default for Runtime {
+impl Default for ScopeState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for Runtime {
+impl std::fmt::Debug for ScopeState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut map = f.debug_map();
         if let Some(obj) = self.doc.as_object() {
@@ -154,37 +172,37 @@ mod tests {
 
     #[test]
     fn test_runtime_new_is_empty() {
-        let rt = Runtime::new();
+        let rt = ScopeState::new();
         assert!(!rt.contains_key("anything"));
         assert!(rt.value("anything").is_none());
     }
 
     #[test]
     fn test_runtime_default() {
-        let rt = Runtime::default();
+        let rt = ScopeState::default();
         assert!(!rt.contains_key("x"));
     }
 
     #[test]
     fn test_set_once_success() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("user_id", "u123").unwrap();
         assert_eq!(rt.value("user_id"), Some(&json!("u123")));
     }
 
     #[test]
     fn test_set_once_duplicate_fails() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("key", "first").unwrap();
         let err = rt.set("key", "second").unwrap_err();
-        assert!(matches!(err, RuntimeError::AlreadySet(k) if k == "key"));
+        assert!(matches!(err, ScopeStateError::AlreadySet(k) if k == "key"));
         // Value unchanged
         assert_eq!(rt.value("key"), Some(&json!("first")));
     }
 
     #[test]
     fn test_set_sensitive() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set_sensitive("token", "secret-abc").unwrap();
         assert!(rt.is_sensitive("token"));
         assert_eq!(rt.value("token"), Some(&json!("secret-abc")));
@@ -192,21 +210,21 @@ mod tests {
 
     #[test]
     fn test_set_sensitive_duplicate_fails() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set_sensitive("token", "first").unwrap();
         let err = rt.set_sensitive("token", "second").unwrap_err();
-        assert!(matches!(err, RuntimeError::AlreadySet(_)));
+        assert!(matches!(err, ScopeStateError::AlreadySet(_)));
     }
 
     #[test]
     fn test_non_sensitive_key() {
-        let rt = Runtime::new();
+        let rt = ScopeState::new();
         assert!(!rt.is_sensitive("anything"));
     }
 
     #[test]
     fn test_debug_redacts_sensitive() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("user_id", "u123").unwrap();
         rt.set_sensitive("token", "secret").unwrap();
 
@@ -218,7 +236,7 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("a", 1).unwrap();
         rt.set_sensitive("b", "secret").unwrap();
 
@@ -229,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_value_at_path() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("config", json!({"nested": {"value": 42}})).unwrap();
         assert_eq!(rt.value_at("config.nested.value"), Some(&json!(42)));
         assert_eq!(rt.value_at("config.missing"), None);
@@ -237,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_value_at_empty_path() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("key", "val").unwrap();
         // Empty path returns root doc
         let root = rt.value_at("").unwrap();
@@ -246,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_set_various_types() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("string", "hello").unwrap();
         rt.set("number", 42).unwrap();
         rt.set("bool", true).unwrap();
@@ -260,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_contains_key() {
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         assert!(!rt.contains_key("x"));
         rt.set("x", 1).unwrap();
         assert!(rt.contains_key("x"));

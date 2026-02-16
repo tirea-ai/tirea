@@ -21,7 +21,7 @@ impl SkillRuntimePlugin {
         Self
     }
 
-    fn render_context(state: &SkillState, runtime: Option<&carve_state::Runtime>) -> String {
+    fn render_context(state: &SkillState, runtime: Option<&carve_state::ScopeState>) -> String {
         if state.active.is_empty() {
             return String::new();
         }

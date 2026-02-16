@@ -3,7 +3,7 @@
 //! The `State` trait provides a unified interface for typed access to JSON documents.
 //! It is typically implemented via the derive macro `#[derive(State)]`.
 
-use crate::{CarveResult, Op, Patch, Path};
+use crate::{CarveResult, Op, Patch, Path, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -47,7 +47,7 @@ impl<'a> PatchSink<'a> {
 
     /// Create a read-only PatchSink that panics on collect.
     ///
-    /// Used for `Runtime::get()` where writes are a programming error.
+    /// Used for `ScopeState::get()` where writes are a programming error.
     #[doc(hidden)]
     pub fn read_only() -> Self {
         Self {
@@ -76,6 +76,64 @@ impl<'a> PatchSink<'a> {
     }
 }
 
+/// Pure state context with automatic patch collection.
+pub struct StateContext<'a> {
+    doc: &'a Value,
+    ops: Mutex<Vec<Op>>,
+}
+
+impl<'a> StateContext<'a> {
+    /// Create a new pure state context.
+    pub fn new(doc: &'a Value) -> Self {
+        Self {
+            doc,
+            ops: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Get a typed state reference at the specified path.
+    pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let base = parse_path(path);
+        T::state_ref(self.doc, base, PatchSink::new(&self.ops))
+    }
+
+    /// Extract collected operations as a plain patch.
+    pub fn take_patch(&self) -> Patch {
+        let ops = std::mem::take(&mut *self.ops.lock().unwrap());
+        Patch::with_ops(ops)
+    }
+
+    /// Extract collected operations as a tracked patch with a source.
+    pub fn take_tracked_patch(&self, source: impl Into<String>) -> TrackedPatch {
+        TrackedPatch::new(self.take_patch()).with_source(source)
+    }
+
+    /// Check if any operations have been collected.
+    pub fn has_changes(&self) -> bool {
+        !self.ops.lock().unwrap().is_empty()
+    }
+
+    /// Get the number of operations collected.
+    pub fn ops_count(&self) -> usize {
+        self.ops.lock().unwrap().len()
+    }
+}
+
+/// Parse a dot-separated path string into a `Path`.
+pub fn parse_path(path: &str) -> Path {
+    if path.is_empty() {
+        return Path::root();
+    }
+
+    let mut result = Path::root();
+    for segment in path.split('.') {
+        if !segment.is_empty() {
+            result = result.key(segment);
+        }
+    }
+    result
+}
+
 /// Trait for types that can create typed state references.
 ///
 /// This trait is typically derived using `#[derive(State)]`.
@@ -94,7 +152,7 @@ impl<'a> PatchSink<'a> {
 ///     pub age: i64,
 /// }
 ///
-/// // In a Context:
+/// // In a StateContext:
 /// let user = ctx.state::<User>("users.alice");
 /// let name = user.name()?;
 /// user.set_name("Alice");
@@ -138,6 +196,7 @@ impl<T: State> StateExt for T {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_patch_sink_collect() {
@@ -181,5 +240,59 @@ mod tests {
     fn test_patch_sink_read_only_inner_panics() {
         let sink = PatchSink::read_only();
         let _ = sink.inner();
+    }
+
+    #[test]
+    fn test_parse_path_empty() {
+        let path = parse_path("");
+        assert!(path.is_empty());
+    }
+
+    #[test]
+    fn test_parse_path_nested() {
+        let path = parse_path("tool_calls.call_123.data");
+        assert_eq!(path.to_string(), "$.tool_calls.call_123.data");
+    }
+
+    #[test]
+    fn test_state_context_collects_ops() {
+        struct Counter;
+
+        struct CounterRef<'a> {
+            base: Path,
+            sink: PatchSink<'a>,
+        }
+
+        impl<'a> CounterRef<'a> {
+            fn set_value(&self, value: i64) {
+                self.sink
+                    .collect(Op::set(self.base.clone().key("value"), Value::from(value)));
+            }
+        }
+
+        impl State for Counter {
+            type Ref<'a> = CounterRef<'a>;
+
+            fn state_ref<'a>(_: &'a Value, base: Path, sink: PatchSink<'a>) -> Self::Ref<'a> {
+                CounterRef { base, sink }
+            }
+
+            fn from_value(_: &Value) -> CarveResult<Self> {
+                Ok(Counter)
+            }
+
+            fn to_value(&self) -> Value {
+                Value::Null
+            }
+        }
+
+        let doc = json!({"counter": {"value": 1}});
+        let ctx = StateContext::new(&doc);
+        let counter = ctx.state::<Counter>("counter");
+        counter.set_value(2);
+
+        assert!(ctx.has_changes());
+        assert_eq!(ctx.ops_count(), 1);
+        assert_eq!(ctx.take_patch().len(), 1);
     }
 }

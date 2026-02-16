@@ -3,7 +3,7 @@
 use crate::contracts::conversation::ToolCall;
 use crate::contracts::context::Context;
 use crate::contracts::traits::tool::{Tool, ToolResult};
-use carve_state::{Runtime, TrackedPatch};
+use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,15 +36,15 @@ pub async fn execute_single_tool(
     call: &ToolCall,
     state: &Value,
 ) -> ToolExecution {
-    execute_single_tool_with_runtime(tool, call, state, None).await
+    execute_single_tool_with_scope(tool, call, state, None).await
 }
 
 /// Execute a single tool call with an optional runtime context.
-pub async fn execute_single_tool_with_runtime(
+pub async fn execute_single_tool_with_scope(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    runtime: Option<&Runtime>,
+    runtime: Option<&ScopeState>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
@@ -55,7 +55,7 @@ pub async fn execute_single_tool_with_runtime(
     };
 
     // Create context for this tool call
-    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name)).with_runtime(runtime);
+    let ctx = Context::new(state, &call.id, format!("tool:{}", call.name)).with_scope(runtime);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {
@@ -403,7 +403,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_single_tool_with_runtime_reads() {
-        use carve_state::Runtime;
+        use carve_state::ScopeState;
 
         /// Tool that reads user_id from runtime and returns it.
         struct RuntimeReaderTool;
@@ -420,7 +420,7 @@ mod tests {
                 ctx: &Context<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let user_id = ctx
-                    .runtime_value("user_id")
+                    .scope_value("user_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 Ok(ToolResult::success(
@@ -430,14 +430,14 @@ mod tests {
             }
         }
 
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set("user_id", "u-42").unwrap();
 
         let tool = RuntimeReaderTool;
         let call = ToolCall::new("call_1", "rt_reader", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["user_id"], "u-42");
@@ -459,7 +459,7 @@ mod tests {
                 _args: Value,
                 ctx: &Context<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let has_runtime = ctx.runtime_ref().is_some();
+                let has_runtime = ctx.scope_ref().is_some();
                 Ok(ToolResult::success(
                     "rt_checker",
                     json!({"has_runtime": has_runtime}),
@@ -472,18 +472,18 @@ mod tests {
         let state = json!({});
 
         // Without runtime
-        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, None).await;
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, None).await;
         assert_eq!(exec.result.data["has_runtime"], false);
 
         // With runtime
-        let rt = Runtime::new();
-        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+        let rt = ScopeState::new();
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
         assert_eq!(exec.result.data["has_runtime"], true);
     }
 
     #[tokio::test]
     async fn test_execute_with_runtime_sensitive_key() {
-        use carve_state::Runtime;
+        use carve_state::ScopeState;
 
         /// Tool that reads a sensitive key from runtime.
         struct SensitiveReaderTool;
@@ -499,7 +499,7 @@ mod tests {
                 _args: Value,
                 ctx: &Context<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let rt = ctx.runtime_ref().unwrap();
+                let rt = ctx.scope_ref().unwrap();
                 let token = rt.value("token").and_then(|v| v.as_str()).unwrap();
                 let is_sensitive = rt.is_sensitive("token");
                 Ok(ToolResult::success(
@@ -509,14 +509,14 @@ mod tests {
             }
         }
 
-        let mut rt = Runtime::new();
+        let mut rt = ScopeState::new();
         rt.set_sensitive("token", "super-secret-token").unwrap();
 
         let tool = SensitiveReaderTool;
         let call = ToolCall::new("call_1", "sensitive", json!({}));
         let state = json!({});
 
-        let exec = execute_single_tool_with_runtime(Some(&tool), &call, &state, Some(&rt)).await;
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&rt)).await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["token_len"], 18);

@@ -461,7 +461,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
-    pub(super) runtime: carve_state::Runtime,
+    pub(super) runtime: carve_state::ScopeState,
 }
 
 pub(super) fn prepare_tool_execution_context(

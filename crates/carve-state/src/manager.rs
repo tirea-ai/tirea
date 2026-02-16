@@ -62,19 +62,19 @@ pub struct ApplyResult {
 /// # Example
 ///
 /// ```ignore
-/// use carve_state::{StateManager, Context};
+/// use carve_state::{StateManager, StateContext};
 /// use serde_json::json;
 ///
 /// let manager = StateManager::new(json!({}));
 ///
-/// // Get snapshot and create context
+/// // Get snapshot and create state context
 /// let snapshot = manager.snapshot().await;
-/// let ctx = Context::new(&snapshot, "call_1", "tool:example");
+/// let ctx = StateContext::new(&snapshot);
 ///
 /// // ... modify state through ctx ...
 ///
 /// // Commit patch (modifies state and records history)
-/// manager.commit(ctx.take_patch()).await?;
+/// manager.commit(ctx.take_tracked_patch("tool:example")).await?;
 ///
 /// // Replay to a specific point
 /// let old_state = manager.replay_to(5).await?;

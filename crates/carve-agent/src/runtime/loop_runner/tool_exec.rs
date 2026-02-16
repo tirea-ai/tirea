@@ -312,7 +312,7 @@ pub(super) fn runtime_with_tool_caller_context(
     thread: &Thread,
     state: &Value,
     config: Option<&AgentConfig>,
-) -> Result<carve_state::Runtime, AgentLoopError> {
+) -> Result<carve_state::ScopeState, AgentLoopError> {
     let mut rt = thread.runtime.clone();
     if rt.value(TOOL_RUNTIME_CALLER_THREAD_ID_KEY).is_none() {
         rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, thread.id.clone())
@@ -384,7 +384,7 @@ pub(super) async fn execute_tool_calls_with_phases(
     plugins: &[Arc<dyn AgentPlugin>],
     parallel: bool,
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::Runtime>,
+    runtime: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     if parallel {
@@ -422,12 +422,12 @@ pub(super) async fn execute_tools_parallel_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::Runtime>,
+    runtime: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
-    // Clone runtime for parallel tasks (Runtime is Clone).
+    // Clone runtime for parallel tasks (ScopeState is Clone).
     let runtime_owned = runtime.cloned();
     let thread_id = thread_id.to_string();
 
@@ -468,7 +468,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::Runtime>,
+    runtime: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
@@ -545,7 +545,7 @@ pub(super) async fn execute_single_tool_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    runtime: Option<&carve_state::Runtime>,
+    runtime: Option<&carve_state::ScopeState>,
     thread_id: &str,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create a thread stub so plugins see the real thread id and runtime.
@@ -555,7 +555,7 @@ pub(super) async fn execute_single_tool_with_phases(
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_runtime(runtime);
+    let plugin_ctx = Context::new(state, "plugin_phase", "plugin:tool_phase").with_scope(runtime);
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
@@ -627,7 +627,7 @@ pub(super) async fn execute_single_tool_with_phases(
             format!("tool:{}", call.name),
             activity_manager,
         )
-        .with_runtime(runtime);
+        .with_scope(runtime);
         let result = async {
             match tool
                 .unwrap()

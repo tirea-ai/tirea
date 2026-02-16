@@ -3,7 +3,7 @@
 //! These tests verify the StateManager's ability to manage immutable state
 //! with patch history and replay capabilities.
 
-use carve_state::{path, Context, Op, Patch, StateManager, TrackedPatch};
+use carve_state::{path, Op, Patch, StateContext, StateManager, TrackedPatch};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -338,7 +338,7 @@ async fn test_manager_clone_shares_state() {
 }
 
 // ============================================================================
-// Integration with Context tests
+// Integration with StateContext tests
 // ============================================================================
 
 #[tokio::test]
@@ -352,18 +352,14 @@ async fn test_manager_with_context_workflow() {
     // Simulate tool execution workflow
     for i in 1..=3 {
         let snapshot = manager.snapshot().await;
-        let ctx = Context::new(
-            &snapshot,
-            format!("call_{}", i),
-            "tool:increment".to_string(),
-        );
+        let ctx = StateContext::new(&snapshot);
 
         let counter = ctx.state::<CounterState>("counters.main");
         let current = counter.value().unwrap();
         counter.set_value(current + 10);
         counter.set_label(format!("After step {}", i));
 
-        let tracked_patch = ctx.take_patch();
+        let tracked_patch = ctx.take_tracked_patch(format!("tool:increment:{i}"));
         manager.commit(tracked_patch).await.unwrap();
     }
 

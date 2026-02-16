@@ -1,9 +1,9 @@
-//! Integration tests for Context and automatic patch collection.
+//! Integration tests for StateContext and automatic patch collection.
 //!
 //! These tests verify the core API design where developers use typed state references
-//! through Context, and all operations are automatically collected.
+//! through StateContext, and all operations are automatically collected.
 
-use carve_state::{apply_patch, Context, State as StateTrait};
+use carve_state::{apply_patch, State as StateTrait, StateContext};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -55,10 +55,8 @@ struct AccountState {
 #[test]
 fn test_context_creation() {
     let doc = json!({"value": 10, "label": "test"});
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
-    assert_eq!(ctx.call_id(), "call_001");
-    assert_eq!(ctx.source(), "tool:counter");
     assert!(!ctx.has_changes());
     assert_eq!(ctx.ops_count(), 0);
 }
@@ -73,7 +71,7 @@ fn test_context_state_read() {
             }
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counters.main");
     assert_eq!(counter.value().unwrap(), 42);
@@ -93,7 +91,7 @@ fn test_context_state_write() {
             }
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counters.main");
     counter.set_value(20);
@@ -104,11 +102,10 @@ fn test_context_state_write() {
 
     // Take patch and verify
     let tracked = ctx.take_patch();
-    assert_eq!(tracked.source.as_deref(), Some("tool:counter"));
-    assert_eq!(tracked.patch().len(), 2);
+    assert_eq!(tracked.len(), 2);
 
     // Apply and verify
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["counters"]["main"]["value"], 20);
     assert_eq!(new_doc["counters"]["main"]["label"], "Updated Counter");
 }
@@ -121,13 +118,13 @@ fn test_context_state_increment() {
             "label": "Test"
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.increment_value(5);
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["counter"]["value"], 105);
 }
 
@@ -139,13 +136,13 @@ fn test_context_state_decrement() {
             "label": "Test"
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.decrement_value(30);
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["counter"]["value"], 70);
 }
 
@@ -157,13 +154,13 @@ fn test_context_state_delete() {
             "label": "Test"
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.delete_label();
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert!(new_doc["counter"].get("label").is_none());
     assert_eq!(new_doc["counter"]["value"], 100);
 }
@@ -171,7 +168,7 @@ fn test_context_state_delete() {
 #[test]
 fn test_context_take_patch_clears_ops() {
     let doc = json!({"counter": {"value": 10, "label": "X"}});
-    let ctx = Context::new(&doc, "c1", "s1");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.set_value(20);
@@ -184,11 +181,11 @@ fn test_context_take_patch_clears_ops() {
 
     // Subsequent take returns empty patch
     let patch2 = ctx.take_patch();
-    assert!(patch2.patch().is_empty());
+    assert!(patch2.is_empty());
 }
 
 // ============================================================================
-// Context with call_state tests
+// StateContext with call-like path tests
 // ============================================================================
 
 #[test]
@@ -201,16 +198,16 @@ fn test_context_call_state() {
             }
         }
     });
-    let ctx = Context::new(&doc, "call_123", "tool:test");
+    let ctx = StateContext::new(&doc);
 
-    let state = ctx.call_state::<CounterState>();
+    let state = ctx.state::<CounterState>("tool_calls.call_123");
     assert_eq!(state.value().unwrap(), 5);
     assert_eq!(state.label().unwrap(), "Call State");
 
     state.set_value(10);
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["tool_calls"]["call_123"]["value"], 10);
 }
 
@@ -226,7 +223,7 @@ fn test_context_multiple_state_refs() {
             "bob": {"name": "Bob", "email": "bob@example.com", "age": 25, "tags": [], "metadata": {}}
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:users");
+    let ctx = StateContext::new(&doc);
 
     // Get multiple state references
     let alice = ctx.state::<UserState>("users.alice");
@@ -238,9 +235,9 @@ fn test_context_multiple_state_refs() {
     bob.increment_age(1);
 
     let tracked = ctx.take_patch();
-    assert_eq!(tracked.patch().len(), 3);
+    assert_eq!(tracked.len(), 3);
 
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["users"]["alice"]["age"], 31);
     assert_eq!(new_doc["users"]["alice"]["email"], "alice@example.com");
     assert_eq!(new_doc["users"]["bob"]["age"], 26);
@@ -249,7 +246,7 @@ fn test_context_multiple_state_refs() {
 #[test]
 fn test_context_state_ref_reuse() {
     let doc = json!({"counter": {"value": 0, "label": "X"}});
-    let ctx = Context::new(&doc, "c1", "s1");
+    let ctx = StateContext::new(&doc);
 
     // Get state ref multiple times - all should share the same sink
     let counter1 = ctx.state::<CounterState>("counter");
@@ -278,7 +275,7 @@ fn test_context_vec_operations() {
             "count": 1
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:todos");
+    let ctx = StateContext::new(&doc);
 
     let todos = ctx.state::<TodoState>("todos");
     todos.items_push("Task 2");
@@ -288,7 +285,7 @@ fn test_context_vec_operations() {
     todos.increment_count(2);
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     assert_eq!(
         new_doc["todos"]["items"],
@@ -309,7 +306,7 @@ fn test_context_map_operations() {
             "metadata": {"key1": "value1"}
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:users");
+    let ctx = StateContext::new(&doc);
 
     let user = ctx.state::<UserState>("user");
     user.metadata_insert("key2", "value2");
@@ -317,7 +314,7 @@ fn test_context_map_operations() {
     user.tags_push("vip");
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     assert_eq!(new_doc["user"]["metadata"]["key1"], "value1");
     assert_eq!(new_doc["user"]["metadata"]["key2"], "value2");
@@ -340,7 +337,7 @@ fn test_context_nested_state_read() {
             }
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:account");
+    let ctx = StateContext::new(&doc);
 
     let account = ctx.state::<AccountState>("account");
     assert_eq!(account.username().unwrap(), "alice");
@@ -364,7 +361,7 @@ fn test_context_nested_state_write() {
             }
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:account");
+    let ctx = StateContext::new(&doc);
 
     let account = ctx.state::<AccountState>("account");
     account.set_username("alice_updated");
@@ -374,7 +371,7 @@ fn test_context_nested_state_write() {
         .set_avatar_url(Some("https://example.com/new.png".to_string()));
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     assert_eq!(new_doc["account"]["username"], "alice_updated");
     assert_eq!(new_doc["account"]["profile"]["bio"], "New bio");
@@ -399,13 +396,13 @@ fn test_context_option_field_some_to_none() {
             "metadata": {}
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:users");
+    let ctx = StateContext::new(&doc);
 
     let user = ctx.state::<UserState>("user");
     user.email_none();
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     assert!(new_doc["user"]["email"].is_null());
 }
@@ -421,13 +418,13 @@ fn test_context_option_field_none_to_some() {
             "metadata": {}
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:users");
+    let ctx = StateContext::new(&doc);
 
     let user = ctx.state::<UserState>("user");
     user.set_email(Some("alice@example.com".to_string()));
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     assert_eq!(new_doc["user"]["email"], "alice@example.com");
 }
@@ -442,7 +439,7 @@ fn test_context_root_state() {
         "value": 100,
         "label": "Root Counter"
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     // Empty path means root
     let counter = ctx.state::<CounterState>("");
@@ -452,7 +449,7 @@ fn test_context_root_state() {
     counter.set_value(200);
 
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["value"], 200);
 }
 
@@ -480,10 +477,10 @@ fn test_context_complex_workflow() {
             "count": 0
         }
     });
-    let ctx = Context::new(&doc, "call_abc", "tool:process");
+    let ctx = StateContext::new(&doc);
 
     // Read current state
-    let call_state = ctx.call_state::<CounterState>();
+    let call_state = ctx.state::<CounterState>("tool_calls.call_abc");
     let current_step = call_state.value().unwrap();
 
     // Update call state
@@ -498,9 +495,9 @@ fn test_context_complex_workflow() {
 
     // Verify changes
     let tracked = ctx.take_patch();
-    assert_eq!(tracked.patch().len(), 5);
+    assert_eq!(tracked.len(), 5);
 
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
     assert_eq!(new_doc["tool_calls"]["call_abc"]["value"], 1);
     assert_eq!(
         new_doc["tool_calls"]["call_abc"]["label"],
@@ -522,7 +519,7 @@ fn test_context_read_missing_field() {
             // label is missing
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     assert_eq!(counter.value().unwrap(), 10);
@@ -537,7 +534,7 @@ fn test_context_read_missing_path() {
     let doc = json!({
         "other": {}
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
 
@@ -558,7 +555,7 @@ fn test_context_original_doc_unchanged() {
             "label": "Original"
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:counter");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.set_value(999);
@@ -570,7 +567,7 @@ fn test_context_original_doc_unchanged() {
 
     // Changes are only reflected after apply_patch
     let tracked = ctx.take_patch();
-    let new_doc = apply_patch(&doc, tracked.patch()).unwrap();
+    let new_doc = apply_patch(&doc, &tracked).unwrap();
 
     // Original still unchanged
     assert_eq!(doc["counter"]["value"], 10);

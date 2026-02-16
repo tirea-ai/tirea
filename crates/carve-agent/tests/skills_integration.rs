@@ -4,7 +4,7 @@ use carve_agent::contracts::conversation::{Message, ToolCall};
 use carve_agent::contracts::context::Context;
 use carve_agent::contracts::phase::{Phase, StepContext};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
-use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_runtime};
+use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
 use carve_agent::extensions::skills::{
     FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
     SkillScriptTool,
@@ -61,14 +61,14 @@ async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread,
     (thread, exec.result)
 }
 
-async fn apply_tool_with_runtime(
+async fn apply_tool_with_scope(
     thread: Thread,
     tool: &dyn Tool,
     call: ToolCall,
-    runtime: &carve_state::Runtime,
+    runtime: &carve_state::ScopeState,
 ) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
-    let exec = execute_single_tool_with_runtime(Some(tool), &call, &state, Some(runtime)).await;
+    let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(runtime)).await;
     let thread = if let Some(patch) = exec.patch.clone() {
         thread.with_patch(patch)
     } else {
@@ -114,12 +114,12 @@ async fn test_skill_activation_respects_runtime_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut runtime = carve_state::Runtime::new();
+    let mut runtime = carve_state::ScopeState::new();
     runtime
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
-    let (_thread, result) = apply_tool_with_runtime(
+    let (_thread, result) = apply_tool_with_scope(
         thread,
         &activate,
         ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
@@ -134,12 +134,12 @@ async fn test_load_skill_resource_respects_runtime_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let load = LoadSkillResourceTool::new(reg);
     let thread = Thread::with_initial_state("s", json!({}));
-    let mut runtime = carve_state::Runtime::new();
+    let mut runtime = carve_state::ScopeState::new();
     runtime
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
 
-    let (_thread, result) = apply_tool_with_runtime(
+    let (_thread, result) = apply_tool_with_scope(
         thread,
         &load,
         ToolCall::new(

@@ -46,7 +46,7 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(
         &self,
         _active: &HashSet<String>,
-        runtime: Option<&carve_state::Runtime>,
+        runtime: Option<&carve_state::ScopeState>,
     ) -> String {
         let mut metas = self.registry.list();
         metas.retain(|m| {

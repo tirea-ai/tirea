@@ -1,8 +1,11 @@
 //! Agent execution context and activity abstractions.
 //!
-//! This module keeps agent-runtime semantics (`activity`) out of `carve-state`.
+//! This module composes pure state primitives from `carve-state` with
+//! invocation metadata (`call_id`, `source`) and optional activity wiring.
 
-use carve_state::{parse_path, CarveResult, Context as StateContext, Op, PatchSink, Runtime, State};
+use carve_state::{
+    parse_path, CarveError, CarveResult, Op, PatchSink, ScopeState, State, StateContext,
+};
 use serde_json::Value;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
@@ -18,12 +21,18 @@ pub trait ActivityManager: Send + Sync {
     fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op);
 }
 
-/// Agent-facing context used by tools and plugins.
+/// Agent-facing invocation context used by tools and plugins.
 ///
-/// It wraps `carve_state::Context` for state access and patch collection,
-/// and adds optional activity wiring for runtime event emission.
+/// It combines:
+/// - persistent state access (`StateContext`)
+/// - invocation metadata (`call_id`, `source`)
+/// - optional ephemeral scope state (`ScopeState`)
+/// - optional activity wiring
 pub struct Context<'a> {
     state: StateContext<'a>,
+    call_id: String,
+    source: String,
+    scope: Option<&'a ScopeState>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
 }
 
@@ -31,7 +40,10 @@ impl<'a> Context<'a> {
     /// Create a new context without activity wiring.
     pub fn new(doc: &'a Value, call_id: impl Into<String>, source: impl Into<String>) -> Self {
         Self {
-            state: StateContext::new(doc, call_id, source),
+            state: StateContext::new(doc),
+            call_id: call_id.into(),
+            source: source.into(),
+            scope: None,
             activity_manager: None,
         }
     }
@@ -44,40 +56,46 @@ impl<'a> Context<'a> {
         activity_manager: Option<Arc<dyn ActivityManager>>,
     ) -> Self {
         Self {
-            state: StateContext::new(doc, call_id, source),
+            state: StateContext::new(doc),
+            call_id: call_id.into(),
+            source: source.into(),
+            scope: None,
             activity_manager,
         }
     }
 
-    /// Attach per-run runtime context.
-    pub fn with_runtime(mut self, runtime: Option<&'a Runtime>) -> Self {
-        self.state = self.state.with_runtime(runtime);
+    /// Attach ephemeral scope state.
+    pub fn with_scope(mut self, scope: Option<&'a ScopeState>) -> Self {
+        self.scope = scope;
         self
     }
 
     /// Current call id.
     pub fn call_id(&self) -> &str {
-        self.state.call_id()
+        &self.call_id
     }
 
     /// Source identifier used for tracked patches.
     pub fn source(&self) -> &str {
-        self.state.source()
+        &self.source
     }
 
-    /// Borrow runtime if present.
-    pub fn runtime_ref(&self) -> Option<&Runtime> {
-        self.state.runtime_ref()
+    /// Borrow scope state if present.
+    pub fn scope_ref(&self) -> Option<&ScopeState> {
+        self.scope
     }
 
-    /// Typed runtime accessor.
-    pub fn runtime<T: State>(&self) -> CarveResult<T::Ref<'_>> {
-        self.state.runtime::<T>()
+    /// Typed scope state accessor.
+    pub fn scope<T: State>(&self) -> CarveResult<T::Ref<'_>> {
+        let scope = self.scope.ok_or_else(|| {
+            CarveError::invalid_operation("Context::scope() called but no ScopeState set")
+        })?;
+        Ok(scope.get::<T>())
     }
 
-    /// Read a runtime value by key.
-    pub fn runtime_value(&self, key: &str) -> Option<&Value> {
-        self.state.runtime_value(key)
+    /// Read a scope value by key.
+    pub fn scope_value(&self, key: &str) -> Option<&Value> {
+        self.scope.and_then(|rt| rt.value(key))
     }
 
     /// Typed state reference at path.
@@ -87,7 +105,8 @@ impl<'a> Context<'a> {
 
     /// Typed state reference for current call (`tool_calls.<call_id>`).
     pub fn call_state<T: State>(&self) -> T::Ref<'_> {
-        self.state.call_state::<T>()
+        let path = format!("tool_calls.{}", self.call_id);
+        self.state::<T>(&path)
     }
 
     /// Create an activity context for a stream/type pair.
@@ -112,9 +131,9 @@ impl<'a> Context<'a> {
         )
     }
 
-    /// Extract accumulated patch.
+    /// Extract accumulated patch with context source metadata.
     pub fn take_patch(&self) -> carve_state::TrackedPatch {
-        self.state.take_patch()
+        self.state.take_tracked_patch(&self.source)
     }
 
     /// Whether state has pending changes.
@@ -127,7 +146,7 @@ impl<'a> Context<'a> {
         self.state.ops_count()
     }
 
-    /// Access underlying state context for lower-level integrations.
+    /// Access underlying pure state context.
     pub fn state_context(&self) -> &StateContext<'a> {
         &self.state
     }

@@ -8,7 +8,7 @@
 //! - **State**: Trait for types that can create typed state references
 //! - **StateRef**: Generated typed accessor for reading and writing state
 //! - **PatchSink**: Automatic operation collector (transparent to developers)
-//! - **Context**: Provides typed state access with automatic patch collection
+//! - **StateContext**: Provides typed state access with automatic patch collection
 //! - **StateManager**: Manages immutable state with patch history and replay
 //! - **Patch**: A serializable record of operations to apply to state
 //!
@@ -49,7 +49,7 @@
 //! For type-safe access with automatic patch collection:
 //!
 //! ```ignore
-//! use carve_state::{Context, State};
+//! use carve_state::{StateContext, State};
 //! use carve_state_derive::State;
 //! use serde::{Serialize, Deserialize};
 //! use serde_json::json;
@@ -61,7 +61,7 @@
 //! }
 //!
 //! // In a tool implementation:
-//! async fn execute(&self, ctx: &Context<'_>) -> Result<()> {
+//! async fn execute(&self, ctx: &StateContext<'_>) -> Result<()> {
 //!     let counter = ctx.state::<Counter>("counters.main");
 //!
 //!     // Read
@@ -94,7 +94,6 @@
 
 mod apply;
 mod conflict;
-mod context;
 mod error;
 mod manager;
 mod op;
@@ -114,10 +113,9 @@ pub use path::{Path, Seg};
 pub use writer::JsonWriter;
 
 // State types
-pub use context::{parse_path, Context};
 pub use manager::{ApplyResult, StateError, StateManager};
-pub use runtime::{Runtime, RuntimeError};
-pub use state::{PatchSink, State, StateExt};
+pub use runtime::{ScopeState, ScopeStateError};
+pub use state::{parse_path, PatchSink, State, StateContext, StateExt};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]

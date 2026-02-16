@@ -3,7 +3,7 @@
 //! These tests verify that the API is thread-safe and works correctly
 //! in concurrent scenarios.
 
-use carve_state::{path, Context, Op, Patch, PatchSink, StateManager, TrackedPatch};
+use carve_state::{path, Op, Patch, PatchSink, StateContext, StateManager, TrackedPatch};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -90,14 +90,14 @@ fn test_state_ref_is_send() {
 
 #[test]
 fn test_context_is_send() {
-    // Context should be Send
-    assert_send::<Context<'_>>();
+    // StateContext should be Send
+    assert_send::<StateContext<'_>>();
 }
 
 #[test]
 fn test_context_is_sync() {
-    // Context should be Sync (for sharing across threads)
-    assert_sync::<Context<'_>>();
+    // StateContext should be Sync (for sharing across threads)
+    assert_sync::<StateContext<'_>>();
 }
 
 // ============================================================================
@@ -113,7 +113,7 @@ fn test_context_concurrent_state_access() {
     });
 
     // Create context
-    let ctx = Context::new(&doc, "call_001", "tool:test");
+    let ctx = StateContext::new(&doc);
 
     // Access state from main thread
     let c1 = ctx.state::<CounterState>("counter1");
@@ -139,7 +139,7 @@ fn test_context_scoped_parallel_access() {
         }
     });
 
-    let ctx = Arc::new(Context::new(&doc, "call_001", "tool:test"));
+    let ctx = Arc::new(StateContext::new(&doc));
 
     // Use scoped threads to access context
     thread::scope(|s| {

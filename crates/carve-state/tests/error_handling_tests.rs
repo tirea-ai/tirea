@@ -4,7 +4,7 @@
 //! when operations fail.
 
 use carve_state::{
-    apply_patch, path, CarveError, Context, Op, Patch, PatchSink, Path, State as StateTrait,
+    apply_patch, path, CarveError, Op, Patch, PatchSink, Path, State as StateTrait, StateContext,
 };
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -365,7 +365,7 @@ fn test_context_error_propagation() {
             // count is missing
         }
     });
-    let ctx = Context::new(&doc, "call_001", "tool:test");
+    let ctx = StateContext::new(&doc);
 
     let counter = ctx.state::<SimpleState>("counter");
 
@@ -405,7 +405,7 @@ fn test_error_check_before_read() {
         }
     });
 
-    let ctx = Context::new(&doc, "call_001", "tool:test");
+    let ctx = StateContext::new(&doc);
     let state = ctx.state::<SimpleState>("data");
 
     // Pattern: check if read succeeds before using

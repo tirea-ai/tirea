@@ -46,7 +46,7 @@ mod parse;
 /// # Examples
 ///
 /// ```ignore
-/// use carve_state::{State, Context};
+/// use carve_state::{State, StateContext};
 /// use carve_state_derive::State;
 ///
 /// #[derive(State)]
@@ -56,7 +56,7 @@ mod parse;
 ///     label: String,
 /// }
 ///
-/// // Usage in a Context
+/// // Usage in a StateContext
 /// let counter = ctx.state::<Counter>("counters.main");
 ///
 /// // Read

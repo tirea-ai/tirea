@@ -118,7 +118,7 @@ impl AgentToolsPlugin {
     pub(super) fn render_available_agents(
         &self,
         caller_agent: Option<&str>,
-        runtime: Option<&carve_state::Runtime>,
+        runtime: Option<&carve_state::ScopeState>,
     ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();

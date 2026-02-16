@@ -40,7 +40,7 @@ fn plugin_filters_agents_by_runtime_policy() {
         crate::runtime::loop_runner::AgentDefinition::new("mock"),
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
-    let mut rt = carve_state::Runtime::new();
+    let mut rt = carve_state::ScopeState::new();
     rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
     let rendered = plugin.render_available_agents(None, Some(&rt));
     assert!(rendered.contains("<id>writer</id>"));
@@ -201,7 +201,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let doc = json!({});
     let mut rt = caller_runtime();
     rt.set(RUNTIME_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-1", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-1", "tool:agent_run").with_scope(Some(&rt));
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
@@ -236,8 +236,8 @@ impl AgentPlugin for SlowSkipPlugin {
 fn caller_runtime_with_state_and_run(
     state: serde_json::Value,
     run_id: &str,
-) -> carve_state::Runtime {
-    let mut rt = carve_state::Runtime::new();
+) -> carve_state::ScopeState {
+    let mut rt = carve_state::ScopeState::new();
     rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, "owner-thread")
         .unwrap();
     rt.set(TOOL_RUNTIME_CALLER_AGENT_ID_KEY, "caller").unwrap();
@@ -253,11 +253,11 @@ fn caller_runtime_with_state_and_run(
     rt
 }
 
-fn caller_runtime_with_state(state: serde_json::Value) -> carve_state::Runtime {
+fn caller_runtime_with_state(state: serde_json::Value) -> carve_state::ScopeState {
     caller_runtime_with_state_and_run(state, "parent-run-default")
 }
 
-fn caller_runtime() -> carve_state::Runtime {
+fn caller_runtime() -> carve_state::ScopeState {
     caller_runtime_with_state(json!({"forked": true}))
 }
 
@@ -277,7 +277,7 @@ async fn background_stop_then_resume_completes() {
 
     let doc = json!({});
     let rt = caller_runtime();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -297,7 +297,7 @@ async fn background_stop_then_resume_completes() {
         .to_string();
 
     let stop_ctx =
-        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_runtime(Some(&rt));
+        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
     let stopped = stop_tool
         .execute(json!({ "run_id": run_id.clone() }), &stop_ctx)
         .await
@@ -412,7 +412,7 @@ async fn agent_run_tool_persists_run_state_patch() {
 
     let doc = json!({});
     let rt = caller_runtime();
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -457,7 +457,7 @@ async fn agent_run_tool_binds_runtime_run_id_and_parent_lineage() {
 
     let doc = json!({});
     let rt = caller_runtime_with_state_and_run(json!({"forked": true}), "parent-run-42");
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let started = run_tool
         .execute(
             json!({
@@ -529,7 +529,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         }
     });
     let rt = caller_runtime_with_state(doc.clone());
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
             json!({
@@ -574,7 +574,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         }
     });
     let rt = caller_runtime_with_state_and_run(doc.clone(), "new-parent-run");
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let resumed = run_tool
         .execute(
             json!({
@@ -642,7 +642,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         }
     });
     let rt = caller_runtime_with_state(doc.clone());
-    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_runtime(Some(&rt));
+    let ctx = crate::contracts::context::Context::new(&doc, "call-run", "tool:agent_run").with_scope(Some(&rt));
     let summary = run_tool
         .execute(
             json!({
@@ -728,11 +728,11 @@ async fn agent_stop_tool_stops_descendant_runs() {
         }
     });
 
-    let mut rt = carve_state::Runtime::new();
+    let mut rt = carve_state::ScopeState::new();
     rt.set(TOOL_RUNTIME_CALLER_THREAD_ID_KEY, os_thread.id.clone())
         .unwrap();
     let ctx =
-        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_runtime(Some(&rt));
+        crate::contracts::context::Context::new(&doc, "call-stop", "tool:agent_stop").with_scope(Some(&rt));
     let result = stop_tool
         .execute(json!({ "run_id": parent_run_id }), &ctx)
         .await

@@ -1,7 +1,6 @@
-//! Integration tests for Runtime type, Context+Runtime integration,
-//! and Runtime thread safety.
+//! Integration tests for ScopeState and its thread-safety behavior.
 
-use carve_state::{Context, Runtime, RuntimeError};
+use carve_state::{ScopeState, ScopeStateError};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,12 +23,12 @@ struct NestedConfig {
 }
 
 // ============================================================================
-// Runtime::get<T>() typed access tests
+// ScopeState::get<T>() typed access tests
 // ============================================================================
 
 #[test]
 fn test_runtime_get_typed_read() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("user_id", "u-42").unwrap();
     rt.set("locale", "en-US").unwrap();
 
@@ -40,7 +39,7 @@ fn test_runtime_get_typed_read() {
 
 #[test]
 fn test_runtime_get_at_typed_read() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("config", json!({"timeout_ms": 5000, "retry": true}))
         .unwrap();
 
@@ -51,7 +50,7 @@ fn test_runtime_get_at_typed_read() {
 
 #[test]
 fn test_runtime_get_missing_field_errors() {
-    let rt = Runtime::new();
+    let rt = ScopeState::new();
     // No data set — reading should produce an error from state ref
     let user = rt.get::<UserInfo>();
     assert!(user.user_id().is_err());
@@ -60,7 +59,7 @@ fn test_runtime_get_missing_field_errors() {
 #[test]
 #[should_panic(expected = "read-only sink")]
 fn test_runtime_get_write_panics() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("user_id", "u-1").unwrap();
     rt.set("locale", "en").unwrap();
 
@@ -72,7 +71,7 @@ fn test_runtime_get_write_panics() {
 #[test]
 #[should_panic(expected = "read-only sink")]
 fn test_runtime_get_at_write_panics() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("config", json!({"timeout_ms": 1000, "retry": false}))
         .unwrap();
 
@@ -81,105 +80,12 @@ fn test_runtime_get_at_write_panics() {
 }
 
 // ============================================================================
-// Context + Runtime integration tests
-// ============================================================================
-
-#[test]
-fn test_context_with_runtime_value() {
-    let mut rt = Runtime::new();
-    rt.set("user_id", "u-abc").unwrap();
-    rt.set("run_id", "run-xyz").unwrap();
-
-    let doc = json!({});
-    let ctx = Context::new(&doc, "call_1", "tool:test").with_runtime(Some(&rt));
-
-    assert_eq!(ctx.runtime_value("user_id"), Some(&json!("u-abc")));
-    assert_eq!(ctx.runtime_value("run_id"), Some(&json!("run-xyz")));
-    assert_eq!(ctx.runtime_value("missing"), None);
-}
-
-#[test]
-fn test_context_runtime_typed_access() {
-    let mut rt = Runtime::new();
-    rt.set("user_id", "u-42").unwrap();
-    rt.set("locale", "zh-CN").unwrap();
-
-    let doc = json!({});
-    let ctx = Context::new(&doc, "call_1", "tool:test").with_runtime(Some(&rt));
-
-    let user = ctx.runtime::<UserInfo>().unwrap();
-    assert_eq!(user.user_id().unwrap(), "u-42");
-    assert_eq!(user.locale().unwrap(), "zh-CN");
-}
-
-#[test]
-fn test_context_runtime_ref() {
-    let mut rt = Runtime::new();
-    rt.set("key", "val").unwrap();
-
-    let doc = json!({});
-    let ctx = Context::new(&doc, "c1", "s1").with_runtime(Some(&rt));
-
-    let rt_ref = ctx.runtime_ref().unwrap();
-    assert_eq!(rt_ref.value("key"), Some(&json!("val")));
-}
-
-#[test]
-fn test_context_runtime_ref_none() {
-    let doc = json!({});
-    let ctx = Context::new(&doc, "c1", "s1");
-    assert!(ctx.runtime_ref().is_none());
-}
-
-#[test]
-fn test_context_runtime_without_runtime_returns_error() {
-    let doc = json!({});
-    let ctx = Context::new(&doc, "c1", "s1");
-    let err = ctx.runtime::<UserInfo>().err().unwrap();
-    assert_eq!(
-        err.to_string(),
-        "invalid operation: Context::runtime() called but no Runtime set"
-    );
-}
-
-#[test]
-fn test_context_runtime_value_without_runtime() {
-    let doc = json!({});
-    let ctx = Context::new(&doc, "c1", "s1");
-    // Should return None, not panic
-    assert_eq!(ctx.runtime_value("anything"), None);
-}
-
-#[test]
-fn test_context_state_and_runtime_independent() {
-    // Verify that state writes don't affect runtime, and runtime reads don't affect state
-    let mut rt = Runtime::new();
-    rt.set("user_id", "runtime-user").unwrap();
-    rt.set("locale", "en").unwrap();
-
-    let doc = json!({"user_id": "state-user", "locale": "fr"});
-    let ctx = Context::new(&doc, "c1", "s1").with_runtime(Some(&rt));
-
-    // State and runtime have different values for same-named fields
-    let state_user = ctx.state::<UserInfo>("");
-    assert_eq!(state_user.user_id().unwrap(), "state-user");
-
-    let rt_user = ctx.runtime::<UserInfo>().unwrap();
-    assert_eq!(rt_user.user_id().unwrap(), "runtime-user");
-
-    // Writing to state should not affect runtime
-    state_user.set_user_id("modified");
-    assert!(ctx.has_changes());
-    assert_eq!(rt.value("user_id"), Some(&json!("runtime-user")));
-}
-
-// ============================================================================
 // Set-once semantics (additional edge cases)
 // ============================================================================
 
 #[test]
 fn test_set_once_independent_keys() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("a", 1).unwrap();
     rt.set("b", 2).unwrap();
     rt.set("c", 3).unwrap();
@@ -197,7 +103,7 @@ fn test_set_once_independent_keys() {
 
 #[test]
 fn test_set_sensitive_marks_only_specified_keys() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("public", "visible").unwrap();
     rt.set_sensitive("secret", "hidden").unwrap();
 
@@ -212,7 +118,7 @@ fn test_set_sensitive_marks_only_specified_keys() {
 
 #[test]
 fn test_clone_preserves_set_once_and_sensitivity() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("a", 1).unwrap();
     rt.set_sensitive("token", "s3cret").unwrap();
 
@@ -229,7 +135,7 @@ fn test_clone_preserves_set_once_and_sensitivity() {
 
 #[test]
 fn test_set_once_clone_allows_set_on_clone() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("a", 1).unwrap();
 
     let mut rt2 = rt.clone();
@@ -245,32 +151,32 @@ fn test_set_once_clone_allows_set_on_clone() {
 
 #[test]
 fn test_runtime_error_display() {
-    let err = RuntimeError::AlreadySet("my_key".to_string());
+    let err = ScopeStateError::AlreadySet("my_key".to_string());
     assert_eq!(err.to_string(), "runtime key already set: my_key");
 
-    let err = RuntimeError::SerializationError("bad json".to_string());
+    let err = ScopeStateError::SerializationError("bad json".to_string());
     assert_eq!(err.to_string(), "runtime serialization error: bad json");
 }
 
 // ============================================================================
-// Runtime thread safety tests
+// ScopeState thread safety tests
 // ============================================================================
 
 #[test]
 fn test_runtime_is_send() {
     fn assert_send<T: Send>() {}
-    assert_send::<Runtime>();
+    assert_send::<ScopeState>();
 }
 
 #[test]
 fn test_runtime_is_sync() {
     fn assert_sync<T: Sync>() {}
-    assert_sync::<Runtime>();
+    assert_sync::<ScopeState>();
 }
 
 #[test]
 fn test_runtime_concurrent_reads() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("user_id", "u-concurrent").unwrap();
     rt.set("locale", "en").unwrap();
     rt.set_sensitive("token", "secret-token").unwrap();
@@ -305,7 +211,7 @@ fn test_runtime_concurrent_reads() {
 
 #[test]
 fn test_runtime_clone_isolation_across_threads() {
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("base", "value").unwrap();
 
     let handles: Vec<_> = (0..10)
@@ -332,10 +238,10 @@ fn test_runtime_clone_isolation_across_threads() {
 }
 
 // ============================================================================
-// Compile-time verification: Runtime does NOT implement Serialize
+// Compile-time verification: ScopeState does NOT implement Serialize
 // ============================================================================
 
-// This is a compile-time assertion: if Runtime ever gains Serialize,
+// This is a compile-time assertion: if ScopeState ever gains Serialize,
 // this test module will fail to compile because the static assertion
 // function will become callable where it shouldn't be.
 // We verify this by checking the trait bound does NOT hold.
@@ -343,10 +249,10 @@ fn test_runtime_clone_isolation_across_threads() {
 fn test_runtime_not_serializable_by_design() {
     // We can't directly assert a negative trait bound at compile time,
     // but we verify the intended behavior: serde_json::to_value should
-    // not compile for Runtime. Instead, we verify the Debug output
-    // works (the approved way to inspect Runtime) and that sensitive
+    // not compile for ScopeState. Instead, we verify the Debug output
+    // works (the approved way to inspect ScopeState) and that sensitive
     // values are redacted.
-    let mut rt = Runtime::new();
+    let mut rt = ScopeState::new();
     rt.set("public", "visible").unwrap();
     rt.set_sensitive("secret", "hidden").unwrap();
 

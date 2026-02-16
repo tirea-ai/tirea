@@ -64,7 +64,7 @@ impl Tool for SkillActivateTool {
             Err(r) => return Ok(r),
         };
         if !is_runtime_allowed(
-            ctx.runtime_ref(),
+            ctx.scope_ref(),
             &meta.id,
             RUNTIME_ALLOWED_SKILLS_KEY,
             RUNTIME_EXCLUDED_SKILLS_KEY,
@@ -229,7 +229,7 @@ impl Tool for LoadSkillResourceTool {
             Err(r) => return Ok(r),
         };
         if !is_runtime_allowed(
-            ctx.runtime_ref(),
+            ctx.scope_ref(),
             &meta.id,
             RUNTIME_ALLOWED_SKILLS_KEY,
             RUNTIME_EXCLUDED_SKILLS_KEY,
@@ -374,7 +374,7 @@ impl Tool for SkillScriptTool {
             Err(r) => return Ok(r),
         };
         if !is_runtime_allowed(
-            ctx.runtime_ref(),
+            ctx.scope_ref(),
             &meta.id,
             RUNTIME_ALLOWED_SKILLS_KEY,
             RUNTIME_EXCLUDED_SKILLS_KEY,
