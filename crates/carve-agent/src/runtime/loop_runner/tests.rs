@@ -173,6 +173,30 @@ fn test_agent_config_builder() {
 }
 
 #[test]
+fn test_agent_config_with_fallback_models_and_retry_policy() {
+    let policy = LlmRetryPolicy {
+        max_attempts_per_model: 3,
+        initial_backoff_ms: 100,
+        max_backoff_ms: 500,
+        retry_stream_start: true,
+    };
+    let config = AgentConfig::new("primary")
+        .with_fallback_models(vec!["fallback-a".to_string()])
+        .with_fallback_model("fallback-b")
+        .with_llm_retry_policy(policy.clone());
+
+    assert_eq!(config.model, "primary");
+    assert_eq!(
+        config.fallback_models,
+        vec!["fallback-a".to_string(), "fallback-b".to_string()]
+    );
+    assert_eq!(config.llm_retry_policy.max_attempts_per_model, 3);
+    assert_eq!(config.llm_retry_policy.initial_backoff_ms, 100);
+    assert_eq!(config.llm_retry_policy.max_backoff_ms, 500);
+    assert!(config.llm_retry_policy.retry_stream_start);
+}
+
+#[test]
 fn test_tool_map() {
     let tools = tool_map([EchoTool]);
 
@@ -230,6 +254,14 @@ fn test_agent_loop_error_termination_reason_mapping() {
 
     let state = AgentLoopError::StateError("broken".to_string());
     assert_eq!(state.termination_reason(), TerminationReason::Error);
+}
+
+#[test]
+fn test_llm_retry_error_classification() {
+    assert!(is_retryable_llm_error("429 too many requests"));
+    assert!(is_retryable_llm_error("gateway timeout"));
+    assert!(!is_retryable_llm_error("401 unauthorized"));
+    assert!(!is_retryable_llm_error("400 bad request"));
 }
 
 #[test]
@@ -2722,6 +2754,54 @@ struct MockStreamProvider {
     responses: Mutex<Vec<MockResponse>>,
 }
 
+/// Provider that fails stream startup for a fixed number of calls, then succeeds.
+struct FailingStartProvider {
+    failures_left: Mutex<usize>,
+    models_seen: Mutex<Vec<String>>,
+}
+
+impl FailingStartProvider {
+    fn new(failures: usize) -> Self {
+        Self {
+            failures_left: Mutex::new(failures),
+            models_seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn seen_models(&self) -> Vec<String> {
+        self.models_seen.lock().expect("lock poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl ChatStreamProvider for FailingStartProvider {
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        _chat_req: genai::chat::ChatRequest,
+        _options: Option<&ChatOptions>,
+    ) -> genai::Result<Pin<Box<dyn Stream<Item = genai::Result<ChatStreamEvent>> + Send>>> {
+        self.models_seen
+            .lock()
+            .expect("lock poisoned")
+            .push(model.to_string());
+        let mut remaining = self.failures_left.lock().expect("lock poisoned");
+        if *remaining > 0 {
+            *remaining -= 1;
+            return Err(genai::Error::Internal("429 rate limit".to_string()));
+        }
+
+        let events = vec![
+            Ok(ChatStreamEvent::Start),
+            Ok(ChatStreamEvent::Chunk(StreamChunk {
+                content: "ok".to_string(),
+            })),
+            Ok(ChatStreamEvent::End(StreamEnd::default())),
+        ];
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+}
+
 impl MockStreamProvider {
     fn new(responses: Vec<MockResponse>) -> Self {
         Self {
@@ -2792,6 +2872,73 @@ async fn run_mock_stream(
         RunContext::default(),
     );
     collect_stream_events(stream).await
+}
+
+#[tokio::test]
+async fn test_stream_retries_startup_error_then_succeeds() {
+    let provider = Arc::new(FailingStartProvider::new(1));
+    let config = AgentConfig::new("mock").with_llm_retry_policy(LlmRetryPolicy {
+        max_attempts_per_model: 2,
+        initial_backoff_ms: 1,
+        max_backoff_ms: 10,
+        retry_stream_start: true,
+    });
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let stream = run_loop_stream_impl_with_provider(
+        provider.clone(),
+        config,
+        thread,
+        tools,
+        RunContext::default(),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    let seen = provider.seen_models();
+    assert_eq!(seen, vec!["mock".to_string(), "mock".to_string()]);
+}
+
+#[tokio::test]
+async fn test_stream_uses_fallback_model_after_primary_failures() {
+    let provider = Arc::new(FailingStartProvider::new(2));
+    let config = AgentConfig::new("primary")
+        .with_fallback_model("fallback")
+        .with_llm_retry_policy(LlmRetryPolicy {
+            max_attempts_per_model: 2,
+            initial_backoff_ms: 1,
+            max_backoff_ms: 10,
+            retry_stream_start: true,
+        });
+    let thread = Thread::new("test").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let stream = run_loop_stream_impl_with_provider(
+        provider.clone(),
+        config,
+        thread,
+        tools,
+        RunContext::default(),
+    );
+    let events = collect_stream_events(stream).await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    let seen = provider.seen_models();
+    assert_eq!(
+        seen,
+        vec![
+            "primary".to_string(),
+            "primary".to_string(),
+            "fallback".to_string()
+        ]
+    );
 }
 
 /// Helper: run a mock stream and collect events plus final session.

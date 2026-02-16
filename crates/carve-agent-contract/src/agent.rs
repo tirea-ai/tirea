@@ -9,6 +9,30 @@ use tokio_util::sync::CancellationToken;
 
 pub type RunCancellationToken = CancellationToken;
 
+/// Retry strategy for LLM inference calls.
+#[derive(Debug, Clone)]
+pub struct LlmRetryPolicy {
+    /// Max attempts per model candidate (must be >= 1).
+    pub max_attempts_per_model: usize,
+    /// Initial backoff for retries in milliseconds.
+    pub initial_backoff_ms: u64,
+    /// Max backoff cap in milliseconds.
+    pub max_backoff_ms: u64,
+    /// Retry stream startup failures before any output is emitted.
+    pub retry_stream_start: bool,
+}
+
+impl Default for LlmRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts_per_model: 2,
+            initial_backoff_ms: 250,
+            max_backoff_ms: 2_000,
+            retry_stream_start: true,
+        }
+    }
+}
+
 /// Definition for the agent loop configuration.
 #[derive(Clone)]
 pub struct AgentDefinition {
@@ -24,6 +48,12 @@ pub struct AgentDefinition {
     pub parallel_tools: bool,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
+    /// Fallback model ids used when the primary model fails.
+    ///
+    /// Evaluated in order after `model`.
+    pub fallback_models: Vec<String>,
+    /// Retry policy for LLM inference failures.
+    pub llm_retry_policy: LlmRetryPolicy,
     /// Plugins to run during the agent loop.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
     /// Plugin references to resolve via AgentOs wiring.
@@ -157,6 +187,8 @@ impl Default for AgentDefinition {
                     .with_capture_usage(true)
                     .with_capture_tool_calls(true),
             ),
+            fallback_models: Vec::new(),
+            llm_retry_policy: LlmRetryPolicy::default(),
             plugins: Vec::new(),
             plugin_ids: Vec::new(),
             policy_ids: Vec::new(),
@@ -184,6 +216,8 @@ impl std::fmt::Debug for AgentDefinition {
             .field("max_rounds", &self.max_rounds)
             .field("parallel_tools", &self.parallel_tools)
             .field("chat_options", &self.chat_options)
+            .field("fallback_models", &self.fallback_models)
+            .field("llm_retry_policy", &self.llm_retry_policy)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
             .field("plugin_ids", &self.plugin_ids)
             .field("policy_ids", &self.policy_ids)
@@ -245,6 +279,27 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
         self.chat_options = Some(options);
+        self
+    }
+
+    /// Set fallback model ids to try after the primary model.
+    #[must_use]
+    pub fn with_fallback_models(mut self, models: Vec<String>) -> Self {
+        self.fallback_models = models;
+        self
+    }
+
+    /// Add a single fallback model id.
+    #[must_use]
+    pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
+        self.fallback_models.push(model.into());
+        self
+    }
+
+    /// Set LLM retry policy.
+    #[must_use]
+    pub fn with_llm_retry_policy(mut self, policy: LlmRetryPolicy) -> Self {
+        self.llm_retry_policy = policy;
         self
     }
 

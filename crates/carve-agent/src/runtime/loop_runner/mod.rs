@@ -76,8 +76,8 @@ use crate::contracts::agent_plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::phase::StepContext;
 pub use carve_agent_contract::agent::{
-    AgentConfig, AgentDefinition, RunCancellationToken, RunContext, StateCommitError,
-    StateCommitter,
+    AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
+    StateCommitError, StateCommitter,
 };
 pub(crate) use carve_agent_contract::agent::{
     TOOL_RUNTIME_CALLER_AGENT_ID_KEY, TOOL_RUNTIME_CALLER_MESSAGES_KEY,
@@ -118,6 +118,92 @@ pub use tool_exec::{execute_tools, execute_tools_with_config, execute_tools_with
 
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
+}
+
+pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
+    let mut models = Vec::with_capacity(1 + config.fallback_models.len());
+    models.push(config.model.clone());
+    for model in &config.fallback_models {
+        if model.trim().is_empty() {
+            continue;
+        }
+        if !models.iter().any(|m| m == model) {
+            models.push(model.clone());
+        }
+    }
+    models
+}
+
+pub(super) fn llm_retry_attempts(config: &AgentConfig) -> usize {
+    config.llm_retry_policy.max_attempts_per_model.max(1)
+}
+
+pub(super) fn is_retryable_llm_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let non_retryable = [
+        "401",
+        "403",
+        "404",
+        "400",
+        "422",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "invalid_request",
+        "bad request",
+    ];
+    if non_retryable.iter().any(|p| lower.contains(p)) {
+        return false;
+    }
+    let retryable = [
+        "429",
+        "too many requests",
+        "rate limit",
+        "timeout",
+        "timed out",
+        "temporar",
+        "connection",
+        "network",
+        "unavailable",
+        "server error",
+        "502",
+        "503",
+        "504",
+        "reset by peer",
+        "eof",
+    ];
+    retryable.iter().any(|p| lower.contains(p))
+}
+
+pub(super) fn retry_backoff_ms(config: &AgentConfig, retry_index: usize) -> u64 {
+    let initial = config.llm_retry_policy.initial_backoff_ms;
+    let cap = config
+        .llm_retry_policy
+        .max_backoff_ms
+        .max(config.llm_retry_policy.initial_backoff_ms);
+    if retry_index == 0 {
+        return initial.min(cap);
+    }
+    let shift = (retry_index - 1).min(20) as u32;
+    let factor = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    initial.saturating_mul(factor).min(cap)
+}
+
+pub(super) async fn wait_retry_backoff(
+    config: &AgentConfig,
+    retry_index: usize,
+    run_cancellation_token: Option<&RunCancellationToken>,
+) -> bool {
+    let wait_ms = retry_backoff_ms(config, retry_index);
+    if let Some(token) = run_cancellation_token {
+        tokio::select! {
+            _ = token.cancelled() => true,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => false,
+        }
+    } else {
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+        false
+    }
 }
 
 #[async_trait]
@@ -396,40 +482,78 @@ pub async fn run_loop_with_context(
             break;
         }
 
-        // Build request with filtered tools
-        let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
-
-        // Call LLM (instrumented with tracing span)
+        // Call LLM with retry + fallback model strategy.
         let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
-        let llm_future = async {
-            client
-                .exec_chat(&config.model, request, config.chat_options.as_ref())
-                .await
-        }
-        .instrument(inference_span);
-        let response_res = if let Some(ref token) = run_cancellation_token {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
-                    return Err(AgentLoopError::Cancelled {
-                        thread: Box::new(thread),
-                    });
+        let mut response: Option<genai::chat::ChatResponse> = None;
+        let mut last_llm_error = String::from("unknown llm error");
+        let model_candidates = effective_llm_models(config);
+        let max_attempts = llm_retry_attempts(config);
+        'model_attempts: for model in model_candidates {
+            for attempt in 1..=max_attempts {
+                let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
+                let llm_future = async {
+                    client
+                        .exec_chat(&model, request, config.chat_options.as_ref())
+                        .await
                 }
-                resp = llm_future => resp,
+                .instrument(inference_span.clone());
+                let response_res = if let Some(ref token) = run_cancellation_token {
+                    tokio::select! {
+                        _ = token.cancelled() => {
+                            thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                            return Err(AgentLoopError::Cancelled {
+                                thread: Box::new(thread),
+                            });
+                        }
+                        resp = llm_future => resp,
+                    }
+                } else {
+                    llm_future.await
+                };
+
+                match response_res {
+                    Ok(r) => {
+                        response = Some(r);
+                        break 'model_attempts;
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        last_llm_error =
+                            format!("model='{model}' attempt={attempt}/{max_attempts}: {message}");
+                        let can_retry_same_model =
+                            attempt < max_attempts && is_retryable_llm_error(&message);
+                        if can_retry_same_model {
+                            let cancelled = wait_retry_backoff(
+                                config,
+                                attempt,
+                                run_cancellation_token.as_ref(),
+                            )
+                            .await;
+                            if cancelled {
+                                thread =
+                                    emit_session_end(thread, &tool_descriptors, &config.plugins)
+                                        .await;
+                                return Err(AgentLoopError::Cancelled {
+                                    thread: Box::new(thread),
+                                });
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
             }
-        } else {
-            llm_future.await
-        };
-        let response = match response_res {
-            Ok(r) => r,
-            Err(e) => {
+        }
+        let response = match response {
+            Some(r) => r,
+            None => {
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 thread = match emit_cleanup_phases_and_apply(
                     thread.clone(),
                     &tool_descriptors,
                     &config.plugins,
                     "llm_exec_error",
-                    e.to_string(),
+                    last_llm_error.clone(),
                 )
                 .await
                 {
@@ -441,7 +565,7 @@ pub async fn run_loop_with_context(
                     }
                 };
                 let _finalized = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
-                return Err(AgentLoopError::LlmError(e.to_string()));
+                return Err(AgentLoopError::LlmError(last_llm_error));
             }
         };
 

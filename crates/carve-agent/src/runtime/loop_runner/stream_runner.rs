@@ -319,33 +319,76 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 return;
             }
 
-            // Build request with filtered tools
-            let request = build_request_for_filtered_tools(&messages, &tools, &filtered_tools);
-
             // Step boundary: starting LLM call
             let assistant_msg_id = gen_message_id();
             yield AgentEvent::StepStart { message_id: assistant_msg_id.clone() };
 
-            // Stream LLM response (instrumented with tracing span)
+            // Stream LLM response with retry + fallback model strategy.
             let inference_span = tracing_span.unwrap_or_else(tracing::Span::none);
-            let stream_result = async {
-                provider
-                    .exec_chat_stream_events(&config.model, request, config.chat_options.as_ref())
-                    .await
-            }
-            .instrument(inference_span)
-            .await;
+            let model_candidates = effective_llm_models(&config);
+            let max_attempts = llm_retry_attempts(&config);
+            let mut chat_stream_events = None;
+            let mut last_llm_error = String::from("unknown llm stream start error");
+            'model_attempts: for model in model_candidates {
+                for attempt in 1..=max_attempts {
+                    let request = build_request_for_filtered_tools(&messages, &tools, &filtered_tools);
+                    let stream_result = async {
+                        provider
+                            .exec_chat_stream_events(&model, request, config.chat_options.as_ref())
+                            .await
+                    }
+                    .instrument(inference_span.clone())
+                    .await;
 
-            let chat_stream_events = match stream_result {
-                Ok(s) => s,
-                Err(e) => {
+                    match stream_result {
+                        Ok(s) => {
+                            chat_stream_events = Some(s);
+                            break 'model_attempts;
+                        }
+                        Err(e) => {
+                            let message = e.to_string();
+                            last_llm_error = format!(
+                                "model='{model}' attempt={attempt}/{max_attempts}: {message}"
+                            );
+                            let can_retry_same_model = config.llm_retry_policy.retry_stream_start
+                                && attempt < max_attempts
+                                && is_retryable_llm_error(&message);
+                            if can_retry_same_model {
+                                let cancelled = wait_retry_backoff(
+                                    &config,
+                                    attempt,
+                                    run_cancellation_token.as_ref(),
+                                )
+                                .await;
+                                if cancelled {
+                                    thread = emit_session_end(thread, &tool_descriptors, &config.plugins).await;
+                                    ensure_run_finished_delta_or_error!();
+                                    yield AgentEvent::RunFinish {
+                                        thread_id: thread.id.clone(),
+                                        run_id: run_id.clone(),
+                                        result: None,
+                                        termination: TerminationReason::Cancelled,
+                                    };
+                                    return;
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let chat_stream_events = match chat_stream_events {
+                Some(s) => s,
+                None => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                     match emit_cleanup_phases_and_apply(
                         thread.clone(),
                         &tool_descriptors,
                         &config.plugins,
                         "llm_stream_start_error",
-                        e.to_string(),
+                        last_llm_error.clone(),
                     )
                     .await
                     {
@@ -356,7 +399,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                             terminate_stream_error!(phase_error.to_string());
                         }
                     }
-                    terminate_stream_error!(e.to_string());
+                    terminate_stream_error!(last_llm_error);
                 }
             };
 
