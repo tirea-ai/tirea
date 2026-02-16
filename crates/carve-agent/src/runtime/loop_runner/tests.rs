@@ -2939,6 +2939,10 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
             "fallback".to_string()
         ]
     );
+    assert_eq!(
+        extract_inference_model(&events),
+        Some("fallback".to_string())
+    );
 }
 
 /// Helper: run a mock stream and collect events plus final session.
@@ -2965,6 +2969,13 @@ async fn run_mock_stream_with_final_thread(
 fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     events.iter().find_map(|e| match e {
         AgentEvent::RunFinish { termination, .. } => Some(termination.clone()),
+        _ => None,
+    })
+}
+
+fn extract_inference_model(events: &[AgentEvent]) -> Option<String> {
+    events.iter().find_map(|e| match e {
+        AgentEvent::InferenceComplete { model, .. } => Some(model.clone()),
         _ => None,
     })
 }
