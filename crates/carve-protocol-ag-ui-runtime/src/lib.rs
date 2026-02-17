@@ -138,9 +138,9 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
-    use carve_agent::contracts::conversation::ToolCall;
     use carve_agent::contracts::runtime::phase::{Phase, ToolContext};
+    use carve_agent::contracts::state::AgentState as ConversationAgentState;
+    use carve_agent::contracts::state::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 
@@ -238,7 +238,7 @@ mod tests {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let state = json!({});
-        let ctx = RuntimeAgentState::new_runtime(&state, "test-call", "agui_runtime_test");
+        let ctx = RuntimeAgentState::new_transient(&state, "test-call", "agui_runtime_test");
         let thread = ConversationAgentState::new("t1");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));

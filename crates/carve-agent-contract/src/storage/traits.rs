@@ -1,5 +1,5 @@
-use crate::change::AgentChangeSet;
-use crate::conversation::AgentState;
+use crate::state::AgentChangeSet;
+use crate::state::AgentState;
 use async_trait::async_trait;
 
 use super::{

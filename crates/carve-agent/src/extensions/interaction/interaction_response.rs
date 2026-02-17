@@ -4,8 +4,7 @@
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
 use crate::contracts::control::{
-    AgentControlState as AgentStateDoc, AGENT_RECOVERY_INTERACTION_ACTION,
-    AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -111,27 +110,23 @@ impl InteractionResponsePlugin {
         step: &StepContext<'_>,
         ctx: &ContextAgentState,
     ) -> Option<Interaction> {
-        Self::pending_interaction_from_step_thread(step).or_else(|| {
-            ctx.state::<AgentStateDoc>(AGENT_STATE_PATH)
-                .pending_interaction()
-                .ok()
-                .flatten()
-        })
+        Self::pending_interaction_from_step_thread(step)
+            .or_else(|| ctx.agent_control().pending_interaction().ok().flatten())
     }
 
     fn push_resolution(ctx: &ContextAgentState, interaction_id: String, result: serde_json::Value) {
-        let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
+        let agent = ctx.agent_control();
         agent.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
-    fn queue_replay_call(ctx: &ContextAgentState, call: crate::contracts::conversation::ToolCall) {
-        let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
+    fn queue_replay_call(ctx: &ContextAgentState, call: crate::contracts::state::ToolCall) {
+        let agent = ctx.agent_control();
         agent.replay_tool_calls_push(call);
     }
 
     /// During RunStart, detect pending_interaction and schedule tool replay if approved.
     fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
-        let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
+        let agent = ctx.agent_control();
         let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
         };
@@ -179,7 +174,7 @@ impl InteractionResponsePlugin {
                 return;
             };
 
-            let replay_call = crate::contracts::conversation::ToolCall::new(
+            let replay_call = crate::contracts::state::ToolCall::new(
                 format!("recovery_resume_{run_id}"),
                 RECOVERY_RESUME_TOOL_ID,
                 json!({
@@ -195,24 +190,25 @@ impl InteractionResponsePlugin {
             .parameters
             .get("origin_tool_call")
             .cloned()
-            .and_then(|v| {
-                serde_json::from_value::<crate::contracts::conversation::ToolCall>(v).ok()
-            })
+            .and_then(|v| serde_json::from_value::<crate::contracts::state::ToolCall>(v).ok())
         {
             Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
-        if let Some(replay_call) = pending.parameters.get("tool_call").cloned().and_then(|v| {
-            serde_json::from_value::<crate::contracts::conversation::ToolCall>(v).ok()
-        }) {
+        if let Some(replay_call) = pending
+            .parameters
+            .get("tool_call")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<crate::contracts::state::ToolCall>(v).ok())
+        {
             Self::queue_replay_call(ctx, replay_call);
             return;
         }
 
         if !pending_id_owned.starts_with("permission_") {
             if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let replay_call = crate::contracts::conversation::ToolCall::new(
+                let replay_call = crate::contracts::state::ToolCall::new(
                     pending_id_owned.clone(),
                     tool_name,
                     pending.parameters.clone(),
@@ -228,9 +224,7 @@ impl InteractionResponsePlugin {
             .messages
             .iter()
             .rev()
-            .find(|m| {
-                m.role == crate::contracts::conversation::Role::Assistant && m.tool_calls.is_some()
-            })
+            .find(|m| m.role == crate::contracts::state::Role::Assistant && m.tool_calls.is_some())
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.
@@ -302,7 +296,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
+        let agent = ctx.agent_control();
         let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
 
         let id_matches = persisted_id
@@ -336,8 +330,8 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::AgentState;
-    use crate::contracts::conversation::{Message, ToolCall};
+    use crate::contracts::state::AgentState;
+    use crate::contracts::state::{Message, ToolCall};
     use crate::contracts::AgentState as ContextAgentState;
     use carve_state::apply_patches;
     use serde_json::json;
@@ -373,7 +367,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
@@ -416,7 +410,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
@@ -460,7 +454,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
 
         let thread = AgentState::with_initial_state(
@@ -503,7 +497,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
         let thread = AgentState::with_initial_state("s1", doc.clone());
 
@@ -537,7 +531,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
         let thread = AgentState::with_initial_state("s1", doc.clone());
@@ -572,7 +566,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
         let thread = AgentState::with_initial_state("s1", doc.clone());
@@ -601,7 +595,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
 
@@ -644,7 +638,7 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let plugin =
             InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
 

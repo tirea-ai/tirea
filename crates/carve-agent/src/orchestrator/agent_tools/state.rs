@@ -1,6 +1,6 @@
 use super::*;
 pub(super) fn parent_run_id_from_thread(
-    thread: Option<&crate::contracts::conversation::AgentState>,
+    thread: Option<&crate::contracts::state::AgentState>,
 ) -> Option<String> {
     thread
         .and_then(|s| s.scope.value(SCOPE_PARENT_RUN_ID_KEY))
@@ -10,7 +10,7 @@ pub(super) fn parent_run_id_from_thread(
 
 pub(super) fn as_agent_run_state(
     summary: &AgentRunSummary,
-    thread: Option<crate::contracts::conversation::AgentState>,
+    thread: Option<crate::contracts::state::AgentState>,
 ) -> AgentRunState {
     let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     AgentRunState {
@@ -125,7 +125,7 @@ pub(super) fn set_pending_interaction_patch(
     interaction: Interaction,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_runtime(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
+    let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
     let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
@@ -141,7 +141,7 @@ pub(super) fn set_replay_tool_calls_patch(
     replay_calls: Vec<ToolCall>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_runtime(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
+    let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
     let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_replay_tool_calls(replay_calls);
     let patch = ctx.take_patch();
@@ -195,7 +195,7 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     next_runs: HashMap<String, AgentRunState>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_runtime(state, call_id, AGENT_TOOLS_PLUGIN_ID);
+    let ctx = AgentState::new_transient(state, call_id, AGENT_TOOLS_PLUGIN_ID);
     let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_agent_runs(next_runs);
     let patch = ctx.take_patch();

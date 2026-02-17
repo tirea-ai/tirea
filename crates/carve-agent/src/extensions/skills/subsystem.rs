@@ -124,10 +124,10 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::AgentState;
-    use crate::contracts::conversation::{Message, ToolCall};
     use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
     use crate::contracts::runtime::phase::{Phase, StepContext};
+    use crate::contracts::state::AgentState;
+    use crate::contracts::state::{Message, ToolCall};
     use crate::contracts::AgentState as ContextAgentState;
     use crate::engine::tool_execution::execute_single_tool;
     use crate::extensions::skills::{
@@ -295,7 +295,7 @@ mod tests {
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         plugin
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;

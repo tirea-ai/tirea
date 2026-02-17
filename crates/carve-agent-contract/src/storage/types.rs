@@ -1,4 +1,4 @@
-use crate::conversation::AgentState;
+use crate::state::AgentState;
 use crate::Message;
 use crate::Visibility;
 use serde::{Deserialize, Serialize};
@@ -217,4 +217,4 @@ pub struct AgentStateHead {
 }
 
 // Re-export for storage-level callers.
-pub use crate::change::{AgentChangeSet, CheckpointReason, Version};
+pub use crate::state::{AgentChangeSet, CheckpointReason, Version};

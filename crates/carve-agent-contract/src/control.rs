@@ -7,8 +7,8 @@ use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::conversation::ToolCall;
 use crate::runtime::interaction::{Interaction, InteractionResponse};
+use crate::state::ToolCall;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct AgentRunState {
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
     #[serde(default, rename = "thread", skip_serializing_if = "Option::is_none")]
-    pub agent_state: Option<crate::conversation::AgentState>,
+    pub agent_state: Option<crate::state::AgentState>,
 }
 
 /// Inference error emitted by the loop and consumed by telemetry plugins.
@@ -113,6 +113,36 @@ pub struct AgentControlState {
     /// Inference error envelope for AfterInference cleanup flow.
     #[carve(default = "None")]
     pub inference_error: Option<AgentInferenceError>,
+}
+
+impl crate::state::AgentState {
+    /// Typed accessor for durable agent control substate at `state["agent"]`.
+    pub fn agent_control(&self) -> <AgentControlState as carve_state::State>::Ref<'_> {
+        self.state::<AgentControlState>(AGENT_STATE_PATH)
+    }
+
+    /// Read pending interaction from durable control state.
+    pub fn pending_interaction(&self) -> Option<Interaction> {
+        if self.patches.is_empty() {
+            return self.agent_control().pending_interaction().ok().flatten();
+        }
+
+        self.rebuild_state()
+            .ok()
+            .and_then(|state| {
+                state
+                    .get(AGENT_STATE_PATH)
+                    .and_then(|agent| agent.get("pending_interaction"))
+                    .cloned()
+            })
+            .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
+            .or_else(|| self.agent_control().pending_interaction().ok().flatten())
+    }
+
+    /// Write pending interaction into durable control state.
+    pub fn set_pending_interaction(&self, interaction: Option<Interaction>) {
+        self.agent_control().set_pending_interaction(interaction);
+    }
 }
 
 #[cfg(test)]
@@ -280,8 +310,8 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = crate::conversation::AgentState::new("child-1")
-            .with_message(crate::conversation::Message::user("seed"));
+        let child = crate::state::AgentState::new("child-1")
+            .with_message(crate::state::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),

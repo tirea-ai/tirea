@@ -98,10 +98,10 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::ToolCall;
     use crate::extension::traits::tool::ToolDescriptor;
     use crate::runtime::phase::StepContext;
     use crate::runtime::Interaction;
+    use crate::state::ToolCall;
     use serde_json::json;
 
     // =========================================================================
@@ -245,8 +245,8 @@ mod tests {
     // Helper Functions
     // =========================================================================
 
-    fn mock_thread() -> crate::conversation::AgentState {
-        crate::conversation::AgentState::new("test-thread")
+    fn mock_thread() -> crate::state::AgentState {
+        crate::state::AgentState::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -268,7 +268,7 @@ mod tests {
     }
 
     fn test_ctx(doc: &serde_json::Value) -> AgentState {
-        AgentState::new_runtime(doc, "test", "test")
+        AgentState::new_transient(doc, "test", "test")
     }
 
     #[tokio::test]

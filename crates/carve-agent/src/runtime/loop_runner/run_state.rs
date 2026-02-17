@@ -1,6 +1,6 @@
 use super::AgentConfig;
-use crate::contracts::conversation::AgentState;
 use crate::contracts::runtime::StreamResult;
+use crate::contracts::state::AgentState;
 use crate::engine::stop_conditions::{StopCheckContext, StopCondition};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -38,7 +38,7 @@ impl RunState {
 
     pub(super) fn record_tool_step(
         &mut self,
-        tool_calls: &[crate::contracts::conversation::ToolCall],
+        tool_calls: &[crate::contracts::state::ToolCall],
         error_count: usize,
     ) {
         let mut names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();

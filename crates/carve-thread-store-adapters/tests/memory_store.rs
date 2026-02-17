@@ -1,4 +1,4 @@
-use carve_agent_contract::change::AgentChangeSet;
+use carve_agent_contract::state::AgentChangeSet;
 use carve_agent_contract::storage::{
     AgentStateReader, AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter,
     VersionPrecondition,

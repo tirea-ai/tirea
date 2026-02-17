@@ -1,6 +1,6 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
-use crate::conversation::{AgentState, Message};
+use crate::state::{AgentState, Message};
 use carve_state::TrackedPatch;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

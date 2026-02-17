@@ -1,7 +1,7 @@
 //! Tool execution utilities.
 
-use crate::contracts::conversation::ToolCall;
 use crate::contracts::extension::traits::tool::{Tool, ToolResult};
+use crate::contracts::state::ToolCall;
 use crate::contracts::AgentState;
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
@@ -55,8 +55,8 @@ pub async fn execute_single_tool_with_scope(
     };
 
     // Create context for this tool call
-    let ctx = AgentState::new_runtime(state, &call.id, format!("tool:{}", call.name))
-        .with_runtime_scope(scope);
+    let ctx = AgentState::new_transient(state, &call.id, format!("tool:{}", call.name))
+        .with_transient_scope(scope);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {

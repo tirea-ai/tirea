@@ -5,8 +5,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::contracts::conversation::{AgentState, Visibility};
 use carve_agent::contracts::runtime::AgentEvent;
+use carve_agent::contracts::state::{AgentState, Visibility};
 use carve_agent::contracts::storage::{
     AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
 };

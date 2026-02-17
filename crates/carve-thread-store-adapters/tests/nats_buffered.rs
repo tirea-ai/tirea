@@ -7,7 +7,7 @@
 
 #![cfg(feature = "nats")]
 
-use carve_agent_contract::change::AgentChangeSet;
+use carve_agent_contract::state::AgentChangeSet;
 use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
     AgentState, AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,

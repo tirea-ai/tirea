@@ -3,12 +3,12 @@
 //! This module provides the core types for the plugin phase system:
 //! - `Phase`: Execution phases in the agent loop
 //! - `StepContext`: Mutable context passed through all phases
-//! - `ToolContext`: Context for the currently executing tool
+//! - `ToolContext`: Tool-call state carried by `StepContext`
 
-use crate::conversation::{AgentState, ToolCall};
 use crate::extension::traits::tool::{ToolDescriptor, ToolResult};
 use crate::runtime::interaction::Interaction;
 use crate::runtime::result::StreamResult;
+use crate::state::{AgentState, ToolCall};
 use carve_state::TrackedPatch;
 use serde_json::Value;
 

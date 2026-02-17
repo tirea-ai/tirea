@@ -1,8 +1,8 @@
-use carve_agent::contracts::conversation::AgentState;
-use carve_agent::contracts::conversation::{Message, ToolCall};
 use carve_agent::contracts::extension::plugin::AgentPlugin;
 use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use carve_agent::contracts::runtime::phase::{Phase, StepContext};
+use carve_agent::contracts::state::AgentState;
+use carve_agent::contracts::state::{Message, ToolCall};
 use carve_agent::contracts::AgentState as ContextAgentState;
 use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
 use carve_agent::extensions::skills::{
@@ -104,7 +104,7 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -187,7 +187,7 @@ async fn test_load_reference_injects_reference_content() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -226,7 +226,7 @@ async fn test_script_result_is_persisted_and_injected() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -266,7 +266,7 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -671,7 +671,7 @@ printf "%s" "$*"
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -838,7 +838,7 @@ async fn test_reference_truncation_flag_is_injected() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -886,7 +886,7 @@ head -c 40000 /dev/zero | tr '\0' 'a'
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;

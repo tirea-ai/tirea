@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::extension::plugin::AgentPlugin;
 use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
+use carve_agent::contracts::state::AgentState;
 use carve_agent::contracts::storage::{
     AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed,
@@ -160,8 +160,8 @@ async fn test_sessions_query_endpoints() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
 
-    let thread = AgentState::new("s1")
-        .with_message(carve_agent::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("s1").with_message(carve_agent::contracts::state::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
     let app = router(AppState {
@@ -490,8 +490,7 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
         .messages
         .iter()
         .filter(|m| {
-            m.role == carve_agent::contracts::conversation::Role::User
-                && m.content == "hello without id"
+            m.role == carve_agent::contracts::state::Role::User && m.content == "hello without id"
         })
         .count();
     assert_eq!(
@@ -985,9 +984,10 @@ async fn test_agui_sse_storage_save_error() {
 fn make_session_with_n_messages(id: &str, n: usize) -> AgentState {
     let mut thread = AgentState::new(id);
     for i in 0..n {
-        thread = thread.with_message(carve_agent::contracts::conversation::Message::user(
-            format!("msg-{}", i),
-        ));
+        thread = thread.with_message(carve_agent::contracts::state::Message::user(format!(
+            "msg-{}",
+            i
+        )));
     }
     thread
 }

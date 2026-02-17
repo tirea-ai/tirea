@@ -1,5 +1,5 @@
-use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
+use carve_agent::contracts::state::Message;
 use carve_agent::orchestrator::AgentOs;
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use futures::StreamExt;

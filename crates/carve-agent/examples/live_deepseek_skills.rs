@@ -11,12 +11,12 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
-use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent::contracts::runtime::AgentEvent;
+use carve_agent::contracts::state::AgentState as ConversationAgentState;
+use carve_agent::contracts::state::Message;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 use carve_agent::prelude::AgentState as RuntimeAgentState;
 use carve_agent::runtime::loop_runner::{

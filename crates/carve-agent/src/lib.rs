@@ -82,8 +82,8 @@
 //!
 //! ```ignore
 //! use carve_agent::contracts::storage::AgentStateWriter;
-//! use carve_agent::contracts::conversation::AgentState;
-//! use carve_agent::contracts::conversation::Message;
+//! use carve_agent::contracts::state::AgentState;
+//! use carve_agent::contracts::state::Message;
 //! use carve_thread_store_adapters::FileStore;
 //!
 //! // Create or load session

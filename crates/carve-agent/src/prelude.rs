@@ -44,7 +44,7 @@ pub use crate::contracts::extension::traits::tool::{
 };
 
 // Message types
-pub use crate::contracts::conversation::{Message, Role, ToolCall};
+pub use crate::contracts::state::{Message, Role, ToolCall};
 
 // Plugin trait
 pub use crate::contracts::extension::plugin::AgentPlugin;

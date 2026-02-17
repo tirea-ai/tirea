@@ -3,11 +3,11 @@ use crate::contracts::control::{
     AgentRunState, AgentRunStatus, ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-use crate::contracts::conversation::{Message, Role, ToolCall};
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, Interaction};
+use crate::contracts::state::{Message, Role, ToolCall};
 use crate::contracts::AgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,

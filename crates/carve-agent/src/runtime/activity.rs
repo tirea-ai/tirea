@@ -1,7 +1,7 @@
 //! Activity state manager and event emission.
 
-use crate::contracts::runtime::state_access::ActivityManager;
 use crate::contracts::runtime::AgentEvent;
+use crate::contracts::state::ActivityManager;
 use carve_state::{apply_patch, Op, Patch, Value};
 use serde_json::json;
 use std::collections::HashMap;

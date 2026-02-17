@@ -303,7 +303,11 @@ mod tests {
         let res = tool
             .execute(
                 serde_json::json!({"a": 1}),
-                &crate::contracts::AgentState::new_runtime(&serde_json::json!({}), "call", "test"),
+                &crate::contracts::AgentState::new_transient(
+                    &serde_json::json!({}),
+                    "call",
+                    "test",
+                ),
             )
             .await
             .unwrap();

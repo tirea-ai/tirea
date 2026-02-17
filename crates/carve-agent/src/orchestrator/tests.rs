@@ -1,8 +1,8 @@
 use super::*;
-use crate::contracts::conversation::AgentState;
 use crate::contracts::extension::traits::tool::ToolDescriptor;
 use crate::contracts::extension::traits::tool::{ToolError, ToolResult};
 use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::state::AgentState;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::extensions::skills::FsSkillRegistry;
@@ -165,7 +165,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
 #[tokio::test]
 async fn wire_skills_inserts_tools_and_plugin() {
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -212,7 +212,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
 #[tokio::test]
 async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -746,7 +746,7 @@ impl AgentPlugin for TestPlugin {
 #[tokio::test]
 async fn resolve_wires_plugins_from_registry() {
     let doc = json!({});
-    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
@@ -1052,7 +1052,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"counter": 42, "new_field": true})),
-        messages: vec![crate::contracts::conversation::Message::user("hello")],
+        messages: vec![crate::contracts::state::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1110,7 +1110,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"initial": true})),
-        messages: vec![crate::contracts::conversation::Message::user("hello")],
+        messages: vec![crate::contracts::state::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1171,7 +1171,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         parent_run_id: None,
         resource_id: None,
         state: None,
-        messages: vec![crate::contracts::conversation::Message::user("hello")],
+        messages: vec![crate::contracts::state::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1227,7 +1227,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
             parent_run_id: Some("run-parent".to_string()),
             resource_id: None,
             state: Some(json!({"count": 1})),
-            messages: vec![crate::contracts::conversation::Message::user("hello")],
+            messages: vec![crate::contracts::state::Message::user("hello")],
         })
         .await
         .unwrap();
@@ -1247,7 +1247,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     assert_eq!(head.agent_state.messages.len(), 1);
     assert_eq!(
         head.agent_state.messages[0].role,
-        crate::contracts::conversation::Role::User
+        crate::contracts::state::Role::User
     );
     assert_eq!(head.agent_state.messages[0].content, "hello");
 }
@@ -1297,7 +1297,7 @@ async fn execute_prepared_runs_stream() {
             parent_run_id: None,
             resource_id: None,
             state: None,
-            messages: vec![crate::contracts::conversation::Message::user("hello")],
+            messages: vec![crate::contracts::state::Message::user("hello")],
         })
         .await
         .unwrap();
@@ -1341,7 +1341,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
         parent_run_id: None,
         resource_id: None,
         state: Some(json!({"base": 1})),
-        messages: vec![crate::contracts::conversation::Message::user("hello")],
+        messages: vec![crate::contracts::state::Message::user("hello")],
     };
 
     let run_stream = os.run_stream(request).await.unwrap();
@@ -1383,7 +1383,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
     );
     assert_eq!(
         head.agent_state.messages[0].role,
-        crate::contracts::conversation::Role::User
+        crate::contracts::state::Role::User
     );
     assert_eq!(
         head.agent_state.messages[0].content.as_str(),

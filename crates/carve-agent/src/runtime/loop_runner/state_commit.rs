@@ -1,5 +1,5 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::conversation::AgentState;
+use crate::contracts::state::AgentState;
 use crate::contracts::storage::{CheckpointReason, VersionPrecondition};
 use crate::contracts::AgentChangeSet;
 use async_trait::async_trait;

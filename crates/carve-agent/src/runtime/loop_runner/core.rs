@@ -1,10 +1,10 @@
 use super::AgentLoopError;
 use crate::contracts::control::{AgentControlState, AgentInferenceError, AGENT_STATE_PATH};
-use crate::contracts::conversation::AgentState;
-use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor};
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
+use crate::contracts::state::AgentState;
+use crate::contracts::state::{Message, MessageMetadata};
 use carve_state::{StateContext, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -145,16 +145,7 @@ pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
 }
 
 pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Interaction> {
-    thread
-        .rebuild_state()
-        .ok()
-        .and_then(|state| {
-            state
-                .get(AGENT_STATE_PATH)?
-                .get("pending_interaction")
-                .cloned()
-        })
-        .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
+    thread.pending_interaction()
 }
 
 pub(super) fn set_agent_inference_error(state: &Value, error: AgentInferenceError) -> TrackedPatch {
@@ -174,7 +165,7 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
 #[derive(Default)]
 pub(super) struct AgentOutboxDrain {
     pub(super) interaction_resolutions: Vec<InteractionResponse>,
-    pub(super) replay_tool_calls: Vec<crate::contracts::conversation::ToolCall>,
+    pub(super) replay_tool_calls: Vec<crate::contracts::state::ToolCall>,
 }
 
 pub(super) fn drain_agent_outbox(
@@ -202,10 +193,10 @@ pub(super) fn drain_agent_outbox(
         .and_then(|agent| agent.get("replay_tool_calls"))
         .cloned()
     {
-        Some(raw) => serde_json::from_value::<Vec<crate::contracts::conversation::ToolCall>>(raw)
+        Some(raw) => serde_json::from_value::<Vec<crate::contracts::state::ToolCall>>(raw)
             .map_err(|e| {
-            AgentLoopError::StateError(format!("failed to parse agent.replay_tool_calls: {e}"))
-        })?,
+                AgentLoopError::StateError(format!("failed to parse agent.replay_tool_calls: {e}"))
+            })?,
         None => Vec::new(),
     };
 

@@ -49,12 +49,11 @@ mod tool_exec;
 
 #[cfg(test)]
 use crate::contracts::control::AGENT_STATE_PATH;
-use crate::contracts::conversation::AgentState;
-use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
-use crate::contracts::runtime::state_access::ActivityManager;
 use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
+use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
+use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::storage::CheckpointReason;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
@@ -509,11 +508,11 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
         .first_text()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    let tool_calls: Vec<crate::contracts::conversation::ToolCall> = response
+    let tool_calls: Vec<crate::contracts::state::ToolCall> = response
         .tool_calls()
         .into_iter()
         .map(|tc| {
-            crate::contracts::conversation::ToolCall::new(
+            crate::contracts::state::ToolCall::new(
                 &tc.call_id,
                 &tc.fn_name,
                 tc.fn_arguments.clone(),

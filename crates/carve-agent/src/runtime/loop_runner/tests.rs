@@ -1,8 +1,8 @@
 use super::*;
 use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::runtime::phase::Phase;
-use crate::contracts::runtime::state_access::ActivityManager;
 use crate::contracts::runtime::TerminationReason;
+use crate::contracts::state::ActivityManager;
 use crate::contracts::storage::{CheckpointReason, VersionPrecondition};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
@@ -124,7 +124,7 @@ impl Tool for ActivityGateTool {
 fn tool_execution_result(call_id: &str, patch: Option<TrackedPatch>) -> ToolExecutionResult {
     ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
-            call: crate::contracts::conversation::ToolCall::new(call_id, "test_tool", json!({})),
+            call: crate::contracts::state::ToolCall::new(call_id, "test_tool", json!({})),
             result: ToolResult::success("test_tool", json!({"ok": true})),
             patch,
         },
@@ -141,7 +141,7 @@ fn skill_activation_result(
 ) -> ToolExecutionResult {
     let patch = instruction.map(|text| {
         let base = json!({});
-        let ctx = ContextAgentState::new_runtime(&base, call_id, "skill_test");
+        let ctx = ContextAgentState::new_transient(&base, call_id, "skill_test");
         let agent = ctx.state::<crate::contracts::control::AgentControlState>(
             crate::contracts::control::AGENT_STATE_PATH,
         );
@@ -152,7 +152,7 @@ fn skill_activation_result(
 
     ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
-            call: crate::contracts::conversation::ToolCall::new(
+            call: crate::contracts::state::ToolCall::new(
                 call_id,
                 "skill",
                 json!({ "skill": skill_id }),
@@ -303,7 +303,7 @@ fn test_execute_tools_with_calls() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "hello"}),
@@ -315,10 +315,7 @@ fn test_execute_tools_with_calls() {
         let thread = execute_tools(thread, &result, &tools, true).await.unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(
-            thread.messages[0].role,
-            crate::contracts::conversation::Role::Tool
-        );
+        assert_eq!(thread.messages[0].role, crate::contracts::state::Role::Tool);
     });
 }
 
@@ -327,10 +324,10 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let thread = AgentState::with_initial_state("caller-s", json!({"k":"v"}))
-            .with_message(crate::contracts::conversation::Message::user("hello"));
+            .with_message(crate::contracts::state::Message::user("hello"));
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "scope_snapshot",
                 json!({}),
@@ -373,7 +370,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
         proceed: proceed.clone(),
     };
 
-    let call = crate::contracts::conversation::ToolCall::new("call_1", "activity_gate", json!({}));
+    let call = crate::contracts::state::ToolCall::new("call_1", "activity_gate", json!({}));
     let descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = Vec::new();
     let state = json!({});
@@ -443,8 +440,8 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     tools.insert(tool_b.id.clone(), Arc::new(tool_b));
 
     let calls = vec![
-        crate::contracts::conversation::ToolCall::new("call_a", "activity_gate_a", json!({})),
-        crate::contracts::conversation::ToolCall::new("call_b", "activity_gate_b", json!({})),
+        crate::contracts::state::ToolCall::new("call_a", "activity_gate_a", json!({})),
+        crate::contracts::state::ToolCall::new("call_b", "activity_gate_b", json!({})),
     ];
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
@@ -541,7 +538,7 @@ fn test_execute_tools_with_state_changes() {
         let thread = AgentState::with_initial_state("test", json!({"counter": 0}));
         let result = StreamResult {
             text: "Incrementing".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "counter",
                 json!({"amount": 5}),
@@ -612,7 +609,7 @@ fn test_execute_tools_with_failing_tool() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Calling failing tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "failing",
                 json!({}),
@@ -698,7 +695,7 @@ fn test_execute_tools_with_blocking_phase_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Blocked".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -744,7 +741,7 @@ fn test_execute_tools_rejects_tool_gate_mutation_outside_before_tool_execute() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "invalid".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -791,7 +788,7 @@ fn test_execute_tools_with_reminder_phase_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "With reminder".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -872,7 +869,7 @@ fn test_tool_filtering_via_plugin() {
         let mut step = StepContext::new(&thread, tool_descriptors);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
         let doc = serde_json::json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
 
         emit_phase_checked(Phase::BeforeInference, &mut step, &ctx, &plugins)
             .await
@@ -922,11 +919,8 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
     }
 
     let tool = EchoTool;
-    let call = crate::contracts::conversation::ToolCall::new(
-        "call_1",
-        "echo",
-        json!({ "message": "hello" }),
-    );
+    let call =
+        crate::contracts::state::ToolCall::new("call_1", "echo", json!({ "message": "hello" }));
     let state = json!({ "plugin": { "allow_exec": true } });
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(GuardedPlugin)];
@@ -980,8 +974,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     VERIFIED.store(false, Ordering::SeqCst);
 
     let tool = EchoTool;
-    let call =
-        crate::contracts::conversation::ToolCall::new("call_1", "echo", json!({ "message": "hi" }));
+    let call = crate::contracts::state::ToolCall::new("call_1", "echo", json!({ "message": "hi" }));
     let state = json!({});
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(SessionCheckPlugin)];
@@ -1408,7 +1401,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Pending".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1436,7 +1429,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
-        assert_eq!(msg.role, crate::contracts::conversation::Role::Tool);
+        assert_eq!(msg.role, crate::contracts::state::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
         let state = thread.rebuild_state().unwrap();
@@ -1474,11 +1467,11 @@ fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
     assert_eq!(applied.thread.message_count(), 2);
     assert_eq!(
         applied.thread.messages[0].role,
-        crate::contracts::conversation::Role::Tool
+        crate::contracts::state::Role::Tool
     );
     assert_eq!(
         applied.thread.messages[1].role,
-        crate::contracts::conversation::Role::User
+        crate::contracts::state::Role::User
     );
     assert_eq!(applied.thread.messages[1].content, "## DOCX\nUse docx-js.");
 }
@@ -1497,7 +1490,7 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
 
     assert_eq!(applied.thread.message_count(), 2);
     let user_msg = &applied.thread.messages[1];
-    assert_eq!(user_msg.role, crate::contracts::conversation::Role::User);
+    assert_eq!(user_msg.role, crate::contracts::state::Role::User);
     assert_eq!(user_msg.metadata.as_ref(), Some(&meta));
 }
 
@@ -1512,7 +1505,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
     assert_eq!(applied.thread.message_count(), 1);
     assert_eq!(
         applied.thread.messages[0].role,
-        crate::contracts::conversation::Role::Tool
+        crate::contracts::state::Role::Tool
     );
 }
 
@@ -1520,7 +1513,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-    let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
     let agent = ctx.state::<crate::contracts::control::AgentControlState>(
         crate::contracts::control::AGENT_STATE_PATH,
     );
@@ -1531,7 +1524,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
-            call: crate::contracts::conversation::ToolCall::new("call_1", "any_tool", json!({})),
+            call: crate::contracts::state::ToolCall::new("call_1", "any_tool", json!({})),
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: Some(outbox_patch),
         },
@@ -1546,16 +1539,16 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     assert_eq!(applied.thread.message_count(), 3);
     assert_eq!(
         applied.thread.messages[0].role,
-        crate::contracts::conversation::Role::Tool
+        crate::contracts::state::Role::Tool
     );
     assert_eq!(
         applied.thread.messages[1].role,
-        crate::contracts::conversation::Role::User
+        crate::contracts::state::Role::User
     );
     assert_eq!(applied.thread.messages[1].content, "first");
     assert_eq!(
         applied.thread.messages[2].role,
-        crate::contracts::conversation::Role::User
+        crate::contracts::state::Role::User
     );
     assert_eq!(applied.thread.messages[2].content, "second");
 }
@@ -1564,7 +1557,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-    let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
     let agent = ctx.state::<crate::contracts::control::AgentControlState>(
         crate::contracts::control::AGENT_STATE_PATH,
     );
@@ -1575,7 +1568,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let outbox_patch = ctx.take_patch();
     let result = ToolExecutionResult {
         execution: crate::engine::tool_execution::ToolExecution {
-            call: crate::contracts::conversation::ToolCall::new("call_1", "any_tool", json!({})),
+            call: crate::contracts::state::ToolCall::new("call_1", "any_tool", json!({})),
             result: ToolResult::success("any_tool", json!({"ok": true})),
             patch: Some(outbox_patch),
         },
@@ -1590,7 +1583,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     assert_eq!(applied.thread.message_count(), 1);
     assert_eq!(
         applied.thread.messages[0].role,
-        crate::contracts::conversation::Role::Tool
+        crate::contracts::state::Role::Tool
     );
 }
 
@@ -1605,13 +1598,13 @@ fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
     let messages = &applied.thread.messages;
 
     assert_eq!(messages.len(), 4);
-    assert_eq!(messages[0].role, crate::contracts::conversation::Role::Tool);
+    assert_eq!(messages[0].role, crate::contracts::state::Role::Tool);
     assert_eq!(messages[0].tool_call_id.as_deref(), Some("call_2"));
-    assert_eq!(messages[1].role, crate::contracts::conversation::Role::Tool);
+    assert_eq!(messages[1].role, crate::contracts::state::Role::Tool);
     assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
-    assert_eq!(messages[2].role, crate::contracts::conversation::Role::User);
+    assert_eq!(messages[2].role, crate::contracts::state::Role::User);
     assert_eq!(messages[2].content, "Instruction B");
-    assert_eq!(messages[3].role, crate::contracts::conversation::Role::User);
+    assert_eq!(messages[3].role, crate::contracts::state::Role::User);
     assert_eq!(messages[3].content, "Instruction A");
 }
 
@@ -1629,7 +1622,7 @@ fn test_execute_tools_missing_tool() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Calling unknown tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "unknown_tool",
                 json!({}),
@@ -1679,7 +1672,7 @@ fn test_execute_tools_with_config_basic() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1694,10 +1687,7 @@ fn test_execute_tools_with_config_basic() {
             .unwrap();
 
         assert_eq!(thread.message_count(), 1);
-        assert_eq!(
-            thread.messages[0].role,
-            crate::contracts::conversation::Role::Tool
-        );
+        assert_eq!(thread.messages[0].role, crate::contracts::state::Role::Tool);
     });
 }
 
@@ -1708,7 +1698,7 @@ fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1740,13 +1730,13 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
         let mut thread = AgentState::new("test").with_message(
             Message::assistant_with_tool_calls(
                 "calling tool",
-                vec![crate::contracts::conversation::ToolCall::new(
+                vec![crate::contracts::state::ToolCall::new(
                     "call_1",
                     "echo",
                     json!({"message": "test"}),
                 )],
             )
-            .with_metadata(crate::contracts::conversation::MessageMetadata {
+            .with_metadata(crate::contracts::state::MessageMetadata {
                 run_id: Some("run-meta-1".to_string()),
                 step_index: Some(7),
             }),
@@ -1755,7 +1745,7 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
 
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1771,7 +1761,7 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
 
         assert_eq!(thread.message_count(), 2);
         let tool_msg = thread.messages.last().expect("tool message should exist");
-        assert_eq!(tool_msg.role, crate::contracts::conversation::Role::Tool);
+        assert_eq!(tool_msg.role, crate::contracts::state::Role::Tool);
         let meta = tool_msg
             .metadata
             .as_ref()
@@ -1788,7 +1778,7 @@ fn test_execute_tools_with_config_with_blocking_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Blocked".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1830,7 +1820,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
         );
         let result = StreamResult {
             text: "Trying tool after denial".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1851,7 +1841,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
 
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
-        assert_eq!(msg.role, crate::contracts::conversation::Role::Tool);
+        assert_eq!(msg.role, crate::contracts::state::Role::Tool);
         assert!(
             msg.content.contains("User denied the action")
                 || msg.content.to_lowercase().contains("denied"),
@@ -1874,7 +1864,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Pending".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1903,7 +1893,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         // Pending tool gets a placeholder tool result to keep message sequence valid.
         assert_eq!(thread.message_count(), 1);
         let msg = &thread.messages[0];
-        assert_eq!(msg.role, crate::contracts::conversation::Role::Tool);
+        assert_eq!(msg.role, crate::contracts::state::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
         // Pending interaction should be persisted via AgentState.
@@ -1919,7 +1909,7 @@ fn test_execute_tools_with_config_with_reminder_plugin() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "With reminder".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -1954,7 +1944,7 @@ fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_succes
 
         let result = StreamResult {
             text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -2016,16 +2006,12 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
         let result = StreamResult {
             text: "Call tools".to_string(),
             tool_calls: vec![
-                crate::contracts::conversation::ToolCall::new(
+                crate::contracts::state::ToolCall::new(
                     "call_1",
                     "echo",
                     json!({"message": "hello"}),
                 ),
-                crate::contracts::conversation::ToolCall::new(
-                    "call_2",
-                    "counter",
-                    json!({"amount": 5}),
-                ),
+                crate::contracts::state::ToolCall::new("call_2", "counter", json!({"amount": 5})),
             ],
             usage: None,
         };
@@ -2095,8 +2081,8 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
 
     let stream = run_loop_stream(
@@ -2146,8 +2132,8 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
 
     let stream = run_loop_stream(
@@ -2204,8 +2190,8 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
 
     let events = collect_stream_events(run_loop_stream(
@@ -2279,7 +2265,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             }
         }),
     )
-    .with_message(crate::contracts::conversation::Message::user("continue"));
+    .with_message(crate::contracts::state::Message::user("continue"));
     let tools = HashMap::new();
 
     let events = collect_stream_events(run_loop_stream(
@@ -2353,7 +2339,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     )
     .with_message(Message::assistant_with_tool_calls(
         "need permission",
-        vec![crate::contracts::conversation::ToolCall::new(
+        vec![crate::contracts::state::ToolCall::new(
             "call_1",
             "echo",
             json!({"message": "approved-run"}),
@@ -2396,7 +2382,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         .messages
         .iter()
         .filter(|m| {
-            m.role == crate::contracts::conversation::Role::Tool
+            m.role == crate::contracts::state::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
         })
         .collect();
@@ -2470,7 +2456,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     )
     .with_message(Message::assistant_with_tool_calls(
         "need permission",
-        vec![crate::contracts::conversation::ToolCall::new(
+        vec![crate::contracts::state::ToolCall::new(
             "call_1",
             "echo",
             json!({"message": "denied-run"}),
@@ -2511,7 +2497,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         .messages
         .iter()
         .find(|m| {
-            m.role == crate::contracts::conversation::Role::Tool
+            m.role == crate::contracts::state::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
         })
         .expect("placeholder tool message should remain when denied");
@@ -2537,8 +2523,8 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2598,8 +2584,8 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingSkipPlugin {
         phases: phases.clone(),
     }) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2637,8 +2623,8 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2672,8 +2658,8 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2718,8 +2704,8 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2783,8 +2769,8 @@ async fn test_stream_run_finish_has_matching_thread_id() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread = AgentState::new("my-thread")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("my-thread").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
 
     let stream = run_loop_stream(
@@ -2993,9 +2979,10 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
         ]
     );
     assert!(
-        final_thread.messages.iter().any(|m| m.role
-            == crate::contracts::conversation::Role::Assistant
-            && m.content == "ok"),
+        final_thread
+            .messages
+            .iter()
+            .any(|m| m.role == crate::contracts::state::Role::Assistant && m.content == "ok"),
         "assistant response should be stored in thread"
     );
 }
@@ -3093,7 +3080,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
                 thread
                     .messages
                     .iter()
-                    .any(|m| m.role == crate::contracts::conversation::Role::Assistant),
+                    .any(|m| m.role == crate::contracts::state::Role::Assistant),
                 "assistant turn should still be committed before stop check"
             );
         }
@@ -3193,14 +3180,14 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
         thread
             .messages
             .iter()
-            .any(|m| m.role == crate::contracts::conversation::Role::Assistant),
+            .any(|m| m.role == crate::contracts::state::Role::Assistant),
         "assistant tool_call turn should be committed before cancellation"
     );
     assert!(
         !thread
             .messages
             .iter()
-            .any(|m| m.role == crate::contracts::conversation::Role::Tool),
+            .any(|m| m.role == crate::contracts::state::Role::Tool),
         "tool results should not be committed after cancellation"
     );
 }
@@ -3742,7 +3729,7 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
                 let agent = ctx.state::<crate::contracts::control::AgentControlState>(
                     crate::contracts::control::AGENT_STATE_PATH,
                 );
-                agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
+                agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
                     json!({"message": "resume"}),
@@ -3810,7 +3797,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
                     let agent = ctx.state::<crate::contracts::control::AgentControlState>(
                         crate::contracts::control::AGENT_STATE_PATH,
                     );
-                    agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
+                    agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                         "replay_call_1",
                         "echo",
                         json!({"message": "resume"}),
@@ -3882,7 +3869,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
                 let agent = ctx.state::<crate::contracts::control::AgentControlState>(
                     crate::contracts::control::AGENT_STATE_PATH,
                 );
-                agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
+                agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
                     json!({"message": "resume"}),
@@ -3908,7 +3895,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
         .messages
         .iter()
         .find(|m| {
-            m.role == crate::contracts::conversation::Role::Tool
+            m.role == crate::contracts::state::Role::Tool
                 && m.tool_call_id.as_deref() == Some("replay_call_1")
         })
         .expect("replay should append a real tool message when no placeholder exists");
@@ -4359,8 +4346,8 @@ async fn test_run_loop_with_context_cancellation_token() {
     let (recorder, _phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
     let token = CancellationToken::new();
@@ -4511,7 +4498,7 @@ async fn test_run_state_tracks_completed_steps() {
     let mut state = RunState::new();
     assert_eq!(state.completed_steps, 0);
 
-    let tool_calls = vec![crate::contracts::conversation::ToolCall::new(
+    let tool_calls = vec![crate::contracts::state::ToolCall::new(
         "c1",
         "echo",
         json!({}),
@@ -4550,7 +4537,7 @@ async fn test_run_state_tracks_token_usage() {
 async fn test_run_state_caps_history_at_20() {
     let mut state = RunState::new();
     for i in 0..25 {
-        let tool_calls = vec![crate::contracts::conversation::ToolCall::new(
+        let tool_calls = vec![crate::contracts::state::ToolCall::new(
             &format!("c{i}"),
             &format!("tool_{i}"),
             json!({}),
@@ -4594,12 +4581,12 @@ fn test_parallel_tools_partial_failure() {
         let result = StreamResult {
             text: "Call both".to_string(),
             tool_calls: vec![
-                crate::contracts::conversation::ToolCall::new(
+                crate::contracts::state::ToolCall::new(
                     "call_echo",
                     "echo",
                     json!({"message": "ok"}),
                 ),
-                crate::contracts::conversation::ToolCall::new("call_fail", "failing", json!({})),
+                crate::contracts::state::ToolCall::new("call_fail", "failing", json!({})),
             ],
             usage: None,
         };
@@ -4643,16 +4630,8 @@ fn test_parallel_tools_conflicting_state_patches_return_error() {
         let result = StreamResult {
             text: "conflicting calls".to_string(),
             tool_calls: vec![
-                crate::contracts::conversation::ToolCall::new(
-                    "call_1",
-                    "counter",
-                    json!({"amount": 1}),
-                ),
-                crate::contracts::conversation::ToolCall::new(
-                    "call_2",
-                    "counter",
-                    json!({"amount": 2}),
-                ),
+                crate::contracts::state::ToolCall::new("call_1", "counter", json!({"amount": 1})),
+                crate::contracts::state::ToolCall::new("call_2", "counter", json!({"amount": 2})),
             ],
             usage: None,
         };
@@ -4677,12 +4656,12 @@ fn test_sequential_tools_partial_failure() {
         let result = StreamResult {
             text: "Call both".to_string(),
             tool_calls: vec![
-                crate::contracts::conversation::ToolCall::new(
+                crate::contracts::state::ToolCall::new(
                     "call_echo",
                     "echo",
                     json!({"message": "ok"}),
                 ),
-                crate::contracts::conversation::ToolCall::new("call_fail", "failing", json!({})),
+                crate::contracts::state::ToolCall::new("call_fail", "failing", json!({})),
             ],
             usage: None,
         };
@@ -4758,8 +4737,8 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
     let result = StreamResult {
         text: "Call both".to_string(),
         tool_calls: vec![
-            crate::contracts::conversation::ToolCall::new("call_1", "echo", json!({"message":"a"})),
-            crate::contracts::conversation::ToolCall::new("call_2", "echo", json!({"message":"b"})),
+            crate::contracts::state::ToolCall::new("call_1", "echo", json!({"message":"a"})),
+            crate::contracts::state::ToolCall::new("call_2", "echo", json!({"message":"b"})),
         ],
         usage: None,
     };
@@ -4828,7 +4807,7 @@ fn test_plugin_execution_order_preserved() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Test".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -4898,7 +4877,7 @@ fn test_plugin_order_affects_outcome() {
         let thread = AgentState::new("test");
         let result = StreamResult {
             text: "Test".to_string(),
-            tool_calls: vec![crate::contracts::conversation::ToolCall::new(
+            tool_calls: vec![crate::contracts::state::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": "test"}),
@@ -4980,7 +4959,7 @@ async fn test_message_id_stepstart_matches_stored_assistant_message() {
     let assistant_msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::contracts::conversation::Role::Assistant)
+        .find(|m| m.role == crate::contracts::state::Role::Assistant)
         .expect("final thread must contain an assistant message");
 
     assert_eq!(
@@ -5033,7 +5012,7 @@ async fn test_message_id_toolcalldone_matches_stored_tool_message() {
     let tool_msg = final_thread
         .messages
         .iter()
-        .find(|m| m.role == crate::contracts::conversation::Role::Tool)
+        .find(|m| m.role == crate::contracts::state::Role::Tool)
         .expect("final thread must contain a tool message");
 
     assert_eq!(
@@ -5102,7 +5081,7 @@ async fn test_message_id_end_to_end_multi_step() {
     let assistant_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .filter(|m| m.role == crate::contracts::conversation::Role::Assistant)
+        .filter(|m| m.role == crate::contracts::state::Role::Assistant)
         .collect();
     assert_eq!(assistant_msgs.len(), 2);
     assert_eq!(assistant_msgs[0].id.as_deref(), Some(step_ids[0].as_str()));
@@ -5112,7 +5091,7 @@ async fn test_message_id_end_to_end_multi_step() {
     let tool_msgs: Vec<&Arc<Message>> = final_thread
         .messages
         .iter()
-        .filter(|m| m.role == crate::contracts::conversation::Role::Tool)
+        .filter(|m| m.role == crate::contracts::state::Role::Tool)
         .collect();
     assert_eq!(tool_msgs.len(), 1);
     assert_eq!(
@@ -5127,8 +5106,8 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let (next_thread, result) = run_step(&Client::default(), &config, thread, &tools)
@@ -5176,8 +5155,8 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipStepPlugin) as Arc<dyn AgentPlugin>);
-    let thread = AgentState::new("test")
-        .with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread =
+        AgentState::new("test").with_message(crate::contracts::state::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let result = run_step(&Client::default(), &config, thread, &tools).await;
@@ -5221,7 +5200,7 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         .messages
         .iter()
         .find(|m| {
-            m.role == crate::contracts::conversation::Role::Tool
+            m.role == crate::contracts::state::Role::Tool
                 && m.tool_call_id.as_deref() == Some("call_1")
         })
         .expect("scope snapshot tool result should exist");

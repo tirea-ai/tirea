@@ -50,8 +50,8 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::AgentState;
     use crate::contracts::extension::traits::tool::ToolDescriptor;
+    use crate::contracts::state::AgentState;
     use crate::contracts::AgentState as ContextAgentState;
     use crate::extensions::skills::{FsSkillRegistry, SkillRegistry};
     use serde_json::json;
@@ -61,7 +61,7 @@ mod tests {
     #[tokio::test]
     async fn combined_plugin_injects_catalog_and_active_skills() {
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();

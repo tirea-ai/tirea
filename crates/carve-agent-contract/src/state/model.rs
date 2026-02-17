@@ -1,6 +1,6 @@
-//! AgentState (conversation) management.
+//! AgentState model and persistent history primitives.
 //!
-//! A `AgentState` represents a conversation with messages and state history.
+//! `AgentState` represents persisted agent state with message history and patches.
 
 use super::message::Message;
 use carve_state::{apply_patches, CarveError, CarveResult, Op, ScopeState, TrackedPatch};
@@ -19,19 +19,19 @@ pub struct PendingDelta {
     pub patches: Vec<TrackedPatch>,
 }
 
-/// Ephemeral runtime-only data used by tools/plugins during a run.
+/// Ephemeral transient-only data used by tools/plugins during a run.
 #[derive(Clone)]
-pub(crate) struct RuntimeState {
+pub(crate) struct TransientState {
     pub call_id: String,
     pub source: String,
     pub version: u64,
     pub scope_attached: bool,
     pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
     pub ops: Arc<Mutex<Vec<Op>>>,
-    pub activity_manager: Option<Arc<dyn crate::runtime::state_access::ActivityManager>>,
+    pub activity_manager: Option<Arc<dyn crate::state::ActivityManager>>,
 }
 
-impl Default for RuntimeState {
+impl Default for TransientState {
     fn default() -> Self {
         Self {
             call_id: String::new(),
@@ -45,9 +45,9 @@ impl Default for RuntimeState {
     }
 }
 
-impl std::fmt::Debug for RuntimeState {
+impl std::fmt::Debug for TransientState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RuntimeState")
+        f.debug_struct("TransientState")
             .field("call_id", &self.call_id)
             .field("source", &self.source)
             .field("version", &self.version)
@@ -72,7 +72,7 @@ impl PendingDelta {
     }
 }
 
-/// A conversation thread with messages and state history.
+/// Persisted agent state with messages and state history.
 ///
 /// AgentState uses an owned builder pattern: `with_*` methods consume `self`
 /// and return a new `AgentState` (e.g., `thread.with_message(msg)`).
@@ -90,7 +90,7 @@ pub struct AgentState {
     /// Parent thread identifier (links child → parent for sub-agent lineage).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_thread_id: Option<String>,
-    /// Conversation messages (Arc-wrapped for efficient cloning).
+    /// Messages (Arc-wrapped for efficient cloning).
     pub messages: Vec<Arc<Message>>,
     /// Initial/snapshot state.
     pub state: Value,
@@ -105,9 +105,9 @@ pub struct AgentState {
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
-    /// Runtime-only execution context (not persisted).
+    /// Transient execution context (not persisted).
     #[serde(skip)]
-    pub(crate) runtime: RuntimeState,
+    pub(crate) transient: TransientState,
 }
 
 /// AgentState metadata.
@@ -143,7 +143,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
-            runtime: RuntimeState::default(),
+            transient: TransientState::default(),
         }
     }
 
@@ -159,7 +159,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
-            runtime: RuntimeState::default(),
+            transient: TransientState::default(),
         }
     }
 
@@ -276,7 +276,7 @@ impl AgentState {
             metadata: self.metadata,
             scope: self.scope,
             pending: self.pending,
-            runtime: self.runtime,
+            transient: self.transient,
         })
     }
 

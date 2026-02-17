@@ -14,7 +14,7 @@ pub enum StepResult {
     ToolsExecuted {
         thread: AgentState,
         text: String,
-        tool_calls: Vec<crate::contracts::conversation::ToolCall>,
+        tool_calls: Vec<crate::contracts::state::ToolCall>,
     },
 }
 

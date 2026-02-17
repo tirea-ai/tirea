@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --package carve-agent --bench message_cloning
 
-use carve_agent::contracts::conversation::{Message, ToolCall};
+use carve_agent::contracts::state::{Message, ToolCall};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
 use std::sync::Arc;

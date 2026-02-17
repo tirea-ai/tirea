@@ -179,7 +179,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
 
         ctx.add_reminder("Test reminder");
         assert!(ctx.has_changes());
@@ -190,7 +190,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
 
         assert!(ctx.reminders().is_empty());
         assert_eq!(ctx.reminder_count(), 0);
@@ -201,7 +201,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
 
         let reminders = ctx.reminders();
         assert_eq!(reminders.len(), 2);
@@ -213,7 +213,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
 
         assert_eq!(ctx.reminder_count(), 2);
         ctx.clear_reminders();
@@ -225,7 +225,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Keep", "Remove", "Keep2"] }
         });
-        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
 
         ctx.remove_reminder("Remove");
         assert!(ctx.has_changes());
@@ -246,9 +246,9 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
         let doc = json!({ "reminders": { "items": ["Test reminder"] } });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
-        use crate::contracts::conversation::AgentState;
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         use crate::contracts::runtime::phase::{Phase, StepContext};
+        use crate::contracts::state::AgentState;
 
         let plugin = ReminderPlugin::new();
         let thread = AgentState::with_initial_state(
@@ -268,9 +268,9 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
         let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
-        use crate::contracts::conversation::AgentState;
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         use crate::contracts::runtime::phase::{Phase, StepContext};
+        use crate::contracts::state::AgentState;
 
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
         let thread = AgentState::with_initial_state(
@@ -297,9 +297,9 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
         let doc = json!({ "reminders": { "items": ["Reminder"] } });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
-        use crate::contracts::conversation::AgentState;
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         use crate::contracts::runtime::phase::{Phase, StepContext};
+        use crate::contracts::state::AgentState;
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         let thread = AgentState::with_initial_state(
@@ -320,9 +320,9 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
         let doc = json!({ "reminders": { "items": [] } });
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
-        use crate::contracts::conversation::AgentState;
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         use crate::contracts::runtime::phase::{Phase, StepContext};
+        use crate::contracts::state::AgentState;
 
         let plugin = ReminderPlugin::new();
         let thread =
@@ -340,9 +340,9 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
-        use crate::contracts::conversation::AgentState;
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         use crate::contracts::runtime::phase::{Phase, StepContext};
+        use crate::contracts::state::AgentState;
 
         let plugin = ReminderPlugin::new();
         let thread = AgentState::new("test");

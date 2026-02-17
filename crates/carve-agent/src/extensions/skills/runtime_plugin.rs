@@ -162,15 +162,15 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::AgentState;
     use crate::contracts::extension::traits::tool::ToolDescriptor;
+    use crate::contracts::state::AgentState;
     use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
 
     #[tokio::test]
     async fn plugin_injects_skill_instructions_from_state() {
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let thread = AgentState::with_initial_state(
             "s",
             json!({
@@ -193,7 +193,7 @@ mod tests {
     #[tokio::test]
     async fn plugin_sorts_references_and_scripts_by_path() {
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let thread = AgentState::with_initial_state(
             "s",
             json!({
@@ -237,7 +237,7 @@ mod tests {
     #[tokio::test]
     async fn plugin_filters_injected_skill_materials_by_runtime_policy() {
         let doc = json!({});
-        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
+        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let mut thread = AgentState::with_initial_state(
             "s",
             json!({

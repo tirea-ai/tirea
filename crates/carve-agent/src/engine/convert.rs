@@ -1,7 +1,7 @@
 //! Pure functions for converting between carve-agent and genai types.
 
-use crate::contracts::conversation::{Message, Role, ToolCall};
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::state::{Message, Role, ToolCall};
 use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
 /// Convert a ToolDescriptor to a genai Tool.

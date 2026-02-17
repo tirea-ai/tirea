@@ -4,11 +4,11 @@ use super::core::{
 };
 use super::AgentLoopError;
 use crate::contracts::control::AgentInferenceError;
-use crate::contracts::conversation::AgentState;
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::ToolDescriptor;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, TerminationReason};
+use crate::contracts::state::AgentState;
 use crate::contracts::AgentState as ContextAgentState;
 use carve_state::TrackedPatch;
 use std::sync::Arc;
