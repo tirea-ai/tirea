@@ -154,10 +154,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let state_committer = run_ctx.state_committer().cloned();
+    let step_tool_provider = step_tool_provider_for_run(&config, &tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
-
-    let tool_descriptors = tool_descriptors_for_config(&tools, &config);
 
         // Resolve run_id: from runtime if pre-set, otherwise generate.
         // NOTE: runtime is mutated in-place here. This is intentional —
@@ -172,6 +171,22 @@ pub(super) fn run_loop_stream_impl_with_provider(
             parent_run_id.as_deref(),
             state_committer.as_ref(),
         );
+        let mut active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                yield AgentEvent::Error {
+                    message: e.to_string(),
+                };
+                yield AgentEvent::RunFinish {
+                    thread_id: thread.id.clone(),
+                    run_id: run_id.clone(),
+                    result: None,
+                    termination: TerminationReason::Error,
+                };
+                return;
+            }
+        };
+        let mut active_tool_descriptors = active_tool_snapshot.descriptors.clone();
 
         macro_rules! emit_run_finished_delta {
             () => {
@@ -202,7 +217,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ($message:expr) => {{
                 let (finalized, error, finish) = prepare_stream_error_termination(
                     thread,
-                    &tool_descriptors,
+                    &active_tool_descriptors,
                     &config.plugins,
                     &run_id,
                     $message,
@@ -220,7 +235,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ($termination_expr:expr, $result_expr:expr) => {{
                 let final_result = $result_expr;
                 let final_termination = $termination_expr;
-                thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
+                thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 yield AgentEvent::RunFinish {
                     thread_id: thread.id.clone(),
@@ -236,7 +251,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         match emit_phase_block(
             Phase::RunStart,
             &thread,
-            &tool_descriptors,
+            &active_tool_descriptors,
             &config.plugins,
             |_| {},
         )
@@ -259,9 +274,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
         // Resume pending tool execution requested by plugins at run start.
         let (next_thread, run_start_events) = match drain_run_start_outbox_and_replay(
             thread.clone(),
-            &tools,
+            &active_tool_snapshot.tools,
             &config,
-            &tool_descriptors,
+            &active_tool_descriptors,
         )
         .await
         {
@@ -292,7 +307,15 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 finish_run!(TerminationReason::Cancelled, None);
             }
 
-            let prepared = match prepare_step_execution(&thread, &tool_descriptors, &config).await {
+            active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+                Ok(snapshot) => snapshot,
+                Err(e) => {
+                    terminate_stream_error!(e.to_string());
+                }
+            };
+            active_tool_descriptors = active_tool_snapshot.descriptors.clone();
+
+            let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, &config).await {
                 Ok(v) => v,
                 Err(e) => {
                     terminate_stream_error!(e.to_string());
@@ -334,7 +357,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 "unknown llm stream start error",
                 |model| {
                     let request =
-                        build_request_for_filtered_tools(&messages, &tools, &filtered_tools);
+                        build_request_for_filtered_tools(&messages, &active_tool_snapshot.tools, &filtered_tools);
                     let provider = provider.clone();
                     let chat_options = chat_options.clone();
                     async move {
@@ -354,12 +377,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 }
                 LlmAttemptOutcome::Exhausted { last_error } => {
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
-                    match apply_llm_error_cleanup(
-                        &mut thread,
-                        &tool_descriptors,
-                        &config.plugins,
-                        "llm_stream_start_error",
-                        last_error.clone(),
+                        match apply_llm_error_cleanup(
+                            &mut thread,
+                            &active_tool_descriptors,
+                            &config.plugins,
+                            "llm_stream_start_error",
+                            last_error.clone(),
                     )
                     .await
                     {
@@ -413,7 +436,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match apply_llm_error_cleanup(
                             &mut thread,
-                            &tool_descriptors,
+                            &active_tool_descriptors,
                             &config.plugins,
                             "llm_stream_event_error",
                             e.to_string(),
@@ -446,7 +469,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 &result,
                 step_meta.clone(),
                 Some(assistant_msg_id.clone()),
-                &tool_descriptors,
+                &active_tool_descriptors,
                 &config.plugins,
             )
             .await
@@ -501,10 +524,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let thread_version_for_tools = thread_state_version(&thread);
             let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
                 Box::pin(execute_tool_calls_with_phases(
-                    &tools,
+                    &active_tool_snapshot.tools,
                     &result.tool_calls,
                     &tool_context.state,
-                    &tool_descriptors,
+                    &active_tool_descriptors,
                     &config.plugins,
                     config.parallel_tools,
                     Some(activity_manager.clone()),

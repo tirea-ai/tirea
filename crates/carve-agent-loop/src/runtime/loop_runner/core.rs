@@ -58,13 +58,6 @@ pub(super) fn apply_pending_patches(thread: AgentState, pending: Vec<TrackedPatc
     reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patches(pending))
 }
 
-pub(super) fn tool_descriptors_for_config(
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    _config: &super::AgentConfig,
-) -> Vec<ToolDescriptor> {
-    tools.values().map(|t| t.descriptor().clone()).collect()
-}
-
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
 

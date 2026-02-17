@@ -77,6 +77,7 @@ use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
 pub use config::{AgentConfig, LlmRetryPolicy};
+pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 pub use crate::runtime::run_context::{
     RunCancellationToken, RunContext, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
@@ -90,7 +91,7 @@ use core::set_agent_pending_interaction;
 use core::{
     apply_pending_patches, build_request_for_filtered_tools, clear_agent_pending_interaction,
     drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_thread,
-    reduce_thread_mutations, tool_descriptors_for_config, ThreadMutationBatch,
+    reduce_thread_mutations, ThreadMutationBatch,
 };
 pub use outcome::{run_step_cycle, tool_map, tool_map_from_arc, AgentLoopError, StepResult};
 #[cfg(test)]
@@ -234,6 +235,22 @@ pub(super) enum LlmAttemptOutcome<T> {
 
 fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
     token.is_some_and(|t| t.is_cancelled())
+}
+
+pub(super) fn step_tool_provider_for_run(
+    config: &AgentConfig,
+    fallback_tools: &HashMap<String, Arc<dyn Tool>>,
+) -> Arc<dyn StepToolProvider> {
+    config.step_tool_provider.clone().unwrap_or_else(|| {
+        Arc::new(StaticStepToolProvider::new(fallback_tools.clone())) as Arc<dyn StepToolProvider>
+    })
+}
+
+pub(super) async fn resolve_step_tool_snapshot(
+    step_tool_provider: &Arc<dyn StepToolProvider>,
+    thread: &AgentState,
+) -> Result<StepToolSnapshot, AgentLoopError> {
+    step_tool_provider.provide(StepToolInput { thread }).await
 }
 
 fn mark_step_completed(run_state: &mut RunState) {
@@ -567,8 +584,10 @@ async fn run_step_with_provider(
     thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(AgentState, StreamResult), AgentLoopError> {
-    let tool_descriptors = tool_descriptors_for_config(tools, config);
+    let step_tool_provider = step_tool_provider_for_run(config, tools);
     let mut thread = thread;
+    let step_tools = resolve_step_tool_snapshot(&step_tool_provider, &thread).await?;
+    let tool_descriptors = step_tools.descriptors.clone();
     let prepared = prepare_step_execution(&thread, &tool_descriptors, config).await?;
     thread = apply_pending_patches(thread, prepared.pending_patches);
     let messages = prepared.messages;
@@ -596,7 +615,8 @@ async fn run_step_with_provider(
     let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
     let attempt_outcome =
         run_llm_with_retry_and_fallback(config, None, true, "unknown llm error", |model| {
-            let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
+            let request =
+                build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
             async move {
                 provider
                     .exec_chat_response(&model, request, config.chat_options.as_ref())
@@ -685,6 +705,7 @@ async fn run_loop_with_context_provider(
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let mut last_text = String::new();
+    let step_tool_provider = step_tool_provider_for_run(config, tools);
     let run_id = thread
         .scope
         .value("run_id")
@@ -694,12 +715,12 @@ async fn run_loop_with_context_provider(
             let _ = thread.scope.set("run_id", &id);
             id
         });
-
-    let tool_descriptors = tool_descriptors_for_config(tools, config);
+    let initial_step_tools = resolve_step_tool_snapshot(&step_tool_provider, &thread).await?;
+    let mut active_tool_descriptors = initial_step_tools.descriptors;
 
     macro_rules! terminate_run {
         ($builder:expr) => {{
-            thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
+            thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
             return Err(($builder)(thread));
         }};
     }
@@ -708,7 +729,7 @@ async fn run_loop_with_context_provider(
     let pending = emit_phase_block(
         Phase::RunStart,
         &thread,
-        &tool_descriptors,
+        &active_tool_descriptors,
         &config.plugins,
         |_| {},
     )
@@ -722,7 +743,15 @@ async fn run_loop_with_context_provider(
             });
         }
 
-        let prepared = match prepare_step_execution(&thread, &tool_descriptors, config).await {
+        let step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                terminate_run!(move |_| e);
+            }
+        };
+        active_tool_descriptors = step_tools.descriptors.clone();
+
+        let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, config).await {
             Ok(v) => v,
             Err(e) => {
                 terminate_run!(move |_| e);
@@ -752,7 +781,11 @@ async fn run_loop_with_context_provider(
             true,
             "unknown llm error",
             |model| {
-                let request = build_request_for_filtered_tools(&messages, tools, &filtered_tools);
+                let request = build_request_for_filtered_tools(
+                    &messages,
+                    &step_tools.tools,
+                    &filtered_tools,
+                );
                 async move {
                     provider
                         .exec_chat_response(&model, request, config.chat_options.as_ref())
@@ -774,7 +807,7 @@ async fn run_loop_with_context_provider(
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 if let Err(phase_error) = apply_llm_error_cleanup(
                     &mut thread,
-                    &tool_descriptors,
+                    &active_tool_descriptors,
                     &config.plugins,
                     "llm_exec_error",
                     last_error.clone(),
@@ -799,7 +832,7 @@ async fn run_loop_with_context_provider(
             &result,
             step_meta.clone(),
             Some(assistant_msg_id.clone()),
-            &tool_descriptors,
+            &active_tool_descriptors,
             &config.plugins,
         )
         .await
@@ -832,10 +865,10 @@ async fn run_loop_with_context_provider(
         let thread_version_for_tools = thread_state_version(&thread);
 
         let tool_exec_future = execute_tool_calls_with_phases(
-            tools,
+            &step_tools.tools,
             &result.tool_calls,
             &tool_context.state,
-            &tool_descriptors,
+            &active_tool_descriptors,
             &config.plugins,
             config.parallel_tools,
             None,
@@ -906,7 +939,7 @@ async fn run_loop_with_context_provider(
     }
 
     // Phase: RunEnd
-    thread = finalize_run_end(thread, &tool_descriptors, &config.plugins).await;
+    thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
 
     Ok((thread, last_text))
 }

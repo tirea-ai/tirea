@@ -1,7 +1,12 @@
+use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StopConditionSpec;
+use crate::contracts::state::AgentState;
+use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::engine::stop_conditions::StopCondition;
+use async_trait::async_trait;
 use genai::chat::ChatOptions;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Retry strategy for LLM inference calls.
@@ -25,6 +30,55 @@ impl Default for LlmRetryPolicy {
             max_backoff_ms: 2_000,
             retry_stream_start: true,
         }
+    }
+}
+
+/// Input context passed to per-step tool providers.
+pub struct StepToolInput<'a> {
+    /// Current AgentState at step boundary.
+    pub thread: &'a AgentState,
+}
+
+/// Tool snapshot resolved for one step.
+#[derive(Clone, Default)]
+pub struct StepToolSnapshot {
+    /// Concrete tool map used for this step.
+    pub tools: HashMap<String, Arc<dyn Tool>>,
+    /// Tool descriptors exposed to plugins/LLM for this step.
+    pub descriptors: Vec<ToolDescriptor>,
+}
+
+impl StepToolSnapshot {
+    /// Build a step snapshot from a concrete tool map.
+    pub fn from_tools(tools: HashMap<String, Arc<dyn Tool>>) -> Self {
+        let descriptors = tools.values().map(|tool| tool.descriptor().clone()).collect();
+        Self { tools, descriptors }
+    }
+}
+
+/// Provider that resolves the tool snapshot for each step.
+#[async_trait]
+pub trait StepToolProvider: Send + Sync {
+    /// Resolve tool map + descriptors for the current step.
+    async fn provide(&self, input: StepToolInput<'_>) -> Result<StepToolSnapshot, AgentLoopError>;
+}
+
+/// Static provider that always returns the same tool map.
+#[derive(Clone, Default)]
+pub struct StaticStepToolProvider {
+    tools: HashMap<String, Arc<dyn Tool>>,
+}
+
+impl StaticStepToolProvider {
+    pub fn new(tools: HashMap<String, Arc<dyn Tool>>) -> Self {
+        Self { tools }
+    }
+}
+
+#[async_trait]
+impl StepToolProvider for StaticStepToolProvider {
+    async fn provide(&self, _input: StepToolInput<'_>) -> Result<StepToolSnapshot, AgentLoopError> {
+        Ok(StepToolSnapshot::from_tools(self.tools.clone()))
     }
 }
 
@@ -62,6 +116,11 @@ pub struct AgentConfig {
     ///
     /// Specs are appended after explicit `stop_conditions` in evaluation order.
     pub stop_condition_specs: Vec<StopConditionSpec>,
+    /// Optional per-step tool provider.
+    ///
+    /// When not set, the loop uses a static provider derived from the `tools`
+    /// map passed to `run_step` / `run_loop` / `run_loop_stream`.
+    pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
 }
 
 impl Default for AgentConfig {
@@ -82,6 +141,7 @@ impl Default for AgentConfig {
             plugins: Vec::new(),
             stop_conditions: Vec::new(),
             stop_condition_specs: Vec::new(),
+            step_tool_provider: None,
         }
     }
 }
@@ -106,6 +166,10 @@ impl std::fmt::Debug for AgentConfig {
                 &format!("[{} conditions]", self.stop_conditions.len()),
             )
             .field("stop_condition_specs", &self.stop_condition_specs)
+            .field(
+                "step_tool_provider",
+                &self.step_tool_provider.as_ref().map(|_| "<set>"),
+            )
             .finish()
     }
 }
@@ -222,6 +286,20 @@ impl AgentConfig {
     #[must_use]
     pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
         self.stop_condition_specs = specs;
+        self
+    }
+
+    /// Set per-step tool provider.
+    #[must_use]
+    pub fn with_step_tool_provider(mut self, provider: Arc<dyn StepToolProvider>) -> Self {
+        self.step_tool_provider = Some(provider);
+        self
+    }
+
+    /// Clear per-step tool provider and use static tools input.
+    #[must_use]
+    pub fn clear_step_tool_provider(mut self) -> Self {
+        self.step_tool_provider = None;
         self
     }
 
