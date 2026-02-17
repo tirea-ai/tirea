@@ -96,7 +96,8 @@ pub trait StopCondition: Send + Sync {
     fn check(&self, ctx: &StopCheckContext) -> Option<StopReason>;
 }
 
-/// Internal evaluator kept crate-private; runtime loop owns public evaluation.
+/// Internal test helper; runtime loop owns public condition evaluation.
+#[cfg(test)]
 pub(crate) fn check_stop_conditions(
     conditions: &[Arc<dyn StopCondition>],
     ctx: &StopCheckContext,
