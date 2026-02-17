@@ -21,7 +21,7 @@
 //! impl AgentPlugin for MyPlugin {
 //!     fn id(&self) -> &str { "my_plugin" }
 //!
-//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
+//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
 //!         match phase {
 //!             Phase::StepStart => {
 //!                 step.system(format!("Time: {}", chrono::Local::now()));
@@ -42,7 +42,7 @@
 
 use crate::extension::phase::{Phase, StepContext};
 use async_trait::async_trait;
-use crate::context::AgentState;
+use crate::AgentState;
 
 /// Plugin trait for extending agent behavior.
 ///
@@ -55,7 +55,7 @@ use crate::context::AgentState;
 /// Use pattern matching to handle specific phases:
 ///
 /// ```ignore
-/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
+/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
 ///     match phase {
 ///         Phase::RunStart => { /* initialize */ }
 ///         Phase::StepStart => { /* prepare context */ }
@@ -73,7 +73,7 @@ use crate::context::AgentState;
 ///
 /// Through `StepContext`, plugins can:
 ///
-/// - **Inject context**: `step.system()`, `step.session()`, `step.reminder()`
+/// - **Inject context**: `step.system()`, `step.thread()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
 /// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
 /// - **Mutate state**: enqueue `step.pending_patches` or write through `ctx.state(...)`
@@ -92,7 +92,7 @@ pub trait AgentPlugin: Send + Sync {
     /// - `phase`: The current execution phase
     /// - `step`: Mutable context for the current step
     /// - `ctx`: AgentState for typed state access (read/write ops auto-collected)
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>);
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState);
 }
 
 #[cfg(test)]
@@ -129,7 +129,7 @@ mod tests {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &AgentState<'_>,
+            _ctx: &AgentState,
         ) {
             match phase {
                 Phase::StepStart => {
@@ -151,7 +151,7 @@ mod tests {
             "noop"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState) {
             // No-op
         }
     }
@@ -168,7 +168,7 @@ mod tests {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &AgentState<'_>,
+            _ctx: &AgentState,
         ) {
             match phase {
                 Phase::StepStart => {
@@ -210,7 +210,7 @@ mod tests {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &AgentState<'_>,
+            _ctx: &AgentState,
         ) {
             if phase != Phase::BeforeToolExecute {
                 return;
@@ -246,7 +246,7 @@ mod tests {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &AgentState<'_>,
+            _ctx: &AgentState,
         ) {
             if phase != Phase::BeforeToolExecute {
                 return;
@@ -288,8 +288,8 @@ mod tests {
         assert_eq!(plugin.id(), "test");
     }
 
-    fn test_ctx(doc: &serde_json::Value) -> AgentState<'_> {
-        AgentState::new(doc, "test", "test")
+    fn test_ctx(doc: &serde_json::Value) -> AgentState {
+        AgentState::new_runtime(doc, "test", "test")
     }
 
     #[tokio::test]

@@ -117,7 +117,7 @@ impl Tool for NoopTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ContextAgentState<'_>,
+        _ctx: &ContextAgentState,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success(self.id, json!({"ok": true})))
     }

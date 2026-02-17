@@ -35,7 +35,7 @@ pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
 /// Interaction ID prefix used for agent run recovery confirmation.
 pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
-/// Status of an `agent_run` entry persisted in [`AgentState`].
+/// Status of an `agent_run` entry persisted in [`PersistedAgentState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentRunStatus {
@@ -90,7 +90,7 @@ pub struct AgentInferenceError {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-pub struct AgentState {
+pub struct PersistedAgentState {
     /// Pending interaction that must be resolved by the client before the run can continue.
     #[carve(default = "None")]
     pub pending_interaction: Option<Interaction>,
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_agent_state_defaults_agent_runs_to_empty_map() {
-        let state = AgentState::default();
+        let state = PersistedAgentState::default();
         assert!(state.pending_interaction.is_none());
         assert!(state.agent_runs.is_empty());
         assert!(state.replay_tool_calls.is_empty());

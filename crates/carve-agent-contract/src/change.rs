@@ -40,12 +40,12 @@ pub struct AgentChangeSet {
 impl AgentChangeSet {
     /// Apply this delta to a thread in place.
     pub fn apply_to(&self, thread: &mut AgentState) {
-        thread.messages.extend(self.messages.iter().cloned());
-        thread.patches.extend(self.patches.iter().cloned());
         if let Some(ref snapshot) = self.snapshot {
             thread.state = snapshot.clone();
             thread.patches.clear();
         }
+
+        thread.messages.extend(self.messages.iter().cloned());
+        thread.patches.extend(self.patches.iter().cloned());
     }
 }
-

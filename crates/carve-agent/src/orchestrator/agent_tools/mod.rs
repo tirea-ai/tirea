@@ -18,7 +18,7 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use crate::contracts::context::AgentState;
+use crate::contracts::AgentState;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};

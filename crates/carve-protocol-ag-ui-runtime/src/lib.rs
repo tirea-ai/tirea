@@ -81,7 +81,7 @@ impl Tool for FrontendToolStub {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, _args: Value, _ctx: &RuntimeAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &RuntimeAgentState) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::error(
             &self.descriptor.id,
             "frontend tool stub should be intercepted before backend execution",
@@ -106,7 +106,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &RuntimeAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &RuntimeAgentState) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -232,7 +232,7 @@ mod tests {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
         let state = json!({});
-        let ctx = RuntimeAgentState::new(&state, "test-call", "agui_runtime_test");
+        let ctx = RuntimeAgentState::new_runtime(&state, "test-call", "agui_runtime_test");
         let thread = ConversationAgentState::new("t1");
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));

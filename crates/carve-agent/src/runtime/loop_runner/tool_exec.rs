@@ -577,7 +577,7 @@ pub(super) async fn execute_single_tool_with_phases(
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = crate::contracts::context::AgentState::from_thread(
+    let plugin_ctx = crate::contracts::AgentState::from_thread(
         &temp_thread,
         state,
         "plugin_phase",
@@ -649,7 +649,7 @@ pub(super) async fn execute_single_tool_with_phases(
     } else {
         // Execute the tool with its own Context (instrumented with tracing span)
         let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
-        let tool_ctx = crate::contracts::context::AgentState::from_thread_with_activity_manager(
+        let tool_ctx = crate::contracts::AgentState::from_thread_with_activity_manager(
             &temp_thread,
             state,
             &call.id,

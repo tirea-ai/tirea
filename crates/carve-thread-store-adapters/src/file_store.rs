@@ -97,6 +97,18 @@ impl AgentStateWriter for FileStore {
         }
         Ok(())
     }
+
+    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+        let next_version = self
+            .load_head(&thread.id)
+            .await?
+            .map_or(0, |head| head.version.saturating_add(1));
+        let head = AgentStateHead {
+            agent_state: thread.clone(),
+            version: next_version,
+        };
+        self.save_head(&head).await
+    }
 }
 
 #[async_trait]

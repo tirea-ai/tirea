@@ -1,7 +1,7 @@
 //! Tool execution utilities.
 
 use crate::contracts::conversation::ToolCall;
-use crate::contracts::context::AgentState;
+use crate::contracts::AgentState;
 use crate::contracts::traits::tool::{Tool, ToolResult};
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
@@ -55,7 +55,8 @@ pub async fn execute_single_tool_with_scope(
     };
 
     // Create context for this tool call
-    let ctx = AgentState::new(state, &call.id, format!("tool:{}", call.name)).with_scope(scope);
+    let ctx = AgentState::new_runtime(state, &call.id, format!("tool:{}", call.name))
+        .with_runtime_scope(scope);
 
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {
@@ -183,7 +184,7 @@ mod tests {
             ToolDescriptor::new("echo", "Echo", "Echo the input")
         }
 
-        async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
         }
     }
@@ -196,7 +197,7 @@ mod tests {
             ToolDescriptor::new("counter", "Counter", "Increment a counter")
         }
 
-        async fn execute(&self, _args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, _args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
             // In real usage, state would be accessed via ctx.state::<T>()
             // For this test, we just return success
             Ok(ToolResult::success("counter", json!({"incremented": true})))
@@ -220,7 +221,7 @@ mod tests {
             )
         }
 
-        async fn execute(&self, _args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, _args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
             let state = ctx.state::<SequentialCounterState>("");
             state.increment_counter(1);
             Ok(ToolResult::success(
@@ -378,7 +379,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                _ctx: &AgentState<'_>,
+                _ctx: &AgentState,
             ) -> Result<ToolResult, ToolError> {
                 Err(ToolError::ExecutionFailed(
                     "Intentional failure".to_string(),
@@ -417,7 +418,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState<'_>,
+                ctx: &AgentState,
             ) -> Result<ToolResult, ToolError> {
                 let user_id = ctx
                     .scope_value("user_id")
@@ -457,7 +458,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState<'_>,
+                ctx: &AgentState,
             ) -> Result<ToolResult, ToolError> {
                 let has_scope = ctx.scope_ref().is_some();
                 Ok(ToolResult::success(
@@ -497,7 +498,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState<'_>,
+                ctx: &AgentState,
             ) -> Result<ToolResult, ToolError> {
                 let scope = ctx.scope_ref().unwrap();
                 let token = scope.value("token").and_then(|v| v.as_str()).unwrap();

@@ -1,5 +1,5 @@
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState as ContextAgentState;
+use crate::contracts::AgentState as ContextAgentState;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::extensions::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
@@ -40,7 +40,7 @@ impl AgentPlugin for SkillPlugin {
         SKILLS_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
         // Keep ordering stable: catalog first (enables selection), then active skill content.
         self.discovery.on_phase(phase, step, ctx).await;
         self.runtime.on_phase(phase, step, ctx).await;
@@ -53,7 +53,7 @@ mod tests {
     use crate::contracts::conversation::AgentState;
     use crate::contracts::traits::tool::ToolDescriptor;
     use crate::extensions::skills::{FsSkillRegistry, SkillRegistry};
-    use crate::contracts::context::AgentState as ContextAgentState;
+    use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;
@@ -61,7 +61,7 @@ mod tests {
     #[tokio::test]
     async fn combined_plugin_injects_catalog_and_active_skills() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();

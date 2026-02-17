@@ -85,12 +85,10 @@ pub trait AgentStateWriter: AgentStateReader {
     /// Delete an AgentState.
     async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError>;
 
-    /// Upsert helper.
-    async fn save(&self, agent_state: &AgentState) -> Result<(), AgentStateStoreError> {
-        let _ = self.delete(&agent_state.id).await;
-        self.create(agent_state).await?;
-        Ok(())
-    }
+    /// Upsert or replace the current persisted AgentState.
+    ///
+    /// Implementations must provide atomic semantics suitable for their backend.
+    async fn save(&self, agent_state: &AgentState) -> Result<(), AgentStateStoreError>;
 }
 
 #[async_trait]

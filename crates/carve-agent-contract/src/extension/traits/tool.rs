@@ -4,7 +4,7 @@
 
 pub use crate::{ToolResult, ToolStatus};
 use async_trait::async_trait;
-use crate::context::AgentState;
+use crate::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ impl ToolDescriptor {
 ///     async fn execute(
 ///         &self,
 ///         args: Value,
-///         ctx: &AgentState<'_>,
+    ///         ctx: &AgentState,
 ///     ) -> Result<ToolResult, ToolError> {
 ///         let state = ctx.call_state::<MyToolState>();
 ///         let current = state.count().unwrap_or(0);
@@ -142,7 +142,7 @@ pub trait Tool: Send + Sync {
     /// # Returns
     ///
     /// Tool result or error
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError>;
 }
 
 #[cfg(test)]

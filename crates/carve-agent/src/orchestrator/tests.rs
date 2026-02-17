@@ -7,7 +7,7 @@ use crate::contracts::traits::tool::{ToolError, ToolResult};
 use crate::extensions::skills::FsSkillRegistry;
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
-use crate::contracts::context::AgentState as ContextAgentState;
+use crate::contracts::AgentState as ContextAgentState;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -122,6 +122,17 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
         )
         .await
     }
+
+    async fn save(
+        &self,
+        thread: &AgentState,
+    ) -> Result<(), crate::contracts::storage::AgentStateStoreError> {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::save(
+            self.inner.as_ref(),
+            thread,
+        )
+        .await
+    }
 }
 
 #[derive(Debug)]
@@ -133,7 +144,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
         "skip_with_run_end_patch"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -150,7 +161,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
 #[tokio::test]
 async fn wire_skills_inserts_tools_and_plugin() {
     let doc = json!({});
-    let ctx = ContextAgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -197,7 +208,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
 #[tokio::test]
 async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let doc = json!({});
-    let ctx = ContextAgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -267,7 +278,7 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
     }
 
     let os = AgentOs::builder()
@@ -297,7 +308,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
     }
 
     let os = AgentOs::builder()
@@ -322,7 +333,7 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
 }
 
 #[test]
@@ -353,7 +364,7 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
 }
 
 #[test]
@@ -384,7 +395,7 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
 }
 
 #[test]
@@ -429,7 +440,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("base_tool", json!({"ok": true})))
         }
@@ -477,7 +488,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -565,7 +576,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("skill", json!({"ok": true})))
         }
@@ -624,7 +635,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("agent_run", json!({"ok": true})))
         }
@@ -701,7 +712,7 @@ impl AgentPlugin for TestPlugin {
         self.0
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeInference {
             step.system(format!("<plugin id=\"{}\"/>", self.0));
         }
@@ -711,7 +722,7 @@ impl AgentPlugin for TestPlugin {
 #[tokio::test]
 async fn resolve_wires_plugins_from_registry() {
     let doc = json!({});
-    let ctx = ContextAgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
     let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
@@ -977,7 +988,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1036,7 +1047,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1086,7 +1097,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1139,7 +1150,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1202,7 +1213,7 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1431,7 +1442,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
             "runtime_only"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1449,7 +1460,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("runtime_tool", json!({"ok": true})))
         }
@@ -1501,7 +1512,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dup_tool", json!({})))
         }
@@ -1517,7 +1528,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dup_tool", json!({})))
         }
@@ -1576,7 +1587,7 @@ impl Tool for BundleTestTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ContextAgentState<'_>,
+        _ctx: &ContextAgentState,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success("dup_tool", json!({"ok": true})))
     }

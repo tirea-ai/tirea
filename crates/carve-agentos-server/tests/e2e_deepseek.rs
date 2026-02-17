@@ -68,7 +68,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent::prelude::AgentState<'_>,
+        _ctx: &carve_agent::prelude::AgentState,
     ) -> Result<ToolResult, ToolError> {
         let op = args["operation"]
             .as_str()

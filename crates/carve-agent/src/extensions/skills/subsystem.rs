@@ -133,7 +133,7 @@ mod tests {
         FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
     };
     use async_trait::async_trait;
-    use crate::contracts::context::AgentState as ContextAgentState;
+    use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
@@ -153,7 +153,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<
             crate::contracts::traits::tool::ToolResult,
             crate::contracts::traits::tool::ToolError,
@@ -237,7 +237,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &ContextAgentState<'_>,
+            _ctx: &ContextAgentState,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }
@@ -288,7 +288,7 @@ mod tests {
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         plugin
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;

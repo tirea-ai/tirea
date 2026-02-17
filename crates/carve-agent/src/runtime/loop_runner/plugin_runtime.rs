@@ -5,7 +5,7 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::context::AgentState as ContextAgentState;
+use crate::contracts::AgentState as ContextAgentState;
 use crate::contracts::events::{AgentEvent, TerminationReason};
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::AgentInferenceError;
@@ -91,7 +91,7 @@ fn validate_phase_mutation(
 pub(super) async fn emit_phase_checked(
     phase: Phase,
     step: &mut StepContext<'_>,
-    ctx: &ContextAgentState<'_>,
+    ctx: &ContextAgentState,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     for plugin in plugins {

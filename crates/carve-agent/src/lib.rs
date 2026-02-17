@@ -70,7 +70,7 @@
 //!             }))
 //!     }
 //!
-//!     async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+//!     async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
 //!         let expr = args["expr"].as_str().unwrap_or("0");
 //!         // ... evaluate expression ...
 //!         Ok(ToolResult::success("calculator", json!({"result": 42})))

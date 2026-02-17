@@ -68,7 +68,7 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: crate::contracts::context::AgentChangeSet,
+        changeset: crate::contracts::context::CheckpointChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.agent_state_store
             .append(thread_id, &changeset.delta)

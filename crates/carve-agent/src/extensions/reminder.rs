@@ -12,7 +12,7 @@
 //! ```ignore
 //! use carve_agent::prelude::*;
 //!
-//! async fn after_tool_execute(&self, ctx: &ContextAgentState<'_>, tool_id: &str, result: &ToolResult) {
+//! async fn after_tool_execute(&self, ctx: &ContextAgentState, tool_id: &str, result: &ToolResult) {
 //!     if tool_id == "file_read" {
 //!         ctx.add_reminder("Remember to close the file when done");
 //!     }
@@ -20,7 +20,7 @@
 //! ```
 
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState as ContextAgentState;
+use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ pub trait ReminderContextExt {
     fn remove_reminder(&self, text: &str);
 }
 
-impl ReminderContextExt for ContextAgentState<'_> {
+impl ReminderContextExt for ContextAgentState {
     fn add_reminder(&self, text: impl Into<String>) {
         let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
         state.items_push(text.into());
@@ -127,7 +127,7 @@ impl AgentPlugin for ReminderPlugin {
         &self,
         phase: crate::contracts::phase::Phase,
         step: &mut crate::contracts::phase::StepContext<'_>,
-        ctx: &ContextAgentState<'_>,
+        ctx: &ContextAgentState,
     ) {
         use crate::contracts::phase::Phase;
 
@@ -153,7 +153,7 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::context::AgentState as ContextAgentState;
+    use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = ContextAgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
 
         ctx.add_reminder("Test reminder");
         assert!(ctx.has_changes());
@@ -190,7 +190,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = ContextAgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
 
         assert!(ctx.reminders().is_empty());
         assert_eq!(ctx.reminder_count(), 0);
@@ -201,7 +201,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = ContextAgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
 
         let reminders = ctx.reminders();
         assert_eq!(reminders.len(), 2);
@@ -213,7 +213,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = ContextAgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
 
         assert_eq!(ctx.reminder_count(), 2);
         ctx.clear_reminders();
@@ -225,7 +225,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Keep", "Remove", "Keep2"] }
         });
-        let ctx = ContextAgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "call_1", "test");
 
         ctx.remove_reminder("Remove");
         assert!(ctx.has_changes());
@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
         let doc = json!({ "reminders": { "items": ["Test reminder"] } });
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
@@ -268,7 +268,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
         let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
@@ -297,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
         let doc = json!({ "reminders": { "items": ["Reminder"] } });
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
@@ -318,7 +318,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
         let doc = json!({ "reminders": { "items": [] } });
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
@@ -337,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 

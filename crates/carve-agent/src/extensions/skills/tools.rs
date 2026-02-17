@@ -1,4 +1,4 @@
-use crate::contracts::state_types::{AgentState as AgentStateDoc, AGENT_STATE_PATH};
+use crate::contracts::state_types::{PersistedAgentState as AgentStateDoc, AGENT_STATE_PATH};
 use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
@@ -10,7 +10,7 @@ use crate::extensions::skills::{
     SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
     SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
-use crate::contracts::context::AgentState;
+use crate::contracts::AgentState;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -46,7 +46,7 @@ impl Tool for SkillActivateTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_ACTIVATE_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -205,7 +205,7 @@ impl Tool for LoadSkillResourceTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
         let key = match required_string_arg(&args, "skill", tool_name) {
             Ok(v) => v,
@@ -343,7 +343,7 @@ impl Tool for SkillScriptTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),

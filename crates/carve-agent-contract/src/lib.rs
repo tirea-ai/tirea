@@ -39,7 +39,7 @@ pub mod plugin {
 pub mod state {
     pub use crate::state_types::{
         AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
-        AgentRunState, AgentRunStatus, AgentState, Interaction, InteractionResponse,
+        AgentRunState, AgentRunStatus, Interaction, InteractionResponse, PersistedAgentState,
         ToolPermissionBehavior,
     };
 }
@@ -55,7 +55,7 @@ pub use conversation::{
     AgentState, AgentStateMetadata, PendingDelta, ToolCall, Visibility, gen_message_id, Message,
     MessageMetadata, Role,
 };
-pub use context::{ActivityContext, ActivityManager, AgentChangeSet};
+pub use context::{ActivityContext, ActivityManager, CheckpointChangeSet};
 pub use event::AgentEvent;
 pub use interaction::{Interaction, InteractionResponse};
 pub use run::RunRequest;

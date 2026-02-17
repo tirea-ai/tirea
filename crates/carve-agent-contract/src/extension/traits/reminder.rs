@@ -4,7 +4,7 @@
 //! the agent about important information.
 
 use async_trait::async_trait;
-use crate::context::AgentState;
+use crate::AgentState;
 
 /// System reminder for generating reminder messages.
 ///
@@ -28,7 +28,7 @@ use crate::context::AgentState;
 ///         "todo_reminder"
 ///     }
 ///
-///     async fn remind(&self, ctx: &AgentState<'_>) -> Option<String> {
+    ///     async fn remind(&self, ctx: &AgentState) -> Option<String> {
 ///         let state = ctx.state::<TodoState>("components.todos");
 ///
 ///         let pending = state.pending_count().unwrap_or(0);
@@ -54,5 +54,5 @@ pub trait SystemReminder: Send + Sync {
     /// # Returns
     ///
     /// Optional reminder message. None means no reminder.
-    async fn remind(&self, ctx: &AgentState<'_>) -> Option<String>;
+    async fn remind(&self, ctx: &AgentState) -> Option<String>;
 }

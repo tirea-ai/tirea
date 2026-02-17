@@ -3,10 +3,10 @@
 //! A `AgentState` represents a conversation with messages and state history.
 
 use super::types::Message;
-use carve_state::{apply_patches, CarveError, CarveResult, ScopeState, TrackedPatch};
+use carve_state::{apply_patches, CarveError, CarveResult, Op, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Accumulated new messages and patches since the last `take_pending()`.
 ///
@@ -17,6 +17,52 @@ use std::sync::Arc;
 pub struct PendingDelta {
     pub messages: Vec<Arc<Message>>,
     pub patches: Vec<TrackedPatch>,
+}
+
+/// Ephemeral runtime-only data used by tools/plugins during a run.
+#[derive(Clone)]
+pub(crate) struct RuntimeState {
+    pub call_id: String,
+    pub source: String,
+    pub version: u64,
+    pub scope_attached: bool,
+    pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
+    pub ops: Arc<Mutex<Vec<Op>>>,
+    pub activity_manager: Option<Arc<dyn crate::context::ActivityManager>>,
+}
+
+impl Default for RuntimeState {
+    fn default() -> Self {
+        Self {
+            call_id: String::new(),
+            source: String::new(),
+            version: 0,
+            scope_attached: false,
+            pending_messages: Arc::new(Mutex::new(Vec::new())),
+            ops: Arc::new(Mutex::new(Vec::new())),
+            activity_manager: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for RuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeState")
+            .field("call_id", &self.call_id)
+            .field("source", &self.source)
+            .field("version", &self.version)
+            .field("scope_attached", &self.scope_attached)
+            .field(
+                "pending_messages_len",
+                &self.pending_messages.lock().unwrap().len(),
+            )
+            .field("ops_len", &self.ops.lock().unwrap().len())
+            .field(
+                "activity_manager",
+                &self.activity_manager.as_ref().map(|_| "<set>"),
+            )
+            .finish()
+    }
 }
 
 impl PendingDelta {
@@ -59,6 +105,9 @@ pub struct AgentState {
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
+    /// Runtime-only execution context (not persisted).
+    #[serde(skip)]
+    pub(crate) runtime: RuntimeState,
 }
 
 /// AgentState metadata.
@@ -94,6 +143,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
+            runtime: RuntimeState::default(),
         }
     }
 
@@ -109,6 +159,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
+            runtime: RuntimeState::default(),
         }
     }
 
@@ -225,6 +276,7 @@ impl AgentState {
             metadata: self.metadata,
             scope: self.scope,
             pending: self.pending,
+            runtime: self.runtime,
         })
     }
 

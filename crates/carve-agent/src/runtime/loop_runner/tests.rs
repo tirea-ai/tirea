@@ -5,7 +5,8 @@ use crate::contracts::storage::CheckpointReason;
 use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use crate::contracts::context::{ActivityManager, AgentState as ContextAgentState};
+use crate::contracts::context::ActivityManager;
+use crate::contracts::AgentState as ContextAgentState;
 use carve_state::{Op, Patch};
 use carve_state_derive::State;
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
@@ -38,7 +39,7 @@ impl Tool for EchoTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
         let msg = args["message"].as_str().unwrap_or("no message");
         Ok(ToolResult::success("echo", json!({ "echoed": msg })))
     }
@@ -56,7 +57,7 @@ impl Tool for ScopeSnapshotTool {
         )
     }
 
-    async fn execute(&self, _args: Value, ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
         let rt = ctx.scope_ref().expect("scope should exist");
         let thread_id = rt
             .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
@@ -97,7 +98,7 @@ impl Tool for ActivityGateTool {
         ToolDescriptor::new(&self.id, "Activity Gate", "Emits activity updates")
     }
 
-    async fn execute(&self, _args: Value, ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
         let activity = ctx.activity(self.stream_id.clone(), "progress");
         let progress = activity.state::<ActivityProgressState>("");
         progress.set_progress(0.1);
@@ -128,8 +129,8 @@ fn skill_activation_result(
 ) -> ToolExecutionResult {
     let patch = instruction.map(|text| {
         let base = json!({});
-        let ctx = ContextAgentState::new(&base, call_id, "skill_test");
-        let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+        let ctx = ContextAgentState::new_runtime(&base, call_id, "skill_test");
+        let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
             crate::contracts::state_types::AGENT_STATE_PATH,
         );
         agent.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
@@ -505,7 +506,7 @@ impl Tool for CounterTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
         let amount = args["amount"].as_i64().unwrap_or(1);
 
         let state = ctx.state::<TestCounterState>("");
@@ -581,7 +582,7 @@ impl Tool for FailingTool {
         ToolDescriptor::new("failing", "Failing Tool", "Always fails")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, _args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed(
             "Intentional failure".to_string(),
         ))
@@ -632,7 +633,7 @@ impl AgentPlugin for TestPhasePlugin {
         &self.id
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         match phase {
             Phase::StepStart => {
                 step.system("Test system context");
@@ -667,7 +668,7 @@ impl AgentPlugin for BlockingPhasePlugin {
         "blocker"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             step.block("Echo tool is blocked");
         }
@@ -713,7 +714,7 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
         "invalid_after_tool_mutation"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::AfterToolExecute {
             step.block("too late");
         }
@@ -760,7 +761,7 @@ impl AgentPlugin for ReminderPhasePlugin {
         "reminder"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::AfterToolExecute {
             step.reminder("Tool execution completed");
         }
@@ -836,7 +837,7 @@ impl AgentPlugin for ToolFilterPlugin {
         "filter"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeInference {
             step.exclude("dangerous_tool");
         }
@@ -855,7 +856,7 @@ fn test_tool_filtering_via_plugin() {
         let mut step = StepContext::new(&thread, tool_descriptors);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
         let doc = serde_json::json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
 
         emit_phase_checked(Phase::BeforeInference, &mut step, &ctx, &plugins)
             .await
@@ -876,7 +877,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -941,7 +942,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread.id, "real-thread-42");
                 assert_eq!(step.thread.scope.value("user_id"), Some(&json!("u-abc")),);
@@ -991,7 +992,7 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             match phase {
                 Phase::BeforeToolExecute => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1062,7 +1063,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             "phase_block"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::StepStart => {
@@ -1126,12 +1127,12 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
                     let agent =
-                        ctx.state::<crate::contracts::state_types::AgentState>(AGENT_STATE_PATH);
+                        ctx.state::<crate::contracts::state_types::PersistedAgentState>(AGENT_STATE_PATH);
                     let err = agent
                         .inference_error()
                         .ok()
@@ -1193,7 +1194,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             "run_scoped_state"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             match phase {
                 Phase::RunStart => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1324,7 +1325,7 @@ fn test_agent_config_with_plugins() {
         fn id(&self) -> &str {
             "dummy"
         }
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
     }
 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -1340,7 +1341,7 @@ impl AgentPlugin for PendingPhasePlugin {
         "pending"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             use crate::contracts::state_types::Interaction;
             step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
@@ -1467,8 +1468,8 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-        let ctx = ContextAgentState::new(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+        let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
         crate::contracts::state_types::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
@@ -1511,8 +1512,8 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-        let ctx = ContextAgentState::new(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+        let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
         crate::contracts::state_types::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
@@ -1936,7 +1937,7 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -2010,7 +2011,7 @@ impl AgentPlugin for RecordAndSkipPlugin {
     fn id(&self) -> &str {
         "record_and_skip"
     }
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         self.phases.lock().unwrap().push(phase);
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -2124,7 +2125,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             "pending_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -2185,7 +2186,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2246,7 +2247,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             "skip_inference_for_permission_approval"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2358,7 +2359,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             "skip_inference_for_permission_denial"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2495,7 +2496,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_non_stream"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             self.phases.lock().unwrap().push(phase);
             if phase != Phase::BeforeInference {
                 return;
@@ -2621,7 +2622,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2656,7 +2657,7 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2922,13 +2923,13 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             "cleanup_on_llm_error_nonstream"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             self.phases.lock().expect("lock poisoned").push(phase);
             if phase != Phase::AfterInference {
                 return;
             }
 
-            let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+            let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
                 crate::contracts::state_types::AGENT_STATE_PATH,
             );
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
@@ -3394,7 +3395,7 @@ impl StateCommitter for RecordingStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: crate::contracts::context::AgentChangeSet,
+        changeset: crate::contracts::context::CheckpointChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.reasons
             .lock()
@@ -3564,7 +3565,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             "invalid_replay_payload"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     carve_state::TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -3627,9 +3628,9 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             "replay_state_failure"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
                     crate::contracts::state_types::AGENT_STATE_PATH,
                 );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
@@ -3689,10 +3690,10 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             "replay_blocking"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             match phase {
                 Phase::RunStart => {
-                    let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
                         crate::contracts::state_types::AGENT_STATE_PATH,
                     );
                     agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
@@ -3757,9 +3758,9 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             "replay_without_placeholder"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
                     crate::contracts::state_types::AGENT_STATE_PATH,
                 );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
@@ -3817,7 +3818,7 @@ async fn test_stream_apply_error_still_runs_run_end_phase() {
             "pending_and_run_end"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
@@ -3995,7 +3996,7 @@ async fn test_stop_on_tool_condition() {
         fn descriptor(&self) -> ToolDescriptor {
             ToolDescriptor::new("finish_tool", "Finish", "Finishes the run")
         }
-        async fn execute(&self, _args: Value, _ctx: &ContextAgentState<'_>) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, _args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("finish_tool", json!({"done": true})))
         }
     }
@@ -4598,7 +4599,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
             "pending_every_tool"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -4667,7 +4668,7 @@ impl AgentPlugin for OrderTrackingPlugin {
         self.id
     }
 
-    async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         self.order_log
             .lock()
             .unwrap()
@@ -4746,7 +4747,7 @@ impl AgentPlugin for ConditionalBlockPlugin {
         "conditional_block"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
             step.block("Blocked because tool was pending".to_string());
         }
@@ -5020,7 +5021,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_step"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -5109,11 +5110,11 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             "cleanup_on_start_error"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::contracts::state_types::AgentState>(
+                    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
                         crate::contracts::state_types::AGENT_STATE_PATH,
                     );
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);

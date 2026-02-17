@@ -138,7 +138,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
         vec![ToolDescriptor::new("t", "t", "t")],
     );
     let doc = json!({});
-    let ctx = RuntimeAgentState::new(&doc, "test", "test");
+    let ctx = RuntimeAgentState::new_runtime(&doc, "test", "test");
     plugin
         .on_phase(
             carve_agent::contracts::phase::Phase::BeforeInference,

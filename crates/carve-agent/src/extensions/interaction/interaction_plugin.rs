@@ -5,7 +5,7 @@
 use super::interaction_response::InteractionResponsePlugin;
 use super::INTERACTION_PLUGIN_ID;
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState;
+use crate::contracts::AgentState;
 use crate::contracts::phase::{Phase, StepContext};
 use async_trait::async_trait;
 
@@ -64,7 +64,7 @@ impl AgentPlugin for InteractionPlugin {
         INTERACTION_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
         let response = self.response_plugin();
         response.on_phase(phase, step, ctx).await;
     }

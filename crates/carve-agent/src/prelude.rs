@@ -17,7 +17,7 @@
 //!         ToolDescriptor::new("my_tool", "My Tool", "Does something useful")
 //!     }
 //!
-//!     async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+//!     async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
 //!         // Extension traits are auto-imported
 //!         ctx.allow_tool("follow_up");           // PermissionContextExt
 //!         ctx.add_reminder("Remember to check"); // ReminderContextExt
@@ -34,7 +34,7 @@ pub use async_trait::async_trait;
 pub use serde_json::{json, Value};
 
 // Core execution state object (state + runtime metadata + activity wiring)
-pub use crate::contracts::context::AgentState;
+pub use crate::contracts::AgentState;
 // Raw state-only context for lower-level integrations
 pub use carve_state::StateContext;
 
@@ -52,7 +52,7 @@ pub use crate::contracts::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
 pub use crate::contracts::state_types::{
-    AgentRunState, AgentRunStatus, AgentState as AgentStateDoc, Interaction, InteractionResponse,
+    AgentRunState, AgentRunStatus, PersistedAgentState as AgentStateDoc, Interaction, InteractionResponse,
     ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };

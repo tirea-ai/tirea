@@ -1,5 +1,5 @@
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState as ContextAgentState;
+use crate::contracts::AgentState as ContextAgentState;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
@@ -124,7 +124,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         SKILLS_DISCOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
         if phase != Phase::BeforeInference {
             return;
         }
@@ -154,7 +154,7 @@ mod tests {
     use crate::contracts::conversation::AgentState;
     use crate::contracts::traits::tool::ToolDescriptor;
     use crate::extensions::skills::FsSkillRegistry;
-    use crate::contracts::context::AgentState as ContextAgentState;
+    use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
@@ -181,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn injects_catalog_with_usage() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 8 * 1024);
         let thread = AgentState::with_initial_state("s", json!({}));
@@ -200,7 +200,7 @@ mod tests {
     #[tokio::test]
     async fn marks_active_skills() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
         let thread = AgentState::with_initial_state(
@@ -224,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_inject_when_registry_empty() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(&root).unwrap();
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_inject_when_all_skills_invalid() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("BadSkill")).unwrap();
@@ -262,7 +262,7 @@ mod tests {
     #[tokio::test]
     async fn injects_only_valid_skills_and_never_warnings() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("good-skill")).unwrap();
@@ -295,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn truncates_by_entry_limit_and_emits_note() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         for i in 0..5 {
@@ -322,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn truncates_by_char_limit() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s")).unwrap();
@@ -343,7 +343,7 @@ mod tests {
     #[tokio::test]
     async fn filters_catalog_by_runtime_skill_policy() {
         let doc = json!({});
-        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         let (_td, reg) = make_registry();
         let p = SkillDiscoveryPlugin::new(reg);
         let mut thread = AgentState::with_initial_state("s", json!({}));

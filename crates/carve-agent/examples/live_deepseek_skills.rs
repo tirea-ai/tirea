@@ -56,7 +56,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &RuntimeAgentState<'_>,
+        _ctx: &RuntimeAgentState,
     ) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
@@ -124,7 +124,7 @@ impl Tool for CounterTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &RuntimeAgentState<'_>,
+        ctx: &RuntimeAgentState,
     ) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()

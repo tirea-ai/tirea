@@ -4,7 +4,7 @@ use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::phase::StepContext;
 use crate::contracts::state_types::{
     AgentInferenceError,
-    AgentState as PersistedAgentState,
+    PersistedAgentState,
     Interaction,
     InteractionResponse,
     AGENT_STATE_PATH,

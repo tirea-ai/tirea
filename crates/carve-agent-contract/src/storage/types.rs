@@ -101,6 +101,7 @@ pub fn paginate_in_memory(
     messages: &[std::sync::Arc<Message>],
     query: &MessageQuery,
 ) -> MessagePage {
+    let limit = query.limit.clamp(1, 200);
     let total = messages.len();
     if total == 0 {
         return MessagePage {
@@ -148,8 +149,8 @@ pub fn paginate_in_memory(
         items.reverse();
     }
 
-    let has_more = items.len() > query.limit;
-    let limited: Vec<_> = items.into_iter().take(query.limit).collect();
+    let has_more = items.len() > limit;
+    let limited: Vec<_> = items.into_iter().take(limit).collect();
 
     MessagePage {
         next_cursor: limited.last().map(|(c, _)| *c),
@@ -189,9 +190,6 @@ pub enum AgentStateStoreError {
     AlreadyExists,
 }
 
-/// Monotonically increasing version for optimistic concurrency.
-pub type Version = u64;
-
 /// Commit acknowledgement returned after successful write.
 #[derive(Debug, Clone, Copy)]
 pub struct Committed {
@@ -206,4 +204,4 @@ pub struct AgentStateHead {
 }
 
 // Re-export for storage-level callers.
-pub use crate::change::{CheckpointReason, AgentChangeSet};
+pub use crate::change::{AgentChangeSet, CheckpointReason, Version};

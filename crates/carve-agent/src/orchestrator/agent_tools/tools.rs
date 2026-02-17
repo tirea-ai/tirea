@@ -184,7 +184,7 @@ impl AgentRunTool {
 
     async fn persist_existing_live_summary(
         &self,
-        ctx: &AgentState<'_>,
+        ctx: &AgentState,
         owner_thread_id: &str,
         run_id: &str,
         summary: AgentRunSummary,
@@ -197,7 +197,7 @@ impl AgentRunTool {
 
     async fn launch_run(
         &self,
-        ctx: &AgentState<'_>,
+        ctx: &AgentState,
         launch: RunLaunch,
         background: bool,
         tool_name: &str,
@@ -305,7 +305,7 @@ impl Tool for AgentRunTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &AgentState<'_>,
+        ctx: &AgentState,
     ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
         let run_id = optional_string(&args, "run_id");
@@ -539,7 +539,7 @@ impl Tool for AgentStopTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &AgentState<'_>,
+        ctx: &AgentState,
     ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id", tool_name) {

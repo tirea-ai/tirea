@@ -29,7 +29,7 @@ impl Tool for SearchTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'query'".into()))?;
@@ -88,7 +88,7 @@ impl Tool for WriteReportTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let report = args["report"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'report'".into()))?;
@@ -134,7 +134,7 @@ impl Tool for SetQuestionTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let question = args["question"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'question'".into()))?;
@@ -184,7 +184,7 @@ impl Tool for DeleteResourcesTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let ids: Vec<&str> = args["resource_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resource_ids' array".into()))?
@@ -247,7 +247,7 @@ impl Tool for ExtractResourcesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let raw = args["resources"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'resources' array".into()))?;

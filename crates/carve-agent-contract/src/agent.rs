@@ -1,5 +1,5 @@
 use crate::extension::agent_plugin::AgentPlugin;
-use crate::context::AgentChangeSet;
+use crate::context::CheckpointChangeSet;
 use crate::stop_conditions::{StopCondition, StopConditionSpec};
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
@@ -118,7 +118,7 @@ pub trait StateCommitter: Send + Sync {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: AgentChangeSet,
+        changeset: CheckpointChangeSet,
     ) -> Result<u64, StateCommitError>;
 }
 
