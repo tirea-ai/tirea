@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use carve_agent::contracts::extension::traits::tool::{
+use carve_agent_contract::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
-use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
-use carve_agent::contracts::state::Message;
-use carve_agent::orchestrator::AgentOs;
-use carve_agent::runtime::loop_runner::AgentDefinition;
+use carve_agent_contract::runtime::{AgentEvent, RunRequest};
+use carve_agent_contract::state::Message;
+use carve_agentos::orchestrator::AgentOs;
+use carve_agent_loop::runtime::loop_runner::AgentDefinition;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -67,7 +67,7 @@ impl Tool for OpenMeteoWeatherTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agent_contract::AgentState,
     ) -> Result<ToolResult, ToolError> {
         let city = args
             .get("city")

@@ -54,7 +54,7 @@ use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::state::{ActivityManager, AgentState};
-use crate::contracts::storage::CheckpointReason;
+use crate::contracts::state::CheckpointReason;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
 use crate::runtime::activity::ActivityHub;
@@ -75,11 +75,9 @@ use uuid::Uuid;
 use crate::contracts::extension::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
-pub use carve_agent_contract::agent::{
-    AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
-    StateCommitError, StateCommitter,
-};
-pub use carve_agent_contract::agent::{
+pub use carve_agent_contract::agent::{AgentConfig, AgentDefinition, LlmRetryPolicy};
+pub use crate::runtime::run_context::{
+    RunCancellationToken, RunContext, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };

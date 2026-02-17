@@ -1,6 +1,6 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::state::AgentState;
-use crate::contracts::storage::{CheckpointReason, VersionPrecondition};
+use crate::contracts::state::{AgentState, CheckpointReason};
+use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::AgentChangeSet;
 use async_trait::async_trait;
 use std::sync::Arc;

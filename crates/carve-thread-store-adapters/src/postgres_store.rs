@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
     MessageWithCursor, SortOrder, VersionPrecondition,
 };
-use carve_agent_contract::{AgentState, Message, Visibility};
+use carve_agent_contract::{AgentChangeSet, AgentState, Message, Visibility};
 use std::collections::HashSet;
 
 pub struct PostgresStore {

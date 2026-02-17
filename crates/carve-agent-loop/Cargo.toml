@@ -24,6 +24,9 @@ json-patch = "3"
 
 [dev-dependencies]
 carve-agent-extension-interaction = { path = "../carve-agent-extension-interaction" }
+carve-agent-extension-observability = { path = "../carve-agent-extension-observability" }
+carve-agent-extension-skills = { path = "../carve-agent-extension-skills" }
+carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }

@@ -3,7 +3,8 @@ use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolR
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::TerminationReason;
 use crate::contracts::state::ActivityManager;
-use crate::contracts::storage::{CheckpointReason, VersionPrecondition};
+use crate::contracts::state::CheckpointReason;
+use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;

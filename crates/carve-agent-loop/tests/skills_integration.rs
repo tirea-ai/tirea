@@ -1,11 +1,11 @@
-use carve_agent::contracts::extension::plugin::AgentPlugin;
-use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
-use carve_agent::contracts::runtime::phase::{Phase, StepContext};
-use carve_agent::contracts::state::AgentState;
-use carve_agent::contracts::state::{Message, ToolCall};
-use carve_agent::contracts::AgentState as ContextAgentState;
-use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
-use carve_agent::extensions::skills::{
+use carve_agent_loop::contracts::extension::plugin::AgentPlugin;
+use carve_agent_loop::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use carve_agent_loop::contracts::runtime::phase::{Phase, StepContext};
+use carve_agent_loop::contracts::state::AgentState;
+use carve_agent_loop::contracts::state::{Message, ToolCall};
+use carve_agent_loop::contracts::AgentState as ContextAgentState;
+use carve_agent_loop::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
+use carve_agent_extension_skills::{
     FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
     SkillScriptTool,
 };

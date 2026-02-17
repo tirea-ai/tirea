@@ -1,13 +1,13 @@
-use carve_agent::contracts::extension::plugin::AgentPlugin;
-use carve_agent::contracts::extension::traits::tool::{
+use carve_agent_loop::contracts::extension::plugin::AgentPlugin;
+use carve_agent_loop::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
-use carve_agent::contracts::runtime::{AgentEvent, StreamResult};
-use carve_agent::contracts::state::AgentState;
-use carve_agent::contracts::state::{Message, ToolCall};
-use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
-use carve_agent::prelude::AgentState as ContextAgentState;
-use carve_agent::runtime::loop_runner::{
+use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
+use carve_agent_loop::contracts::state::AgentState;
+use carve_agent_loop::contracts::state::{Message, ToolCall};
+use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
+use carve_agent_loop::contracts::AgentState as ContextAgentState;
+use carve_agent_loop::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
 use futures::StreamExt;

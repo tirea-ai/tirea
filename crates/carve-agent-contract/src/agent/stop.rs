@@ -96,8 +96,8 @@ pub trait StopCondition: Send + Sync {
     fn check(&self, ctx: &StopCheckContext) -> Option<StopReason>;
 }
 
-/// Check all conditions in order, returning the first match.
-pub fn check_stop_conditions(
+/// Internal evaluator kept crate-private; runtime loop owns public evaluation.
+pub(crate) fn check_stop_conditions(
     conditions: &[Arc<dyn StopCondition>],
     ctx: &StopCheckContext,
 ) -> Option<StopReason> {

@@ -95,7 +95,7 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     async fn append(
         &self,
         thread_id: &str,
-        changeset: &crate::contracts::storage::AgentChangeSet,
+        changeset: &crate::contracts::AgentChangeSet,
         precondition: crate::contracts::storage::VersionPrecondition,
     ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
     {

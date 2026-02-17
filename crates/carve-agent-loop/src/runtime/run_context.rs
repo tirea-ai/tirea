@@ -1,5 +1,5 @@
-use crate::state::AgentChangeSet;
-use crate::storage::VersionPrecondition;
+use crate::contracts::state::AgentChangeSet;
+use crate::contracts::storage::VersionPrecondition;
 use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;

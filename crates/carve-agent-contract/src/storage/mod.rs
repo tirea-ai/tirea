@@ -5,7 +5,7 @@ pub mod types;
 
 pub use traits::{AgentStateReader, AgentStateStore, AgentStateSync, AgentStateWriter};
 pub use types::{
-    paginate_in_memory, AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery,
-    AgentStateStoreError, CheckpointReason, Committed, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder, Version, VersionPrecondition,
+    paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery,
+    AgentStateStoreError, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
+    VersionPrecondition,
 };

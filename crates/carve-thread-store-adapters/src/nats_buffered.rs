@@ -22,10 +22,10 @@
 use async_nats::jetstream;
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
+    AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::AgentState;
+use carve_agent_contract::{AgentChangeSet, AgentState};
 use std::sync::Arc;
 
 /// NATS JetStream stream name for thread deltas.

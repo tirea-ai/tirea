@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateSync, AgentStateWriter, Version, VersionPrecondition,
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStoreError, AgentStateSync, AgentStateWriter, VersionPrecondition,
 };
-use carve_agent_contract::{AgentState, Committed};
+use carve_agent_contract::{AgentChangeSet, AgentState, Committed, Version};
 
 struct MemoryEntry {
     agent_state: AgentState,

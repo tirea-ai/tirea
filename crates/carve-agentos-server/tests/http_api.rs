@@ -6,9 +6,10 @@ use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::state::AgentState;
 use carve_agent::contracts::storage::{
-    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed,
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
+    AgentStateStoreError, AgentStateWriter, Committed,
 };
+use carve_agent::contracts::AgentChangeSet;
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
@@ -782,7 +783,7 @@ impl AgentStateWriter for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::storage::AgentChangeSet,
+        _delta: &carve_agent::contracts::AgentChangeSet,
         _precondition: carve_agent::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
@@ -903,7 +904,7 @@ impl AgentStateWriter for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::storage::AgentChangeSet,
+        _delta: &carve_agent::contracts::AgentChangeSet,
         _precondition: carve_agent::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(

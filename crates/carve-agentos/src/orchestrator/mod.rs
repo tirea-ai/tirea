@@ -10,8 +10,9 @@ use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::{AgentEvent, RunRequest};
 use crate::contracts::state::AgentState;
 use crate::contracts::state::Message;
+use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::{
-    AgentStateHead, AgentStateStore, AgentStateStoreError, CheckpointReason, VersionPrecondition,
+    AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
 use crate::extensions::skills::{
@@ -25,6 +26,7 @@ use crate::runtime::loop_runner::{
 
 pub(crate) mod agent_tools;
 mod builder;
+mod composition;
 mod run;
 mod wiring;
 
@@ -35,13 +37,16 @@ use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
 pub use carve_agent_contract::composition::{
-    AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
-    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
-    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
-    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
-    PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle, RegistrySet,
-    ToolPluginBundle, ToolRegistry, ToolRegistryError,
+    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
+    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
+    ToolRegistry, ToolRegistryError,
+};
+pub use composition::{
+    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
+    CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
+    InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+    RegistrySet, ToolPluginBundle,
 };
 
 type ResolvedAgentWiring = (

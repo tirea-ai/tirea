@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateWriter, Committed, Version, VersionPrecondition,
+    AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::AgentState;
+use carve_agent_contract::{AgentChangeSet, AgentState, Version};
 use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;

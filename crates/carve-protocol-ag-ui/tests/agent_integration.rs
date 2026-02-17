@@ -1253,8 +1253,9 @@ async fn test_session_incremental_checkpoints() {
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
     use carve_agent::contracts::storage::{
-        AgentChangeSet, AgentStateSync, AgentStateWriter, CheckpointReason, VersionPrecondition,
+        AgentStateSync, AgentStateWriter, VersionPrecondition,
     };
+    use carve_agent::contracts::{AgentChangeSet, CheckpointReason};
 
     let storage = MemoryStore::new();
 

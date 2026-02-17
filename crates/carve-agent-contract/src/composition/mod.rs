@@ -1,16 +1,11 @@
-//! Agent composition contracts: registries and bundles.
+//! Agent composition contracts: registry and bundle interfaces only.
 
 mod bundle;
 mod registry;
 
-pub use bundle::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
-    RegistryBundle, RegistrySet, ToolPluginBundle,
-};
+pub use bundle::RegistryBundle;
 pub use registry::{
-    AgentRegistry, AgentRegistryError, CompositeAgentRegistry, CompositeModelRegistry,
-    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
-    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
-    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
-    PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry, ToolRegistryError,
+    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
+    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
+    ToolRegistryError,
 };

@@ -1,10 +1,11 @@
 use crate::state::AgentChangeSet;
 use crate::state::AgentState;
+use crate::state::Version;
 use async_trait::async_trait;
 
 use super::{
     paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery,
-    AgentStateStoreError, Committed, MessagePage, MessageQuery, Version, VersionPrecondition,
+    AgentStateStoreError, Committed, MessagePage, MessageQuery, VersionPrecondition,
 };
 
 #[async_trait]
