@@ -26,9 +26,9 @@
 //! let subsystem = SkillSubsystem::new(std::sync::Arc::new(registry));
 //! ```
 
-use crate::extensions::skills::resource_lookup::load_resource_from_maps;
-use crate::extensions::skills::skill_md::{parse_allowed_tools, parse_skill_md};
-use crate::extensions::skills::{
+use crate::resource_lookup::load_resource_from_maps;
+use crate::skill_md::{parse_allowed_tools, parse_skill_md};
+use crate::{
     LoadedAsset, LoadedReference, ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryWarning, SkillResource, SkillResourceKind,
 };
@@ -523,7 +523,7 @@ More instructions.
 
     #[tokio::test]
     async fn works_with_skill_subsystem() {
-        use crate::extensions::skills::SkillSubsystem;
+        use crate::SkillSubsystem;
         use std::sync::Arc;
 
         let skills = &[

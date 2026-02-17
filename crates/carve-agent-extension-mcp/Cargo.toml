@@ -1,0 +1,16 @@
+[package]
+name = "carve-agent-extension-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "MCP extension for carve-agent"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+carve-agent-contract = { path = "../carve-agent-contract" }
+async-trait = "0.1"
+serde_json = "1"
+thiserror = "2"
+mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

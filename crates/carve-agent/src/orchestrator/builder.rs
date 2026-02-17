@@ -194,8 +194,6 @@ impl AgentOsBuilder {
             agent_state_store,
         } = self;
 
-        let mut skill_registries: Vec<Arc<dyn SkillRegistry>> =
-            skills_registry.into_iter().collect();
         BundleComposer::apply(
             &bundles,
             BundleRegistryAccumulator {
@@ -209,10 +207,8 @@ impl AgentOsBuilder {
                 provider_registries: &mut provider_registries,
                 model_definitions: &mut model_defs,
                 model_registries: &mut model_registries,
-                skill_registries: &mut skill_registries,
             },
         )?;
-        let skills_registry = BundleComposer::merge_skill_registries(skill_registries)?;
 
         if skills.mode != SkillsMode::Disabled && skills_registry.is_none() {
             return Err(AgentOsBuildError::SkillsNotConfigured);
@@ -326,7 +322,6 @@ impl AgentOsBuilder {
             plugins,
             providers,
             models,
-            skills_registry,
         );
 
         Ok(AgentOs {
@@ -336,7 +331,7 @@ impl AgentOsBuilder {
             plugins: registries.plugins,
             providers: registries.providers,
             models: registries.models,
-            skills_registry: registries.skills_registry,
+            skills_registry,
             skills,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,

@@ -1,4 +1,4 @@
-use crate::extensions::skills::{
+use crate::{
     LoadedAsset, LoadedReference, SkillRegistryError, SkillResource, SkillResourceKind,
 };
 use std::collections::HashMap;

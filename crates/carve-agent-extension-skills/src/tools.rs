@@ -1,23 +1,32 @@
-use crate::runtime::control::{AgentControlState as AgentStateDoc, AGENT_STATE_PATH};
-use crate::contracts::extension::traits::tool::{
+use carve_agent_contract::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
 };
-use crate::contracts::AgentState;
-use crate::engine::tool_filter::{
+use carve_agent_contract::AgentState;
+use carve_state_derive::State;
+use crate::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
-use crate::extensions::permission::PermissionContextExt;
-use crate::extensions::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
-use crate::extensions::skills::{
+use carve_agent_extension_permission::PermissionContextExt;
+use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
+use crate::{
     material_key, SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource,
     SkillResourceKind, SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID,
     SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
+
+const AGENT_STATE_PATH: &str = "agent";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+struct AgentStateDoc {
+    #[carve(default = "HashMap::new()")]
+    pub append_user_messages: HashMap<String, Vec<String>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {

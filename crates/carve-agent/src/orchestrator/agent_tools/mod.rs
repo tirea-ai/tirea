@@ -3,7 +3,6 @@ use crate::runtime::control::{
     AgentRunState, AgentRunStatus, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-use crate::contracts::extension::permission::ToolPermissionBehavior;
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
 use crate::contracts::runtime::phase::{Phase, StepContext};
@@ -13,6 +12,7 @@ use crate::contracts::AgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,
 };
+use crate::extensions::permission::ToolPermissionBehavior;
 use crate::extensions::permission::PermissionContextExt;
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{

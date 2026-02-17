@@ -1,11 +1,11 @@
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::Phase;
-use crate::contracts::runtime::phase::StepContext;
-use crate::contracts::AgentState as ContextAgentState;
-use crate::engine::tool_filter::{
+use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::runtime::phase::Phase;
+use carve_agent_contract::runtime::phase::StepContext;
+use carve_agent_contract::AgentState as ContextAgentState;
+use crate::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
-use crate::extensions::skills::{SkillState, SKILLS_RUNTIME_PLUGIN_ID, SKILLS_STATE_PATH};
+use crate::{SkillState, SKILLS_RUNTIME_PLUGIN_ID, SKILLS_STATE_PATH};
 use async_trait::async_trait;
 
 /// Injects activated skills (instructions + loaded materials) into the LLM context.
@@ -161,9 +161,9 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::extension::traits::tool::ToolDescriptor;
-    use crate::contracts::state::AgentState;
-    use crate::contracts::AgentState as ContextAgentState;
+    use carve_agent_contract::extension::traits::tool::ToolDescriptor;
+    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::AgentState as ContextAgentState;
     use serde_json::json;
 
     #[tokio::test]

@@ -1,9 +1,9 @@
-use crate::extensions::skills::materialize::{
+use crate::materialize::{
     load_asset_material, load_reference_material, run_script_material,
 };
-use crate::extensions::skills::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
+use crate::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
 use async_trait::async_trait;
-use carve_agent_contract::extension::skills::{
+use crate::{
     ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryWarning, SkillResource, SkillResourceKind,
 };

@@ -1,5 +1,5 @@
-use crate::extensions::skills::resource_lookup::load_resource_from_maps;
-use crate::extensions::skills::{
+use crate::resource_lookup::load_resource_from_maps;
+use crate::{
     LoadedAsset, LoadedReference, ScriptResult, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryWarning, SkillResource, SkillResourceKind,
 };

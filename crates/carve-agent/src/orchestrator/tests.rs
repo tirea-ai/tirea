@@ -1677,22 +1677,6 @@ impl RegistryBundle for ToolConflictBundle {
     }
 }
 
-#[derive(Clone)]
-struct SkillRegistryBundle {
-    id: &'static str,
-    registry: Arc<dyn SkillRegistry>,
-}
-
-impl RegistryBundle for SkillRegistryBundle {
-    fn id(&self) -> &str {
-        self.id
-    }
-
-    fn skill_registries(&self) -> Vec<Arc<dyn SkillRegistry>> {
-        vec![self.registry.clone()]
-    }
-}
-
 #[test]
 fn builder_fails_fast_on_bundle_registry_conflict() {
     let err = AgentOs::builder()
@@ -1712,53 +1696,4 @@ fn builder_fails_fast_on_bundle_registry_conflict() {
             id,
         }) if bundle_id == "tool_conflict_bundle" && id == "dup_tool"
     ));
-}
-
-#[test]
-fn builder_merges_skill_registries_from_multiple_bundles() {
-    use crate::extensions::skills::{InMemorySkillRegistry, SkillMeta};
-
-    let mut a = InMemorySkillRegistry::new();
-    a.insert_skill(
-        SkillMeta {
-            id: "s1".to_string(),
-            name: "s1".to_string(),
-            description: "skill one".to_string(),
-            allowed_tools: Vec::new(),
-        },
-        "---\nname: s1\ndescription: skill one\n---\nBody\n",
-    );
-
-    let mut b = InMemorySkillRegistry::new();
-    b.insert_skill(
-        SkillMeta {
-            id: "s2".to_string(),
-            name: "s2".to_string(),
-            description: "skill two".to_string(),
-            allowed_tools: Vec::new(),
-        },
-        "---\nname: s2\ndescription: skill two\n---\nBody\n",
-    );
-
-    let os = AgentOs::builder()
-        .with_skills_config(SkillsConfig {
-            mode: SkillsMode::DiscoveryOnly,
-            ..SkillsConfig::default()
-        })
-        .with_bundle(Arc::new(SkillRegistryBundle {
-            id: "skills_a",
-            registry: Arc::new(a),
-        }))
-        .with_bundle(Arc::new(SkillRegistryBundle {
-            id: "skills_b",
-            registry: Arc::new(b),
-        }))
-        .build()
-        .expect("multiple bundle skill registries should compose");
-
-    let reg = os
-        .skill_registry()
-        .expect("skills should be configured through bundles");
-    let ids: Vec<String> = reg.list().into_iter().map(|m| m.id).collect();
-    assert_eq!(ids, vec!["s1".to_string(), "s2".to_string()]);
 }

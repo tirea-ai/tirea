@@ -15,8 +15,8 @@ use crate::contracts::storage::{
 };
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
 use crate::extensions::skills::{
-    SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
-    SkillSubsystemError,
+    CompositeSkillRegistryError, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
+    SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
     run_loop_stream, AgentConfig, AgentDefinition, AgentLoopError, RunContext, StateCommitError,
@@ -190,6 +190,9 @@ pub enum AgentOsBuildError {
 
     #[error(transparent)]
     Models(#[from] ModelRegistryError),
+
+    #[error(transparent)]
+    SkillsRegistry(#[from] CompositeSkillRegistryError),
 
     #[error("agent {agent_id} references an empty plugin id")]
     AgentEmptyPluginRef { agent_id: String },

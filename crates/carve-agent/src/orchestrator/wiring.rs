@@ -256,10 +256,6 @@ impl AgentOs {
                 !bundle.model_registries().is_empty(),
                 "model_registries".to_string(),
             ),
-            (
-                !bundle.skill_registries().is_empty(),
-                "skill_registries".to_string(),
-            ),
         ];
         if let Some((_, kind)) = unsupported.into_iter().find(|(has, _)| *has) {
             return Err(AgentOsWiringError::BundleUnsupportedContribution {

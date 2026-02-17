@@ -14,14 +14,7 @@ pub use agent::{
     TokenBudget, TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-pub use extension::permission::{PermissionState, ToolPermissionBehavior, PERMISSION_STATE_PATH};
 pub use extension::plugin::AgentPlugin;
-pub use extension::skills::{
-    material_key, CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset,
-    LoadedReference, ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry,
-    SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillState,
-    SKILLS_STATE_PATH,
-};
 pub use extension::traits::provider::{ContextCategory, ContextProvider};
 pub use extension::traits::reminder::SystemReminder;
 pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};

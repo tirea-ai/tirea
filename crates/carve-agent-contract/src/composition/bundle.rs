@@ -3,9 +3,6 @@ use super::{
 };
 use crate::agent::AgentDefinition;
 use crate::extension::plugin::AgentPlugin;
-use crate::extension::skills::{
-    CompositeSkillRegistry, CompositeSkillRegistryError, SkillRegistry,
-};
 use crate::extension::traits::tool::Tool;
 use genai::Client;
 use std::collections::HashMap;
@@ -19,7 +16,6 @@ pub struct RegistrySet {
     pub plugins: Arc<dyn PluginRegistry>,
     pub providers: Arc<dyn ProviderRegistry>,
     pub models: Arc<dyn ModelRegistry>,
-    pub skills_registry: Option<Arc<dyn SkillRegistry>>,
 }
 
 impl RegistrySet {
@@ -29,7 +25,6 @@ impl RegistrySet {
         plugins: Arc<dyn PluginRegistry>,
         providers: Arc<dyn ProviderRegistry>,
         models: Arc<dyn ModelRegistry>,
-        skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Self {
         Self {
             agents,
@@ -37,7 +32,6 @@ impl RegistrySet {
             plugins,
             providers,
             models,
-            skills_registry,
         }
     }
 }
@@ -90,10 +84,6 @@ pub trait RegistryBundle: Send + Sync {
     fn model_registries(&self) -> Vec<Arc<dyn ModelRegistry>> {
         Vec::new()
     }
-
-    fn skill_registries(&self) -> Vec<Arc<dyn SkillRegistry>> {
-        Vec::new()
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,9 +121,6 @@ pub enum BundleComposeError {
         bundle_id: String,
         kind: BundleRegistryKind,
     },
-
-    #[error(transparent)]
-    Skills(#[from] CompositeSkillRegistryError),
 }
 
 pub struct BundleRegistryAccumulator<'a> {
@@ -147,7 +134,6 @@ pub struct BundleRegistryAccumulator<'a> {
     pub provider_registries: &'a mut Vec<Arc<dyn ProviderRegistry>>,
     pub model_definitions: &'a mut HashMap<String, ModelDefinition>,
     pub model_registries: &'a mut Vec<Arc<dyn ModelRegistry>>,
-    pub skill_registries: &'a mut Vec<Arc<dyn SkillRegistry>>,
 }
 
 pub struct BundleComposer;
@@ -168,7 +154,6 @@ impl BundleComposer {
             provider_registries,
             model_definitions,
             model_registries,
-            skill_registries,
         } = acc;
 
         for bundle in bundles {
@@ -212,21 +197,9 @@ impl BundleComposer {
                 BundleRegistryKind::Model,
             )?;
             model_registries.extend(bundle.model_registries());
-
-            skill_registries.extend(bundle.skill_registries());
         }
 
         Ok(())
-    }
-
-    pub fn merge_skill_registries(
-        sources: Vec<Arc<dyn SkillRegistry>>,
-    ) -> Result<Option<Arc<dyn SkillRegistry>>, BundleComposeError> {
-        match sources.len() {
-            0 => Ok(None),
-            1 => Ok(sources.into_iter().next()),
-            _ => Ok(Some(Arc::new(CompositeSkillRegistry::new(sources)?))),
-        }
     }
 
     fn merge_named<V>(

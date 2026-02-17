@@ -57,8 +57,8 @@ pub use crate::runtime::control::{
     AgentControlState as AgentStateDoc, AgentRunState, AgentRunStatus,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-pub use crate::contracts::extension::permission::ToolPermissionBehavior;
 pub use crate::contracts::runtime::{Interaction, InteractionResponse};
+pub use crate::extensions::permission::ToolPermissionBehavior;
 
 // Extension traits - these add helper methods to AgentState
 pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};

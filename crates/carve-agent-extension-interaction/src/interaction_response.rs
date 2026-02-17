@@ -3,14 +3,14 @@
 //! Handles client responses to pending interactions (approvals/denials).
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
-use crate::runtime::control::{
-    AgentStateControlExt, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+use crate::agent_control::{
+    AgentControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::{Interaction, InteractionResponse};
-use crate::contracts::AgentState as ContextAgentState;
+use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::runtime::{Interaction, InteractionResponse};
+use carve_agent_contract::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
@@ -112,22 +112,25 @@ impl InteractionResponsePlugin {
         ctx: &ContextAgentState,
     ) -> Option<Interaction> {
         Self::pending_interaction_from_step_thread(step)
-            .or_else(|| ctx.agent_control().pending_interaction().ok().flatten())
+            .or_else(|| {
+                let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+                agent.pending_interaction().ok().flatten()
+            })
     }
 
     fn push_resolution(ctx: &ContextAgentState, interaction_id: String, result: serde_json::Value) {
-        let agent = ctx.agent_control();
+        let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
         agent.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
-    fn queue_replay_call(ctx: &ContextAgentState, call: crate::contracts::state::ToolCall) {
-        let agent = ctx.agent_control();
+    fn queue_replay_call(ctx: &ContextAgentState, call: carve_agent_contract::state::ToolCall) {
+        let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
         agent.replay_tool_calls_push(call);
     }
 
     /// During RunStart, detect pending_interaction and schedule tool replay if approved.
     fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
-        let agent = ctx.agent_control();
+        let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
         let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
         };
@@ -175,7 +178,7 @@ impl InteractionResponsePlugin {
                 return;
             };
 
-            let replay_call = crate::contracts::state::ToolCall::new(
+            let replay_call = carve_agent_contract::state::ToolCall::new(
                 format!("recovery_resume_{run_id}"),
                 RECOVERY_RESUME_TOOL_ID,
                 json!({
@@ -191,7 +194,7 @@ impl InteractionResponsePlugin {
             .parameters
             .get("origin_tool_call")
             .cloned()
-            .and_then(|v| serde_json::from_value::<crate::contracts::state::ToolCall>(v).ok())
+            .and_then(|v| serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok())
         {
             Self::queue_replay_call(ctx, replay_call);
             return;
@@ -201,7 +204,7 @@ impl InteractionResponsePlugin {
             .parameters
             .get("tool_call")
             .cloned()
-            .and_then(|v| serde_json::from_value::<crate::contracts::state::ToolCall>(v).ok())
+            .and_then(|v| serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok())
         {
             Self::queue_replay_call(ctx, replay_call);
             return;
@@ -209,7 +212,7 @@ impl InteractionResponsePlugin {
 
         if !pending_id_owned.starts_with("permission_") {
             if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let replay_call = crate::contracts::state::ToolCall::new(
+                let replay_call = carve_agent_contract::state::ToolCall::new(
                     pending_id_owned.clone(),
                     tool_name,
                     pending.parameters.clone(),
@@ -225,7 +228,7 @@ impl InteractionResponsePlugin {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == crate::contracts::state::Role::Assistant && m.tool_calls.is_some())
+            .find(|m| m.role == carve_agent_contract::state::Role::Assistant && m.tool_calls.is_some())
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.
@@ -297,7 +300,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let agent = ctx.agent_control();
+        let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
         let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
 
         let id_matches = persisted_id
@@ -331,9 +334,9 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::state::AgentState;
-    use crate::contracts::state::{Message, ToolCall};
-    use crate::contracts::AgentState as ContextAgentState;
+    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::state::{Message, ToolCall};
+    use carve_agent_contract::AgentState as ContextAgentState;
     use carve_state::apply_patches;
     use serde_json::json;
 

@@ -1,9 +1,3 @@
-//! Skills extension contracts.
-//!
-//! This module contains both:
-//! - skill registry/materialization contracts (`SkillRegistry`, `SkillResource`, ...)
-//! - persisted skill extension state (`SkillState`)
-
 use async_trait::async_trait;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};

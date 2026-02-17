@@ -1,0 +1,17 @@
+[package]
+name = "carve-agent-extension-permission"
+version = "0.1.0"
+edition = "2021"
+description = "Permission extension for carve-agent"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+carve-state = { path = "../carve-state" }
+carve-state-derive = { path = "../carve-state-derive" }
+carve-agent-contract = { path = "../carve-agent-contract" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

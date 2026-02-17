@@ -1,7 +1,7 @@
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::AgentState as ContextAgentState;
-use crate::extensions::skills::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
+use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::AgentState as ContextAgentState;
+use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -50,10 +50,10 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::extension::traits::tool::ToolDescriptor;
-    use crate::contracts::state::AgentState;
-    use crate::contracts::AgentState as ContextAgentState;
-    use crate::extensions::skills::{FsSkillRegistry, SkillRegistry};
+    use carve_agent_contract::extension::traits::tool::ToolDescriptor;
+    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::AgentState as ContextAgentState;
+    use crate::{FsSkillRegistry, SkillRegistry};
     use serde_json::json;
     use std::fs;
     use tempfile::TempDir;

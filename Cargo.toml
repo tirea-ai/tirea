@@ -4,6 +4,12 @@ members = [
     "crates/carve-state",
     "crates/carve-state-derive",
     "crates/carve-agent-contract",
+    "crates/carve-agent-extension-permission",
+    "crates/carve-agent-extension-reminder",
+    "crates/carve-agent-extension-interaction",
+    "crates/carve-agent-extension-observability",
+    "crates/carve-agent-extension-skills",
+    "crates/carve-agent-extension-mcp",
     "crates/carve-protocol-contract",
     "crates/carve-protocol-ag-ui",
     "crates/carve-protocol-ag-ui-runtime",
@@ -25,6 +31,12 @@ repository = "https://github.com/user/uncarve"
 carve-state = { path = "crates/carve-state" }
 carve-state-derive = { path = "crates/carve-state-derive" }
 carve-agent-contract = { path = "crates/carve-agent-contract" }
+carve-agent-extension-permission = { path = "crates/carve-agent-extension-permission" }
+carve-agent-extension-reminder = { path = "crates/carve-agent-extension-reminder" }
+carve-agent-extension-interaction = { path = "crates/carve-agent-extension-interaction" }
+carve-agent-extension-observability = { path = "crates/carve-agent-extension-observability" }
+carve-agent-extension-skills = { path = "crates/carve-agent-extension-skills" }
+carve-agent-extension-mcp = { path = "crates/carve-agent-extension-mcp" }
 carve-protocol-contract = { path = "crates/carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "crates/carve-protocol-ag-ui" }
 carve-protocol-ag-ui-runtime = { path = "crates/carve-protocol-ag-ui-runtime" }
