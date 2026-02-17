@@ -890,15 +890,7 @@ async fn run_loop_outcome_with_context_provider(
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let mut last_text = String::new();
     let step_tool_provider = step_tool_provider_for_run(config, tools);
-    let run_id = thread
-        .scope
-        .value("run_id")
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| {
-            let id = uuid_v7();
-            let _ = thread.scope.set("run_id", &id);
-            id
-        });
+    let run_id = stream_core::resolve_stream_run_identity(&mut thread).run_id;
     let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
         Ok(snapshot) => snapshot,
         Err(error) => {

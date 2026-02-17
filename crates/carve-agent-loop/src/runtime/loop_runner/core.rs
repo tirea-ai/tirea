@@ -3,7 +3,7 @@ use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
 use crate::contracts::state::AgentState;
 use crate::contracts::state::{Message, MessageMetadata};
-use crate::contracts::tool::{Tool, ToolDescriptor};
+use crate::contracts::tool::Tool;
 use crate::runtime::control::{
     AgentControlState, AgentInferenceError, AgentStateControlExt, AGENT_STATE_PATH,
 };

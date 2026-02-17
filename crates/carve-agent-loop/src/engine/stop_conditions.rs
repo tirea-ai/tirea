@@ -195,14 +195,6 @@ pub(crate) fn check_stop_policies(
     None
 }
 
-/// Evaluate stop conditions in declaration order and return the first match.
-pub(crate) fn check_stop_conditions(
-    conditions: &[Arc<dyn StopCondition>],
-    ctx: &StopCheckContext,
-) -> Option<StopReason> {
-    check_stop_policies(conditions, &ctx.as_policy_input())
-}
-
 // ---------------------------------------------------------------------------
 // Built-in conditions
 // ---------------------------------------------------------------------------
@@ -630,7 +622,7 @@ mod tests {
         ctx.elapsed = Duration::from_secs(15);
         // MaxRounds is first, so it should win
         assert_eq!(
-            check_stop_conditions(&conditions, &ctx),
+            check_stop_policies(&conditions, &ctx.as_policy_input()),
             Some(StopReason::MaxRoundsReached)
         );
     }
@@ -644,14 +636,14 @@ mod tests {
         let mut ctx = empty_context();
         ctx.rounds = 3;
         ctx.elapsed = Duration::from_secs(5);
-        assert!(check_stop_conditions(&conditions, &ctx).is_none());
+        assert!(check_stop_policies(&conditions, &ctx.as_policy_input()).is_none());
     }
 
     #[test]
     fn check_stop_conditions_empty_always_none() {
         let conditions: Vec<Arc<dyn StopCondition>> = vec![];
         let ctx = empty_context();
-        assert!(check_stop_conditions(&conditions, &ctx).is_none());
+        assert!(check_stop_policies(&conditions, &ctx.as_policy_input()).is_none());
     }
 
     // -- StopReason serialization --
@@ -692,7 +684,7 @@ mod tests {
         let conditions: Vec<Arc<dyn StopCondition>> = vec![Arc::new(AlwaysStop)];
         let ctx = empty_context();
         assert_eq!(
-            check_stop_conditions(&conditions, &ctx),
+            check_stop_policies(&conditions, &ctx.as_policy_input()),
             Some(StopReason::Custom("always".to_string()))
         );
     }

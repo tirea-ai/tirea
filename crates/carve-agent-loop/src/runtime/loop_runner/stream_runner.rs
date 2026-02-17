@@ -705,12 +705,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
-                    yield emitter.emit_existing(AgentEvent::InteractionRequested {
-                        interaction: interaction.clone(),
-                    });
-                    yield emitter.emit_existing(AgentEvent::Pending {
-                        interaction: interaction.clone(),
-                    });
+                    for event in interaction_requested_pending_events(interaction) {
+                        yield emitter.emit_existing(event);
+                    }
                 }
             }
             let thread_before_apply = thread.clone();

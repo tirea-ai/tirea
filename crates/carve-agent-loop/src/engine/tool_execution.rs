@@ -5,8 +5,6 @@ use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::AgentState;
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
 
 /// Result of executing a single tool.
 #[derive(Debug, Clone)]
@@ -79,89 +77,6 @@ pub async fn execute_single_tool_with_scope(
     }
 }
 
-/// Execute multiple tool calls in parallel.
-///
-/// All tools receive the same state snapshot (they don't see each other's changes).
-/// The patches should be applied in order after all tools complete.
-///
-/// # Arguments
-///
-/// * `tools` - Map of tool name to tool implementation
-/// * `calls` - The tool calls to execute
-/// * `state` - The current state snapshot (shared by all tools)
-///
-/// # Returns
-///
-/// Vector of execution results in the same order as the input calls.
-pub async fn execute_tools_parallel(
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    calls: &[ToolCall],
-    state: &Value,
-) -> Vec<ToolExecution> {
-    use futures::future::join_all;
-
-    let futures = calls.iter().map(|call| {
-        let tool = tools.get(&call.name).cloned();
-        let state = state.clone();
-        let call = call.clone();
-
-        async move { execute_single_tool(tool.as_deref(), &call, &state).await }
-    });
-
-    join_all(futures).await
-}
-
-/// Execute tool calls sequentially.
-///
-/// Each tool sees the state changes from previous tools.
-///
-/// # Arguments
-///
-/// * `tools` - Map of tool name to tool implementation
-/// * `calls` - The tool calls to execute
-/// * `initial_state` - The initial state
-///
-/// # Returns
-///
-/// Tuple of (final_state, executions).
-pub async fn execute_tools_sequential(
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    calls: &[ToolCall],
-    initial_state: &Value,
-) -> (Value, Vec<ToolExecution>) {
-    use carve_state::apply_patch;
-
-    let mut state = initial_state.clone();
-    let mut executions = Vec::with_capacity(calls.len());
-
-    for call in calls {
-        let tool = tools.get(&call.name).cloned();
-        let mut exec = execute_single_tool(tool.as_deref(), call, &state).await;
-
-        // Apply patch to state for next tool
-        if let Some(ref patch) = exec.patch {
-            match apply_patch(&state, patch.patch()) {
-                Ok(new_state) => {
-                    state = new_state;
-                }
-                Err(e) => {
-                    exec.result = ToolResult::error(
-                        &call.name,
-                        format!("failed to apply tool patch for call '{}': {}", call.id, e),
-                    );
-                    exec.patch = None;
-                    executions.push(exec);
-                    break;
-                }
-            }
-        }
-
-        executions.push(exec);
-    }
-
-    (state, executions)
-}
-
 /// Collect patches from executions.
 pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
     executions.iter().filter_map(|e| e.patch.clone()).collect()
@@ -172,8 +87,6 @@ mod tests {
     use super::*;
     use crate::contracts::tool::{ToolDescriptor, ToolError};
     use async_trait::async_trait;
-    use carve_state_derive::State;
-    use serde::{Deserialize, Serialize};
     use serde_json::json;
 
     struct EchoTool;
@@ -186,48 +99,6 @@ mod tests {
 
         async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
-        }
-    }
-
-    struct CounterTool;
-
-    #[async_trait]
-    impl Tool for CounterTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("counter", "Counter", "Increment a counter")
-        }
-
-        async fn execute(&self, _args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
-            // In real usage, state would be accessed via ctx.state::<T>()
-            // For this test, we just return success
-            Ok(ToolResult::success("counter", json!({"incremented": true})))
-        }
-    }
-
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-    struct SequentialCounterState {
-        counter: i64,
-    }
-
-    struct InvalidIncrementTool;
-
-    #[async_trait]
-    impl Tool for InvalidIncrementTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new(
-                "invalid_increment",
-                "InvalidIncrement",
-                "Produces an increment patch that can fail to apply",
-            )
-        }
-
-        async fn execute(&self, _args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
-            let state = ctx.state::<SequentialCounterState>("");
-            state.increment_counter(1);
-            Ok(ToolResult::success(
-                "invalid_increment",
-                json!({"ok": true}),
-            ))
         }
     }
 
@@ -252,29 +123,6 @@ mod tests {
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["msg"], "hello");
-    }
-
-    #[tokio::test]
-    async fn test_execute_tools_parallel() {
-        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        tools.insert("echo".to_string(), Arc::new(EchoTool));
-        tools.insert("counter".to_string(), Arc::new(CounterTool));
-
-        let calls = vec![
-            ToolCall::new("call_1", "echo", json!({"n": 1})),
-            ToolCall::new("call_2", "echo", json!({"n": 2})),
-            ToolCall::new("call_3", "counter", json!({})),
-            ToolCall::new("call_4", "unknown", json!({})),
-        ];
-
-        let state = json!({});
-        let executions = execute_tools_parallel(&tools, &calls, &state).await;
-
-        assert_eq!(executions.len(), 4);
-        assert!(executions[0].result.is_success());
-        assert!(executions[1].result.is_success());
-        assert!(executions[2].result.is_success());
-        assert!(executions[3].result.is_error());
     }
 
     #[tokio::test]
@@ -305,65 +153,6 @@ mod tests {
 
         let patches = collect_patches(&executions);
         assert_eq!(patches.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_execute_tools_sequential() {
-        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        tools.insert("echo".to_string(), Arc::new(EchoTool));
-
-        let calls = vec![
-            ToolCall::new("call_1", "echo", json!({"n": 1})),
-            ToolCall::new("call_2", "echo", json!({"n": 2})),
-        ];
-
-        let state = json!({});
-
-        let (final_state, executions) = execute_tools_sequential(&tools, &calls, &state).await;
-
-        assert_eq!(executions.len(), 2);
-        assert!(executions[0].result.is_success());
-        assert!(executions[1].result.is_success());
-        assert!(final_state.is_object());
-    }
-
-    #[tokio::test]
-    async fn test_execute_tools_sequential_surfaces_patch_apply_failure() {
-        let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-        tools.insert(
-            "invalid_increment".to_string(),
-            Arc::new(InvalidIncrementTool),
-        );
-        tools.insert("echo".to_string(), Arc::new(EchoTool));
-
-        let calls = vec![
-            ToolCall::new("call_bad", "invalid_increment", json!({})),
-            ToolCall::new("call_echo", "echo", json!({"n": 2})),
-        ];
-
-        // Missing `counter` makes increment patch application fail.
-        let state = json!({});
-        let (_final_state, executions) = execute_tools_sequential(&tools, &calls, &state).await;
-
-        assert_eq!(
-            executions.len(),
-            1,
-            "execution should stop once patch apply fails"
-        );
-        assert!(
-            executions[0].result.is_error(),
-            "patch apply failure should surface as tool execution error"
-        );
-        assert!(
-            executions[0]
-                .result
-                .message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("failed to apply tool patch"),
-            "expected patch apply error message, got: {:?}",
-            executions[0].result.message
-        );
     }
 
     #[tokio::test]

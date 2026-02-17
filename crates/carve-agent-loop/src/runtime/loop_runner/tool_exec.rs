@@ -497,43 +497,6 @@ pub async fn execute_tools_with_plugins_and_executor(
     Ok(applied.thread)
 }
 
-pub(super) async fn execute_tool_calls_with_phases(
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    calls: &[crate::contracts::state::ToolCall],
-    state: &Value,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    parallel: bool,
-    activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&carve_state::ScopeState>,
-    thread_id: &str,
-    thread_messages: &[Arc<Message>],
-    state_version: u64,
-) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
-    let parallel_executor = ParallelToolExecutor;
-    let sequential_executor = SequentialToolExecutor;
-    let executor: &dyn ToolExecutor = if parallel {
-        &parallel_executor
-    } else {
-        &sequential_executor
-    };
-    executor
-        .execute(ToolExecutionRequest {
-            tools,
-            calls,
-            state,
-            tool_descriptors,
-            plugins,
-            activity_manager,
-            scope,
-            thread_id,
-            thread_messages,
-            state_version,
-            cancellation_token: None,
-        })
-        .await
-}
-
 /// Execute tools in parallel with phase hooks.
 pub(super) async fn execute_tools_parallel_with_phases(
     tools: &HashMap<String, Arc<dyn Tool>>,
