@@ -1,36 +1,17 @@
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StopConditionSpec;
 use crate::engine::stop_conditions::StopCondition;
+use crate::runtime::loop_runner::{AgentConfig, LlmRetryPolicy};
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 
-/// Retry strategy for LLM inference calls.
-#[derive(Debug, Clone)]
-pub struct LlmRetryPolicy {
-    /// Max attempts per model candidate (must be >= 1).
-    pub max_attempts_per_model: usize,
-    /// Initial backoff for retries in milliseconds.
-    pub initial_backoff_ms: u64,
-    /// Max backoff cap in milliseconds.
-    pub max_backoff_ms: u64,
-    /// Retry stream startup failures before any output is emitted.
-    pub retry_stream_start: bool,
-}
-
-impl Default for LlmRetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_attempts_per_model: 2,
-            initial_backoff_ms: 250,
-            max_backoff_ms: 2_000,
-            retry_stream_start: true,
-        }
-    }
-}
-
-/// Runtime configuration for the agent loop.
+/// Agent composition definition owned by AgentOS orchestration.
+///
+/// This is the orchestration-facing model and can include registry references
+/// (`plugin_ids`, `policy_ids`) and policy filters (`allowed_*`, `excluded_*`).
+/// Before execution, AgentOS resolves it into loop-facing [`AgentConfig`].
 #[derive(Clone)]
-pub struct AgentConfig {
+pub struct AgentDefinition {
     /// Unique identifier for this agent.
     pub id: String,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
@@ -49,22 +30,31 @@ pub struct AgentConfig {
     pub fallback_models: Vec<String>,
     /// Retry policy for LLM inference failures.
     pub llm_retry_policy: LlmRetryPolicy,
-    /// Plugins to run during the agent loop.
+    /// Explicit plugin instances.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
+    /// Plugin references resolved from AgentOS plugin registry.
+    pub plugin_ids: Vec<String>,
+    /// Policy references resolved from AgentOS plugin registry.
+    pub policy_ids: Vec<String>,
+    /// Tool whitelist (None = all tools available).
+    pub allowed_tools: Option<Vec<String>>,
+    /// Tool blacklist.
+    pub excluded_tools: Option<Vec<String>>,
+    /// Skill whitelist (None = all skills available).
+    pub allowed_skills: Option<Vec<String>>,
+    /// Skill blacklist.
+    pub excluded_skills: Option<Vec<String>>,
+    /// Agent whitelist for `agent_run` delegation (None = all visible agents available).
+    pub allowed_agents: Option<Vec<String>>,
+    /// Agent blacklist for `agent_run` delegation.
+    pub excluded_agents: Option<Vec<String>>,
     /// Composable stop conditions checked after each tool-call round.
-    ///
-    /// When empty (and `stop_condition_specs` is also empty), a default
-    /// [`crate::engine::stop_conditions::MaxRounds`] condition is created from `max_rounds`.
-    /// When non-empty, `max_rounds` is ignored.
     pub stop_conditions: Vec<Arc<dyn StopCondition>>,
-    /// Declarative stop condition specs, resolved to `Arc<dyn StopCondition>`
-    /// at runtime.
-    ///
-    /// Specs are appended after explicit `stop_conditions` in evaluation order.
+    /// Declarative stop condition specs, resolved at runtime.
     pub stop_condition_specs: Vec<StopConditionSpec>,
 }
 
-impl Default for AgentConfig {
+impl Default for AgentDefinition {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
@@ -80,15 +70,23 @@ impl Default for AgentConfig {
             fallback_models: Vec::new(),
             llm_retry_policy: LlmRetryPolicy::default(),
             plugins: Vec::new(),
+            plugin_ids: Vec::new(),
+            policy_ids: Vec::new(),
+            allowed_tools: None,
+            excluded_tools: None,
+            allowed_skills: None,
+            excluded_skills: None,
+            allowed_agents: None,
+            excluded_agents: None,
             stop_conditions: Vec::new(),
             stop_condition_specs: Vec::new(),
         }
     }
 }
 
-impl std::fmt::Debug for AgentConfig {
+impl std::fmt::Debug for AgentDefinition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentConfig")
+        f.debug_struct("AgentDefinition")
             .field("id", &self.id)
             .field("model", &self.model)
             .field(
@@ -101,6 +99,14 @@ impl std::fmt::Debug for AgentConfig {
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
             .field("plugins", &format!("[{} plugins]", self.plugins.len()))
+            .field("plugin_ids", &self.plugin_ids)
+            .field("policy_ids", &self.policy_ids)
+            .field("allowed_tools", &self.allowed_tools)
+            .field("excluded_tools", &self.excluded_tools)
+            .field("allowed_skills", &self.allowed_skills)
+            .field("excluded_skills", &self.excluded_skills)
+            .field("allowed_agents", &self.allowed_agents)
+            .field("excluded_agents", &self.excluded_agents)
             .field(
                 "stop_conditions",
                 &format!("[{} conditions]", self.stop_conditions.len()),
@@ -110,8 +116,8 @@ impl std::fmt::Debug for AgentConfig {
     }
 }
 
-impl AgentConfig {
-    /// Create a new agent config with the given model.
+impl AgentDefinition {
+    /// Create a new agent definition with the given model.
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
@@ -119,7 +125,7 @@ impl AgentConfig {
         }
     }
 
-    /// Create a new agent config with explicit id and model.
+    /// Create a new agent definition with explicit id and model.
     pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -128,105 +134,157 @@ impl AgentConfig {
         }
     }
 
-    /// Set system prompt.
     #[must_use]
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
     }
 
-    /// Set max rounds.
     #[must_use]
     pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
         self
     }
 
-    /// Set parallel tool execution.
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
         self.parallel_tools = parallel;
         self
     }
 
-    /// Set chat options.
     #[must_use]
     pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
         self.chat_options = Some(options);
         self
     }
 
-    /// Set fallback model ids to try after the primary model.
     #[must_use]
     pub fn with_fallback_models(mut self, models: Vec<String>) -> Self {
         self.fallback_models = models;
         self
     }
 
-    /// Add a single fallback model id.
     #[must_use]
     pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
         self.fallback_models.push(model.into());
         self
     }
 
-    /// Set LLM retry policy.
     #[must_use]
     pub fn with_llm_retry_policy(mut self, policy: LlmRetryPolicy) -> Self {
         self.llm_retry_policy = policy;
         self
     }
 
-    /// Set plugins.
     #[must_use]
     pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
         self.plugins = plugins;
         self
     }
 
-    /// Add a single plugin.
+    #[must_use]
+    pub fn with_plugin_ids(mut self, plugin_ids: Vec<String>) -> Self {
+        self.plugin_ids = plugin_ids;
+        self
+    }
+
+    #[must_use]
+    pub fn with_plugin_id(mut self, plugin_id: impl Into<String>) -> Self {
+        self.plugin_ids.push(plugin_id.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_policy_ids(mut self, policy_ids: Vec<String>) -> Self {
+        self.policy_ids = policy_ids;
+        self
+    }
+
+    #[must_use]
+    pub fn with_policy_id(mut self, policy_id: impl Into<String>) -> Self {
+        self.policy_ids.push(policy_id.into());
+        self
+    }
+
     #[must_use]
     pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
         self.plugins.push(plugin);
         self
     }
 
-    /// Add a stop condition.
-    ///
-    /// When any stop conditions are set, the `max_rounds` field is ignored
-    /// and only explicit stop conditions are checked.
+    #[must_use]
+    pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
+        self.allowed_tools = Some(tools);
+        self
+    }
+
+    #[must_use]
+    pub fn with_excluded_tools(mut self, tools: Vec<String>) -> Self {
+        self.excluded_tools = Some(tools);
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_skills(mut self, skills: Vec<String>) -> Self {
+        self.allowed_skills = Some(skills);
+        self
+    }
+
+    #[must_use]
+    pub fn with_excluded_skills(mut self, skills: Vec<String>) -> Self {
+        self.excluded_skills = Some(skills);
+        self
+    }
+
+    #[must_use]
+    pub fn with_allowed_agents(mut self, agents: Vec<String>) -> Self {
+        self.allowed_agents = Some(agents);
+        self
+    }
+
+    #[must_use]
+    pub fn with_excluded_agents(mut self, agents: Vec<String>) -> Self {
+        self.excluded_agents = Some(agents);
+        self
+    }
+
     #[must_use]
     pub fn with_stop_condition(mut self, condition: impl StopCondition + 'static) -> Self {
         self.stop_conditions.push(Arc::new(condition));
         self
     }
 
-    /// Set all stop conditions, replacing any previously set.
     #[must_use]
     pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopCondition>>) -> Self {
         self.stop_conditions = conditions;
         self
     }
 
-    /// Add a declarative stop condition spec.
-    ///
-    /// Specs are resolved to `Arc<dyn StopCondition>` at runtime and
-    /// appended after explicit `stop_conditions` in evaluation order.
     #[must_use]
     pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
         self.stop_condition_specs.push(spec);
         self
     }
 
-    /// Set all declarative stop condition specs, replacing any previously set.
     #[must_use]
     pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
         self.stop_condition_specs = specs;
         self
     }
 
-    /// Check if any plugins are configured.
-    pub fn has_plugins(&self) -> bool {
-        !self.plugins.is_empty()
+    pub fn into_loop_config(self) -> AgentConfig {
+        AgentConfig {
+            id: self.id,
+            model: self.model,
+            system_prompt: self.system_prompt,
+            max_rounds: self.max_rounds,
+            parallel_tools: self.parallel_tools,
+            chat_options: self.chat_options,
+            fallback_models: self.fallback_models,
+            llm_retry_policy: self.llm_retry_policy,
+            plugins: self.plugins,
+            stop_conditions: self.stop_conditions,
+            stop_condition_specs: self.stop_condition_specs,
+        }
     }
 }

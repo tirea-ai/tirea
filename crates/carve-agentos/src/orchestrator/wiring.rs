@@ -1,6 +1,7 @@
 use super::agent_tools::{
     AGENT_RECOVERY_PLUGIN_ID, AGENT_TOOLS_PLUGIN_ID, SCOPE_CALLER_AGENT_ID_KEY,
 };
+use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
 use super::*;
 use crate::extensions::skills::{
     SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
@@ -389,33 +390,33 @@ impl AgentOs {
     #[cfg(test)]
     pub(crate) fn wire_plugins_into(
         &self,
-        mut config: AgentConfig,
-    ) -> Result<AgentConfig, AgentOsWiringError> {
-        if config.policy_ids.is_empty() && config.plugin_ids.is_empty() {
-            return Ok(config);
+        mut definition: AgentDefinition,
+    ) -> Result<AgentDefinition, AgentOsWiringError> {
+        if definition.policy_ids.is_empty() && definition.plugin_ids.is_empty() {
+            return Ok(definition);
         }
 
-        let explicit_plugins = std::mem::take(&mut config.plugins);
-        let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
-        let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
+        let explicit_plugins = std::mem::take(&mut definition.plugins);
+        let policy_plugins = self.resolve_plugin_id_list(&definition.policy_ids)?;
+        let other_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
         let agent_default_plugins =
             Self::merge_agent_default_plugins(policy_plugins, other_plugins, explicit_plugins);
-        config.plugins = ResolvedPlugins::default()
+        definition.plugins = ResolvedPlugins::default()
             .with_agent_default(agent_default_plugins)
             .into_plugins()?;
-        Ok(config)
+        Ok(definition)
     }
 
     pub fn wire_into(
         &self,
-        mut config: AgentConfig,
+        mut definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentConfig, AgentOsWiringError> {
         // Explicit wiring order:
         // system bundles (skills, agent_tools, agent_recovery) -> policies -> plugins -> explicit.
-        let explicit_plugins = std::mem::take(&mut config.plugins);
-        let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
-        let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
+        let explicit_plugins = std::mem::take(&mut definition.plugins);
+        let policy_plugins = self.resolve_plugin_id_list(&definition.policy_ids)?;
+        let other_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
 
         let mut system_bundles = self.build_skills_wiring_bundles(&explicit_plugins)?;
         system_bundles.extend(self.build_agent_tool_wiring_bundles(&explicit_plugins)?);
@@ -423,11 +424,11 @@ impl AgentOs {
             self.merge_wiring_bundles(&system_bundles, tools, WiringScope::System)?;
         let agent_default_plugins =
             Self::merge_agent_default_plugins(policy_plugins, other_plugins, explicit_plugins);
-        config.plugins = ResolvedPlugins::default()
+        definition.plugins = ResolvedPlugins::default()
             .with_global(system_plugins)
             .with_agent_default(agent_default_plugins)
             .into_plugins()?;
-        Ok(config)
+        Ok(definition.into_loop_config())
     }
 
     fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<Client, AgentOsResolveError> {
@@ -456,18 +457,18 @@ impl AgentOs {
     #[cfg(test)]
     pub(crate) fn wire_skills_into(
         &self,
-        mut config: AgentConfig,
+        mut definition: AgentDefinition,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-    ) -> Result<AgentConfig, AgentOsWiringError> {
-        let explicit_plugins = std::mem::take(&mut config.plugins);
+    ) -> Result<AgentDefinition, AgentOsWiringError> {
+        let explicit_plugins = std::mem::take(&mut definition.plugins);
         let skills_bundles = self.build_skills_wiring_bundles(&explicit_plugins)?;
         let skills_plugins =
             self.merge_wiring_bundles(&skills_bundles, tools, WiringScope::System)?;
-        config.plugins = ResolvedPlugins::default()
+        definition.plugins = ResolvedPlugins::default()
             .with_global(skills_plugins)
             .with_agent_default(explicit_plugins)
             .into_plugins()?;
-        Ok(config)
+        Ok(definition)
     }
 
     /// Check whether an agent with the given ID is registered.
@@ -504,7 +505,7 @@ impl AgentOs {
         agent_id: &str,
         mut thread: AgentState,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
-        let def = self
+        let definition = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
@@ -514,10 +515,17 @@ impl AgentOs {
                 .scope
                 .set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
-        let _ = set_scope_filters_from_config_if_absent(&mut thread.scope, &def);
+        let _ = set_scope_filters_from_definition_if_absent(&mut thread.scope, &definition);
 
+        let allowed_tools = definition.allowed_tools.clone();
+        let excluded_tools = definition.excluded_tools.clone();
         let mut tools = self.base_tools.snapshot();
-        let mut cfg = self.wire_into(def, &mut tools)?;
+        let mut cfg = self.wire_into(definition, &mut tools)?;
+        filter_tools_in_place(
+            &mut tools,
+            allowed_tools.as_deref(),
+            excluded_tools.as_deref(),
+        );
         let client = self.resolve_model(&mut cfg)?;
         Ok((client, cfg, tools, thread))
     }

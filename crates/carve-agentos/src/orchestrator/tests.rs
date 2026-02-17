@@ -177,7 +177,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
         .unwrap();
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let cfg = AgentConfig::new("gpt-4o-mini");
+    let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
     assert!(tools.contains_key("skill"));
@@ -224,7 +224,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
         .unwrap();
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let cfg = AgentConfig::new("gpt-4o-mini");
+    let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg = os.wire_skills_into(cfg, &mut tools).unwrap();
 
     assert_eq!(cfg.plugins.len(), 1);
@@ -264,7 +264,7 @@ fn wire_skills_disabled_is_noop() {
         .unwrap();
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let cfg = AgentConfig::new("gpt-4o-mini");
+    let cfg = AgentDefinition::new("gpt-4o-mini");
     let cfg2 = os.wire_skills_into(cfg.clone(), &mut tools).unwrap();
 
     assert!(tools.is_empty());
@@ -297,7 +297,7 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
         .build()
         .unwrap();
 
-    let cfg = AgentConfig::new("gpt-4o-mini")
+    let cfg = AgentDefinition::new("gpt-4o-mini")
         .with_policy_id("policy1")
         .with_plugin_id("p1")
         .with_plugin(Arc::new(LocalPlugin("explicit")));
@@ -332,7 +332,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
         .build()
         .unwrap();
 
-    let cfg = AgentConfig::new("gpt-4o-mini")
+    let cfg = AgentDefinition::new("gpt-4o-mini")
         .with_plugin_id("p1")
         .with_plugin(Arc::new(LocalPlugin("p1")));
 
@@ -366,7 +366,7 @@ fn wire_skills_errors_if_plugin_already_installed() {
         .unwrap();
 
     let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    let cfg = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(FakeSkillsPlugin));
+    let cfg = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(FakeSkillsPlugin));
 
     let err = os.wire_skills_into(cfg, &mut tools).unwrap_err();
     assert!(err.to_string().contains("skills plugin already installed"));
@@ -569,19 +569,19 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         thread
             .scope
-            .value(crate::engine::tool_filter::SCOPE_ALLOWED_SKILLS_KEY),
+            .value(crate::contracts::runtime::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
         thread
             .scope
-            .value(crate::engine::tool_filter::SCOPE_ALLOWED_AGENTS_KEY),
+            .value(crate::contracts::runtime::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
         thread
             .scope
-            .value(crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
+            .value(crate::contracts::runtime::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
 }

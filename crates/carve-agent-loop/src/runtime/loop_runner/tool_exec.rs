@@ -11,7 +11,9 @@ use crate::runtime::control::AGENT_STATE_PATH;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
-use crate::contracts::runtime::{Interaction, StreamResult};
+use crate::contracts::runtime::{
+    Interaction, StreamResult, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
+};
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::engine::convert::tool_response;
@@ -286,17 +288,11 @@ pub async fn execute_tools(
 
 /// Execute tool calls with phase-based plugin hooks.
 pub async fn execute_tools_with_config(
-    mut thread: AgentState,
+    thread: AgentState,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<AgentState, AgentLoopError> {
-    crate::engine::tool_filter::set_scope_filters_from_config_if_absent(
-        &mut thread.scope,
-        config,
-    )
-    .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-
     execute_tools_with_plugins(
         thread,
         result,
@@ -310,7 +306,7 @@ pub async fn execute_tools_with_config(
 pub(super) fn scope_with_tool_caller_context(
     thread: &AgentState,
     state: &Value,
-    config: Option<&AgentConfig>,
+    _config: Option<&AgentConfig>,
 ) -> Result<carve_state::ScopeState, AgentLoopError> {
     let mut rt = thread.scope.clone();
     if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
@@ -323,10 +319,6 @@ pub(super) fn scope_with_tool_caller_context(
     }
     if rt.value(TOOL_SCOPE_CALLER_MESSAGES_KEY).is_none() {
         rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, thread.messages.clone())
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    }
-    if let Some(cfg) = config {
-        crate::engine::tool_filter::set_scope_filters_from_config_if_absent(&mut rt, cfg)
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)
@@ -594,8 +586,8 @@ pub(super) async fn execute_single_tool_with_phases(
     let (execution, pending_interaction) = if !crate::engine::tool_filter::is_scope_allowed(
         scope,
         &call.name,
-        crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY,
-        crate::engine::tool_filter::SCOPE_EXCLUDED_TOOLS_KEY,
+        SCOPE_ALLOWED_TOOLS_KEY,
+        SCOPE_EXCLUDED_TOOLS_KEY,
     ) {
         (
             ToolExecution {

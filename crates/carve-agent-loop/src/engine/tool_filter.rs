@@ -1,13 +1,5 @@
-use crate::runtime::loop_runner::AgentConfig;
 use carve_state::ScopeState;
 use serde_json::Value;
-
-pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
-pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
-pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-pub const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
-pub const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 pub fn is_tool_allowed(
     tool_id: &str,
@@ -25,57 +17,6 @@ pub fn is_tool_allowed(
         }
     }
     true
-}
-
-pub fn set_scope_filter_if_absent(
-    scope: &mut ScopeState,
-    key: &str,
-    values: Option<&[String]>,
-) -> Result<(), carve_state::ScopeStateError> {
-    if scope.value(key).is_some() {
-        return Ok(());
-    }
-    if let Some(values) = values {
-        scope.set(key, values.to_vec())?;
-    }
-    Ok(())
-}
-
-pub fn set_scope_filters_from_config_if_absent(
-    scope: &mut ScopeState,
-    config: &AgentConfig,
-) -> Result<(), carve_state::ScopeStateError> {
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_ALLOWED_TOOLS_KEY,
-        config.allowed_tools.as_deref(),
-    )?;
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_EXCLUDED_TOOLS_KEY,
-        config.excluded_tools.as_deref(),
-    )?;
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_ALLOWED_SKILLS_KEY,
-        config.allowed_skills.as_deref(),
-    )?;
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_EXCLUDED_SKILLS_KEY,
-        config.excluded_skills.as_deref(),
-    )?;
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_ALLOWED_AGENTS_KEY,
-        config.allowed_agents.as_deref(),
-    )?;
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_EXCLUDED_AGENTS_KEY,
-        config.excluded_agents.as_deref(),
-    )?;
-    Ok(())
 }
 
 fn parse_scope_filter(values: Option<&Value>) -> Option<Vec<String>> {
@@ -104,6 +45,7 @@ pub fn is_scope_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 
     #[test]
     fn test_is_tool_allowed_allows_when_no_filters() {
@@ -156,44 +98,5 @@ mod tests {
             SCOPE_ALLOWED_TOOLS_KEY,
             SCOPE_EXCLUDED_TOOLS_KEY
         ));
-    }
-
-    #[test]
-    fn test_set_scope_filters_from_config_if_absent() {
-        let mut rt = ScopeState::new();
-        let config = AgentConfig::default()
-            .with_allowed_tools(vec!["a".to_string()])
-            .with_excluded_tools(vec!["b".to_string()])
-            .with_allowed_skills(vec!["s1".to_string()])
-            .with_excluded_skills(vec!["s2".to_string()])
-            .with_allowed_agents(vec!["agent_a".to_string()])
-            .with_excluded_agents(vec!["agent_b".to_string()]);
-
-        set_scope_filters_from_config_if_absent(&mut rt, &config).unwrap();
-
-        assert_eq!(
-            rt.value(SCOPE_ALLOWED_TOOLS_KEY),
-            Some(&serde_json::json!(["a"]))
-        );
-        assert_eq!(
-            rt.value(SCOPE_EXCLUDED_TOOLS_KEY),
-            Some(&serde_json::json!(["b"]))
-        );
-        assert_eq!(
-            rt.value(SCOPE_ALLOWED_SKILLS_KEY),
-            Some(&serde_json::json!(["s1"]))
-        );
-        assert_eq!(
-            rt.value(SCOPE_EXCLUDED_SKILLS_KEY),
-            Some(&serde_json::json!(["s2"]))
-        );
-        assert_eq!(
-            rt.value(SCOPE_ALLOWED_AGENTS_KEY),
-            Some(&serde_json::json!(["agent_a"]))
-        );
-        assert_eq!(
-            rt.value(SCOPE_EXCLUDED_AGENTS_KEY),
-            Some(&serde_json::json!(["agent_b"]))
-        );
     }
 }

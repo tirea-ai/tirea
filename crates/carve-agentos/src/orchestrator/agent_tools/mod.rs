@@ -9,7 +9,7 @@ use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, Interaction};
 use crate::contracts::state::{Message, Role, ToolCall};
 use crate::contracts::AgentState;
-use crate::engine::tool_filter::{
+use super::policy::{
     is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,
 };
 use crate::extensions::permission::ToolPermissionBehavior;

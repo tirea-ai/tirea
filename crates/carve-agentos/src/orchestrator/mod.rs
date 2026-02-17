@@ -14,7 +14,6 @@ use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::{
     AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };
-use crate::engine::tool_filter::set_scope_filters_from_config_if_absent;
 use crate::extensions::skills::{
     CompositeSkillRegistryError, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
@@ -23,12 +22,11 @@ use crate::runtime::loop_runner::{
     run_loop_stream, AgentConfig, AgentLoopError, RunContext, StateCommitError, StateCommitter,
 };
 
-/// Agent composition definition owned by AgentOS orchestration.
-pub type AgentDefinition = AgentConfig;
-
+mod agent_definition;
 pub(crate) mod agent_tools;
 mod builder;
 mod composition;
+mod policy;
 mod run;
 mod wiring;
 
@@ -38,6 +36,7 @@ mod tests;
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
+pub use agent_definition::AgentDefinition;
 pub use composition::{
     AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
     BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,

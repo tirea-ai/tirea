@@ -60,19 +60,9 @@ pub(super) fn apply_pending_patches(thread: AgentState, pending: Vec<TrackedPatc
 
 pub(super) fn tool_descriptors_for_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
-    config: &super::AgentConfig,
+    _config: &super::AgentConfig,
 ) -> Vec<ToolDescriptor> {
-    tools
-        .values()
-        .map(|t| t.descriptor().clone())
-        .filter(|td| {
-            crate::engine::tool_filter::is_tool_allowed(
-                &td.id,
-                config.allowed_tools.as_deref(),
-                config.excluded_tools.as_deref(),
-            )
-        })
-        .collect()
+    tools.values().map(|t| t.descriptor().clone()).collect()
 }
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {

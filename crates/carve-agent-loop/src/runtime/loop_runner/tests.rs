@@ -1693,10 +1693,17 @@ fn test_execute_tools_with_config_basic() {
 }
 
 #[test]
-fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
+fn test_execute_tools_with_config_enforces_scope_tool_policy_at_execution() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let thread = AgentState::new("test");
+        let mut thread = AgentState::new("test");
+        thread
+            .scope
+            .set(
+                crate::contracts::runtime::SCOPE_ALLOWED_TOOLS_KEY,
+                vec!["other"],
+            )
+            .unwrap();
         let result = StreamResult {
             text: "Calling tool".to_string(),
             tool_calls: vec![crate::contracts::state::ToolCall::new(
@@ -1707,7 +1714,7 @@ fn test_execute_tools_with_config_enforces_allowed_tools_at_execution() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4").with_allowed_tools(vec!["other".to_string()]);
+        let config = AgentConfig::new("gpt-4");
 
         let thread = execute_tools_with_config(thread, &result, &tools, &config)
             .await
