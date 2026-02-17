@@ -1,4 +1,4 @@
-use crate::contracts::control::{AgentControlState as AgentStateDoc, AGENT_STATE_PATH};
+use crate::runtime::control::{AgentControlState as AgentStateDoc, AGENT_STATE_PATH};
 use crate::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
 };
@@ -8,10 +8,10 @@ use crate::engine::tool_filter::{
 };
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::skills::skill_md::{parse_allowed_tool_token, parse_skill_md};
-use crate::extensions::skills::state::{material_key, SkillState, SKILLS_STATE_PATH};
 use crate::extensions::skills::{
-    SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
-    SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+    material_key, SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource,
+    SkillResourceKind, SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID,
+    SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

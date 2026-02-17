@@ -7,21 +7,8 @@ use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::runtime::interaction::{Interaction, InteractionResponse};
-use crate::state::ToolCall;
-
-/// Tool permission behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolPermissionBehavior {
-    /// Tool is allowed without confirmation.
-    Allow,
-    /// Tool requires user confirmation before execution.
-    #[default]
-    Ask,
-    /// Tool is denied (will not execute).
-    Deny,
-}
+use crate::contracts::runtime::interaction::{Interaction, InteractionResponse};
+use crate::contracts::state::{AgentState, ToolCall};
 
 /// Agent-owned state stored in the session document.
 ///
@@ -76,7 +63,7 @@ pub struct AgentRunState {
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
     #[serde(default, rename = "thread", skip_serializing_if = "Option::is_none")]
-    pub agent_state: Option<crate::state::AgentState>,
+    pub agent_state: Option<AgentState>,
 }
 
 /// Inference error emitted by the loop and consumed by telemetry plugins.
@@ -115,14 +102,24 @@ pub struct AgentControlState {
     pub inference_error: Option<AgentInferenceError>,
 }
 
-impl crate::state::AgentState {
+/// Runtime-only helpers for accessing agent control state from `AgentState`.
+pub trait AgentStateControlExt {
     /// Typed accessor for durable agent control substate at `state["agent"]`.
-    pub fn agent_control(&self) -> <AgentControlState as carve_state::State>::Ref<'_> {
+    fn agent_control(&self) -> <AgentControlState as carve_state::State>::Ref<'_>;
+
+    /// Read pending interaction from durable control state.
+    fn pending_interaction(&self) -> Option<Interaction>;
+
+    /// Write pending interaction into durable control state.
+    fn set_pending_interaction(&self, interaction: Option<Interaction>);
+}
+
+impl AgentStateControlExt for AgentState {
+    fn agent_control(&self) -> <AgentControlState as carve_state::State>::Ref<'_> {
         self.state::<AgentControlState>(AGENT_STATE_PATH)
     }
 
-    /// Read pending interaction from durable control state.
-    pub fn pending_interaction(&self) -> Option<Interaction> {
+    fn pending_interaction(&self) -> Option<Interaction> {
         if self.patches.is_empty() {
             return self.agent_control().pending_interaction().ok().flatten();
         }
@@ -139,8 +136,7 @@ impl crate::state::AgentState {
             .or_else(|| self.agent_control().pending_interaction().ok().flatten())
     }
 
-    /// Write pending interaction into durable control state.
-    pub fn set_pending_interaction(&self, interaction: Option<Interaction>) {
+    fn set_pending_interaction(&self, interaction: Option<Interaction>) {
         self.agent_control().set_pending_interaction(interaction);
     }
 }
@@ -150,22 +146,6 @@ mod tests {
     use super::*;
     use serde_json::json;
     use serde_json::Value;
-
-    #[test]
-    fn test_tool_permission_behavior_default() {
-        let behavior: ToolPermissionBehavior = Default::default();
-        assert_eq!(behavior, ToolPermissionBehavior::Ask);
-    }
-
-    #[test]
-    fn test_tool_permission_behavior_serialization() {
-        let allow = ToolPermissionBehavior::Allow;
-        let json = serde_json::to_string(&allow).unwrap();
-        assert_eq!(json, "\"allow\"");
-
-        let parsed: ToolPermissionBehavior = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, ToolPermissionBehavior::Allow);
-    }
 
     #[test]
     fn test_interaction_new() {
@@ -310,8 +290,7 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = crate::state::AgentState::new("child-1")
-            .with_message(crate::state::Message::user("seed"));
+        let child = AgentState::new("child-1").with_message(crate::contracts::state::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),

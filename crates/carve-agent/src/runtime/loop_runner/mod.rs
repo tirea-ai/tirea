@@ -48,7 +48,7 @@ mod stream_runner;
 mod tool_exec;
 
 #[cfg(test)]
-use crate::contracts::control::AGENT_STATE_PATH;
+use crate::runtime::control::AGENT_STATE_PATH;
 use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};

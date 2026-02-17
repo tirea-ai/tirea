@@ -3,7 +3,7 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
-use crate::contracts::control::{
+use crate::runtime::control::{
     AgentControlState as AgentStateDoc, AgentInferenceError, AGENT_STATE_PATH,
 };
 use crate::contracts::extension::plugin::AgentPlugin;

@@ -53,10 +53,11 @@ pub use crate::contracts::extension::plugin::AgentPlugin;
 pub use crate::contracts::runtime::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
-pub use crate::contracts::control::{
-    AgentControlState as AgentStateDoc, AgentRunState, AgentRunStatus, ToolPermissionBehavior,
+pub use crate::runtime::control::{
+    AgentControlState as AgentStateDoc, AgentRunState, AgentRunStatus,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
+pub use crate::contracts::extension::permission::ToolPermissionBehavior;
 pub use crate::contracts::runtime::{Interaction, InteractionResponse};
 
 // Extension traits - these add helper methods to AgentState

@@ -1,6 +1,6 @@
 use crate::extensions::skills::{LoadedAsset, LoadedReference, ScriptResult};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use carve_agent_contract::skills::SkillMaterializeError;
+use carve_agent_contract::extension::skills::SkillMaterializeError;
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;

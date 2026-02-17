@@ -3,8 +3,10 @@ use super::{
 };
 use crate::agent::AgentDefinition;
 use crate::extension::plugin::AgentPlugin;
+use crate::extension::skills::{
+    CompositeSkillRegistry, CompositeSkillRegistryError, SkillRegistry,
+};
 use crate::extension::traits::tool::Tool;
-use crate::skills::{CompositeSkillRegistry, CompositeSkillRegistryError, SkillRegistry};
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -5,8 +5,7 @@ use crate::contracts::AgentState as ContextAgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
-use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
-use crate::extensions::skills::SKILLS_RUNTIME_PLUGIN_ID;
+use crate::extensions::skills::{SkillState, SKILLS_RUNTIME_PLUGIN_ID, SKILLS_STATE_PATH};
 use async_trait::async_trait;
 
 /// Injects activated skills (instructions + loaded materials) into the LLM context.

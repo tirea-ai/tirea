@@ -4,8 +4,9 @@ use crate::contracts::AgentState as ContextAgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
-use crate::extensions::skills::state::{SkillState, SKILLS_STATE_PATH};
-use crate::extensions::skills::{SkillRegistry, SKILLS_DISCOVERY_PLUGIN_ID};
+use crate::extensions::skills::{
+    SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH,
+};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
+use crate::agent::stop::{StopCondition, StopConditionSpec};
 use crate::extension::plugin::AgentPlugin;
-use crate::stop_conditions::{StopCondition, StopConditionSpec};
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 
@@ -75,7 +75,7 @@ pub struct AgentDefinition {
     /// Composable stop conditions checked after each tool-call round.
     ///
     /// When empty (and `stop_condition_specs` is also empty), a default
-    /// [`crate::stop_conditions::MaxRounds`] condition is created from `max_rounds`.
+    /// [`crate::agent::stop::MaxRounds`] condition is created from `max_rounds`.
     /// When non-empty, `max_rounds` is ignored.
     pub stop_conditions: Vec<Arc<dyn StopCondition>>,
     /// Declarative stop condition specs, resolved to `Arc<dyn StopCondition>`

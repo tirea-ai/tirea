@@ -3,7 +3,7 @@ use crate::extensions::skills::materialize::{
 };
 use crate::extensions::skills::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
 use async_trait::async_trait;
-use carve_agent_contract::skills::{
+use carve_agent_contract::extension::skills::{
     ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryWarning, SkillResource, SkillResourceKind,
 };

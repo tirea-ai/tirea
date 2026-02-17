@@ -264,7 +264,7 @@ impl StopCondition for LoopDetection {
 /// resolve to `Arc<dyn StopCondition>` at runtime via [`into_condition`].
 ///
 /// ```
-/// use carve_agent_contract::stop_conditions::StopConditionSpec;
+/// use carve_agent_contract::agent::stop::StopConditionSpec;
 ///
 /// let spec = StopConditionSpec::MaxRounds { rounds: 5 };
 /// let json = serde_json::to_string(&spec).unwrap();

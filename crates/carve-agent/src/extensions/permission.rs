@@ -21,38 +21,16 @@
 //! }
 //! ```
 
-use crate::contracts::control::ToolPermissionBehavior;
+pub use crate::contracts::extension::permission::{
+    PermissionState, ToolPermissionBehavior, PERMISSION_STATE_PATH,
+};
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::runtime::Interaction;
 use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
-use carve_state_derive::State;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
-
-/// State path for permission state.
-pub const PERMISSION_STATE_PATH: &str = "permissions";
 /// Unified frontend ask tool name used for user interaction prompts.
 pub const ASK_USER_TOOL_NAME: &str = "AskUserQuestion";
-
-/// Permission state stored in session state.
-#[derive(Debug, Clone, Serialize, Deserialize, State)]
-pub struct PermissionState {
-    /// Default behavior for tools not explicitly configured.
-    pub default_behavior: ToolPermissionBehavior,
-    /// Per-tool permission overrides.
-    pub tools: HashMap<String, ToolPermissionBehavior>,
-}
-
-impl Default for PermissionState {
-    fn default() -> Self {
-        Self {
-            default_behavior: ToolPermissionBehavior::Ask,
-            tools: HashMap::new(),
-        }
-    }
-}
 
 /// Extension trait for permission management on Context.
 pub trait PermissionContextExt {

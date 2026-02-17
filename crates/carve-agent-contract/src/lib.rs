@@ -2,30 +2,32 @@
 
 pub mod agent;
 pub mod composition;
-pub mod control;
 pub mod extension;
 pub mod runtime;
-pub mod skills;
 pub mod state;
-pub mod stop_conditions;
 pub mod storage;
 
 pub use agent::{
-    AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
-    StateCommitError, StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY,
-    TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    check_stop_conditions, AgentConfig, AgentDefinition, ConsecutiveErrors, ContentMatch,
+    LlmRetryPolicy, LoopDetection, MaxRounds, RunCancellationToken, RunContext, StateCommitError,
+    StateCommitter, StopCheckContext, StopCondition, StopConditionSpec, StopOnTool, Timeout,
+    TokenBudget, TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-pub use control::{
-    AgentControlState, AgentInferenceError, AgentRunState, AgentRunStatus, ToolPermissionBehavior,
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
-};
+pub use extension::permission::{PermissionState, ToolPermissionBehavior, PERMISSION_STATE_PATH};
 pub use extension::plugin::AgentPlugin;
+pub use extension::skills::{
+    material_key, CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset,
+    LoadedReference, ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry,
+    SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillState,
+    SKILLS_STATE_PATH,
+};
 pub use extension::traits::provider::{ContextCategory, ContextProvider};
 pub use extension::traits::reminder::SystemReminder;
-pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError};
+pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 pub use runtime::{
     AgentEvent, Interaction, InteractionResponse, RunRequest, StopReason, StreamResult,
-    TerminationReason, ToolResult, ToolStatus,
+    TerminationReason,
 };
 pub use state::{
     gen_message_id, AgentState, AgentStateMetadata, Message, MessageMetadata, PendingDelta, Role,

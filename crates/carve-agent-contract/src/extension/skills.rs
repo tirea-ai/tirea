@@ -1,4 +1,11 @@
+//! Skills extension contracts.
+//!
+//! This module contains both:
+//! - skill registry/materialization contracts (`SkillRegistry`, `SkillResource`, ...)
+//! - persisted skill extension state (`SkillState`)
+
 use async_trait::async_trait;
+use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +18,9 @@ pub struct SkillMeta {
     pub description: String,
     pub allowed_tools: Vec<String>,
 }
+
+/// State path for skill state inside `AgentState.state`.
+pub const SKILLS_STATE_PATH: &str = "skills";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRegistryWarning {
@@ -66,6 +76,31 @@ pub struct LoadedAsset {
     pub media_type: Option<String>,
     pub encoding: String,
     pub content: String,
+}
+
+/// Persisted skill state (instructions + loaded materials).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+pub struct SkillState {
+    /// Activated skill IDs (stable identifiers from the registry).
+    #[serde(default)]
+    pub active: Vec<String>,
+    /// Activated skill instructions (SKILL.md body), keyed by skill ID.
+    #[serde(default)]
+    pub instructions: HashMap<String, String>,
+    /// Loaded references, keyed by `<skill_id>:<relative_path>`.
+    #[serde(default)]
+    pub references: HashMap<String, LoadedReference>,
+    /// Script results, keyed by `<skill_id>:<relative_path>`.
+    #[serde(default)]
+    pub scripts: HashMap<String, ScriptResult>,
+    /// Loaded assets, keyed by `<skill_id>:<relative_path>`.
+    #[serde(default)]
+    pub assets: HashMap<String, LoadedAsset>,
+}
+
+/// Build a stable map key for skill materials.
+pub fn material_key(skill_id: &str, relative_path: &str) -> String {
+    format!("{skill_id}:{relative_path}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
