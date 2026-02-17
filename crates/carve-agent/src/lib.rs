@@ -96,7 +96,7 @@
 //! storage.save(&thread).await?;
 //! ```
 
-pub mod contracts;
+pub use carve_agent_contract as contracts;
 pub mod engine;
 pub mod extensions;
 pub mod orchestrator;
