@@ -2,7 +2,9 @@ use super::outcome::{LoopStats, LoopUsage};
 use super::AgentConfig;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::state::AgentState;
-use crate::engine::stop_conditions::{condition_from_spec, StopCheckContext, StopCondition};
+use crate::engine::stop_conditions::{
+    condition_from_spec, StopCondition, StopPolicyInput, StopPolicyStats,
+};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,6 +17,7 @@ pub(super) struct RunState {
     pub(super) llm_calls: usize,
     pub(super) llm_retries: usize,
     pub(super) tool_calls: usize,
+    pub(super) step_tool_call_count: usize,
     pub(super) tool_errors: usize,
     pub(super) consecutive_errors: usize,
     start_time: Instant,
@@ -31,6 +34,7 @@ impl RunState {
             llm_calls: 0,
             llm_retries: 0,
             tool_calls: 0,
+            step_tool_call_count: 0,
             tool_errors: 0,
             consecutive_errors: 0,
             start_time: Instant::now(),
@@ -58,6 +62,7 @@ impl RunState {
         tool_calls: &[crate::contracts::state::ToolCall],
         error_count: usize,
     ) {
+        self.step_tool_call_count = tool_calls.len();
         let mut names: Vec<String> = tool_calls.iter().map(|tc| tc.name.clone()).collect();
         names.sort();
         if self.tool_call_history.len() >= 20 {
@@ -72,6 +77,10 @@ impl RunState {
         } else {
             self.consecutive_errors = 0;
         }
+    }
+
+    pub(super) fn record_step_without_tools(&mut self) {
+        self.step_tool_call_count = 0;
     }
 
     pub(super) fn usage(&self) -> LoopUsage {
@@ -93,21 +102,25 @@ impl RunState {
         }
     }
 
-    pub(super) fn to_check_context<'a>(
+    pub(super) fn to_policy_input<'a>(
         &'a self,
         result: &'a StreamResult,
         thread: &'a AgentState,
-    ) -> StopCheckContext<'a> {
-        StopCheckContext {
-            rounds: self.completed_steps,
-            total_input_tokens: self.total_input_tokens,
-            total_output_tokens: self.total_output_tokens,
-            consecutive_errors: self.consecutive_errors,
-            elapsed: self.start_time.elapsed(),
-            last_tool_calls: &result.tool_calls,
-            last_text: &result.text,
-            tool_call_history: &self.tool_call_history,
-            thread,
+    ) -> StopPolicyInput<'a> {
+        StopPolicyInput {
+            agent_state: thread,
+            stats: StopPolicyStats {
+                step: self.completed_steps,
+                step_tool_call_count: self.step_tool_call_count,
+                total_tool_call_count: self.tool_calls,
+                total_input_tokens: self.total_input_tokens,
+                total_output_tokens: self.total_output_tokens,
+                consecutive_errors: self.consecutive_errors,
+                elapsed: self.start_time.elapsed(),
+                last_tool_calls: &result.tool_calls,
+                last_text: &result.text,
+                tool_call_history: &self.tool_call_history,
+            },
         }
     }
 }

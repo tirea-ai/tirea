@@ -50,6 +50,38 @@ use std::time::Duration;
 // StopCheckContext
 // ---------------------------------------------------------------------------
 
+/// Aggregated runtime stats consumed by stop policies.
+pub struct StopPolicyStats<'a> {
+    /// Number of completed steps.
+    pub step: usize,
+    /// Tool calls emitted by the current step.
+    pub step_tool_call_count: usize,
+    /// Total tool calls across the whole run.
+    pub total_tool_call_count: usize,
+    /// Cumulative input tokens across all LLM calls.
+    pub total_input_tokens: usize,
+    /// Cumulative output tokens across all LLM calls.
+    pub total_output_tokens: usize,
+    /// Number of consecutive rounds where all tools failed.
+    pub consecutive_errors: usize,
+    /// Time elapsed since the loop started.
+    pub elapsed: Duration,
+    /// Tool calls from the most recent LLM response.
+    pub last_tool_calls: &'a [ToolCall],
+    /// Text from the most recent LLM response.
+    pub last_text: &'a str,
+    /// History of tool call names per round (most recent last), for loop detection.
+    pub tool_call_history: &'a VecDeque<Vec<String>>,
+}
+
+/// Canonical stop-policy input: persisted state + runtime stats.
+pub struct StopPolicyInput<'a> {
+    /// Current agent state snapshot.
+    pub agent_state: &'a AgentState,
+    /// Runtime run stats.
+    pub stats: StopPolicyStats<'a>,
+}
+
 /// Snapshot of loop state provided to stop condition checks.
 ///
 /// Passed to [`StopCondition::check`] after each round so conditions can
@@ -78,9 +110,39 @@ pub struct StopCheckContext<'a> {
     pub thread: &'a AgentState,
 }
 
+impl<'a> StopCheckContext<'a> {
+    /// Convert legacy context shape to canonical stop-policy input.
+    pub fn as_policy_input(&'a self) -> StopPolicyInput<'a> {
+        StopPolicyInput {
+            agent_state: self.thread,
+            stats: StopPolicyStats {
+                step: self.rounds,
+                step_tool_call_count: self.last_tool_calls.len(),
+                total_tool_call_count: self.tool_call_history.iter().map(std::vec::Vec::len).sum(),
+                total_input_tokens: self.total_input_tokens,
+                total_output_tokens: self.total_output_tokens,
+                consecutive_errors: self.consecutive_errors,
+                elapsed: self.elapsed,
+                last_tool_calls: self.last_tool_calls,
+                last_text: self.last_text,
+                tool_call_history: self.tool_call_history,
+            },
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StopCondition trait
 // ---------------------------------------------------------------------------
+
+/// Preferred stop-policy contract.
+pub trait StopPolicy: Send + Sync {
+    /// Unique identifier for this policy.
+    fn id(&self) -> &str;
+
+    /// Evaluate stop decision from canonical input.
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
+}
 
 /// Trait for composable agent loop stop conditions.
 ///
@@ -96,17 +158,49 @@ pub trait StopCondition: Send + Sync {
     fn check(&self, ctx: &StopCheckContext) -> Option<StopReason>;
 }
 
+impl<T> StopPolicy for T
+where
+    T: StopCondition + ?Sized,
+{
+    fn id(&self) -> &str {
+        StopCondition::id(self)
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = StopCheckContext {
+            rounds: input.stats.step,
+            total_input_tokens: input.stats.total_input_tokens,
+            total_output_tokens: input.stats.total_output_tokens,
+            consecutive_errors: input.stats.consecutive_errors,
+            elapsed: input.stats.elapsed,
+            last_tool_calls: input.stats.last_tool_calls,
+            last_text: input.stats.last_text,
+            tool_call_history: input.stats.tool_call_history,
+            thread: input.agent_state,
+        };
+        StopCondition::check(self, &ctx)
+    }
+}
+
+/// Evaluate canonical stop policies in declaration order and return the first match.
+pub(crate) fn check_stop_policies(
+    conditions: &[Arc<dyn StopCondition>],
+    input: &StopPolicyInput<'_>,
+) -> Option<StopReason> {
+    for condition in conditions {
+        if let Some(reason) = StopPolicy::evaluate(condition.as_ref(), input) {
+            return Some(reason);
+        }
+    }
+    None
+}
+
 /// Evaluate stop conditions in declaration order and return the first match.
 pub(crate) fn check_stop_conditions(
     conditions: &[Arc<dyn StopCondition>],
     ctx: &StopCheckContext,
 ) -> Option<StopReason> {
-    for condition in conditions {
-        if let Some(reason) = condition.check(ctx) {
-            return Some(reason);
-        }
-    }
-    None
+    check_stop_policies(conditions, &ctx.as_policy_input())
 }
 
 // ---------------------------------------------------------------------------

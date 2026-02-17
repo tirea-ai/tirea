@@ -55,7 +55,7 @@ use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
-use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
+use crate::engine::stop_conditions::{check_stop_policies, StopReason};
 use crate::runtime::activity::ActivityHub;
 #[cfg(test)]
 use crate::runtime::control::AGENT_STATE_PATH;
@@ -291,8 +291,8 @@ fn stop_reason_for_step(
     thread: &AgentState,
     stop_conditions: &[Arc<dyn crate::engine::stop_conditions::StopCondition>],
 ) -> Option<StopReason> {
-    let stop_ctx = run_state.to_check_context(result, thread);
-    check_stop_conditions(stop_conditions, &stop_ctx)
+    let stop_input = run_state.to_policy_input(result, thread);
+    check_stop_policies(stop_conditions, &stop_input)
 }
 
 pub(super) async fn run_llm_with_retry_and_fallback<T, Invoke, Fut>(
@@ -977,6 +977,7 @@ async fn run_loop_outcome_with_context_provider(
         mark_step_completed(&mut run_state);
 
         if !result.needs_tools() {
+            run_state.record_step_without_tools();
             if let Some(reason) =
                 stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
             {

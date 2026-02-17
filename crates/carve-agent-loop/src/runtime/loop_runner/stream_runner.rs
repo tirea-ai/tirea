@@ -622,6 +622,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             // Check if we need to execute tools
             if !result.needs_tools() {
+                run_state.record_step_without_tools();
                 if is_run_cancelled(run_cancellation_token.as_ref()) {
                     finish_run!(TerminationReason::Cancelled, None);
                 }
