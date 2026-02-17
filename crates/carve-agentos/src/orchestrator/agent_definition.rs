@@ -1,6 +1,5 @@
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::StopConditionSpec;
-use crate::engine::stop_conditions::StopCondition;
+use crate::contracts::runtime::{StopConditionSpec, StopPolicy, ToolExecutor};
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };
@@ -51,7 +50,7 @@ pub struct AgentDefinition {
     /// Agent blacklist for `agent_run` delegation.
     pub excluded_agents: Option<Vec<String>>,
     /// Composable stop conditions checked after each tool-call round.
-    pub stop_conditions: Vec<Arc<dyn StopCondition>>,
+    pub stop_conditions: Vec<Arc<dyn StopPolicy>>,
     /// Declarative stop condition specs, resolved at runtime.
     pub stop_condition_specs: Vec<StopConditionSpec>,
 }
@@ -251,13 +250,13 @@ impl AgentDefinition {
     }
 
     #[must_use]
-    pub fn with_stop_condition(mut self, condition: impl StopCondition + 'static) -> Self {
+    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
         self.stop_conditions.push(Arc::new(condition));
         self
     }
 
     #[must_use]
-    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopCondition>>) -> Self {
+    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
         self.stop_conditions = conditions;
         self
     }
@@ -275,7 +274,7 @@ impl AgentDefinition {
     }
 
     pub fn into_loop_config(self) -> AgentConfig {
-        let tool_executor: Arc<dyn crate::runtime::loop_runner::ToolExecutor> =
+        let tool_executor: Arc<dyn ToolExecutor> =
             if self.parallel_tools {
                 Arc::new(ParallelToolExecutor)
             } else {

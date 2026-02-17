@@ -15,17 +15,18 @@
 //!
 //! # Custom Conditions
 //!
-//! Implement the [`StopCondition`] trait for custom logic:
+//! Implement the [`StopPolicy`] trait for custom logic:
 //!
 //! ```ignore
-//! use carve_agent::engine::stop_conditions::{StopCondition, StopCheckContext, StopReason};
+//! use carve_agent::contracts::runtime::{StopPolicy, StopPolicyInput, StopReason};
 //!
 //! struct CostLimit { max_cents: usize }
 //!
-//! impl StopCondition for CostLimit {
+//! impl StopPolicy for CostLimit {
 //!     fn id(&self) -> &str { "cost_limit" }
-//!     fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
-//!         let estimated_cents = ctx.total_input_tokens / 1000 + ctx.total_output_tokens / 500;
+//!     fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+//!         let estimated_cents =
+//!             input.stats.total_input_tokens / 1000 + input.stats.total_output_tokens / 500;
 //!         if estimated_cents >= self.max_cents {
 //!             Some(StopReason::Custom("Cost limit exceeded".into()))
 //!         } else {
@@ -35,7 +36,9 @@
 //! }
 //! ```
 
-use crate::contracts::runtime::StopConditionSpec;
+use crate::contracts::runtime::{
+    StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats,
+};
 pub use crate::contracts::runtime::StopReason;
 use crate::contracts::state::{AgentState, ToolCall};
 use std::collections::VecDeque;
@@ -50,42 +53,7 @@ use std::time::Duration;
 // StopCheckContext
 // ---------------------------------------------------------------------------
 
-/// Aggregated runtime stats consumed by stop policies.
-pub struct StopPolicyStats<'a> {
-    /// Number of completed steps.
-    pub step: usize,
-    /// Tool calls emitted by the current step.
-    pub step_tool_call_count: usize,
-    /// Total tool calls across the whole run.
-    pub total_tool_call_count: usize,
-    /// Cumulative input tokens across all LLM calls.
-    pub total_input_tokens: usize,
-    /// Cumulative output tokens across all LLM calls.
-    pub total_output_tokens: usize,
-    /// Number of consecutive rounds where all tools failed.
-    pub consecutive_errors: usize,
-    /// Time elapsed since the loop started.
-    pub elapsed: Duration,
-    /// Tool calls from the most recent LLM response.
-    pub last_tool_calls: &'a [ToolCall],
-    /// Text from the most recent LLM response.
-    pub last_text: &'a str,
-    /// History of tool call names per round (most recent last), for loop detection.
-    pub tool_call_history: &'a VecDeque<Vec<String>>,
-}
-
-/// Canonical stop-policy input: persisted state + runtime stats.
-pub struct StopPolicyInput<'a> {
-    /// Current agent state snapshot.
-    pub agent_state: &'a AgentState,
-    /// Runtime run stats.
-    pub stats: StopPolicyStats<'a>,
-}
-
-/// Snapshot of loop state provided to stop condition checks.
-///
-/// Passed to [`StopCondition::check`] after each round so conditions can
-/// inspect cumulative metrics and the most recent LLM response.
+/// Snapshot of loop state provided to stop checks.
 pub struct StopCheckContext<'a> {
     /// Number of completed tool-call rounds.
     pub rounds: usize,
@@ -132,59 +100,26 @@ impl<'a> StopCheckContext<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// StopCondition trait
+// Stop policy helpers
 // ---------------------------------------------------------------------------
 
-/// Preferred stop-policy contract.
-pub trait StopPolicy: Send + Sync {
-    /// Unique identifier for this policy.
-    fn id(&self) -> &str;
-
-    /// Evaluate stop decision from canonical input.
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason>;
-}
-
-/// Trait for composable agent loop stop conditions.
-///
-/// Implementations are stored as `Arc<dyn StopCondition>` in [`AgentConfig`]
-/// and checked after each tool-call round.
-pub trait StopCondition: Send + Sync {
-    /// Unique identifier for this condition (used in logging/debugging).
-    fn id(&self) -> &str;
-
-    /// Check whether the loop should stop.
-    ///
-    /// Returns `Some(StopReason)` to terminate the loop, or `None` to continue.
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason>;
-}
-
-impl<T> StopPolicy for T
-where
-    T: StopCondition + ?Sized,
-{
-    fn id(&self) -> &str {
-        StopCondition::id(self)
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = StopCheckContext {
-            rounds: input.stats.step,
-            total_input_tokens: input.stats.total_input_tokens,
-            total_output_tokens: input.stats.total_output_tokens,
-            consecutive_errors: input.stats.consecutive_errors,
-            elapsed: input.stats.elapsed,
-            last_tool_calls: input.stats.last_tool_calls,
-            last_text: input.stats.last_text,
-            tool_call_history: input.stats.tool_call_history,
-            thread: input.agent_state,
-        };
-        StopCondition::check(self, &ctx)
+fn stop_check_context_from_policy_input<'a>(input: &'a StopPolicyInput<'a>) -> StopCheckContext<'a> {
+    StopCheckContext {
+        rounds: input.stats.step,
+        total_input_tokens: input.stats.total_input_tokens,
+        total_output_tokens: input.stats.total_output_tokens,
+        consecutive_errors: input.stats.consecutive_errors,
+        elapsed: input.stats.elapsed,
+        last_tool_calls: input.stats.last_tool_calls,
+        last_text: input.stats.last_text,
+        tool_call_history: input.stats.tool_call_history,
+        thread: input.agent_state,
     }
 }
 
 /// Evaluate canonical stop policies in declaration order and return the first match.
 pub(crate) fn check_stop_policies(
-    conditions: &[Arc<dyn StopCondition>],
+    conditions: &[Arc<dyn StopPolicy>],
     input: &StopPolicyInput<'_>,
 ) -> Option<StopReason> {
     for condition in conditions {
@@ -202,12 +137,8 @@ pub(crate) fn check_stop_policies(
 /// Stop after a fixed number of tool-call rounds.
 pub struct MaxRounds(pub usize);
 
-impl StopCondition for MaxRounds {
-    fn id(&self) -> &str {
-        "max_rounds"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl MaxRounds {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if ctx.rounds >= self.0 {
             Some(StopReason::MaxRoundsReached)
         } else {
@@ -216,20 +147,38 @@ impl StopCondition for MaxRounds {
     }
 }
 
+impl StopPolicy for MaxRounds {
+    fn id(&self) -> &str {
+        "max_rounds"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
+    }
+}
+
 /// Stop after a wall-clock duration elapses.
 pub struct Timeout(pub Duration);
 
-impl StopCondition for Timeout {
-    fn id(&self) -> &str {
-        "timeout"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl Timeout {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if ctx.elapsed >= self.0 {
             Some(StopReason::TimeoutReached)
         } else {
             None
         }
+    }
+}
+
+impl StopPolicy for Timeout {
+    fn id(&self) -> &str {
+        "timeout"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
     }
 }
 
@@ -239,12 +188,8 @@ pub struct TokenBudget {
     pub max_total: usize,
 }
 
-impl StopCondition for TokenBudget {
-    fn id(&self) -> &str {
-        "token_budget"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl TokenBudget {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if self.max_total > 0
             && (ctx.total_input_tokens + ctx.total_output_tokens) >= self.max_total
         {
@@ -255,15 +200,22 @@ impl StopCondition for TokenBudget {
     }
 }
 
+impl StopPolicy for TokenBudget {
+    fn id(&self) -> &str {
+        "token_budget"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
+    }
+}
+
 /// Stop after N consecutive rounds where all tool executions failed.
 pub struct ConsecutiveErrors(pub usize);
 
-impl StopCondition for ConsecutiveErrors {
-    fn id(&self) -> &str {
-        "consecutive_errors"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl ConsecutiveErrors {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if self.0 > 0 && ctx.consecutive_errors >= self.0 {
             Some(StopReason::ConsecutiveErrorsExceeded)
         } else {
@@ -272,15 +224,22 @@ impl StopCondition for ConsecutiveErrors {
     }
 }
 
+impl StopPolicy for ConsecutiveErrors {
+    fn id(&self) -> &str {
+        "consecutive_errors"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
+    }
+}
+
 /// Stop when a specific tool is called by the LLM.
 pub struct StopOnTool(pub String);
 
-impl StopCondition for StopOnTool {
-    fn id(&self) -> &str {
-        "stop_on_tool"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl StopOnTool {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         for call in ctx.last_tool_calls {
             if call.name == self.0 {
                 return Some(StopReason::ToolCalled(self.0.clone()));
@@ -290,20 +249,38 @@ impl StopCondition for StopOnTool {
     }
 }
 
+impl StopPolicy for StopOnTool {
+    fn id(&self) -> &str {
+        "stop_on_tool"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
+    }
+}
+
 /// Stop when LLM output text contains a literal pattern.
 pub struct ContentMatch(pub String);
 
-impl StopCondition for ContentMatch {
-    fn id(&self) -> &str {
-        "content_match"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl ContentMatch {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         if !self.0.is_empty() && ctx.last_text.contains(&self.0) {
             Some(StopReason::ContentMatched(self.0.clone()))
         } else {
             None
         }
+    }
+}
+
+impl StopPolicy for ContentMatch {
+    fn id(&self) -> &str {
+        "content_match"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
     }
 }
 
@@ -317,12 +294,8 @@ pub struct LoopDetection {
     pub window: usize,
 }
 
-impl StopCondition for LoopDetection {
-    fn id(&self) -> &str {
-        "loop_detection"
-    }
-
-    fn check(&self, ctx: &StopCheckContext) -> Option<StopReason> {
+impl LoopDetection {
+    fn check(&self, ctx: &StopCheckContext<'_>) -> Option<StopReason> {
         let window = self.window.max(2);
         let history = ctx.tool_call_history;
         if history.len() < 2 {
@@ -340,12 +313,23 @@ impl StopCondition for LoopDetection {
     }
 }
 
+impl StopPolicy for LoopDetection {
+    fn id(&self) -> &str {
+        "loop_detection"
+    }
+
+    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+        let ctx = stop_check_context_from_policy_input(input);
+        self.check(&ctx)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StopConditionSpec resolution
 // ---------------------------------------------------------------------------
 
 /// Resolve contract-level declarative stop condition spec to runtime evaluator.
-pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopCondition> {
+pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy> {
     match spec {
         StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
         StopConditionSpec::Timeout { seconds } => Arc::new(Timeout(Duration::from_secs(seconds))),
@@ -613,7 +597,7 @@ mod tests {
 
     #[test]
     fn check_stop_conditions_returns_first_match() {
-        let conditions: Vec<Arc<dyn StopCondition>> = vec![
+        let conditions: Vec<Arc<dyn StopPolicy>> = vec![
             Arc::new(MaxRounds(5)),
             Arc::new(Timeout(Duration::from_secs(10))),
         ];
@@ -629,7 +613,7 @@ mod tests {
 
     #[test]
     fn check_stop_conditions_returns_none_when_all_pass() {
-        let conditions: Vec<Arc<dyn StopCondition>> = vec![
+        let conditions: Vec<Arc<dyn StopPolicy>> = vec![
             Arc::new(MaxRounds(10)),
             Arc::new(Timeout(Duration::from_secs(60))),
         ];
@@ -641,7 +625,7 @@ mod tests {
 
     #[test]
     fn check_stop_conditions_empty_always_none() {
-        let conditions: Vec<Arc<dyn StopCondition>> = vec![];
+        let conditions: Vec<Arc<dyn StopPolicy>> = vec![];
         let ctx = empty_context();
         assert!(check_stop_policies(&conditions, &ctx.as_policy_input()).is_none());
     }
@@ -667,21 +651,21 @@ mod tests {
         }
     }
 
-    // -- Custom StopCondition --
+    // -- Custom StopPolicy --
 
     struct AlwaysStop;
-    impl StopCondition for AlwaysStop {
+    impl StopPolicy for AlwaysStop {
         fn id(&self) -> &str {
             "always_stop"
         }
-        fn check(&self, _ctx: &StopCheckContext) -> Option<StopReason> {
+        fn evaluate(&self, _input: &StopPolicyInput<'_>) -> Option<StopReason> {
             Some(StopReason::Custom("always".to_string()))
         }
     }
 
     #[test]
-    fn custom_stop_condition_works() {
-        let conditions: Vec<Arc<dyn StopCondition>> = vec![Arc::new(AlwaysStop)];
+    fn custom_stop_policy_works() {
+        let conditions: Vec<Arc<dyn StopPolicy>> = vec![Arc::new(AlwaysStop)];
         let ctx = empty_context();
         assert_eq!(
             check_stop_policies(&conditions, &ctx.as_policy_input()),
@@ -733,7 +717,10 @@ mod tests {
         assert_eq!(cond.id(), "max_rounds");
         let mut ctx = empty_context();
         ctx.rounds = 3;
-        assert_eq!(cond.check(&ctx), Some(StopReason::MaxRoundsReached));
+        assert_eq!(
+            cond.evaluate(&ctx.as_policy_input()),
+            Some(StopReason::MaxRoundsReached)
+        );
     }
 
     #[test]
@@ -743,7 +730,10 @@ mod tests {
         assert_eq!(cond.id(), "timeout");
         let mut ctx = empty_context();
         ctx.elapsed = Duration::from_secs(10);
-        assert_eq!(cond.check(&ctx), Some(StopReason::TimeoutReached));
+        assert_eq!(
+            cond.evaluate(&ctx.as_policy_input()),
+            Some(StopReason::TimeoutReached)
+        );
     }
 
     #[test]
@@ -753,7 +743,10 @@ mod tests {
         let mut ctx = empty_context();
         ctx.total_input_tokens = 60;
         ctx.total_output_tokens = 50;
-        assert_eq!(cond.check(&ctx), Some(StopReason::TokenBudgetExceeded));
+        assert_eq!(
+            cond.evaluate(&ctx.as_policy_input()),
+            Some(StopReason::TokenBudgetExceeded)
+        );
     }
 
     #[test]
@@ -770,7 +763,7 @@ mod tests {
             ..empty_context()
         };
         assert_eq!(
-            cond.check(&ctx),
+            cond.evaluate(&ctx.as_policy_input()),
             Some(StopReason::ToolCalled("finish".to_string()))
         );
     }

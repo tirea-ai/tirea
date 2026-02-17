@@ -1,10 +1,8 @@
 use super::outcome::{LoopStats, LoopUsage};
 use super::AgentConfig;
-use crate::contracts::runtime::StreamResult;
+use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult};
 use crate::contracts::state::AgentState;
-use crate::engine::stop_conditions::{
-    condition_from_spec, StopCondition, StopPolicyInput, StopPolicyStats,
-};
+use crate::engine::stop_conditions::condition_from_spec;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -129,7 +127,7 @@ impl RunState {
 ///
 /// If the user explicitly configured stop conditions, use those.
 /// Otherwise, create a default `MaxRounds` from `config.max_rounds`.
-pub(super) fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopCondition>> {
+pub(super) fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopPolicy>> {
     let mut conditions = config.stop_conditions.clone();
     for spec in &config.stop_condition_specs {
         conditions.push(condition_from_spec(spec.clone()));

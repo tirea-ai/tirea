@@ -115,7 +115,7 @@ impl AgentOs {
             version = committed.version;
         }
         let version_timestamp = thread.metadata.version_timestamp;
-        crate::runtime::loop_runner::set_thread_state_version(
+        crate::runtime::loop_runner::set_agent_state_version(
             &mut thread,
             version,
             version_timestamp,

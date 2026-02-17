@@ -654,20 +654,27 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let sid_for_tools = thread.id.clone();
             let thread_messages_for_tools = thread.messages.clone();
             let thread_version_for_tools = agent_state_version(&thread);
-            let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
-                Box::pin(config.tool_executor.execute(ToolExecutionRequest {
-                    tools: &active_tool_snapshot.tools,
-                    calls: &result.tool_calls,
-                    state: &tool_context.state,
-                    tool_descriptors: &active_tool_descriptors,
-                    plugins: &config.plugins,
-                    activity_manager: Some(activity_manager.clone()),
-                    scope: Some(&tool_context.scope),
-                    thread_id: &sid_for_tools,
-                    thread_messages: &thread_messages_for_tools,
-                    state_version: thread_version_for_tools,
-                    cancellation_token: run_cancellation_token.as_ref(),
-                }));
+            let mut tool_future: Pin<
+                Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>,
+            > = Box::pin(async {
+                config
+                    .tool_executor
+                    .execute(ToolExecutionRequest {
+                        tools: &active_tool_snapshot.tools,
+                        calls: &result.tool_calls,
+                        state: &tool_context.state,
+                        tool_descriptors: &active_tool_descriptors,
+                        plugins: &config.plugins,
+                        activity_manager: Some(activity_manager.clone()),
+                        scope: Some(&tool_context.scope),
+                        thread_id: &sid_for_tools,
+                        thread_messages: &thread_messages_for_tools,
+                        state_version: thread_version_for_tools,
+                        cancellation_token: run_cancellation_token.as_ref(),
+                    })
+                    .await
+                    .map_err(AgentLoopError::from)
+            });
             let mut activity_closed = false;
             let results = loop {
                 tokio::select! {

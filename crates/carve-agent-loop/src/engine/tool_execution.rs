@@ -1,21 +1,11 @@
 //! Tool execution utilities.
 
+pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::state::ToolCall;
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::AgentState;
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
-
-/// Result of executing a single tool.
-#[derive(Debug, Clone)]
-pub struct ToolExecution {
-    /// The tool call that was executed.
-    pub call: ToolCall,
-    /// The result of execution.
-    pub result: ToolResult,
-    /// State changes from the tool (if any).
-    pub patch: Option<TrackedPatch>,
-}
 
 /// Execute a single tool call.
 ///

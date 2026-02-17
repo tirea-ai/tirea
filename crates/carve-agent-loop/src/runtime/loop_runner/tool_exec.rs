@@ -10,13 +10,14 @@ use super::{
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::runtime::{
-    Interaction, StreamResult, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
+    Interaction, StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
+    ToolExecutor, ToolExecutorError, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
 };
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::engine::convert::tool_response;
-use crate::engine::tool_execution::{collect_patches, ToolExecution};
+use crate::engine::tool_execution::collect_patches;
 use crate::runtime::control::AGENT_STATE_PATH;
 use async_trait::async_trait;
 use carve_state::{PatchExt, TrackedPatch};
@@ -31,35 +32,14 @@ pub(super) struct AppliedToolResults {
     pub(super) state_snapshot: Option<Value>,
 }
 
-/// Input envelope for tool execution strategy.
-pub struct ToolExecutionRequest<'a> {
-    pub tools: &'a HashMap<String, Arc<dyn Tool>>,
-    pub calls: &'a [crate::contracts::state::ToolCall],
-    pub state: &'a Value,
-    pub tool_descriptors: &'a [ToolDescriptor],
-    pub plugins: &'a [Arc<dyn AgentPlugin>],
-    pub activity_manager: Option<Arc<dyn ActivityManager>>,
-    pub scope: Option<&'a carve_state::ScopeState>,
-    pub thread_id: &'a str,
-    pub thread_messages: &'a [Arc<Message>],
-    pub state_version: u64,
-    pub cancellation_token: Option<&'a RunCancellationToken>,
-}
-
-/// Strategy abstraction for tool execution.
-#[async_trait]
-pub trait ToolExecutor: Send + Sync {
-    async fn execute(
-        &self,
-        request: ToolExecutionRequest<'_>,
-    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError>;
-
-    /// Stable strategy label for logs/debug output.
-    fn name(&self) -> &'static str;
-
-    /// Whether tool-result apply step should enforce parallel patch conflict checks.
-    fn requires_parallel_patch_conflict_check(&self) -> bool {
-        false
+fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
+    match err {
+        AgentLoopError::Cancelled { state } => ToolExecutorError::Cancelled {
+            thread_id: state.id.clone(),
+        },
+        other => ToolExecutorError::Failed {
+            message: other.to_string(),
+        },
     }
 }
 
@@ -72,7 +52,7 @@ impl ToolExecutor for ParallelToolExecutor {
     async fn execute(
         &self,
         request: ToolExecutionRequest<'_>,
-    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
+    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
         execute_tools_parallel_with_phases(
             request.tools,
             request.calls,
@@ -87,6 +67,7 @@ impl ToolExecutor for ParallelToolExecutor {
             request.cancellation_token,
         )
         .await
+        .map_err(map_tool_executor_error)
     }
 
     fn name(&self) -> &'static str {
@@ -107,7 +88,7 @@ impl ToolExecutor for SequentialToolExecutor {
     async fn execute(
         &self,
         request: ToolExecutionRequest<'_>,
-    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
+    ) -> Result<Vec<ToolExecutionResult>, ToolExecutorError> {
         execute_tools_sequential_with_phases(
             request.tools,
             request.calls,
@@ -122,6 +103,7 @@ impl ToolExecutor for SequentialToolExecutor {
             request.cancellation_token,
         )
         .await
+        .map_err(map_tool_executor_error)
     }
 
     fn name(&self) -> &'static str {
@@ -664,18 +646,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
     }
 
     Ok(results)
-}
-
-/// Result of tool execution with phase hooks.
-pub struct ToolExecutionResult {
-    /// The tool execution result.
-    pub execution: ToolExecution,
-    /// System reminders collected during execution.
-    pub reminders: Vec<String>,
-    /// Pending interaction if tool is waiting for user action.
-    pub pending_interaction: Option<Interaction>,
-    /// Pending patches from plugins during tool phases.
-    pub pending_patches: Vec<TrackedPatch>,
 }
 
 /// Execute a single tool with phase hooks.

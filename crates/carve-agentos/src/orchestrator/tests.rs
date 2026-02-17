@@ -205,8 +205,10 @@ async fn wire_skills_inserts_tools_and_plugin() {
         .await;
     let merged = step.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
-    assert!(merged.contains("<skill_instructions skill=\"s1\">"));
-    assert!(merged.contains("Do X"));
+    assert!(
+        !merged.contains("<skill_instructions skill=\"s1\">"),
+        "runtime skill instructions are delivered via append_user_messages, not system context"
+    );
 }
 
 #[tokio::test]
@@ -247,8 +249,10 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
         .await;
     let merged = step.system_context.join("\n");
     assert!(!merged.contains("<available_skills>"));
-    assert!(merged.contains("<skill_instructions skill=\"s1\">"));
-    assert!(merged.contains("Do X"));
+    assert!(
+        !merged.contains("<skill_instructions skill=\"s1\">"),
+        "runtime-only plugin is intentionally no-op for system context"
+    );
 }
 
 #[test]
@@ -1568,7 +1572,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
         .clone();
     let snapshot = provider
         .provide(crate::runtime::loop_runner::StepToolInput {
-            thread: &prepared.thread,
+            state: &prepared.thread,
         })
         .await
         .expect("step tool provider should resolve");

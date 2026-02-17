@@ -149,6 +149,21 @@ impl AgentLoopError {
     }
 }
 
+impl From<crate::contracts::runtime::ToolExecutorError> for AgentLoopError {
+    fn from(value: crate::contracts::runtime::ToolExecutorError) -> Self {
+        match value {
+            crate::contracts::runtime::ToolExecutorError::Cancelled { thread_id } => {
+                Self::Cancelled {
+                    state: Box::new(AgentState::new(thread_id)),
+                }
+            }
+            crate::contracts::runtime::ToolExecutorError::Failed { message } => {
+                Self::StateError(message)
+            }
+        }
+    }
+}
+
 /// Helper to create a tool map from an iterator of tools.
 pub fn tool_map<I, T>(tools: I) -> HashMap<String, Arc<dyn Tool>>
 where

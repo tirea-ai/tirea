@@ -1,16 +1,13 @@
-use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
+use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::StopConditionSpec;
+use crate::contracts::runtime::{LlmExecutor, StopConditionSpec, StopPolicy, ToolExecutor};
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::{Tool, ToolDescriptor};
-use crate::engine::stop_conditions::StopCondition;
 use async_trait::async_trait;
-use futures::Stream;
 use genai::chat::ChatOptions;
 use genai::Client;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
 /// Retry strategy for LLM inference calls.
@@ -70,35 +67,6 @@ pub trait StepToolProvider: Send + Sync {
     async fn provide(&self, input: StepToolInput<'_>) -> Result<StepToolSnapshot, AgentLoopError>;
 }
 
-/// Abstraction over LLM execution backend.
-///
-/// This keeps loop execution independent from concrete provider SDK clients.
-#[async_trait]
-pub trait LlmExecutor: Send + Sync {
-    /// Execute a non-streaming chat completion call.
-    async fn exec_chat_response(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<genai::chat::ChatResponse>;
-
-    /// Execute a streaming chat completion call.
-    async fn exec_chat_stream_events(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<
-        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
-    >;
-
-    /// Stable executor label for debug/telemetry output.
-    fn name(&self) -> &'static str {
-        "llm_executor"
-    }
-}
-
 /// Default LLM executor backed by `genai::Client`.
 #[derive(Clone)]
 pub struct GenaiLlmExecutor {
@@ -133,9 +101,7 @@ impl LlmExecutor for GenaiLlmExecutor {
         model: &str,
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
-    ) -> genai::Result<
-        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
-    > {
+    ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
         let resp = self.client.exec_chat_stream(model, chat_req, options).await?;
         Ok(Box::pin(resp.stream))
     }
@@ -187,13 +153,13 @@ pub struct AgentConfig {
     pub llm_retry_policy: LlmRetryPolicy,
     /// Plugins to run during the agent loop.
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
-    /// Composable stop conditions checked after each tool-call round.
+    /// Composable stop policies checked after each tool-call round.
     ///
     /// When empty (and `stop_condition_specs` is also empty), a default
     /// [`crate::engine::stop_conditions::MaxRounds`] condition is created from `max_rounds`.
     /// When non-empty, `max_rounds` is ignored.
-    pub stop_conditions: Vec<Arc<dyn StopCondition>>,
-    /// Declarative stop condition specs, resolved to `Arc<dyn StopCondition>`
+    pub stop_conditions: Vec<Arc<dyn StopPolicy>>,
+    /// Declarative stop condition specs, resolved to `Arc<dyn StopPolicy>`
     /// at runtime.
     ///
     /// Specs are appended after explicit `stop_conditions` in evaluation order.
@@ -361,26 +327,26 @@ impl AgentConfig {
         self
     }
 
-    /// Add a stop condition.
+    /// Add a stop policy.
     ///
     /// When any stop conditions are set, the `max_rounds` field is ignored
-    /// and only explicit stop conditions are checked.
+    /// and only explicit stop policies are checked.
     #[must_use]
-    pub fn with_stop_condition(mut self, condition: impl StopCondition + 'static) -> Self {
+    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
         self.stop_conditions.push(Arc::new(condition));
         self
     }
 
-    /// Set all stop conditions, replacing any previously set.
+    /// Set all stop policies, replacing any previously set.
     #[must_use]
-    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopCondition>>) -> Self {
+    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
         self.stop_conditions = conditions;
         self
     }
 
-    /// Add a declarative stop condition spec.
+    /// Add a declarative stop policy spec.
     ///
-    /// Specs are resolved to `Arc<dyn StopCondition>` at runtime and
+    /// Specs are resolved to `Arc<dyn StopPolicy>` at runtime and
     /// appended after explicit `stop_conditions` in evaluation order.
     #[must_use]
     pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
@@ -388,7 +354,7 @@ impl AgentConfig {
         self
     }
 
-    /// Set all declarative stop condition specs, replacing any previously set.
+    /// Set all declarative stop policy specs, replacing any previously set.
     #[must_use]
     pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
         self.stop_condition_specs = specs;

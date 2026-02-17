@@ -49,13 +49,17 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::runtime::phase::Phase;
-use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
+use crate::contracts::runtime::{
+    AgentEvent, Interaction, StopPolicy, StreamResult, TerminationReason, ToolExecutionRequest,
+    ToolExecutionResult,
+};
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
-use crate::engine::stop_conditions::{check_stop_policies, StopReason};
+use crate::engine::stop_conditions::check_stop_policies;
+use crate::contracts::runtime::StopReason;
 use crate::runtime::activity::ActivityHub;
 #[cfg(test)]
 use crate::runtime::control::AGENT_STATE_PATH;
@@ -82,7 +86,8 @@ pub use crate::runtime::run_context::{
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
-pub use config::{AgentConfig, GenaiLlmExecutor, LlmExecutor, LlmRetryPolicy};
+pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
+pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
 pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
@@ -111,13 +116,11 @@ use tokio_util::sync::CancellationToken;
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    next_step_index, scope_with_tool_caller_context, step_metadata, ToolExecutionRequest,
-    ToolExecutionResult,
+    next_step_index, scope_with_tool_caller_context, step_metadata,
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
-    ToolExecutor,
 };
 
 /// Canonical loop invocation input.
@@ -321,7 +324,7 @@ fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
     state: &AgentState,
-    stop_conditions: &[Arc<dyn crate::engine::stop_conditions::StopCondition>],
+    stop_conditions: &[Arc<dyn StopPolicy>],
 ) -> Option<StopReason> {
     let stop_input = run_state.to_policy_input(result, state);
     check_stop_policies(stop_conditions, &stop_input)
@@ -1098,7 +1101,7 @@ async fn run_loop_outcome_with_context_provider(
             state_version: thread_version_for_tools,
             cancellation_token: run_cancellation_token.as_ref(),
         });
-        let results = tool_exec_future.await;
+        let results = tool_exec_future.await.map_err(AgentLoopError::from);
 
         let results = match results {
             Ok(r) => r,
