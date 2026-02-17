@@ -94,11 +94,11 @@ use core::{
     reduce_thread_mutations, ThreadMutationBatch,
 };
 pub use outcome::{run_step_cycle, tool_map, tool_map_from_arc, AgentLoopError, StepResult};
+pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
 use plugin_runtime::{
-    emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase,
-    prepare_stream_error_termination, run_phase_block,
+    emit_cleanup_phases_and_apply, emit_phase_block, emit_run_end_phase, run_phase_block,
 };
 use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
@@ -232,9 +232,16 @@ pub(super) async fn wait_retry_backoff(
 }
 
 pub(super) enum LlmAttemptOutcome<T> {
-    Success { value: T, model: String },
+    Success {
+        value: T,
+        model: String,
+        attempts: usize,
+    },
     Cancelled,
-    Exhausted { last_error: String },
+    Exhausted {
+        last_error: String,
+        attempts: usize,
+    },
 }
 
 fn is_run_cancelled(token: Option<&RunCancellationToken>) -> bool {
@@ -261,6 +268,23 @@ fn mark_step_completed(run_state: &mut RunState) {
     run_state.completed_steps += 1;
 }
 
+fn build_loop_outcome(
+    thread: AgentState,
+    termination: TerminationReason,
+    response: Option<String>,
+    run_state: &RunState,
+    failure: Option<outcome::LoopFailure>,
+) -> LoopOutcome {
+    LoopOutcome {
+        thread,
+        termination,
+        response: response.filter(|text| !text.is_empty()),
+        usage: run_state.usage(),
+        stats: run_state.stats(),
+        failure,
+    }
+}
+
 fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
@@ -285,9 +309,11 @@ where
     let mut last_llm_error = unknown_error.to_string();
     let model_candidates = effective_llm_models(config);
     let max_attempts = llm_retry_attempts(config);
+    let mut total_attempts = 0usize;
 
     for model in model_candidates {
         for attempt in 1..=max_attempts {
+            total_attempts = total_attempts.saturating_add(1);
             let response_res = if let Some(token) = run_cancellation_token {
                 tokio::select! {
                     _ = token.cancelled() => return LlmAttemptOutcome::Cancelled,
@@ -299,7 +325,11 @@ where
 
             match response_res {
                 Ok(value) => {
-                    return LlmAttemptOutcome::Success { value, model };
+                    return LlmAttemptOutcome::Success {
+                        value,
+                        model,
+                        attempts: total_attempts,
+                    };
                 }
                 Err(e) => {
                     let message = e.to_string();
@@ -324,6 +354,7 @@ where
 
     LlmAttemptOutcome::Exhausted {
         last_error: last_llm_error,
+        attempts: total_attempts,
     }
 }
 
@@ -636,7 +667,7 @@ async fn run_step_with_provider(
                 thread: Box::new(thread),
             });
         }
-        LlmAttemptOutcome::Exhausted { last_error } => {
+        LlmAttemptOutcome::Exhausted { last_error, .. } => {
             apply_llm_error_cleanup(
                 &mut thread,
                 &tool_descriptors,
@@ -698,13 +729,69 @@ pub async fn run_loop_with_context(
     run_loop_with_context_provider(client, config, thread, tools, run_ctx).await
 }
 
+fn legacy_result_from_outcome(
+    outcome: LoopOutcome,
+) -> Result<(AgentState, String), AgentLoopError> {
+    let LoopOutcome {
+        thread,
+        termination,
+        response,
+        failure,
+        ..
+    } = outcome;
+
+    match termination {
+        TerminationReason::NaturalEnd | TerminationReason::PluginRequested => {
+            Ok((thread, response.unwrap_or_default()))
+        }
+        TerminationReason::Stopped(reason) => Err(AgentLoopError::Stopped {
+            thread: Box::new(thread),
+            reason,
+        }),
+        TerminationReason::Cancelled => Err(AgentLoopError::Cancelled {
+            thread: Box::new(thread),
+        }),
+        TerminationReason::PendingInteraction => {
+            if let Some(interaction) = pending_interaction_from_thread(&thread) {
+                Err(AgentLoopError::PendingInteraction {
+                    thread: Box::new(thread),
+                    interaction: Box::new(interaction),
+                })
+            } else {
+                Err(AgentLoopError::StateError(
+                    "pending interaction termination without pending interaction state".to_string(),
+                ))
+            }
+        }
+        TerminationReason::Error => match failure {
+            Some(outcome::LoopFailure::Llm(message)) => Err(AgentLoopError::LlmError(message)),
+            Some(outcome::LoopFailure::State(message)) => Err(AgentLoopError::StateError(message)),
+            None => Err(AgentLoopError::StateError(
+                "loop terminated with error".to_string(),
+            )),
+        },
+    }
+}
+
 async fn run_loop_with_context_provider(
+    provider: &dyn ChatProvider,
+    config: &AgentConfig,
+    thread: AgentState,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+) -> Result<(AgentState, String), AgentLoopError> {
+    let outcome =
+        run_loop_outcome_with_context_provider(provider, config, thread, tools, run_ctx).await;
+    legacy_result_from_outcome(outcome)
+}
+
+async fn run_loop_outcome_with_context_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
     mut thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> LoopOutcome {
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
@@ -719,38 +806,61 @@ async fn run_loop_with_context_provider(
             let _ = thread.scope.set("run_id", &id);
             id
         });
-    let initial_step_tools = resolve_step_tool_snapshot(&step_tool_provider, &thread).await?;
+    let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return build_loop_outcome(
+                thread,
+                TerminationReason::Error,
+                None,
+                &run_state,
+                Some(outcome::LoopFailure::State(error.to_string())),
+            );
+        }
+    };
     let mut active_tool_descriptors = initial_step_tools.descriptors;
 
     macro_rules! terminate_run {
-        ($builder:expr) => {{
+        ($termination:expr, $response:expr, $failure:expr) => {{
             thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
-            return Err(($builder)(thread));
+            return build_loop_outcome(thread, $termination, $response, &run_state, $failure);
         }};
     }
 
     // Phase: RunStart
-    let pending = emit_phase_block(
+    let pending = match emit_phase_block(
         Phase::RunStart,
         &thread,
         &active_tool_descriptors,
         &config.plugins,
         |_| {},
     )
-    .await?;
+    .await
+    {
+        Ok(pending) => pending,
+        Err(error) => {
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(error.to_string()))
+            );
+        }
+    };
     thread = apply_pending_patches(thread, pending);
 
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {
-            terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
-                thread: Box::new(thread),
-            });
+            terminate_run!(TerminationReason::Cancelled, None, None);
         }
 
         let step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
-                terminate_run!(move |_| e);
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
             }
         };
         active_tool_descriptors = step_tools.descriptors.clone();
@@ -759,21 +869,24 @@ async fn run_loop_with_context_provider(
         {
             Ok(v) => v,
             Err(e) => {
-                terminate_run!(move |_| e);
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
             }
         };
         thread = apply_pending_patches(thread, prepared.pending_patches);
 
         if prepared.skip_inference {
-            if let Some(interaction) = pending_interaction_from_thread(&thread) {
-                terminate_run!(
-                    move |thread: AgentState| AgentLoopError::PendingInteraction {
-                        thread: Box::new(thread),
-                        interaction: Box::new(interaction),
-                    }
-                );
+            if pending_interaction_from_thread(&thread).is_some() {
+                terminate_run!(TerminationReason::PendingInteraction, None, None);
             }
-            break;
+            terminate_run!(
+                TerminationReason::PluginRequested,
+                Some(last_text.clone()),
+                None
+            );
         }
 
         // Call LLM with unified retry + fallback model strategy.
@@ -799,13 +912,20 @@ async fn run_loop_with_context_provider(
         .await;
 
         let response = match attempt_outcome {
-            LlmAttemptOutcome::Success { value, .. } => value,
-            LlmAttemptOutcome::Cancelled => {
-                terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
-                    thread: Box::new(thread),
-                });
+            LlmAttemptOutcome::Success {
+                value, attempts, ..
+            } => {
+                run_state.record_llm_attempts(attempts);
+                value
             }
-            LlmAttemptOutcome::Exhausted { last_error } => {
+            LlmAttemptOutcome::Cancelled => {
+                terminate_run!(TerminationReason::Cancelled, None, None);
+            }
+            LlmAttemptOutcome::Exhausted {
+                last_error,
+                attempts,
+            } => {
+                run_state.record_llm_attempts(attempts);
                 // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 if let Err(phase_error) = apply_llm_error_cleanup(
                     &mut thread,
@@ -816,9 +936,17 @@ async fn run_loop_with_context_provider(
                 )
                 .await
                 {
-                    terminate_run!(move |_| phase_error);
+                    terminate_run!(
+                        TerminationReason::Error,
+                        None,
+                        Some(outcome::LoopFailure::State(phase_error.to_string()))
+                    );
                 }
-                terminate_run!(move |_| AgentLoopError::LlmError(last_error));
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::Llm(last_error))
+                );
             }
         };
 
@@ -839,7 +967,11 @@ async fn run_loop_with_context_provider(
         )
         .await
         {
-            terminate_run!(move |_| e);
+            terminate_run!(
+                TerminationReason::Error,
+                None,
+                Some(outcome::LoopFailure::State(e.to_string()))
+            );
         }
 
         mark_step_completed(&mut run_state);
@@ -848,19 +980,20 @@ async fn run_loop_with_context_provider(
             if let Some(reason) =
                 stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
             {
-                terminate_run!(move |thread: AgentState| AgentLoopError::Stopped {
-                    thread: Box::new(thread),
-                    reason,
-                });
+                terminate_run!(TerminationReason::Stopped(reason), None, None);
             }
-            break;
+            terminate_run!(TerminationReason::NaturalEnd, Some(last_text.clone()), None);
         }
 
         // Execute tools with phase hooks using configured execution strategy.
         let tool_context = match prepare_tool_execution_context(&thread, Some(config)) {
             Ok(ctx) => ctx,
             Err(e) => {
-                terminate_run!(move |_| e);
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
             }
         };
         let thread_messages_for_tools = thread.messages.clone();
@@ -881,9 +1014,7 @@ async fn run_loop_with_context_provider(
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
-                    terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
-                        thread: Box::new(thread),
-                    });
+                    terminate_run!(TerminationReason::Cancelled, None, None);
                 }
                 results = tool_exec_future => results,
             }
@@ -894,7 +1025,11 @@ async fn run_loop_with_context_provider(
         let results = match results {
             Ok(r) => r,
             Err(e) => {
-                terminate_run!(move |_| e);
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
             }
         };
 
@@ -910,19 +1045,18 @@ async fn run_loop_with_context_provider(
             Ok(a) => a,
             Err(e) => {
                 thread = thread_before_apply;
-                terminate_run!(move |_| e);
+                terminate_run!(
+                    TerminationReason::Error,
+                    None,
+                    Some(outcome::LoopFailure::State(e.to_string()))
+                );
             }
         };
         thread = applied.thread;
 
         // Pause if any tool is waiting for client response.
-        if let Some(interaction) = applied.pending_interaction {
-            terminate_run!(
-                move |thread: AgentState| AgentLoopError::PendingInteraction {
-                    thread: Box::new(thread),
-                    interaction: Box::new(interaction),
-                }
-            );
+        if let Some(_interaction) = applied.pending_interaction {
+            terminate_run!(TerminationReason::PendingInteraction, None, None);
         }
 
         // Track tool-step metrics for post-tool stop condition evaluation.
@@ -934,17 +1068,10 @@ async fn run_loop_with_context_provider(
 
         // Check stop conditions.
         if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions) {
-            terminate_run!(move |thread: AgentState| AgentLoopError::Stopped {
-                thread: Box::new(thread),
-                reason,
-            });
+            terminate_run!(TerminationReason::Stopped(reason), None, None);
         }
     }
 
-    // Phase: RunEnd
-    thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
-
-    Ok((thread, last_text))
 }
 
 /// Run the agent loop with streaming output.

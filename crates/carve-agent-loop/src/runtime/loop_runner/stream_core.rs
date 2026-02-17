@@ -1,5 +1,4 @@
 use super::*;
-use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// Pure stream-loop helpers:
@@ -30,14 +29,6 @@ pub(super) fn resolve_stream_run_identity(thread: &mut AgentState) -> StreamRunI
     StreamRunIdentity {
         run_id,
         parent_run_id,
-    }
-}
-
-pub(super) fn natural_result_payload(text: &str) -> Option<Value> {
-    if text.is_empty() {
-        None
-    } else {
-        Some(json!({ "response": text }))
     }
 }
 

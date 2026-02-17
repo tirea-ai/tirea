@@ -1,7 +1,5 @@
 use super::state_commit::PendingDeltaCommitContext;
-use super::stream_core::{
-    natural_result_payload, preallocate_tool_result_message_ids, resolve_stream_run_identity,
-};
+use super::stream_core::{preallocate_tool_result_message_ids, resolve_stream_run_identity};
 use super::*;
 
 // Stream adapter layer:
@@ -151,6 +149,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
     Box::pin(stream! {
     let mut thread = thread;
     let mut run_state = RunState::new();
+    let mut last_text = String::new();
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
     let state_committer = run_ctx.state_committer().cloned();
@@ -174,15 +173,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
         let mut active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
+                let message = e.to_string();
                 yield AgentEvent::Error {
-                    message: e.to_string(),
+                    message: message.clone(),
                 };
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: None,
-                    termination: TerminationReason::Error,
-                };
+                let outcome = build_loop_outcome(
+                    thread,
+                    TerminationReason::Error,
+                    None,
+                    &run_state,
+                    Some(outcome::LoopFailure::State(message)),
+                );
+                yield outcome.to_run_finish_event(run_id.clone());
                 return;
             }
         };
@@ -214,35 +216,40 @@ pub(super) fn run_loop_stream_impl_with_provider(
         }
 
         macro_rules! terminate_stream_error {
-            ($message:expr) => {{
-                let (finalized, error, finish) = prepare_stream_error_termination(
-                    thread,
-                    &active_tool_descriptors,
-                    &config.plugins,
-                    &run_id,
-                    $message,
-                )
-                .await;
-                thread = finalized;
+            ($failure:expr, $message:expr) => {{
+                let failure = $failure;
+                let message = $message;
+                thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
                 emit_run_finished_delta!();
-                yield error;
-                yield finish;
+                let outcome = build_loop_outcome(
+                    thread,
+                    TerminationReason::Error,
+                    Some(last_text.clone()),
+                    &run_state,
+                    Some(failure),
+                );
+                yield AgentEvent::Error {
+                    message: message.clone(),
+                };
+                yield outcome.to_run_finish_event(run_id.clone());
                 return;
             }};
         }
 
         macro_rules! finish_run {
-            ($termination_expr:expr, $result_expr:expr) => {{
-                let final_result = $result_expr;
+            ($termination_expr:expr, $response_expr:expr) => {{
                 let final_termination = $termination_expr;
+                let final_response = $response_expr;
                 thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
-                yield AgentEvent::RunFinish {
-                    thread_id: thread.id.clone(),
-                    run_id: run_id.clone(),
-                    result: final_result,
-                    termination: final_termination,
-                };
+                let outcome = build_loop_outcome(
+                    thread,
+                    final_termination,
+                    final_response,
+                    &run_state,
+                    None,
+                );
+                yield outcome.to_run_finish_event(run_id.clone());
                 return;
             }};
         }
@@ -255,13 +262,14 @@ pub(super) fn run_loop_stream_impl_with_provider(
             &config.plugins,
             |_| {},
         )
-        .await
+            .await
         {
             Ok(pending) => {
                 thread = apply_pending_patches(thread, pending);
             }
             Err(e) => {
-                terminate_stream_error!(e.to_string());
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         }
 
@@ -282,7 +290,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
         {
             Ok(v) => v,
             Err(e) => {
-                terminate_stream_error!(e);
+                let message = e;
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         };
         thread = next_thread;
@@ -294,7 +303,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let (next_thread, loop_tick_events) = match drain_loop_tick_outbox(thread.clone()) {
                 Ok(v) => v,
                 Err(e) => {
-                    terminate_stream_error!(e);
+                    let message = e;
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
             thread = next_thread;
@@ -310,7 +320,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
                 Ok(snapshot) => snapshot,
                 Err(e) => {
-                    terminate_stream_error!(e.to_string());
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
             active_tool_descriptors = active_tool_snapshot.descriptors.clone();
@@ -318,7 +329,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, &config).await {
                 Ok(v) => v,
                 Err(e) => {
-                    terminate_stream_error!(e.to_string());
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
             thread = apply_pending_patches(thread, prepared.pending_patches);
@@ -339,7 +351,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     } else {
                         TerminationReason::PluginRequested
                     },
-                    None
+                    Some(last_text.clone())
                 );
             }
 
@@ -371,11 +383,22 @@ pub(super) fn run_loop_stream_impl_with_provider(
             .await;
 
             let (chat_stream_events, inference_model) = match attempt_outcome {
-                LlmAttemptOutcome::Success { value, model } => (value, model),
+                LlmAttemptOutcome::Success {
+                    value,
+                    model,
+                    attempts,
+                } => {
+                    run_state.record_llm_attempts(attempts);
+                    (value, model)
+                }
                 LlmAttemptOutcome::Cancelled => {
                     finish_run!(TerminationReason::Cancelled, None);
                 }
-                LlmAttemptOutcome::Exhausted { last_error } => {
+                LlmAttemptOutcome::Exhausted {
+                    last_error,
+                    attempts,
+                } => {
+                    run_state.record_llm_attempts(attempts);
                     // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match apply_llm_error_cleanup(
                             &mut thread,
@@ -388,10 +411,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     {
                         Ok(()) => {}
                         Err(phase_error) => {
-                            terminate_stream_error!(phase_error.to_string());
+                            let message = phase_error.to_string();
+                            terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                         }
                     }
-                    terminate_stream_error!(last_error);
+                    let message = last_error;
+                    terminate_stream_error!(outcome::LoopFailure::Llm(message.clone()), message);
                 }
             };
 
@@ -445,15 +470,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         {
                             Ok(()) => {}
                             Err(phase_error) => {
-                                terminate_stream_error!(phase_error.to_string());
+                                let message = phase_error.to_string();
+                                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                             }
                         }
-                        terminate_stream_error!(e.to_string());
+                        let message = e.to_string();
+                        terminate_stream_error!(outcome::LoopFailure::Llm(message.clone()), message);
                     }
                 }
             }
 
             let result = collector.finish();
+            last_text = result.text.clone();
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
 
@@ -474,14 +502,16 @@ pub(super) fn run_loop_stream_impl_with_provider(
             )
             .await
             {
-                terminate_stream_error!(e.to_string());
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
 
             if let Err(e) = pending_delta_commit
                 .commit(&mut thread, CheckpointReason::AssistantTurnCommitted, false)
                 .await
             {
-                terminate_stream_error!(e.to_string());
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
 
             // Step boundary: finished LLM call
@@ -499,8 +529,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 {
                     finish_run!(TerminationReason::Stopped(reason), None);
                 }
-                let result_value = natural_result_payload(&result.text);
-                finish_run!(TerminationReason::NaturalEnd, result_value);
+                finish_run!(TerminationReason::NaturalEnd, Some(last_text.clone()));
             }
 
             // Emit ToolCallReady for each finalized tool call
@@ -516,7 +545,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let tool_context = match prepare_tool_execution_context(&thread, Some(&config)) {
                 Ok(ctx) => ctx,
                 Err(e) => {
-                    terminate_stream_error!(e.to_string());
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
             let sid_for_tools = thread.id.clone();
@@ -570,7 +600,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let results = match results {
                 Ok(r) => r,
                 Err(e) => {
-                    terminate_stream_error!(e.to_string());
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
 
@@ -600,7 +631,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 Ok(a) => a,
                 Err(e) => {
                     thread = thread_before_apply;
-                    terminate_stream_error!(e.to_string());
+                    let message = e.to_string();
+                    terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
             thread = applied.thread;
@@ -609,7 +641,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 .commit(&mut thread, CheckpointReason::ToolResultsCommitted, false)
                 .await
             {
-                terminate_stream_error!(e.to_string());
+                let message = e.to_string();
+                terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
 
             // Emit non-pending tool results (pending ones pause the run).

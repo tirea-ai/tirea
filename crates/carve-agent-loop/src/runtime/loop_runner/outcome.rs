@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::{json, Value};
 
 /// Single step-cycle execution for fine-grained control.
 ///
@@ -16,6 +17,65 @@ pub enum StepResult {
         text: String,
         tool_calls: Vec<crate::contracts::state::ToolCall>,
     },
+}
+
+/// Aggregated token usage for one loop run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoopUsage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+}
+
+/// Aggregated runtime metrics for one loop run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoopStats {
+    pub duration_ms: u64,
+    pub steps: usize,
+    pub llm_calls: usize,
+    pub llm_retries: usize,
+    pub tool_calls: usize,
+    pub tool_errors: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum LoopFailure {
+    Llm(String),
+    State(String),
+}
+
+/// Unified terminal state for loop execution.
+#[derive(Debug, Clone)]
+pub struct LoopOutcome {
+    pub thread: AgentState,
+    pub termination: TerminationReason,
+    pub response: Option<String>,
+    pub usage: LoopUsage,
+    pub stats: LoopStats,
+    pub(super) failure: Option<LoopFailure>,
+}
+
+impl LoopOutcome {
+    /// Build a `RunFinish.result` payload from the unified outcome.
+    pub fn run_finish_result(&self) -> Option<Value> {
+        if !matches!(self.termination, TerminationReason::NaturalEnd) {
+            return None;
+        }
+        self.response
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|text| json!({ "response": text }))
+    }
+
+    /// Project unified outcome into stream `RunFinish` event.
+    pub fn to_run_finish_event(self, run_id: String) -> AgentEvent {
+        AgentEvent::RunFinish {
+            thread_id: self.thread.id.clone(),
+            run_id,
+            result: self.run_finish_result(),
+            termination: self.termination,
+        }
+    }
 }
 
 /// Run a single step-cycle of the agent loop.

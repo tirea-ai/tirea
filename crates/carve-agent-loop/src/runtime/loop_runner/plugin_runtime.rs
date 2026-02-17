@@ -5,7 +5,6 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::{AgentEvent, TerminationReason};
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::AgentState as ContextAgentState;
@@ -237,22 +236,4 @@ pub(super) async fn emit_run_end_phase(
         take_step_pending_patches(&mut step)
     };
     apply_pending_patches(thread, pending)
-}
-
-pub(super) async fn prepare_stream_error_termination(
-    thread: AgentState,
-    tool_descriptors: &[ToolDescriptor],
-    plugins: &[Arc<dyn AgentPlugin>],
-    run_id: &str,
-    message: String,
-) -> (AgentState, AgentEvent, AgentEvent) {
-    let thread = super::finalize_run_end(thread, tool_descriptors, plugins).await;
-    let error = AgentEvent::Error { message };
-    let finish = AgentEvent::RunFinish {
-        thread_id: thread.id.clone(),
-        run_id: run_id.to_string(),
-        result: None,
-        termination: TerminationReason::Error,
-    };
-    (thread, error, finish)
 }

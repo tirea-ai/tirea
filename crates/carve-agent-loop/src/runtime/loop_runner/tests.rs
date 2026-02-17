@@ -2896,6 +2896,28 @@ fn text_chat_response(text: &str) -> genai::chat::ChatResponse {
     }
 }
 
+fn text_chat_response_with_usage(
+    text: &str,
+    prompt_tokens: i32,
+    completion_tokens: i32,
+) -> genai::chat::ChatResponse {
+    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
+    genai::chat::ChatResponse {
+        content: MessageContent::from_text(text.to_string()),
+        reasoning_content: None,
+        model_iden: model_iden.clone(),
+        provider_model_iden: model_iden,
+        usage: Usage {
+            prompt_tokens: Some(prompt_tokens),
+            prompt_tokens_details: None,
+            completion_tokens: Some(completion_tokens),
+            completion_tokens_details: None,
+            total_tokens: Some(prompt_tokens + completion_tokens),
+        },
+        captured_raw_body: None,
+    }
+}
+
 fn tool_call_chat_response(call_id: &str, name: &str, args: Value) -> genai::chat::ChatResponse {
     let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
     genai::chat::ChatResponse {
@@ -3135,6 +3157,126 @@ async fn test_nonstream_cancellation_token_during_inference() {
         matches!(result, Err(AgentLoopError::Cancelled { .. })),
         "expected cancellation during inference, got: {result:?}"
     );
+}
+
+#[test]
+fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
+    let outcome = LoopOutcome {
+        thread: AgentState::new("thread-1"),
+        termination: TerminationReason::NaturalEnd,
+        response: Some("final text".to_string()),
+        usage: LoopUsage::default(),
+        stats: LoopStats::default(),
+        failure: None,
+    };
+
+    let event = outcome.to_run_finish_event("run-1".to_string());
+    match event {
+        AgentEvent::RunFinish {
+            thread_id,
+            run_id,
+            result,
+            termination,
+        } => {
+            assert_eq!(thread_id, "thread-1");
+            assert_eq!(run_id, "run-1");
+            assert_eq!(termination, TerminationReason::NaturalEnd);
+            assert_eq!(result, Some(json!({ "response": "final text" })));
+        }
+        other => panic!("expected run finish event, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
+    let outcome = LoopOutcome {
+        thread: AgentState::new("thread-2"),
+        termination: TerminationReason::Cancelled,
+        response: Some("ignored".to_string()),
+        usage: LoopUsage::default(),
+        stats: LoopStats::default(),
+        failure: None,
+    };
+
+    let event = outcome.to_run_finish_event("run-2".to_string());
+    match event {
+        AgentEvent::RunFinish {
+            result,
+            termination,
+            ..
+        } => {
+            assert_eq!(termination, TerminationReason::Cancelled);
+            assert_eq!(result, None);
+        }
+        other => panic!("expected run finish event, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
+    let provider = MockChatProvider::new(vec![Ok(text_chat_response_with_usage("done", 7, 3))]);
+    let config = AgentConfig::new("mock");
+    let thread = AgentState::new("usage-stats").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let outcome = run_loop_outcome_with_context_provider(
+        &provider,
+        &config,
+        thread,
+        &tools,
+        RunContext::default(),
+    )
+    .await;
+
+    assert_eq!(outcome.termination, TerminationReason::NaturalEnd);
+    assert_eq!(outcome.response.as_deref(), Some("done"));
+    assert_eq!(outcome.usage.prompt_tokens, 7);
+    assert_eq!(outcome.usage.completion_tokens, 3);
+    assert_eq!(outcome.usage.total_tokens, 10);
+    assert_eq!(outcome.stats.steps, 1);
+    assert_eq!(outcome.stats.llm_calls, 1);
+    assert_eq!(outcome.stats.llm_retries, 0);
+    assert_eq!(outcome.stats.tool_calls, 0);
+    assert_eq!(outcome.stats.tool_errors, 0);
+    assert!(outcome
+        .thread
+        .messages
+        .iter()
+        .any(|m| m.role == crate::contracts::state::Role::Assistant && m.content == "done"));
+}
+
+#[tokio::test]
+async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind() {
+    let provider = MockChatProvider::new(vec![
+        Err(genai::Error::Internal("429 rate limit".to_string())),
+        Err(genai::Error::Internal("still failing".to_string())),
+    ]);
+    let config = AgentConfig::new("primary").with_llm_retry_policy(LlmRetryPolicy {
+        max_attempts_per_model: 2,
+        initial_backoff_ms: 1,
+        max_backoff_ms: 1,
+        retry_stream_start: true,
+    });
+    let thread = AgentState::new("error-stats").with_message(Message::user("go"));
+    let tools = HashMap::new();
+
+    let outcome = run_loop_outcome_with_context_provider(
+        &provider,
+        &config,
+        thread,
+        &tools,
+        RunContext::default(),
+    )
+    .await;
+
+    assert_eq!(outcome.termination, TerminationReason::Error);
+    assert_eq!(outcome.stats.llm_calls, 2);
+    assert_eq!(outcome.stats.llm_retries, 1);
+    assert_eq!(outcome.stats.steps, 0);
+    assert!(matches!(
+        outcome.failure,
+        Some(outcome::LoopFailure::Llm(message)) if message.contains("model='primary' attempt=2/2")
+    ));
 }
 
 #[tokio::test]
