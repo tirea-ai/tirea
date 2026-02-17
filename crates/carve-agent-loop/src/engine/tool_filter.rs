@@ -2,14 +2,14 @@ use carve_agent_contract::agent::AgentDefinition;
 use carve_state::ScopeState;
 use serde_json::Value;
 
-pub(crate) const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
-pub(crate) const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
-pub(crate) const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-pub(crate) const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-pub(crate) const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
-pub(crate) const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
+pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
+pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
+pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
+pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
+pub const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+pub const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
-pub(crate) fn is_tool_allowed(
+pub fn is_tool_allowed(
     tool_id: &str,
     allowed: Option<&[String]>,
     excluded: Option<&[String]>,
@@ -27,7 +27,7 @@ pub(crate) fn is_tool_allowed(
     true
 }
 
-pub(crate) fn set_scope_filter_if_absent(
+pub fn set_scope_filter_if_absent(
     scope: &mut ScopeState,
     key: &str,
     values: Option<&[String]>,
@@ -41,7 +41,7 @@ pub(crate) fn set_scope_filter_if_absent(
     Ok(())
 }
 
-pub(crate) fn set_scope_filters_from_definition_if_absent(
+pub fn set_scope_filters_from_definition_if_absent(
     scope: &mut ScopeState,
     def: &AgentDefinition,
 ) -> Result<(), carve_state::ScopeStateError> {
@@ -86,7 +86,7 @@ fn parse_scope_filter(values: Option<&Value>) -> Option<Vec<String>> {
     Some(parsed)
 }
 
-pub(crate) fn is_scope_allowed(
+pub fn is_scope_allowed(
     scope: Option<&ScopeState>,
     id: &str,
     allowed_key: &str,

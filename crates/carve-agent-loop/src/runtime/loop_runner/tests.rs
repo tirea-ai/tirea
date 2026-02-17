@@ -1828,7 +1828,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
             usage: None,
         };
         let tools = tool_map([EchoTool]);
-        let interaction = crate::extensions::interaction::InteractionPlugin::with_responses(
+        let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
             Vec::new(),
             vec!["permission_echo".to_string()],
         );
@@ -2246,7 +2246,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         }
     }
 
-    let interaction = crate::extensions::interaction::InteractionPlugin::with_responses(
+    let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
         Vec::new(),
         vec!["permission_write_file".to_string()],
     );
@@ -2312,7 +2312,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         }
     }
 
-    let interaction = crate::extensions::interaction::InteractionPlugin::with_responses(
+    let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
         vec!["permission_echo".to_string()],
         Vec::new(),
     );
@@ -2429,7 +2429,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
         }
     }
 
-    let interaction = crate::extensions::interaction::InteractionPlugin::with_responses(
+    let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
         Vec::new(),
         vec!["permission_echo".to_string()],
     );

@@ -4,6 +4,8 @@ members = [
     "crates/carve-state",
     "crates/carve-state-derive",
     "crates/carve-agent-contract",
+    "crates/carve-agent-loop",
+    "crates/carve-agentos",
     "crates/carve-agent-extension-permission",
     "crates/carve-agent-extension-reminder",
     "crates/carve-agent-extension-interaction",
@@ -31,6 +33,8 @@ repository = "https://github.com/user/uncarve"
 carve-state = { path = "crates/carve-state" }
 carve-state-derive = { path = "crates/carve-state-derive" }
 carve-agent-contract = { path = "crates/carve-agent-contract" }
+carve-agent-loop = { path = "crates/carve-agent-loop" }
+carve-agentos = { path = "crates/carve-agentos" }
 carve-agent-extension-permission = { path = "crates/carve-agent-extension-permission" }
 carve-agent-extension-reminder = { path = "crates/carve-agent-extension-reminder" }
 carve-agent-extension-interaction = { path = "crates/carve-agent-extension-interaction" }

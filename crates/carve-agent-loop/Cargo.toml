@@ -1,0 +1,38 @@
+[package]
+name = "carve-agent-loop"
+version = "0.1.0"
+edition = "2021"
+description = "Core agent execution loop and runtime for carve-agent"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+carve-state = { path = "../carve-state" }
+carve-state-derive = { path = "../carve-state-derive" }
+carve-agent-contract = { path = "../carve-agent-contract" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
+thiserror = "2"
+genai = "0.5"
+futures = "0.3"
+async-stream = "0.3"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "v7"] }
+tokio-util = "0.7"
+json-patch = "3"
+
+[dev-dependencies]
+carve-agent-extension-interaction = { path = "../carve-agent-extension-interaction" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
+tracing-opentelemetry = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+criterion.workspace = true
+trybuild.workspace = true
+
+[lints]
+workspace = true

@@ -79,7 +79,7 @@ pub use carve_agent_contract::agent::{
     AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
     StateCommitError, StateCommitter,
 };
-pub(crate) use carve_agent_contract::agent::{
+pub use carve_agent_contract::agent::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
@@ -124,7 +124,7 @@ pub(super) fn thread_state_version(thread: &AgentState) -> u64 {
     thread.metadata.version.unwrap_or(0)
 }
 
-pub(crate) fn set_thread_state_version(
+pub fn set_thread_state_version(
     thread: &mut AgentState,
     version: u64,
     version_timestamp: Option<u64>,

@@ -3,4 +3,4 @@
 pub mod convert;
 pub mod stop_conditions;
 pub mod tool_execution;
-pub(crate) mod tool_filter;
+pub mod tool_filter;

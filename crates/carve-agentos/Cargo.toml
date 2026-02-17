@@ -1,8 +1,8 @@
 [package]
-name = "carve-agent"
+name = "carve-agentos"
 version = "0.1.0"
 edition = "2021"
-description = "Immutable state-driven agent framework built on carve-state"
+description = "AgentOS orchestration layer for carve-agent"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -10,7 +10,6 @@ carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
 carve-agent-contract = { path = "../carve-agent-contract" }
 carve-agent-loop = { path = "../carve-agent-loop" }
-carve-agentos = { path = "../carve-agentos" }
 carve-agent-extension-permission = { path = "../carve-agent-extension-permission" }
 carve-agent-extension-reminder = { path = "../carve-agent-extension-reminder" }
 carve-agent-extension-interaction = { path = "../carve-agent-extension-interaction" }
@@ -24,15 +23,7 @@ tokio = { version = "1", features = ["sync", "rt", "time", "process"] }
 thiserror = "2"
 genai = "0.5"
 futures = "0.3"
-async-stream = "0.3"
-serde_yaml = "0.9"
-sha2 = "0.10"
-tracing = "0.1"
-unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
-tokio-util = "0.7"
-base64 = "0.22"
-json-patch = "3"
 
 [features]
 default = []
@@ -40,32 +31,8 @@ mcp = ["dep:carve-agent-extension-mcp"]
 
 [dev-dependencies]
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
-trybuild.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = ["fmt", "registry"] }
-opentelemetry = "0.28"
-opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "testing"] }
-tracing-opentelemetry = "0.29"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-criterion.workspace = true
 
-[[example]]
-name = "live_deepseek"
-path = "examples/live_deepseek.rs"
-
-[[example]]
-name = "live_deepseek_skills"
-path = "examples/live_deepseek_skills.rs"
-
-[[bench]]
-name = "message_cloning"
-harness = false
-
-[[bench]]
-name = "thread_operations"
-harness = false
-
-[[bench]]
-name = "quick_clone_test"
-harness = false
+[lints]
+workspace = true
