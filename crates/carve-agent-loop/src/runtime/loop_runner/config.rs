@@ -1,4 +1,4 @@
-use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::plugin::AgentPlugin;
 use crate::engine::stop_conditions::{StopCondition, StopConditionSpec};
 use genai::chat::ChatOptions;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::plugin::AgentPlugin;
 use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::runtime::{AgentEvent, RunRequest};

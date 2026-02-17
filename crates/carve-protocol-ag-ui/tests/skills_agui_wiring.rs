@@ -1,4 +1,4 @@
-use carve_agent::contracts::extension::traits::tool::ToolDescriptor;
+use carve_agent::contracts::tool::ToolDescriptor;
 use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::contracts::state::AgentState as ConversationAgentState;
 use carve_agent::contracts::state::ToolCall;

@@ -39,7 +39,7 @@ pub use crate::contracts::AgentState;
 pub use carve_state::StateContext;
 
 // Tool trait and types
-pub use crate::contracts::extension::traits::tool::{
+pub use crate::contracts::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
 };
 
@@ -47,7 +47,7 @@ pub use crate::contracts::extension::traits::tool::{
 pub use crate::contracts::state::{Message, Role, ToolCall};
 
 // Plugin trait
-pub use crate::contracts::extension::plugin::AgentPlugin;
+pub use crate::contracts::plugin::AgentPlugin;
 
 // Phase types for plugins
 pub use crate::contracts::runtime::phase::{Phase, StepContext, StepOutcome, ToolContext};

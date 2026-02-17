@@ -3,8 +3,8 @@ use crate::runtime::control::{
     AgentRunState, AgentRunStatus, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, Interaction};
 use crate::contracts::state::{Message, Role, ToolCall};

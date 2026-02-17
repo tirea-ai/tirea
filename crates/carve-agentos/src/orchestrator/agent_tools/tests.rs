@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::extension::traits::tool::ToolStatus;
+use crate::contracts::tool::ToolStatus;
 use crate::contracts::state::AgentState;
 use crate::contracts::AgentState as ContextAgentState;
 use crate::orchestrator::InMemoryAgentRegistry;

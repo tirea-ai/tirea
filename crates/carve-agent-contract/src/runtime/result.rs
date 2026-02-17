@@ -1,4 +1,4 @@
-pub use crate::extension::traits::tool::{ToolResult, ToolStatus};
+pub use crate::tool::{ToolResult, ToolStatus};
 use crate::state::ToolCall;
 use genai::chat::Usage;
 

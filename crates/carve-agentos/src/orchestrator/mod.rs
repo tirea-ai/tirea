@@ -5,8 +5,8 @@ use std::sync::Arc;
 use futures::Stream;
 use genai::Client;
 
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::tool::Tool;
 use crate::contracts::runtime::{AgentEvent, RunRequest};
 use crate::contracts::state::AgentState;
 use crate::contracts::state::Message;

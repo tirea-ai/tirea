@@ -50,7 +50,7 @@ mod tool_exec;
 
 #[cfg(test)]
 use crate::runtime::control::AGENT_STATE_PATH;
-use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
@@ -73,7 +73,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
 pub use config::{AgentConfig, LlmRetryPolicy};
@@ -357,7 +357,7 @@ impl ChatStreamProvider for Client {
 
 async fn run_step_prepare_phases(
     thread: &AgentState,
-    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
     (
@@ -397,7 +397,7 @@ pub(super) struct PreparedStep {
 
 pub(super) async fn prepare_step_execution(
     thread: &AgentState,
-    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
     let (messages, filtered_tools, skip_inference, tracing_span, pending) =
@@ -413,8 +413,8 @@ pub(super) async fn prepare_step_execution(
 
 pub(super) async fn apply_llm_error_cleanup(
     thread: &mut AgentState,
-    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
@@ -434,8 +434,8 @@ pub(super) async fn complete_step_after_inference(
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
-    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     let pending = emit_phase_block(
         Phase::AfterInference,
@@ -496,8 +496,8 @@ pub(super) fn prepare_tool_execution_context(
 
 pub(super) async fn finalize_run_end(
     thread: AgentState,
-    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
 ) -> AgentState {
     emit_run_end_phase(thread, tool_descriptors, plugins).await
 }

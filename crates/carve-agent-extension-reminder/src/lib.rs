@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use carve_state_derive::State;

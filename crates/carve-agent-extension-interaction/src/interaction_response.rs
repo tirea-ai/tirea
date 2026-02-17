@@ -7,7 +7,7 @@ use crate::agent_control::{
     AgentControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };
-use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::runtime::{Interaction, InteractionResponse};
 use carve_agent_contract::AgentState as ContextAgentState;

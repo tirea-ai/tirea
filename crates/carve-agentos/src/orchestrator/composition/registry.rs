@@ -3,8 +3,8 @@ use super::{
     PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
     ToolRegistryError,
 };
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::tool::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::Client;
 use std::collections::HashMap;

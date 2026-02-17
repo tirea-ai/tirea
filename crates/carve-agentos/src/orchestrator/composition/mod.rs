@@ -1,8 +1,8 @@
 mod bundle;
 mod registry;
 
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::tool::Tool;
 use crate::orchestrator::AgentDefinition;
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -13,7 +13,7 @@ pub use bundle::{
     BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
     RegistrySet, ToolPluginBundle,
 };
-pub use carve_agent_contract::composition::{ToolRegistry, ToolRegistryError};
+pub use carve_agent_contract::{ToolRegistry, ToolRegistryError};
 pub use registry::{
     CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
     CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,

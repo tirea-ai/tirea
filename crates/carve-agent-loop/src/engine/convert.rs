@@ -1,6 +1,6 @@
 //! Pure functions for converting between carve-agent and genai types.
 
-use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::state::{Message, Role, ToolCall};
 use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
@@ -115,7 +115,7 @@ mod tests {
             &self,
             _args: serde_json::Value,
             _ctx: &crate::contracts::AgentState,
-        ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
+        ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
             Ok(ToolResult::success("mock", json!({"result": "ok"})))
         }
     }
@@ -235,7 +235,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            ) -> Result<ToolResult, crate::contracts::tool::ToolError>
             {
                 Ok(ToolResult::success("tool1", json!({})))
             }
@@ -250,7 +250,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            ) -> Result<ToolResult, crate::contracts::tool::ToolError>
             {
                 Ok(ToolResult::success("tool2", json!({})))
             }
@@ -265,7 +265,7 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            ) -> Result<ToolResult, crate::contracts::tool::ToolError>
             {
                 Ok(ToolResult::success("tool3", json!({})))
             }

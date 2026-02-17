@@ -1,5 +1,5 @@
-use carve_agent_loop::contracts::extension::plugin::AgentPlugin;
-use carve_agent_loop::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use carve_agent_loop::contracts::plugin::AgentPlugin;
+use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use carve_agent_loop::contracts::runtime::phase::{Phase, StepContext};
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};

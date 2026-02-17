@@ -1,5 +1,5 @@
-use carve_agent_contract::extension::plugin::AgentPlugin;
-use carve_agent_contract::extension::traits::tool::Tool;
+use carve_agent_contract::plugin::AgentPlugin;
+use carve_agent_contract::tool::Tool;
 use crate::{
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
@@ -23,7 +23,7 @@ pub enum SkillSubsystemError {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::extension::traits::tool::Tool;
+/// use carve_agent::contracts::tool::Tool;
 /// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 /// use carve_agent::runtime::loop_runner::AgentConfig;
 /// use std::collections::HashMap;
@@ -85,7 +85,7 @@ impl SkillSubsystem {
     /// Returns an error if any tool id is already present.
     ///
     /// ```ignore
-    /// use carve_agent::contracts::extension::traits::tool::Tool;
+    /// use carve_agent::contracts::tool::Tool;
     /// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
     /// use std::collections::HashMap;
     /// use std::sync::Arc;
@@ -124,7 +124,7 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+    use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
     use carve_agent_contract::runtime::phase::{Phase, StepContext};
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::state::{Message, ToolCall};
@@ -177,8 +177,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for DummyTool {
-        fn descriptor(&self) -> carve_agent_contract::extension::traits::tool::ToolDescriptor {
-            carve_agent_contract::extension::traits::tool::ToolDescriptor::new(
+        fn descriptor(&self) -> carve_agent_contract::tool::ToolDescriptor {
+            carve_agent_contract::tool::ToolDescriptor::new(
                 SKILL_ACTIVATE_TOOL_ID,
                 "x",
                 "x",
@@ -191,11 +191,11 @@ mod tests {
             _args: Value,
             _ctx: &ContextAgentState,
         ) -> Result<
-            carve_agent_contract::extension::traits::tool::ToolResult,
-            carve_agent_contract::extension::traits::tool::ToolError,
+            carve_agent_contract::tool::ToolResult,
+            carve_agent_contract::tool::ToolError,
         > {
             Ok(
-                carve_agent_contract::extension::traits::tool::ToolResult::success(
+                carve_agent_contract::tool::ToolResult::success(
                     SKILL_ACTIVATE_TOOL_ID,
                     json!({}),
                 ),
@@ -267,8 +267,8 @@ mod tests {
 
     #[async_trait]
     impl Tool for DummyOtherTool {
-        fn descriptor(&self) -> carve_agent_contract::extension::traits::tool::ToolDescriptor {
-            carve_agent_contract::extension::traits::tool::ToolDescriptor::new("other", "x", "x")
+        fn descriptor(&self) -> carve_agent_contract::tool::ToolDescriptor {
+            carve_agent_contract::tool::ToolDescriptor::new("other", "x", "x")
                 .with_parameters(json!({}))
         }
 

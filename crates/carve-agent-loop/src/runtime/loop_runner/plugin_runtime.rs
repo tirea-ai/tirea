@@ -4,8 +4,8 @@ use super::core::{
 };
 use super::AgentLoopError;
 use crate::runtime::control::AgentInferenceError;
-use crate::contracts::extension::plugin::AgentPlugin;
-use crate::contracts::extension::traits::tool::ToolDescriptor;
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, TerminationReason};
 use crate::contracts::state::AgentState;

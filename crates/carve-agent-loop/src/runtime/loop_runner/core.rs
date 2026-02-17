@@ -2,7 +2,7 @@ use super::AgentLoopError;
 use crate::runtime::control::{
     AgentControlState, AgentInferenceError, AgentStateControlExt, AGENT_STATE_PATH,
 };
-use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor};
+use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
 use crate::contracts::state::AgentState;

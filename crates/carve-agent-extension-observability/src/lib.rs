@@ -4,7 +4,7 @@
 //! forwarding them to a pluggable [`MetricsSink`].
 
 
-use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::AgentState as ContextAgentState;
 use async_trait::async_trait;
@@ -525,7 +525,7 @@ impl AgentPlugin for LLMMetryPlugin {
                     let status = tc.result.as_ref().map(|r| r.status.clone());
                     let message = tc.result.as_ref().and_then(|r| r.message.clone());
                     let error_type = match status {
-                        Some(carve_agent_contract::extension::traits::tool::ToolStatus::Error) => {
+                        Some(carve_agent_contract::tool::ToolStatus::Error) => {
                             Some("tool_error".to_string())
                         }
                         _ => None,
@@ -615,7 +615,7 @@ fn inference_error_from_state(ctx: &ContextAgentState) -> Option<AgentInferenceE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::extension::traits::tool::ToolResult;
+    use carve_agent_contract::tool::ToolResult;
     use carve_agent_contract::runtime::phase::ToolContext as PhaseToolContext;
     use carve_agent_contract::runtime::StreamResult;
     use carve_agent_contract::state::AgentState;

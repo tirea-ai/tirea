@@ -1,13 +1,13 @@
 //! Shared agent contracts for conversation state, runtime protocol, extension SPI, and storage.
 
-pub mod composition;
-pub mod extension;
+pub mod plugin;
 pub mod runtime;
 pub mod state;
 pub mod storage;
+pub mod tool;
+pub mod tool_registry;
 
-pub use extension::plugin::AgentPlugin;
-pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use plugin::AgentPlugin;
 pub use runtime::{
     AgentEvent, Interaction, InteractionResponse, RunRequest, StopReason, StreamResult,
     TerminationReason,
@@ -22,3 +22,5 @@ pub use storage::{
     AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter, Committed,
     MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
 };
+pub use tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use tool_registry::{ToolRegistry, ToolRegistryError};

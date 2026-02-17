@@ -1,4 +1,4 @@
-use carve_agent_contract::extension::plugin::AgentPlugin;
+use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::AgentState as ContextAgentState;
 use crate::tool_filter::{
@@ -152,7 +152,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::extension::traits::tool::ToolDescriptor;
+    use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::AgentState as ContextAgentState;
     use crate::FsSkillRegistry;

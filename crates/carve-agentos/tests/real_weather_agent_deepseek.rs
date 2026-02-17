@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use carve_agent_contract::extension::traits::tool::{
+use carve_agent_contract::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};

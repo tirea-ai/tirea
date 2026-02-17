@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::TerminationReason;
 use crate::contracts::state::ActivityManager;
@@ -347,7 +347,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
             serde_json::from_str(&tool_msg.content).expect("tool result json");
         assert_eq!(
             tool_result.status,
-            crate::contracts::extension::traits::tool::ToolStatus::Success
+            crate::contracts::tool::ToolStatus::Success
         );
         assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
         assert_eq!(tool_result.data["state"]["k"], json!("v"));
@@ -2374,7 +2374,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallDone { id, result, .. }
-                if id == "call_1" && result.status == crate::contracts::extension::traits::tool::ToolStatus::Success
+                if id == "call_1" && result.status == crate::contracts::tool::ToolStatus::Success
         )),
         "approved flow must replay and execute original tool call: {events:?}"
     );
@@ -5209,7 +5209,7 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         serde_json::from_str(&tool_msg.content).expect("tool result json");
     assert_eq!(
         tool_result.status,
-        crate::contracts::extension::traits::tool::ToolStatus::Success
+        crate::contracts::tool::ToolStatus::Success
     );
     assert_eq!(tool_result.data["thread_id"], json!("stream-caller"));
     assert_eq!(tool_result.data["state"]["k"], json!("v"));

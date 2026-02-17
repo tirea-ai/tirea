@@ -1,5 +1,5 @@
-use carve_agent_loop::contracts::extension::plugin::AgentPlugin;
-use carve_agent_loop::contracts::extension::traits::tool::{
+use carve_agent_loop::contracts::plugin::AgentPlugin;
+use carve_agent_loop::contracts::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::plugin::AgentPlugin;
 use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::state::AgentState;

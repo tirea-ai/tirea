@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use carve_agent::extensions::interaction::{ContextCategory, ContextProvider};
 use carve_agent::extensions::reminder::SystemReminder;
-use carve_agent::contracts::extension::traits::tool::{
+use carve_agent::contracts::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent::contracts::runtime::InteractionResponse;
@@ -2061,7 +2061,7 @@ async fn test_file_storage_corrupted_json() {
 
 #[test]
 fn test_tool_error_variants_display() {
-    use carve_agent::contracts::extension::traits::tool::ToolError;
+    use carve_agent::contracts::tool::ToolError;
 
     let invalid_args = ToolError::InvalidArguments("Missing required field 'name'".to_string());
     assert!(invalid_args.to_string().contains("Invalid arguments"));
@@ -4884,7 +4884,7 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::plugin::AgentPlugin;
 use carve_agent::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 use carve_agent::contracts::state::ToolCall;
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
@@ -6547,7 +6547,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // execute_tools_with_plugins should return PendingInteraction error
@@ -6617,7 +6617,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6643,7 +6643,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Resume with only InteractionPlugin — denial should block the tool
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -6712,7 +6712,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6738,7 +6738,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Resume with only InteractionPlugin (no PermissionPlugin)
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -12377,8 +12377,8 @@ fn test_interaction_to_ag_ui_events() {
 // ============================================================================
 
 mod llmmetry_tracing {
-    use carve_agent::contracts::extension::plugin::AgentPlugin;
-    use carve_agent::contracts::extension::traits::tool::ToolResult;
+    use carve_agent::contracts::plugin::AgentPlugin;
+    use carve_agent::contracts::tool::ToolResult;
     use carve_agent::contracts::runtime::phase::{Phase, StepContext, ToolContext};
     use carve_agent::contracts::runtime::StreamResult;
     use carve_agent::contracts::state::AgentState as ConversationAgentState;

@@ -1,4 +1,4 @@
-use carve_agent_contract::extension::traits::tool::{
+use carve_agent_contract::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
 };
 use carve_agent_contract::AgentState;

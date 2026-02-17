@@ -1,6 +1,6 @@
 use super::*;
-use crate::contracts::extension::traits::tool::ToolDescriptor;
-use crate::contracts::extension::traits::tool::{ToolError, ToolResult};
+use crate::contracts::tool::ToolDescriptor;
+use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::state::AgentState;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};

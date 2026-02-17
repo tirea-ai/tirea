@@ -215,7 +215,7 @@ impl ToolDescriptor {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+/// use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 /// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///

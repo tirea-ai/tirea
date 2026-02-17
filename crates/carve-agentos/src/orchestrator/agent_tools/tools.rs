@@ -306,7 +306,7 @@ impl Tool for AgentRunTool {
         &self,
         args: Value,
         ctx: &AgentState,
-    ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
         let run_id = optional_string(&args, "run_id");
         let background = required_bool(&args, "background", false);
@@ -542,7 +542,7 @@ impl Tool for AgentStopTool {
         &self,
         args: Value,
         ctx: &AgentState,
-    ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id", tool_name) {
             Ok(v) => v,

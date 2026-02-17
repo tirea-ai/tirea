@@ -7,7 +7,7 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent_loop::contracts::extension::traits::tool::{
+use carve_agent_loop::contracts::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent_loop::contracts::runtime::AgentEvent;

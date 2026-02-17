@@ -1,6 +1,6 @@
 //! Tool execution utilities.
 
-use crate::contracts::extension::traits::tool::{Tool, ToolResult};
+use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::state::ToolCall;
 use crate::contracts::AgentState;
 use carve_state::{ScopeState, TrackedPatch};
@@ -170,7 +170,7 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError};
+    use crate::contracts::tool::{ToolDescriptor, ToolError};
     use async_trait::async_trait;
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
