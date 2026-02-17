@@ -10,26 +10,26 @@ use super::{
 #[async_trait]
 pub trait AgentStateReader: Send + Sync {
     /// Load an AgentState and its current version.
-    async fn load(&self, agent_state_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError>;
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError>;
 
     /// Load an AgentState without version info. Convenience wrapper.
     async fn load_agent_state(
         &self,
-        agent_state_id: &str,
+        thread_id: &str,
     ) -> Result<Option<AgentState>, AgentStateStoreError> {
-        Ok(self.load(agent_state_id).await?.map(|h| h.agent_state))
+        Ok(self.load(thread_id).await?.map(|h| h.agent_state))
     }
 
     /// Load paginated messages for an AgentState.
     async fn load_messages(
         &self,
-        agent_state_id: &str,
+        thread_id: &str,
         query: &MessageQuery,
     ) -> Result<MessagePage, AgentStateStoreError> {
         let head = self
-            .load(agent_state_id)
+            .load(thread_id)
             .await?
-            .ok_or_else(|| AgentStateStoreError::NotFound(agent_state_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
         Ok(paginate_in_memory(&head.agent_state.messages, query))
     }
 
@@ -61,11 +61,11 @@ pub trait AgentStateReader: Send + Sync {
     }
 
     /// Return total message count.
-    async fn message_count(&self, agent_state_id: &str) -> Result<usize, AgentStateStoreError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, AgentStateStoreError> {
         let head = self
-            .load(agent_state_id)
+            .load(thread_id)
             .await?
-            .ok_or_else(|| AgentStateStoreError::NotFound(agent_state_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
         Ok(head.agent_state.messages.len())
     }
 }
@@ -78,12 +78,12 @@ pub trait AgentStateWriter: AgentStateReader {
     /// Append an AgentChangeSet to an existing AgentState.
     async fn append(
         &self,
-        agent_state_id: &str,
+        thread_id: &str,
         delta: &AgentChangeSet,
     ) -> Result<Committed, AgentStateStoreError>;
 
     /// Delete an AgentState.
-    async fn delete(&self, agent_state_id: &str) -> Result<(), AgentStateStoreError>;
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError>;
 
     /// Upsert helper.
     async fn save(&self, agent_state: &AgentState) -> Result<(), AgentStateStoreError> {
@@ -98,7 +98,7 @@ pub trait AgentStateSync: AgentStateWriter {
     /// Load delta list appended after a specific version.
     async fn load_deltas(
         &self,
-        agent_state_id: &str,
+        thread_id: &str,
         after_version: Version,
     ) -> Result<Vec<AgentChangeSet>, AgentStateStoreError>;
 }
