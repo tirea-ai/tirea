@@ -73,10 +73,10 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: crate::contracts::CheckpointChangeSet,
+        changeset: crate::contracts::AgentChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.agent_state_store
-            .append(thread_id, &changeset.delta)
+            .append(thread_id, &changeset)
             .await
             .map(|committed| committed.version)
             .map_err(|e| StateCommitError::new(format!("checkpoint append failed: {e}")))

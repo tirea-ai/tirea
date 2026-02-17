@@ -1,4 +1,4 @@
-use crate::change::CheckpointChangeSet;
+use crate::change::AgentChangeSet;
 use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;
@@ -30,7 +30,7 @@ pub trait StateCommitter: Send + Sync {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: CheckpointChangeSet,
+        changeset: AgentChangeSet,
     ) -> Result<u64, StateCommitError>;
 }
 

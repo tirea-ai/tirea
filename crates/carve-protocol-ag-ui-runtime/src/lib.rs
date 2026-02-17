@@ -5,7 +5,7 @@
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agent::contracts::extension::persisted_state::Interaction;
+use carve_agent::contracts::control::Interaction;
 use carve_agent::contracts::extension::plugin::AgentPlugin;
 use carve_agent::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,

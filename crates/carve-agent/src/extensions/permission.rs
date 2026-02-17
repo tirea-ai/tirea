@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::contracts::extension::persisted_state::{Interaction, ToolPermissionBehavior};
+use crate::contracts::control::{Interaction, ToolPermissionBehavior};
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;

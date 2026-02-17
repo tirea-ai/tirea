@@ -142,8 +142,8 @@ fn skill_activation_result(
     let patch = instruction.map(|text| {
         let base = json!({});
         let ctx = ContextAgentState::new_runtime(&base, call_id, "skill_test");
-        let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-            crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+        let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+            crate::contracts::control::AGENT_STATE_PATH,
         );
         agent.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
         ctx.take_patch()
@@ -1172,10 +1172,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx
-                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                        AGENT_STATE_PATH,
-                    );
+                    let agent =
+                        ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
                     let err = agent
                         .inference_error()
                         .ok()
@@ -1397,7 +1395,7 @@ impl AgentPlugin for PendingPhasePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            use crate::contracts::extension::persisted_state::Interaction;
+            use crate::contracts::control::Interaction;
             step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
         }
     }
@@ -1523,8 +1521,8 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
     let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+        crate::contracts::control::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
         "call_1".to_string(),
@@ -1567,8 +1565,8 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
     let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+        crate::contracts::control::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
         "call_1".to_string(),
@@ -3025,10 +3023,9 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
                 return;
             }
 
-            let agent = ctx
-                .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                    crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
-                );
+            let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+                crate::contracts::control::AGENT_STATE_PATH,
+            );
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
         }
@@ -3463,7 +3460,7 @@ async fn run_mock_stream_with_final_thread(
         run_loop_stream_impl_with_provider(Arc::new(provider), config, thread, tools, run_ctx);
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
-        changeset.delta.apply_to(&mut final_thread);
+        changeset.apply_to(&mut final_thread);
     }
     (events, final_thread)
 }
@@ -3492,24 +3489,24 @@ impl StateCommitter for RecordingStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: crate::contracts::CheckpointChangeSet,
+        changeset: crate::contracts::AgentChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.reasons
             .lock()
             .expect("lock poisoned")
-            .push(changeset.delta.reason.clone());
+            .push(changeset.reason.clone());
 
         if self
             .fail_on
             .as_ref()
-            .is_some_and(|reason| *reason == changeset.delta.reason)
+            .is_some_and(|reason| *reason == changeset.reason)
         {
             return Err(StateCommitError::new(format!(
                 "forced commit failure at {:?}",
-                changeset.delta.reason
+                changeset.reason
             )));
         }
-        Ok(changeset.expected_version.saturating_add(1))
+        Ok(changeset.expected_version.unwrap_or(0).saturating_add(1))
     }
 }
 
@@ -3737,10 +3734,9 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let agent = ctx
-                    .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
-                    );
+                let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+                    crate::contracts::control::AGENT_STATE_PATH,
+                );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -3806,9 +3802,8 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
         ) {
             match phase {
                 Phase::RunStart => {
-                    let agent = ctx
-                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+                    let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+                        crate::contracts::control::AGENT_STATE_PATH,
                     );
                     agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                         "replay_call_1",
@@ -3879,10 +3874,9 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let agent = ctx
-                    .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
-                    );
+                let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+                    crate::contracts::control::AGENT_STATE_PATH,
+                );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -5258,9 +5252,8 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx
-                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+                    let agent = ctx.state::<crate::contracts::control::AgentControlState>(
+                        crate::contracts::control::AGENT_STATE_PATH,
                     );
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
@@ -5308,7 +5301,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     .await;
 
     while let Some(changeset) = checkpoint_rx.recv().await {
-        changeset.delta.apply_to(&mut final_thread);
+        changeset.apply_to(&mut final_thread);
     }
 
     assert_eq!(extract_termination(&events), Some(TerminationReason::Error));

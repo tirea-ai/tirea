@@ -1,6 +1,4 @@
-use crate::contracts::extension::persisted_state::{
-    PersistedAgentState as AgentStateDoc, AGENT_STATE_PATH,
-};
+use crate::contracts::control::{AgentControlState as AgentStateDoc, AGENT_STATE_PATH};
 use crate::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
 };

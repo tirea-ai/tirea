@@ -3,8 +3,8 @@ use super::core::{
     set_agent_inference_error, ThreadMutationBatch,
 };
 use super::AgentLoopError;
+use crate::contracts::control::AgentInferenceError;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::extension::persisted_state::AgentInferenceError;
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::ToolDescriptor;
 use crate::contracts::runtime::phase::{Phase, StepContext};

@@ -3,8 +3,8 @@
 //! Handles client responses to pending interactions (approvals/denials).
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
-use crate::contracts::extension::persisted_state::{
-    Interaction, InteractionResponse, PersistedAgentState as AgentStateDoc,
+use crate::contracts::control::{
+    AgentControlState as AgentStateDoc, Interaction, InteractionResponse,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::contracts::extension::plugin::AgentPlugin;

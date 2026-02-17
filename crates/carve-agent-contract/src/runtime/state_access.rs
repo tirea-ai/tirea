@@ -2,7 +2,7 @@
 //!
 //! This module adds runtime-only operations onto the unified `AgentState`.
 
-use crate::change::{CheckpointChangeSet, CheckpointReason};
+use crate::change::{AgentChangeSet, CheckpointReason};
 use crate::conversation::{AgentState, Message};
 use carve_state::{
     parse_path, CarveError, CarveResult, Op, Patch, PatchSink, ScopeState, State, TrackedPatch,
@@ -222,7 +222,7 @@ impl AgentState {
         parent_run_id: Option<String>,
         reason: CheckpointReason,
         snapshot: Option<Value>,
-    ) -> Option<CheckpointChangeSet> {
+    ) -> Option<AgentChangeSet> {
         let messages = std::mem::take(&mut *self.runtime.pending_messages.lock().unwrap());
         let patch = self.take_patch();
         let mut patches = Vec::new();
@@ -232,8 +232,8 @@ impl AgentState {
         if messages.is_empty() && patches.is_empty() && snapshot.is_none() {
             return None;
         }
-        Some(CheckpointChangeSet::from_parts(
-            self.runtime.version,
+        Some(AgentChangeSet::from_parts(
+            Some(self.runtime.version),
             run_id.into(),
             parent_run_id,
             reason,

@@ -77,6 +77,15 @@ impl AgentStateWriter for FileStore {
             .await?
             .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
+        if let Some(expected) = delta.expected_version {
+            if head.version != expected {
+                return Err(AgentStateStoreError::VersionConflict {
+                    expected,
+                    actual: head.version,
+                });
+            }
+        }
+
         let mut agent_state = head.agent_state;
         delta.apply_to(&mut agent_state);
         let new_version = head.version + 1;
@@ -350,6 +359,7 @@ mod tests {
         store.create(&AgentState::new("t1")).await.unwrap();
 
         let d1 = AgentChangeSet {
+            expected_version: Some(0),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::UserMessage,
@@ -361,6 +371,7 @@ mod tests {
         assert_eq!(c1.version, 1);
 
         let d2 = AgentChangeSet {
+            expected_version: Some(1),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -374,6 +385,7 @@ mod tests {
         assert_eq!(c2.version, 2);
 
         let d3 = AgentChangeSet {
+            expected_version: Some(2),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::RunFinished,

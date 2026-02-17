@@ -7,9 +7,9 @@ use super::{
     AgentConfig, AgentLoopError, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
+use crate::contracts::control::{Interaction, AGENT_STATE_PATH};
 use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{Message, MessageMetadata};
-use crate::contracts::extension::persisted_state::{Interaction, AGENT_STATE_PATH};
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};

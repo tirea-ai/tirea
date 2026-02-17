@@ -52,6 +52,15 @@ impl AgentStateWriter for MemoryStore {
             .get_mut(thread_id)
             .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
+        if let Some(expected) = delta.expected_version {
+            if entry.version != expected {
+                return Err(AgentStateStoreError::VersionConflict {
+                    expected,
+                    actual: entry.version,
+                });
+            }
+        }
+
         delta.apply_to(&mut entry.agent_state);
         entry.version += 1;
         entry.deltas.push(delta.clone());

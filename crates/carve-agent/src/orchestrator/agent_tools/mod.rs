@@ -1,9 +1,9 @@
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::conversation::{Message, Role, ToolCall};
-use crate::contracts::extension::persisted_state::{
+use crate::contracts::control::{
     AgentRunState, AgentRunStatus, Interaction, ToolPermissionBehavior,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
+use crate::contracts::conversation::{Message, Role, ToolCall};
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
 use crate::contracts::runtime::phase::{Phase, StepContext};

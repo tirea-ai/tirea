@@ -396,6 +396,7 @@ async fn test_list_paginated_empty() {
 
 fn sample_delta(run_id: &str, reason: CheckpointReason) -> AgentChangeSet {
     AgentChangeSet {
+        expected_version: None,
         run_id: run_id.to_string(),
         parent_run_id: None,
         reason,
@@ -484,6 +485,7 @@ async fn test_thread_store_append_with_snapshot() {
     store.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -622,6 +624,7 @@ async fn test_full_agent_run_via_append() {
     assert!(pending.patches.is_empty());
 
     let user_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::UserMessage,
@@ -638,6 +641,7 @@ async fn test_full_agent_run_via_append() {
     assert_eq!(pending.messages.len(), 1);
 
     let assistant_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -658,6 +662,7 @@ async fn test_full_agent_run_via_append() {
     assert_eq!(pending.patches.len(), 1);
 
     let tool_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
@@ -673,6 +678,7 @@ async fn test_full_agent_run_via_append() {
     let pending = thread.take_pending();
 
     let finished_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -703,6 +709,7 @@ async fn test_delta_replay_reconstructs_thread() {
     // Simulate 3 rounds of append
     let deltas: Vec<AgentChangeSet> = vec![
         AgentChangeSet {
+            expected_version: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::UserMessage,
@@ -713,6 +720,7 @@ async fn test_delta_replay_reconstructs_thread() {
             snapshot: None,
         },
         AgentChangeSet {
+            expected_version: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -723,6 +731,7 @@ async fn test_delta_replay_reconstructs_thread() {
             snapshot: None,
         },
         AgentChangeSet {
+            expected_version: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::RunFinished,
@@ -765,6 +774,7 @@ async fn test_partial_delta_replay() {
 
     for i in 0..5u64 {
         let delta = AgentChangeSet {
+            expected_version: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -796,6 +806,7 @@ async fn test_append_preserves_patch_provenance() {
     let pending = thread.take_pending();
 
     let delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
@@ -832,6 +843,7 @@ async fn test_append_preserves_parent_run_id() {
         .unwrap();
 
     let delta = AgentChangeSet {
+        expected_version: None,
         run_id: "child-run-1".to_string(),
         parent_run_id: Some("parent-run-1".to_string()),
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -862,6 +874,7 @@ async fn test_append_empty_delta() {
         .unwrap();
 
     let empty = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -888,6 +901,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     let thread = AgentState::with_initial_state("t1", json!({"counter": 0}));
     store.create(&thread).await.unwrap();
     let patch_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-0".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
@@ -911,6 +925,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     //    This simulates what run_stream does: include snapshot in UserMessage delta.
     let frontend_state = json!({"counter": 10, "name": "Alice"});
     let user_delta = AgentChangeSet {
+        expected_version: None,
         run_id: "run-1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::UserMessage,

@@ -47,11 +47,11 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
+use crate::contracts::control::Interaction;
+#[cfg(test)]
+use crate::contracts::control::AGENT_STATE_PATH;
 use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::extension::persisted_state::Interaction;
-#[cfg(test)]
-use crate::contracts::extension::persisted_state::AGENT_STATE_PATH;
 use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::state_access::ActivityManager;

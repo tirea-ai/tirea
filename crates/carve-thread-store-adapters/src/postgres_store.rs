@@ -158,6 +158,14 @@ impl AgentStateWriter for PostgresStore {
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
+        if let Some(expected) = delta.expected_version {
+            if current_version != expected {
+                return Err(AgentStateStoreError::VersionConflict {
+                    expected,
+                    actual: current_version,
+                });
+            }
+        }
         let new_version = current_version + 1;
 
         // Apply snapshot or patches to stored data.

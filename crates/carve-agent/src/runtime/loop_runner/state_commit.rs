@@ -1,17 +1,17 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
 use crate::contracts::conversation::AgentState;
 use crate::contracts::storage::CheckpointReason;
-use crate::contracts::CheckpointChangeSet;
+use crate::contracts::AgentChangeSet;
 use async_trait::async_trait;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ChannelStateCommitter {
-    tx: tokio::sync::mpsc::UnboundedSender<CheckpointChangeSet>,
+    tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>,
 }
 
 impl ChannelStateCommitter {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<CheckpointChangeSet>) -> Self {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>) -> Self {
         Self { tx }
     }
 }
@@ -21,9 +21,9 @@ impl StateCommitter for ChannelStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: CheckpointChangeSet,
+        changeset: AgentChangeSet,
     ) -> Result<u64, StateCommitError> {
-        let next_version = changeset.expected_version.saturating_add(1);
+        let next_version = changeset.expected_version.unwrap_or(0).saturating_add(1);
         self.tx
             .send(changeset)
             .map_err(|e| StateCommitError::new(format!("channel state commit failed: {e}")))?;
@@ -48,8 +48,8 @@ pub(super) async fn commit_pending_delta(
         return Ok(());
     }
 
-    let changeset = CheckpointChangeSet::from_parts(
-        super::thread_state_version(thread),
+    let changeset = AgentChangeSet::from_parts(
+        Some(super::thread_state_version(thread)),
         run_id.to_string(),
         parent_run_id.map(str::to_string),
         reason,

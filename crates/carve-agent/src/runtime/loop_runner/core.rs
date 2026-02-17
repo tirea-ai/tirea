@@ -1,9 +1,9 @@
 use super::AgentLoopError;
+use crate::contracts::control::{
+    AgentControlState, AgentInferenceError, Interaction, InteractionResponse, AGENT_STATE_PATH,
+};
 use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{Message, MessageMetadata};
-use crate::contracts::extension::persisted_state::{
-    AgentInferenceError, Interaction, InteractionResponse, PersistedAgentState, AGENT_STATE_PATH,
-};
 use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor};
 use crate::contracts::runtime::phase::StepContext;
 use carve_state::{StateContext, TrackedPatch};
@@ -133,14 +133,14 @@ pub(super) fn set_agent_pending_interaction(
     interaction: Interaction,
 ) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     agent.set_pending_interaction(Some(interaction));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     agent.pending_interaction_none();
     ctx.take_tracked_patch("agent_loop")
 }
@@ -160,14 +160,14 @@ pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Int
 
 pub(super) fn set_agent_inference_error(state: &Value, error: AgentInferenceError) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     agent.set_inference_error(Some(error));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     agent.inference_error_none();
     ctx.take_tracked_patch("agent_loop")
 }
@@ -215,7 +215,7 @@ pub(super) fn drain_agent_outbox(
     }
 
     let ctx = StateContext::new(&state);
-    let agent = ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     if !interaction_resolutions.is_empty() {
         agent.set_interaction_resolutions(Vec::new());
     }
@@ -297,7 +297,7 @@ pub(super) fn drain_agent_append_user_messages(
     }
 
     let clear_ctx = StateContext::new(&state);
-    let agent = clear_ctx.state::<PersistedAgentState>(AGENT_STATE_PATH);
+    let agent = clear_ctx.state::<AgentControlState>(AGENT_STATE_PATH);
     agent.set_append_user_messages(HashMap::new());
     let clear_patch = clear_ctx.take_tracked_patch("agent_loop");
     if !clear_patch.patch().is_empty() {

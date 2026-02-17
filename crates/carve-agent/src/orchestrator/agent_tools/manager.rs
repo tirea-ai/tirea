@@ -309,13 +309,13 @@ pub(super) async fn execute_target_agent(
         }
 
         while let Ok(changeset) = checkpoints.try_recv() {
-            changeset.delta.apply_to(&mut final_thread);
+            changeset.apply_to(&mut final_thread);
         }
     }
 
     while checkpoints_open {
         match checkpoints.recv().await {
-            Some(changeset) => changeset.delta.apply_to(&mut final_thread),
+            Some(changeset) => changeset.apply_to(&mut final_thread),
             None => checkpoints_open = false,
         }
     }

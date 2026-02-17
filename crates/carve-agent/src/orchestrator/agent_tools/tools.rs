@@ -421,17 +421,18 @@ impl Tool for AgentRunTool {
                         return Ok(error);
                     }
 
-                    let mut child_thread =
-                        match persisted.agent_state {
-                            Some(s) => s,
-                            None => return Ok(tool_error(
+                    let mut child_thread = match persisted.agent_state {
+                        Some(s) => s,
+                        None => {
+                            return Ok(tool_error(
                                 tool_name,
                                 "invalid_state",
                                 format!(
                                     "Run '{run_id}' cannot be resumed: missing child agent state"
                                 ),
-                            )),
-                        };
+                            ))
+                        }
+                    };
                     child_thread = bind_child_lineage(
                         child_thread,
                         &run_id,

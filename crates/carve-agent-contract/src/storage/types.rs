@@ -186,6 +186,10 @@ pub enum AgentStateStoreError {
     /// AgentState already exists.
     #[error("AgentState already exists")]
     AlreadyExists,
+
+    /// Optimistic concurrency check failed.
+    #[error("Version conflict: expected {expected}, actual {actual}")]
+    VersionConflict { expected: Version, actual: Version },
 }
 
 /// Commit acknowledgement returned after successful write.

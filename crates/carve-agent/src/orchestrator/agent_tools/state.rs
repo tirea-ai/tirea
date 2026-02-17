@@ -35,16 +35,12 @@ pub(super) fn as_agent_run_summary(run_id: &str, state: &AgentRunState) -> Agent
 }
 
 pub(super) fn set_persisted_run(ctx: &AgentState, run_id: &str, run: AgentRunState) {
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        AGENT_STATE_PATH,
-    );
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.agent_runs_insert(run_id.to_string(), run);
 }
 
 pub(super) fn parse_persisted_runs(ctx: &AgentState) -> HashMap<String, AgentRunState> {
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        AGENT_STATE_PATH,
-    );
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.agent_runs().ok().unwrap_or_default()
 }
 
@@ -130,9 +126,7 @@ pub(super) fn set_pending_interaction_patch(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_runtime(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        AGENT_STATE_PATH,
-    );
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
@@ -148,9 +142,7 @@ pub(super) fn set_replay_tool_calls_patch(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_runtime(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        AGENT_STATE_PATH,
-    );
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_replay_tool_calls(replay_calls);
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
@@ -204,9 +196,7 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_runtime(state, call_id, AGENT_TOOLS_PLUGIN_ID);
-    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
-        AGENT_STATE_PATH,
-    );
+    let agent = ctx.state::<crate::contracts::control::AgentControlState>(AGENT_STATE_PATH);
     agent.set_agent_runs(next_runs);
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
