@@ -171,8 +171,8 @@ pub fn paginate_in_memory(
 /// Storage errors.
 #[derive(Debug, Error)]
 pub enum ThreadStoreError {
-    /// Thread not found.
-    #[error("Thread not found: {0}")]
+    /// AgentState not found.
+    #[error("AgentState not found: {0}")]
     NotFound(String),
 
     /// IO error.
@@ -187,14 +187,10 @@ pub enum ThreadStoreError {
     #[error("Invalid thread id: {0}")]
     InvalidId(String),
 
-    /// Thread already exists (for create operations).
-    #[error("Thread already exists")]
+    /// AgentState already exists (for create operations).
+    #[error("AgentState already exists")]
     AlreadyExists,
 }
-
-// ============================================================================
-// Delta-based storage types
-// ============================================================================
 
 /// Monotonically increasing version for optimistic concurrency.
 pub type Version = u64;
@@ -207,47 +203,9 @@ pub struct Committed {
 
 /// A thread together with its current storage version.
 #[derive(Debug, Clone)]
-pub struct ThreadHead {
-    pub thread: Thread,
+pub struct AgentStateHead {
+    pub thread: AgentState,
     pub version: Version,
 }
 
-/// Reason for a checkpoint (delta).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum CheckpointReason {
-    UserMessage,
-    AssistantTurnCommitted,
-    ToolResultsCommitted,
-    RunFinished,
-}
-
-/// An incremental change to a thread produced by a single step.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadDelta {
-    /// Which run produced this delta.
-    pub run_id: String,
-    /// Parent run (for sub-agent deltas).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_run_id: Option<String>,
-    /// Why this delta was created.
-    pub reason: CheckpointReason,
-    /// New messages appended in this step.
-    pub messages: Vec<Arc<Message>>,
-    /// New patches appended in this step.
-    pub patches: Vec<TrackedPatch>,
-    /// If `Some`, a full state snapshot was taken (replaces base state).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub snapshot: Option<Value>,
-}
-
-impl ThreadDelta {
-    /// Apply this delta to a thread in place.
-    pub fn apply_to(&self, thread: &mut Thread) {
-        thread.messages.extend(self.messages.iter().cloned());
-        thread.patches.extend(self.patches.iter().cloned());
-        if let Some(ref snapshot) = self.snapshot {
-            thread.state = snapshot.clone();
-            thread.patches.clear();
-        }
-    }
-}
+pub use carve_agent_contract::change::{AgentChangeSet, CheckpointReason};

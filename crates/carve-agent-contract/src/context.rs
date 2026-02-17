@@ -6,8 +6,8 @@
 use carve_state::{
     parse_path, CarveError, CarveResult, Op, PatchSink, ScopeState, State, StateContext,
 };
-use carve_thread_model::Message;
-use carve_thread_store_contract::{CheckpointReason, ThreadDelta};
+use crate::change::{AgentChangeSet as ContractAgentChangeSet, CheckpointReason};
+use crate::conversation::{AgentState as ConversationState, Message};
 use serde_json::Value;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,32 @@ pub struct AgentChangeSet {
     /// Storage version expected by this change set.
     pub expected_version: u64,
     /// Incremental delta payload for persistence.
-    pub delta: ThreadDelta,
+    pub delta: ContractAgentChangeSet,
+}
+
+impl AgentChangeSet {
+    /// Build an `AgentChangeSet` from explicit delta components.
+    pub fn from_parts(
+        expected_version: u64,
+        run_id: impl Into<String>,
+        parent_run_id: Option<String>,
+        reason: CheckpointReason,
+        messages: Vec<std::sync::Arc<Message>>,
+        patches: Vec<carve_state::TrackedPatch>,
+        snapshot: Option<Value>,
+    ) -> Self {
+        Self {
+            expected_version,
+            delta: ContractAgentChangeSet {
+                run_id: run_id.into(),
+                parent_run_id,
+                reason,
+                messages,
+                patches,
+                snapshot,
+            },
+        }
+    }
 }
 
 /// Agent-facing runtime data object used by tools and plugins.
@@ -80,6 +105,33 @@ impl<'a> AgentState<'a> {
         self.messages = messages;
         self.version = version;
         self
+    }
+
+    /// Create a context object directly from a loaded thread snapshot.
+    pub fn from_thread(
+        thread: &'a ConversationState,
+        doc: &'a Value,
+        call_id: impl Into<String>,
+        source: impl Into<String>,
+        version: u64,
+    ) -> Self {
+        Self::new(doc, call_id, source)
+            .with_scope(Some(&thread.scope))
+            .with_thread_data(thread.id.clone(), thread.messages.clone(), version)
+    }
+
+    /// Create a context object from a loaded thread snapshot with activity wiring.
+    pub fn from_thread_with_activity_manager(
+        thread: &'a ConversationState,
+        doc: &'a Value,
+        call_id: impl Into<String>,
+        source: impl Into<String>,
+        version: u64,
+        activity_manager: Option<Arc<dyn ActivityManager>>,
+    ) -> Self {
+        Self::new_with_activity_manager(doc, call_id, source, activity_manager)
+            .with_scope(Some(&thread.scope))
+            .with_thread_data(thread.id.clone(), thread.messages.clone(), version)
     }
 
     /// Create a new state object with optional activity manager.
@@ -222,17 +274,15 @@ impl<'a> AgentState<'a> {
         if messages.is_empty() && patches.is_empty() && snapshot.is_none() {
             return None;
         }
-        Some(AgentChangeSet {
-            expected_version: self.version,
-            delta: ThreadDelta {
-                run_id: run_id.into(),
-                parent_run_id,
-                reason,
-                messages,
-                patches,
-                snapshot,
-            },
-        })
+        Some(AgentChangeSet::from_parts(
+            self.version,
+            run_id.into(),
+            parent_run_id,
+            reason,
+            messages,
+            patches,
+            snapshot,
+        ))
     }
 
     /// Whether state has pending changes.

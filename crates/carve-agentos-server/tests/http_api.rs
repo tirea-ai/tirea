@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::phase::Phase;
 use carve_agent::contracts::phase::StepContext;
 use carve_agent::contracts::storage::{
-    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
+    Committed, AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader, ThreadStore,
     ThreadStoreError, ThreadWriter,
 };
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
@@ -60,7 +60,7 @@ fn make_os_with_storage(write_store: Arc<dyn ThreadStore>) -> AgentOs {
 
 #[derive(Default)]
 struct RecordingStorage {
-    threads: RwLock<HashMap<String, Thread>>,
+    threads: RwLock<HashMap<String, AgentState>>,
     saves: AtomicUsize,
     notify: Notify,
 }
@@ -79,7 +79,7 @@ impl RecordingStorage {
 
 #[async_trait]
 impl ThreadWriter for RecordingStorage {
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if threads.contains_key(&thread.id) {
             return Err(ThreadStoreError::AlreadyExists);
@@ -90,7 +90,7 @@ impl ThreadWriter for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &ThreadDelta) -> Result<Committed, ThreadStoreError> {
+    async fn append(&self, id: &str, delta: &AgentChangeSet) -> Result<Committed, ThreadStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
             for msg in &delta.messages {
@@ -109,7 +109,7 @@ impl ThreadWriter for RecordingStorage {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
         let mut threads = self.threads.write().await;
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -120,9 +120,9 @@ impl ThreadWriter for RecordingStorage {
 
 #[async_trait]
 impl ThreadReader for RecordingStorage {
-    async fn load(&self, id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let threads = self.threads.read().await;
-        Ok(threads.get(id).map(|t| ThreadHead {
+        Ok(threads.get(id).map(|t| AgentStateHead {
             thread: t.clone(),
             version: 0,
         }))
@@ -155,7 +155,7 @@ async fn test_sessions_query_endpoints() {
     let os = Arc::new(make_os());
     let storage = Arc::new(MemoryStore::new());
 
-    let thread = Thread::new("s1")
+    let thread = AgentState::new("s1")
         .with_message(carve_agent::contracts::conversation::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
@@ -752,7 +752,7 @@ async fn test_agui_sse_session_id_mismatch() {
     let read_store: Arc<dyn ThreadReader> = storage.clone();
 
     // Pre-save a session with id "real-id".
-    storage.save(&Thread::new("real-id")).await.unwrap();
+    storage.save(&AgentState::new("real-id")).await.unwrap();
 
     let _app = make_app(os, read_store);
 
@@ -768,7 +768,7 @@ struct FailingStorage;
 
 #[async_trait]
 impl ThreadWriter for FailingStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, _thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -778,7 +778,7 @@ impl ThreadWriter for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::storage::ThreadDelta,
+        _delta: &carve_agent::contracts::storage::AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -793,7 +793,7 @@ impl ThreadWriter for FailingStorage {
         )))
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, _thread: &AgentState) -> Result<(), ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -803,7 +803,7 @@ impl ThreadWriter for FailingStorage {
 
 #[async_trait]
 impl ThreadReader for FailingStorage {
-    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, _id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk read denied",
@@ -888,7 +888,7 @@ struct SaveFailStorage;
 
 #[async_trait]
 impl ThreadWriter for SaveFailStorage {
-    async fn create(&self, _thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, _thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -898,7 +898,7 @@ impl ThreadWriter for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::storage::ThreadDelta,
+        _delta: &carve_agent::contracts::storage::AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -910,7 +910,7 @@ impl ThreadWriter for SaveFailStorage {
         Ok(())
     }
 
-    async fn save(&self, _thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, _thread: &AgentState) -> Result<(), ThreadStoreError> {
         Err(ThreadStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -920,7 +920,7 @@ impl ThreadWriter for SaveFailStorage {
 
 #[async_trait]
 impl ThreadReader for SaveFailStorage {
-    async fn load(&self, _id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, _id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         Ok(None)
     }
 
@@ -975,8 +975,8 @@ async fn test_agui_sse_storage_save_error() {
 // Message pagination tests
 // ============================================================================
 
-fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
-    let mut thread = Thread::new(id);
+fn make_session_with_n_messages(id: &str, n: usize) -> AgentState {
+    let mut thread = AgentState::new(id);
     for i in 0..n {
         thread = thread.with_message(carve_agent::contracts::conversation::Message::user(
             format!("msg-{}", i),

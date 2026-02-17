@@ -1,9 +1,9 @@
-//! Benchmarks for Thread/Thread operations including state rebuilding and patch application.
+//! Benchmarks for AgentState/AgentState operations including state rebuilding and patch application.
 //!
 //! Run with: cargo bench --package carve-agent --bench session_operations
 
 use carve_agent::contracts::conversation::Message;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
@@ -149,7 +149,7 @@ fn bench_state_clone(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Thread rebuild_state
+// Benchmark: AgentState rebuild_state
 // ============================================================================
 
 fn bench_thread_rebuild(c: &mut Criterion) {
@@ -159,7 +159,7 @@ fn bench_thread_rebuild(c: &mut Criterion) {
         let state = generate_state("medium");
         let patches = generate_patches(patch_count);
 
-        let mut thread = Thread::with_initial_state("test", state);
+        let mut thread = AgentState::with_initial_state("test", state);
         for patch in patches {
             thread = thread.with_patch(patch);
         }
@@ -182,7 +182,7 @@ fn bench_thread_rebuild(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Thread replay_to (time-travel)
+// Benchmark: AgentState replay_to (time-travel)
 // ============================================================================
 
 fn bench_thread_replay(c: &mut Criterion) {
@@ -192,7 +192,7 @@ fn bench_thread_replay(c: &mut Criterion) {
     let state = generate_state("medium");
     let patches = generate_patches(patch_count);
 
-    let mut thread = Thread::with_initial_state("test", state);
+    let mut thread = AgentState::with_initial_state("test", state);
     for patch in patches {
         thread = thread.with_patch(patch);
     }
@@ -215,7 +215,7 @@ fn bench_thread_replay(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Thread snapshot
+// Benchmark: AgentState snapshot
 // ============================================================================
 
 fn bench_thread_snapshot(c: &mut Criterion) {
@@ -225,7 +225,7 @@ fn bench_thread_snapshot(c: &mut Criterion) {
         let state = generate_state("medium");
         let patches = generate_patches(patch_count);
 
-        let mut thread = Thread::with_initial_state("test", state);
+        let mut thread = AgentState::with_initial_state("test", state);
         for patch in patches {
             thread = thread.with_patch(patch);
         }
@@ -248,7 +248,7 @@ fn bench_thread_snapshot(c: &mut Criterion) {
 }
 
 // ============================================================================
-// Benchmark: Thread with_message (builder pattern)
+// Benchmark: AgentState with_message (builder pattern)
 // ============================================================================
 
 fn bench_thread_with_message(c: &mut Criterion) {
@@ -264,7 +264,7 @@ fn bench_thread_with_message(c: &mut Criterion) {
             &messages,
             |b, msgs| {
                 b.iter(|| {
-                    let mut thread = Thread::new("test");
+                    let mut thread = AgentState::new("test");
                     for msg in msgs {
                         thread = thread.with_message(msg.clone());
                     }
@@ -296,7 +296,7 @@ fn bench_full_thread_clone(c: &mut Criterion) {
         let patches = generate_patches(patch_count);
         let state = generate_state("medium");
 
-        let mut thread = Thread::with_initial_state("test", state);
+        let mut thread = AgentState::with_initial_state("test", state);
         for msg in messages {
             thread = thread.with_message(msg);
         }
@@ -332,7 +332,7 @@ fn bench_agent_loop_simulation(c: &mut Criterion) {
             &initial_msgs,
             |b, &msg_count| {
                 b.iter(|| {
-                    let mut thread = Thread::with_initial_state("test", generate_state("medium"));
+                    let mut thread = AgentState::with_initial_state("test", generate_state("medium"));
 
                     // Add initial messages
                     for msg in generate_messages(msg_count) {

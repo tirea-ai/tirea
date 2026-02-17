@@ -469,7 +469,7 @@ impl AgentOs {
     pub fn resolve(
         &self,
         agent_id: &str,
-        mut thread: Thread,
+        mut thread: AgentState,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let def = self
             .agents

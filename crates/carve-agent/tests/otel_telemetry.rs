@@ -1,10 +1,10 @@
 use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::conversation::{Message, ToolCall};
 use carve_agent::contracts::events::{AgentEvent, StreamResult};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
-use carve_agent::prelude::AgentState;
+use carve_agent::prelude::AgentState as ContextAgentState;
 use carve_agent::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
@@ -117,7 +117,7 @@ impl Tool for NoopTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &AgentState<'_>,
+        _ctx: &ContextAgentState<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success(self.id, json!({"ok": true})))
     }
@@ -131,7 +131,7 @@ async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
     let plugin =
         Arc::new(LLMMetryPlugin::new(sink).with_provider("test-provider")) as Arc<dyn AgentPlugin>;
 
-    let thread = Thread::with_initial_state("t", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("t", json!({})).with_message(Message::user("hi"));
     let result = StreamResult {
         text: "tools".into(),
         tool_calls: vec![
@@ -214,7 +214,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let (_thread, result) = run_step(&client, &config, thread, &tools).await.unwrap();
@@ -269,7 +269,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let err = run_step(&client, &config, thread, &tools)
@@ -333,7 +333,7 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())
@@ -395,7 +395,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         .build();
 
     let config = AgentConfig::new("gpt-4").with_plugin(plugin);
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())

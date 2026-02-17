@@ -4,8 +4,8 @@ use super::core::{
 };
 use super::AgentLoopError;
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::conversation::Thread;
-use crate::contracts::context::AgentState;
+use crate::contracts::conversation::AgentState;
+use crate::contracts::context::AgentState as ContextAgentState;
 use crate::contracts::events::{AgentEvent, TerminationReason};
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::state_types::AgentInferenceError;
@@ -91,7 +91,7 @@ fn validate_phase_mutation(
 pub(super) async fn emit_phase_checked(
     phase: Phase,
     step: &mut StepContext<'_>,
-    ctx: &AgentState<'_>,
+    ctx: &ContextAgentState<'_>,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     for plugin in plugins {
@@ -108,7 +108,7 @@ fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
 }
 
 pub(super) async fn run_phase_block<R, Setup, Extract>(
-    thread: &Thread,
+    thread: &AgentState,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     phases: &[Phase],
@@ -122,13 +122,13 @@ where
     let current_state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let ctx = AgentState::new(&current_state, "phase", "plugin:phase")
-        .with_scope(Some(&thread.scope))
-        .with_thread_data(
-            thread.id.clone(),
-            thread.messages.clone(),
-            super::thread_state_version(thread),
-        );
+    let ctx = ContextAgentState::from_thread(
+        thread,
+        &current_state,
+        "phase",
+        "plugin:phase",
+        super::thread_state_version(thread),
+    );
     let mut step = StepContext::new(thread, tool_descriptors.to_vec());
     setup(&mut step);
     for phase in phases {
@@ -145,7 +145,7 @@ where
 
 pub(super) async fn emit_phase_block<Setup>(
     phase: Phase,
-    thread: &Thread,
+    thread: &AgentState,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     setup: Setup,
@@ -159,12 +159,12 @@ where
 }
 
 pub(super) async fn emit_cleanup_phases_and_apply(
-    thread: Thread,
+    thread: AgentState,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     error_type: &'static str,
     message: String,
-) -> Result<Thread, AgentLoopError> {
+) -> Result<AgentState, AgentLoopError> {
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -205,10 +205,10 @@ pub(super) async fn emit_cleanup_phases_and_apply(
 }
 
 pub(super) async fn emit_run_end_phase(
-    thread: Thread,
+    thread: AgentState,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Thread {
+) -> AgentState {
     let pending = {
         let current_state = match thread.rebuild_state() {
             Ok(s) => s,
@@ -217,13 +217,13 @@ pub(super) async fn emit_run_end_phase(
                 return thread;
             }
         };
-        let ctx = AgentState::new(&current_state, "phase", "plugin:run_end")
-            .with_scope(Some(&thread.scope))
-            .with_thread_data(
-                thread.id.clone(),
-                thread.messages.clone(),
-                super::thread_state_version(&thread),
-            );
+        let ctx = ContextAgentState::from_thread(
+            &thread,
+            &current_state,
+            "phase",
+            "plugin:run_end",
+            super::thread_state_version(&thread),
+        );
         let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
         if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {
             tracing::warn!(error = %e, "RunEndPhase(RunEnd) plugin phase validation failed");
@@ -238,12 +238,12 @@ pub(super) async fn emit_run_end_phase(
 }
 
 pub(super) async fn prepare_stream_error_termination(
-    thread: Thread,
+    thread: AgentState,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     run_id: &str,
     message: String,
-) -> (Thread, AgentEvent, AgentEvent) {
+) -> (AgentState, AgentEvent, AgentEvent) {
     let thread = super::finalize_run_end(thread, tool_descriptors, plugins).await;
     let error = AgentEvent::Error { message };
     let finish = AgentEvent::RunFinish {

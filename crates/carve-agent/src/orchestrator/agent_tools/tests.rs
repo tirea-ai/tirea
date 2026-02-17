@@ -1,5 +1,6 @@
 use super::*;
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
+use crate::contracts::context::AgentState as ContextAgentState;
 use crate::contracts::traits::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
@@ -50,7 +51,7 @@ fn plugin_filters_agents_by_scope_policy() {
 #[tokio::test]
 async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "worker",
@@ -65,13 +66,13 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
             "owner-1".to_string(),
             "worker".to_string(),
             None,
-            Thread::new("child-1"),
+            AgentState::new("child-1"),
             None,
         )
         .await;
     assert_eq!(epoch, 1);
 
-    let owner = Thread::new("owner-1");
+    let owner = AgentState::new("owner-1");
     let mut step = StepContext::new(&owner, vec![]);
     plugin
         .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
@@ -103,7 +104,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             "owner".to_string(),
             "agent-a".to_string(),
             None,
-            Thread::new("s-1"),
+            AgentState::new("s-1"),
             None,
         )
         .await;
@@ -115,7 +116,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             "owner".to_string(),
             "agent-a".to_string(),
             None,
-            Thread::new("s-2"),
+            AgentState::new("s-2"),
             None,
         )
         .await;
@@ -126,7 +127,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             "run-1",
             epoch1,
             AgentRunCompletion {
-                thread: Thread::new("old"),
+                thread: AgentState::new("old"),
                 status: AgentRunStatus::Completed,
                 assistant: Some("old".to_string()),
                 error: None,
@@ -146,7 +147,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             "run-1",
             epoch2,
             AgentRunCompletion {
-                thread: Thread::new("new"),
+                thread: AgentState::new("new"),
                 status: AgentRunStatus::Completed,
                 assistant: Some("new".to_string()),
                 error: None,
@@ -225,7 +226,7 @@ impl AgentPlugin for SlowSkipPlugin {
         "slow_skip"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
         if phase == Phase::BeforeInference {
             tokio::time::sleep(Duration::from_millis(120)).await;
             step.skip_inference = true;
@@ -332,7 +333,7 @@ async fn manager_stop_tree_stops_descendants() {
             "owner-thread".to_string(),
             "agent-a".to_string(),
             None,
-            Thread::new("parent-run-thread"),
+            AgentState::new("parent-run-thread"),
             None,
         )
         .await;
@@ -342,7 +343,7 @@ async fn manager_stop_tree_stops_descendants() {
             "owner-thread".to_string(),
             "agent-a".to_string(),
             Some("parent-run".to_string()),
-            Thread::new("child-run-thread"),
+            AgentState::new("child-run-thread"),
             None,
         )
         .await;
@@ -352,7 +353,7 @@ async fn manager_stop_tree_stops_descendants() {
             "owner-thread".to_string(),
             "agent-a".to_string(),
             Some("child-run".to_string()),
-            Thread::new("grandchild-run-thread"),
+            AgentState::new("grandchild-run-thread"),
             None,
         )
         .await;
@@ -362,7 +363,7 @@ async fn manager_stop_tree_stops_descendants() {
             "other-owner".to_string(),
             "agent-b".to_string(),
             Some("parent-run".to_string()),
-            Thread::new("other-owner-thread"),
+            AgentState::new("other-owner-thread"),
             None,
         )
         .await;
@@ -514,7 +515,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         .unwrap();
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
     let doc = json!({
         "agent": {
@@ -558,7 +559,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let manager = Arc::new(AgentRunManager::new());
     let run_tool = AgentRunTool::new(os, manager.clone());
 
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
     let doc = json!({
         "agent": {
@@ -627,7 +628,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         .unwrap();
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
     let doc = json!({
         "agent": {
@@ -661,11 +662,11 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
 async fn agent_stop_tool_stops_descendant_runs() {
     let manager = Arc::new(AgentRunManager::new());
     let stop_tool = AgentStopTool::new(manager.clone());
-    let os_thread = Thread::new("owner-thread");
+    let os_thread = AgentState::new("owner-thread");
 
-    let parent_thread = Thread::new("parent-s");
-    let child_thread = Thread::new("child-s");
-    let grandchild_thread = Thread::new("grandchild-s");
+    let parent_thread = AgentState::new("parent-s");
+    let child_thread = AgentState::new("child-s");
+    let grandchild_thread = AgentState::new("grandchild-s");
     let parent_run_id = "run-parent";
     let child_run_id = "run-child";
     let grandchild_run_id = "run-grandchild";
@@ -775,9 +776,9 @@ async fn agent_stop_tool_stops_descendant_runs() {
 #[tokio::test]
 async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "agent": {
@@ -793,7 +794,7 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
@@ -834,9 +835,9 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
 #[tokio::test]
 async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "agent": {
@@ -857,7 +858,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     );
 
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
     assert!(
@@ -879,9 +880,9 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
 #[tokio::test]
 async fn recovery_plugin_auto_approve_when_permission_allow() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
@@ -903,7 +904,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -933,9 +934,9 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
 #[tokio::test]
 async fn recovery_plugin_auto_deny_when_permission_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
@@ -957,7 +958,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -985,9 +986,9 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
 #[tokio::test]
 async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
@@ -1007,7 +1008,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -1033,9 +1034,9 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
 #[tokio::test]
 async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
@@ -1055,7 +1056,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 
@@ -1082,9 +1083,9 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
 #[tokio::test]
 async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::conversation::Thread::new("child-run")
+    let child_thread = crate::contracts::conversation::AgentState::new("child-run")
         .with_message(crate::contracts::conversation::Message::user("seed"));
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
             "permissions": {
@@ -1106,7 +1107,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let mut step = StepContext::new(&thread, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
 

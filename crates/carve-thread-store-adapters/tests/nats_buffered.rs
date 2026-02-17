@@ -7,10 +7,9 @@
 
 #![cfg(feature = "nats")]
 
-use carve_thread_model::{Message, Thread};
 use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 use carve_thread_store_contract::{
-    CheckpointReason, MessageQuery, ThreadDelta, ThreadReader, ThreadWriter,
+    AgentChangeSet, AgentState, CheckpointReason, Message, MessageQuery, ThreadReader, ThreadWriter,
 };
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
@@ -51,7 +50,7 @@ async fn test_create_delegates_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = Thread::new("t1");
+    let thread = AgentState::new("t1");
     storage.create(&thread).await.unwrap();
 
     let loaded = inner.load("t1").await.unwrap();
@@ -66,10 +65,10 @@ async fn test_append_does_not_write_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = Thread::new("t1").with_message(Message::user("hello"));
+    let thread = AgentState::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta = ThreadDelta {
+    let delta = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -94,10 +93,10 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = Thread::new("t1").with_message(Message::user("hello"));
+    let thread = AgentState::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta = ThreadDelta {
+    let delta = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -108,7 +107,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     storage.append("t1", &delta).await.unwrap();
 
     // Build final thread with both messages
-    let final_thread = Thread::new("t1")
+    let final_thread = AgentState::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("world"));
 
@@ -130,7 +129,7 @@ async fn test_load_delegates_to_inner() {
 
     assert!(storage.load("nonexistent").await.unwrap().is_none());
 
-    let thread = Thread::new("t1");
+    let thread = AgentState::new("t1");
     inner.create(&thread).await.unwrap();
 
     let loaded = storage.load("t1").await.unwrap();
@@ -144,7 +143,7 @@ async fn test_delete_delegates_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = Thread::new("t1");
+    let thread = AgentState::new("t1");
     inner.create(&thread).await.unwrap();
 
     storage.delete("t1").await.unwrap();
@@ -160,11 +159,11 @@ async fn test_recover_replays_unacked_deltas() {
     let (inner, storage) = make_storage(&url).await;
 
     // Create thread in inner storage
-    let thread = Thread::new("t1").with_message(Message::user("hello"));
+    let thread = AgentState::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     // Publish deltas via append (these go to NATS)
-    let delta1 = ThreadDelta {
+    let delta1 = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -172,7 +171,7 @@ async fn test_recover_replays_unacked_deltas() {
         patches: vec![],
         snapshot: None,
     };
-    let delta2 = ThreadDelta {
+    let delta2 = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -208,13 +207,13 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     let (inner, storage) = make_storage(&url).await;
 
     // Simulate a completed first run: thread with 1 user + 1 assistant msg.
-    let thread = Thread::new("t1")
+    let thread = AgentState::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("first reply"));
     inner.create(&thread).await.unwrap();
 
     // Second run starts — new deltas go to NATS only.
-    let delta = ThreadDelta {
+    let delta = AgentChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -244,14 +243,14 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = Thread::new("t1")
+    let thread = AgentState::new("t1")
         .with_message(Message::user("msg-0"))
         .with_message(Message::assistant("msg-1"));
     inner.create(&thread).await.unwrap();
 
     // Buffer 2 new deltas via NATS.
     for i in 2..4 {
-        let delta = ThreadDelta {
+        let delta = AgentChangeSet {
             run_id: "r2".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -282,11 +281,11 @@ async fn test_query_accurate_after_run_end_flush() {
     let (inner, storage) = make_storage(&url).await;
 
     // First run: create thread with 1 message.
-    let thread = Thread::new("t1").with_message(Message::user("hello"));
+    let thread = AgentState::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     // Run produces deltas buffered in NATS.
-    let delta = ThreadDelta {
+    let delta = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -301,7 +300,7 @@ async fn test_query_accurate_after_run_end_flush() {
     assert_eq!(pre.thread.messages.len(), 1);
 
     // Run-end flush.
-    let final_thread = Thread::new("t1")
+    let final_thread = AgentState::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("world"));
     storage.save(&final_thread).await.unwrap();
@@ -328,10 +327,10 @@ async fn test_multi_run_query_sees_previous_run_data() {
     let (inner, storage) = make_storage(&url).await;
 
     // === Run 1 ===
-    let thread = Thread::new("t1").with_message(Message::user("q1"));
+    let thread = AgentState::new("t1").with_message(Message::user("q1"));
     inner.create(&thread).await.unwrap();
 
-    let delta1 = ThreadDelta {
+    let delta1 = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -342,13 +341,13 @@ async fn test_multi_run_query_sees_previous_run_data() {
     storage.append("t1", &delta1).await.unwrap();
 
     // Flush run 1.
-    let run1_thread = Thread::new("t1")
+    let run1_thread = AgentState::new("t1")
         .with_message(Message::user("q1"))
         .with_message(Message::assistant("a1"));
     storage.save(&run1_thread).await.unwrap();
 
     // === Run 2 (in progress) ===
-    let delta2 = ThreadDelta {
+    let delta2 = AgentChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -369,7 +368,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     assert_eq!(head.thread.messages[1].content, "a1");
 
     // Flush run 2.
-    let run2_thread = Thread::new("t1")
+    let run2_thread = AgentState::new("t1")
         .with_message(Message::user("q1"))
         .with_message(Message::assistant("a1"))
         .with_message(Message::assistant("a2"));

@@ -10,11 +10,11 @@ use super::*;
 // - delegates deterministic state-machine helpers to `stream_core`
 
 async fn drain_run_start_outbox_and_replay(
-    mut thread: Thread,
+    mut thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
-) -> Result<(Thread, Vec<AgentEvent>), String> {
+) -> Result<(AgentState, Vec<AgentEvent>), String> {
     let (next_thread, outbox) =
         drain_agent_outbox(thread.clone(), "agent_outbox_run_start").map_err(|e| e.to_string())?;
     thread = next_thread;
@@ -122,7 +122,7 @@ async fn drain_run_start_outbox_and_replay(
     Ok((thread, events))
 }
 
-fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), String> {
+fn drain_loop_tick_outbox(thread: AgentState) -> Result<(AgentState, Vec<AgentEvent>), String> {
     let (next_thread, outbox) =
         drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
 
@@ -144,7 +144,7 @@ fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), S
 pub(super) fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {

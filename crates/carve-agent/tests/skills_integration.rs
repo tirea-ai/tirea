@@ -1,7 +1,7 @@
 use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::conversation::{Message, ToolCall};
-use carve_agent::contracts::context::AgentState;
+use carve_agent::contracts::context::AgentState as ContextAgentState;
 use carve_agent::contracts::phase::{Phase, StepContext};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
@@ -50,7 +50,7 @@ echo "hello"
     (td, reg)
 }
 
-async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread, ToolResult) {
+async fn apply_tool(thread: AgentState, tool: &dyn Tool, call: ToolCall) -> (AgentState, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -62,11 +62,11 @@ async fn apply_tool(thread: Thread, tool: &dyn Tool, call: ToolCall) -> (Thread,
 }
 
 async fn apply_tool_with_scope(
-    thread: Thread,
+    thread: AgentState,
     tool: &dyn Tool,
     call: ToolCall,
     scope: &carve_state::ScopeState,
-) -> (Thread, ToolResult) {
+) -> (AgentState, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(scope)).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -88,7 +88,7 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
     let activate = SkillActivateTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, result) = apply_tool(
         thread,
@@ -100,7 +100,7 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -113,7 +113,7 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
 async fn test_skill_activation_respects_scope_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let mut scope = carve_state::ScopeState::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
@@ -133,7 +133,7 @@ async fn test_skill_activation_respects_scope_skill_policy() {
 async fn test_load_skill_resource_respects_scope_skill_policy() {
     let (_td, reg) = make_skill_tree();
     let load = LoadSkillResourceTool::new(reg);
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let mut scope = carve_state::ScopeState::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
@@ -160,7 +160,7 @@ async fn test_load_reference_injects_reference_content() {
     let load_ref = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, _) = apply_tool(
         thread,
@@ -183,7 +183,7 @@ async fn test_load_reference_injects_reference_content() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -199,7 +199,7 @@ async fn test_script_result_is_persisted_and_injected() {
     let run_script = SkillScriptTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, _) = apply_tool(
         thread,
@@ -222,7 +222,7 @@ async fn test_script_result_is_persisted_and_injected() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -238,7 +238,7 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
     let load_asset = LoadSkillResourceTool::new(reg);
     let plugin = SkillRuntimePlugin::new();
 
-    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, _) = apply_tool(
         thread,
@@ -262,7 +262,7 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -276,7 +276,7 @@ async fn test_load_reference_rejects_escape() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -296,7 +296,7 @@ async fn test_load_resource_requires_supported_prefix() {
     let (_td, reg) = make_skill_tree();
     let load_asset = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_asset,
@@ -316,7 +316,7 @@ async fn test_load_resource_kind_mismatch_is_error() {
     let (_td, reg) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_resource,
@@ -336,7 +336,7 @@ async fn test_load_resource_explicit_kind_asset_works() {
     let (_td, reg) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_resource,
@@ -357,7 +357,7 @@ async fn test_skill_activation_requires_exact_skill_name() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -373,7 +373,7 @@ async fn test_skill_activation_unknown_skill_errors() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -389,7 +389,7 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -405,7 +405,7 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -423,7 +423,7 @@ async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -450,7 +450,7 @@ async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
     fs::remove_file(td.path().join("skills").join("docx").join("SKILL.md")).unwrap();
 
     let activate = SkillActivateTool::new(reg);
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -466,7 +466,7 @@ async fn test_load_reference_requires_references_prefix() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -486,7 +486,7 @@ async fn test_load_reference_missing_arguments_are_errors() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
 
     let (_thread, r1) = apply_tool(
         thread.clone(),
@@ -517,7 +517,7 @@ async fn test_load_reference_invalid_utf8_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BAD.bin"), vec![0xff, 0xfe, 0xfd]).unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -537,7 +537,7 @@ async fn test_load_reference_missing_file_is_error() {
     let (_td, reg) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -566,7 +566,7 @@ async fn test_load_reference_symlink_escape_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     unix_fs::symlink(&outside, refs_dir.join("ESCAPE.md")).unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -586,7 +586,7 @@ async fn test_script_requires_scripts_prefix() {
     let (_td, reg) = make_skill_tree();
     let run_script = SkillScriptTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -606,7 +606,7 @@ async fn test_script_missing_arguments_are_errors() {
     let (_td, reg) = make_skill_tree();
     let run_script = SkillScriptTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
 
     let (_thread, r1) = apply_tool(
         thread.clone(),
@@ -645,7 +645,7 @@ printf "%s" "$*"
     )
     .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, _) = apply_tool(
         thread,
         &activate,
@@ -667,7 +667,7 @@ printf "%s" "$*"
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -691,7 +691,7 @@ exit 2
     )
     .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -716,7 +716,7 @@ async fn test_script_unsupported_runtime_is_error() {
     fs::write(scripts_dir.join("bad.rb"), "puts 'hi'\n").unwrap();
 
     let run_script = SkillScriptTool::new(reg);
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -741,7 +741,7 @@ async fn test_script_rejects_excessive_argument_count() {
         args.push(format!("arg-{i}"));
     }
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -777,7 +777,7 @@ Body
         Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
     let activate = SkillActivateTool::new(reg);
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -812,7 +812,7 @@ async fn test_reference_truncation_flag_is_injected() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BIG.md"), big).unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, _) = apply_tool(
         thread,
         &activate,
@@ -834,7 +834,7 @@ async fn test_reference_truncation_flag_is_injected() {
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;
@@ -860,7 +860,7 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     )
     .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, _) = apply_tool(
         thread,
         &activate,
@@ -882,7 +882,7 @@ head -c 40000 /dev/zero | tr '\0' 'a'
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(Phase::BeforeInference, &mut step, &ctx)
         .await;

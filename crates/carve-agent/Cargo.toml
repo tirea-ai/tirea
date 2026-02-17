@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
 carve-agent-contract = { path = "../carve-agent-contract" }
-carve-thread-model = { path = "../carve-thread-model" }
 carve-thread-store-contract = { path = "../carve-thread-store-contract" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

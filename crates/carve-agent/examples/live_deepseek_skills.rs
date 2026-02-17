@@ -12,11 +12,11 @@
 
 use async_trait::async_trait;
 use carve_agent::contracts::conversation::Message;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-use carve_agent::prelude::AgentState;
+use carve_agent::prelude::AgentState as RuntimeAgentState;
 use carve_agent::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
 };
@@ -53,7 +53,11 @@ impl Tool for CalculatorTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &RuntimeAgentState<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'expression'".to_string()))?;
@@ -117,7 +121,11 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState<'_>) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &RuntimeAgentState<'_>,
+    ) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;
@@ -219,7 +227,7 @@ async fn test_unit_converter(
         .with_max_rounds(5)
         .with_plugin(subsystem.plugin());
 
-    let thread = Thread::with_initial_state("test-unit-converter", json!({}))
+    let thread = ConversationAgentState::with_initial_state("test-unit-converter", json!({}))
         .with_message(Message::system(
             "You are a helpful assistant with access to skills and tools. \
              When the user asks about unit conversions, first activate the \
@@ -274,7 +282,7 @@ async fn test_todo_manager_streaming(
         .with_max_rounds(8)
         .with_plugin(subsystem.plugin());
 
-    let thread = Thread::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
+    let thread = ConversationAgentState::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant with access to skills and tools. \
              When managing tasks, first activate the todo-manager skill, \
@@ -335,7 +343,7 @@ async fn test_multi_skill(
         .with_plugin(subsystem.plugin());
 
     // Multi-turn conversation activating both skills
-    let mut thread = Thread::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
+    let mut thread = ConversationAgentState::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant with skills and tools. \
              Activate the appropriate skill before performing related tasks.",

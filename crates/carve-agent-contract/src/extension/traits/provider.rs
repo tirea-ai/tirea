@@ -4,7 +4,7 @@
 //! based on the current state.
 
 use async_trait::async_trait;
-use crate::AgentState;
+use crate::context::AgentState;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ContextCategory {
     /// Injected at session start, before message history.
-    Thread,
+    AgentState,
     /// Injected after user input.
     UserInput,
     /// Injected after tool execution.

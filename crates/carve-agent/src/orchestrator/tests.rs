@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
 use crate::contracts::phase::{Phase, StepContext};
 use crate::contracts::storage::{ThreadReader, ThreadWriter};
 use crate::contracts::traits::tool::ToolDescriptor;
@@ -7,7 +7,7 @@ use crate::contracts::traits::tool::{ToolError, ToolResult};
 use crate::extensions::skills::FsSkillRegistry;
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
-use crate::contracts::context::AgentState;
+use crate::contracts::context::AgentState as ContextAgentState;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -53,7 +53,7 @@ impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
         &self,
         thread_id: &str,
     ) -> Result<
-        Option<crate::contracts::storage::ThreadHead>,
+        Option<crate::contracts::storage::AgentStateHead>,
         crate::contracts::storage::ThreadStoreError,
     > {
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::load(
@@ -82,7 +82,7 @@ impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
 impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     async fn create(
         &self,
-        thread: &Thread,
+        thread: &AgentState,
     ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
     {
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::create(
@@ -95,7 +95,7 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &crate::contracts::storage::ThreadDelta,
+        changeset: &crate::contracts::storage::AgentChangeSet,
     ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
     {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
@@ -107,7 +107,7 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::append(
             self.inner.as_ref(),
             thread_id,
-            delta,
+            changeset,
         )
         .await
     }
@@ -133,7 +133,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
         "skip_with_run_end_patch"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -150,7 +150,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
 #[tokio::test]
 async fn wire_skills_inserts_tools_and_plugin() {
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -173,7 +173,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert_eq!(cfg.plugins[0].id(), "skills");
 
     // Verify injection does not panic and includes catalog.
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "s",
         json!({
             "skills": {
@@ -197,7 +197,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
 #[tokio::test]
 async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
@@ -215,7 +215,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].id(), "skills_runtime");
 
-    let thread = Thread::with_initial_state(
+    let thread = AgentState::with_initial_state(
         "s",
         json!({
             "skills": {
@@ -267,7 +267,7 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
     }
 
     let os = AgentOs::builder()
@@ -297,7 +297,7 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {}
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
     }
 
     let os = AgentOs::builder()
@@ -322,7 +322,7 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
 }
 
 #[test]
@@ -353,7 +353,7 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn resolve_errors_if_agent_tools_plugin_already_installed() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -384,7 +384,7 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {}
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn resolve_errors_if_agent_recovery_plugin_already_installed() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -410,7 +410,7 @@ fn resolve_errors_if_agent_recovery_plugin_already_installed() {
 #[test]
 fn resolve_errors_if_agent_missing() {
     let os = AgentOs::builder().build().unwrap();
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("missing", thread).err().unwrap();
     assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
 }
@@ -429,7 +429,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("base_tool", json!({"ok": true})))
         }
@@ -450,7 +450,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
 
     assert_eq!(cfg.id, "a1");
@@ -477,7 +477,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -522,7 +522,7 @@ fn resolve_sets_runtime_caller_agent_id() {
         )
         .build()
         .unwrap();
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, _cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(
         thread
@@ -565,7 +565,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("skill", json!({"ok": true})))
         }
@@ -586,7 +586,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -602,7 +602,7 @@ async fn resolve_wires_agent_tools_by_default() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("agent_run"));
     assert!(tools.contains_key("agent_stop"));
@@ -624,7 +624,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("agent_run", json!({"ok": true})))
         }
@@ -639,7 +639,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -673,7 +673,7 @@ async fn resolve_errors_if_models_registry_present_but_model_missing() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(err, AgentOsResolveError::ModelNotFound(ref id) if id == "missing_model_ref"));
 }
@@ -687,7 +687,7 @@ async fn resolve_rewrites_model_when_registry_present() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.model, "gpt-4o-mini");
 }
@@ -701,7 +701,7 @@ impl AgentPlugin for TestPlugin {
         self.0
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
         if phase == Phase::BeforeInference {
             step.system(format!("<plugin id=\"{}\"/>", self.0));
         }
@@ -711,7 +711,7 @@ impl AgentPlugin for TestPlugin {
 #[tokio::test]
 async fn resolve_wires_plugins_from_registry() {
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = ContextAgentState::new(&doc, "test", "test");
     let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
@@ -721,7 +721,7 @@ async fn resolve_wires_plugins_from_registry() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, _tools, _thread) = os.resolve("a1", thread.clone()).unwrap();
     assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
@@ -746,7 +746,7 @@ async fn resolve_wires_policies_before_plugins() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
     assert_eq!(cfg.plugins[1].id(), "agent_recovery");
@@ -775,7 +775,7 @@ async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("skill"));
     assert!(tools.contains_key("load_skill_resource"));
@@ -836,7 +836,7 @@ fn resolve_errors_on_duplicate_plugin_id() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -861,7 +861,7 @@ fn resolve_errors_on_duplicate_plugin_id_between_policy_and_plugin_ref() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -918,7 +918,7 @@ fn resolve_errors_on_reserved_plugin_id() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -940,7 +940,7 @@ fn resolve_errors_on_reserved_policy_id() {
         .build()
         .unwrap();
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = AgentState::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -977,7 +977,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -995,7 +995,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         .unwrap();
 
     // Create thread with initial state {"counter": 0}
-    let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
+    let thread = AgentState::with_initial_state("t1", json!({"counter": 0}));
     storage.create(&thread).await.unwrap();
 
     // Verify initial state
@@ -1036,7 +1036,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1086,7 +1086,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1104,7 +1104,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         .unwrap();
 
     // Create thread with initial state
-    let thread = Thread::with_initial_state("t1", json!({"counter": 5}));
+    let thread = AgentState::with_initial_state("t1", json!({"counter": 5}));
     storage.create(&thread).await.unwrap();
 
     // Run without frontend state — state should be preserved
@@ -1139,7 +1139,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1202,7 +1202,7 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1331,7 +1331,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     use futures::StreamExt;
 
     let storage = Arc::new(FailOnNthAppendStorage::new(1));
-    let initial = Thread::with_initial_state("t-existing-fail", json!({"counter": 5}));
+    let initial = AgentState::with_initial_state("t-existing-fail", json!({"counter": 5}));
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()
@@ -1431,7 +1431,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
             "runtime_only"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1449,7 +1449,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("runtime_tool", json!({"ok": true})))
         }
@@ -1501,7 +1501,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dup_tool", json!({})))
         }
@@ -1517,7 +1517,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("dup_tool", json!({})))
         }
@@ -1576,7 +1576,7 @@ impl Tool for BundleTestTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &AgentState<'_>,
+        _ctx: &ContextAgentState<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success("dup_tool", json!({"ok": true})))
     }

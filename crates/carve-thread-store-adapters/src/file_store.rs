@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use carve_thread_model::Thread;
 use carve_thread_store_contract::{
-    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    AgentState, Committed, AgentChangeSet, AgentStateHead, Message, ThreadListPage, ThreadListQuery,
+    ThreadReader,
     ThreadStoreError, ThreadWriter, Version,
 };
 use serde::Deserialize;
@@ -53,13 +53,13 @@ impl FileStore {
 
 #[async_trait]
 impl ThreadWriter for FileStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         let path = self.thread_path(&thread.id)?;
         if path.exists() {
             return Err(ThreadStoreError::AlreadyExists);
         }
         // Serialize with version=0 embedded
-        let head = ThreadHead {
+        let head = AgentStateHead {
             thread: thread.clone(),
             version: 0,
         };
@@ -70,7 +70,7 @@ impl ThreadWriter for FileStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &ThreadDelta,
+        delta: &AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         let head = self
             .load_head(thread_id)
@@ -80,7 +80,7 @@ impl ThreadWriter for FileStore {
         let mut thread = head.thread;
         delta.apply_to(&mut thread);
         let new_version = head.version + 1;
-        let new_head = ThreadHead {
+        let new_head = AgentStateHead {
             thread,
             version: new_version,
         };
@@ -101,7 +101,7 @@ impl ThreadWriter for FileStore {
 
 #[async_trait]
 impl ThreadReader for FileStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         self.load_head(thread_id).await
     }
 
@@ -172,29 +172,29 @@ impl ThreadReader for FileStore {
 
 impl FileStore {
     /// Load a thread head (thread + version) from file.
-    async fn load_head(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load_head(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let path = self.thread_path(thread_id)?;
         if !path.exists() {
             return Ok(None);
         }
         let content = tokio::fs::read_to_string(&path).await?;
-        // Try to parse as ThreadHead first (new format with version).
+        // Try to parse as AgentStateHead first (new format with version).
         if let Ok(head) = serde_json::from_str::<VersionedThread>(&content) {
-            let thread: Thread = serde_json::from_str(&content)
+            let thread: AgentState = serde_json::from_str(&content)
                 .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
-            Ok(Some(ThreadHead {
+            Ok(Some(AgentStateHead {
                 thread,
                 version: head._version.unwrap_or(0),
             }))
         } else {
-            let thread: Thread = serde_json::from_str(&content)
+            let thread: AgentState = serde_json::from_str(&content)
                 .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
-            Ok(Some(ThreadHead { thread, version: 0 }))
+            Ok(Some(AgentStateHead { thread, version: 0 }))
         }
     }
 
     /// Save a thread head (thread + version) to file atomically.
-    async fn save_head(&self, head: &ThreadHead) -> Result<(), ThreadStoreError> {
+    async fn save_head(&self, head: &AgentStateHead) -> Result<(), ThreadStoreError> {
         if !self.base_path.exists() {
             tokio::fs::create_dir_all(&self.base_path).await?;
         }
@@ -252,14 +252,15 @@ struct VersionedThread {
 mod tests {
     use super::*;
     use carve_state::{path, Op, Patch, TrackedPatch};
-    use carve_thread_model::Message;
-    use carve_thread_store_contract::{CheckpointReason, MessageQuery, ThreadReader, ThreadWriter};
+    use carve_thread_store_contract::{
+        CheckpointReason, MessageQuery, ThreadReader, ThreadWriter,
+    };
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
-        let mut thread = Thread::new(thread_id);
+    fn make_thread_with_messages(thread_id: &str, n: usize) -> AgentState {
+        let mut thread = AgentState::new(thread_id);
         for i in 0..n {
             thread = thread.with_message(Message::user(format!("msg-{i}")));
         }
@@ -271,7 +272,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
 
-        let thread = Thread::new("test-1").with_message(Message::user("hello"));
+        let thread = AgentState::new("test-1").with_message(Message::user("hello"));
         storage.save(&thread).await.unwrap();
 
         let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
@@ -284,9 +285,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
 
-        storage.create(&Thread::new("thread-a")).await.unwrap();
-        storage.create(&Thread::new("thread-b")).await.unwrap();
-        storage.create(&Thread::new("thread-c")).await.unwrap();
+        storage.create(&AgentState::new("thread-a")).await.unwrap();
+        storage.create(&AgentState::new("thread-b")).await.unwrap();
+        storage.create(&AgentState::new("thread-c")).await.unwrap();
 
         let mut ids = storage.list().await.unwrap();
         ids.sort();
@@ -326,9 +327,9 @@ mod tests {
     async fn file_storage_append_and_versioning() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileStore::new(temp_dir.path());
-        store.create(&Thread::new("t1")).await.unwrap();
+        store.create(&AgentState::new("t1")).await.unwrap();
 
-        let d1 = ThreadDelta {
+        let d1 = AgentChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::UserMessage,
@@ -339,7 +340,7 @@ mod tests {
         let c1 = store.append("t1", &d1).await.unwrap();
         assert_eq!(c1.version, 1);
 
-        let d2 = ThreadDelta {
+        let d2 = AgentChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -352,7 +353,7 @@ mod tests {
         let c2 = store.append("t1", &d2).await.unwrap();
         assert_eq!(c2.version, 2);
 
-        let d3 = ThreadDelta {
+        let d3 = AgentChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::RunFinished,

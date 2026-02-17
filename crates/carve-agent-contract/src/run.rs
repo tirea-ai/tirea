@@ -1,4 +1,4 @@
-use carve_thread_model::Message;
+use crate::conversation::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -7,7 +7,7 @@ use serde_json::Value;
 pub struct RunRequest {
     /// Target agent identifier.
     pub agent_id: String,
-    /// Thread (conversation) ID. `None` -> auto-generate.
+    /// AgentState (conversation) ID. `None` -> auto-generate.
     pub thread_id: Option<String>,
     /// Run ID. `None` -> auto-generate.
     pub run_id: Option<String>,

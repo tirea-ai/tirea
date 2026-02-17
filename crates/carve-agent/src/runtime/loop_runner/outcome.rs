@@ -6,10 +6,10 @@ use super::*;
 #[derive(Debug)]
 pub enum StepResult {
     /// LLM responded with text, no tools needed.
-    Done { thread: Thread, response: String },
+    Done { thread: AgentState, response: String },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
-        thread: Thread,
+        thread: AgentState,
         text: String,
         tool_calls: Vec<crate::contracts::conversation::ToolCall>,
     },
@@ -21,7 +21,7 @@ pub enum StepResult {
 pub async fn run_step_cycle(
     client: &Client,
     config: &AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<StepResult, AgentLoopError> {
     // Run one step
@@ -57,7 +57,7 @@ pub enum AgentLoopError {
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
-        thread: Box<Thread>,
+        thread: Box<AgentState>,
         reason: StopReason,
     },
     /// Pending user interaction; execution should pause until the client responds.
@@ -66,12 +66,12 @@ pub enum AgentLoopError {
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        thread: Box<Thread>,
+        thread: Box<AgentState>,
         interaction: Box<Interaction>,
     },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]
-    Cancelled { thread: Box<Thread> },
+    Cancelled { thread: Box<AgentState> },
 }
 
 impl AgentLoopError {

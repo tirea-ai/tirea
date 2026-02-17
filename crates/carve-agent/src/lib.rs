@@ -45,7 +45,7 @@
 //!
 //! - **Tool**: Trait for implementing agent tools (reads/writes state via Context)
 //! - **Context**: Provides typed state access with automatic patch collection
-//! - **Thread**: Immutable conversation state with messages and patches
+//! - **AgentState**: Immutable conversation state with messages and patches
 //! - **StreamCollector**: Collects streaming LLM responses
 //! - **ThreadWriter/ThreadReader**: Traits for thread persistence
 //!
@@ -82,12 +82,12 @@
 //!
 //! ```ignore
 //! use carve_agent::contracts::storage::ThreadWriter;
-//! use carve_agent::contracts::conversation::Thread;
+//! use carve_agent::contracts::conversation::AgentState;
 //! use carve_agent::contracts::conversation::Message;
 //! use carve_thread_store_adapters::FileStore;
 //!
 //! // Create or load session
-//! let thread = Thread::new("session-1")
+//! let thread = AgentState::new("session-1")
 //!     .with_message(Message::user("Hello"))
 //!     .with_message(Message::assistant("Hi!"));
 //!

@@ -47,7 +47,7 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::events::{AgentEvent, StreamResult, TerminationReason};
 use crate::contracts::phase::Phase;
@@ -82,11 +82,11 @@ pub use carve_agent_contract::agent::{
     StateCommitError, StateCommitter,
 };
 pub(crate) use carve_agent_contract::agent::{
-    AGENT_STATE_VERSION_META_KEY,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use core::build_messages;
 #[cfg(test)]
@@ -122,20 +122,25 @@ fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
 
-pub(super) fn thread_state_version(thread: &Thread) -> u64 {
-    thread
-        .metadata
-        .extra
-        .get(AGENT_STATE_VERSION_META_KEY)
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
+pub(super) fn thread_state_version(thread: &AgentState) -> u64 {
+    thread.metadata.version.unwrap_or(0)
 }
 
-pub(super) fn set_thread_state_version(thread: &mut Thread, version: u64) {
-    thread.metadata.extra.insert(
-        AGENT_STATE_VERSION_META_KEY.to_string(),
-        serde_json::Value::from(version),
-    );
+pub(crate) fn set_thread_state_version(
+    thread: &mut AgentState,
+    version: u64,
+    version_timestamp: Option<u64>,
+) {
+    thread.metadata.version = Some(version);
+    if let Some(timestamp) = version_timestamp {
+        thread.metadata.version_timestamp = Some(timestamp);
+    }
+}
+
+pub(crate) fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
 pub(super) fn effective_llm_models(config: &AgentConfig) -> Vec<String> {
@@ -241,7 +246,7 @@ fn mark_step_completed(run_state: &mut RunState) {
 fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
-    thread: &Thread,
+    thread: &AgentState,
     stop_conditions: &[Arc<dyn crate::engine::stop_conditions::StopCondition>],
 ) -> Option<StopReason> {
     let stop_ctx = run_state.to_check_context(result, thread);
@@ -354,7 +359,7 @@ impl ChatStreamProvider for Client {
 }
 
 async fn run_step_prepare_phases(
-    thread: &Thread,
+    thread: &AgentState,
     tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
@@ -394,7 +399,7 @@ pub(super) struct PreparedStep {
 }
 
 pub(super) async fn prepare_step_execution(
-    thread: &Thread,
+    thread: &AgentState,
     tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
@@ -410,7 +415,7 @@ pub(super) async fn prepare_step_execution(
 }
 
 pub(super) async fn apply_llm_error_cleanup(
-    thread: &mut Thread,
+    thread: &mut AgentState,
     tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
     error_type: &'static str,
@@ -428,7 +433,7 @@ pub(super) async fn apply_llm_error_cleanup(
 }
 
 pub(super) async fn complete_step_after_inference(
-    thread: &mut Thread,
+    thread: &mut AgentState,
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
@@ -482,7 +487,7 @@ pub(super) struct ToolExecutionContext {
 }
 
 pub(super) fn prepare_tool_execution_context(
-    thread: &Thread,
+    thread: &AgentState,
     config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
     let state = thread
@@ -493,10 +498,10 @@ pub(super) fn prepare_tool_execution_context(
 }
 
 pub(super) async fn finalize_run_end(
-    thread: Thread,
+    thread: AgentState,
     tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
-) -> Thread {
+) -> AgentState {
     emit_run_end_phase(thread, tool_descriptors, plugins).await
 }
 
@@ -553,18 +558,18 @@ fn assistant_turn_message(
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, StreamResult), AgentLoopError> {
+) -> Result<(AgentState, StreamResult), AgentLoopError> {
     run_step_with_provider(client, config, thread, tools).await
 }
 
 async fn run_step_with_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, StreamResult), AgentLoopError> {
+) -> Result<(AgentState, StreamResult), AgentLoopError> {
     let tool_descriptors = tool_descriptors_for_config(tools, config);
     let mut thread = thread;
     let prepared = prepare_step_execution(&thread, &tool_descriptors, config).await?;
@@ -652,9 +657,9 @@ async fn run_step_with_provider(
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, String), AgentLoopError> {
+) -> Result<(AgentState, String), AgentLoopError> {
     run_loop_with_context(client, config, thread, tools, RunContext::default()).await
 }
 
@@ -665,20 +670,20 @@ pub async fn run_loop(
 pub async fn run_loop_with_context(
     client: &Client,
     config: &AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> Result<(Thread, String), AgentLoopError> {
+) -> Result<(AgentState, String), AgentLoopError> {
     run_loop_with_context_provider(client, config, thread, tools, run_ctx).await
 }
 
 async fn run_loop_with_context_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    mut thread: Thread,
+    mut thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> Result<(Thread, String), AgentLoopError> {
+) -> Result<(AgentState, String), AgentLoopError> {
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
@@ -715,7 +720,7 @@ async fn run_loop_with_context_provider(
 
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {
-            terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
+            terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
                 thread: Box::new(thread),
             });
         }
@@ -730,7 +735,7 @@ async fn run_loop_with_context_provider(
 
         if prepared.skip_inference {
             if let Some(interaction) = pending_interaction_from_thread(&thread) {
-                terminate_run!(move |thread: Thread| AgentLoopError::PendingInteraction {
+                terminate_run!(move |thread: AgentState| AgentLoopError::PendingInteraction {
                     thread: Box::new(thread),
                     interaction: Box::new(interaction),
                 });
@@ -762,7 +767,7 @@ async fn run_loop_with_context_provider(
         let response = match attempt_outcome {
             LlmAttemptOutcome::Success { value, .. } => value,
             LlmAttemptOutcome::Cancelled => {
-                terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
+                terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
                     thread: Box::new(thread),
                 });
             }
@@ -809,7 +814,7 @@ async fn run_loop_with_context_provider(
             if let Some(reason) =
                 stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
             {
-                terminate_run!(move |thread: Thread| AgentLoopError::Stopped {
+                terminate_run!(move |thread: AgentState| AgentLoopError::Stopped {
                     thread: Box::new(thread),
                     reason,
                 });
@@ -843,7 +848,7 @@ async fn run_loop_with_context_provider(
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
-                    terminate_run!(|thread: Thread| AgentLoopError::Cancelled {
+                    terminate_run!(|thread: AgentState| AgentLoopError::Cancelled {
                         thread: Box::new(thread),
                     });
                 }
@@ -877,7 +882,7 @@ async fn run_loop_with_context_provider(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            terminate_run!(move |thread: Thread| AgentLoopError::PendingInteraction {
+            terminate_run!(move |thread: AgentState| AgentLoopError::PendingInteraction {
                 thread: Box::new(thread),
                 interaction: Box::new(interaction),
             });
@@ -892,7 +897,7 @@ async fn run_loop_with_context_provider(
 
         // Check stop conditions.
         if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions) {
-            terminate_run!(move |thread: Thread| AgentLoopError::Stopped {
+            terminate_run!(move |thread: AgentState| AgentLoopError::Stopped {
                 thread: Box::new(thread),
                 reason,
             });
@@ -911,7 +916,7 @@ async fn run_loop_with_context_provider(
 pub fn run_loop_stream(
     client: Client,
     config: AgentConfig,
-    thread: Thread,
+    thread: AgentState,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {

@@ -1,5 +1,5 @@
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState;
+use crate::contracts::context::AgentState as ContextAgentState;
 use crate::contracts::phase::Phase;
 use crate::contracts::phase::StepContext;
 use crate::engine::tool_filter::{
@@ -130,7 +130,7 @@ impl AgentPlugin for SkillRuntimePlugin {
         SKILLS_RUNTIME_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState<'_>) {
         if phase != Phase::BeforeInference {
             return;
         }
@@ -162,16 +162,16 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::Thread;
+    use crate::contracts::conversation::AgentState;
     use crate::contracts::traits::tool::ToolDescriptor;
-    use crate::contracts::context::AgentState;
+    use crate::contracts::context::AgentState as ContextAgentState;
     use serde_json::json;
 
     #[tokio::test]
     async fn plugin_injects_skill_instructions_from_state() {
         let doc = json!({});
-        let ctx = AgentState::new(&doc, "test", "test");
-        let thread = Thread::with_initial_state(
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let thread = AgentState::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -193,8 +193,8 @@ mod tests {
     #[tokio::test]
     async fn plugin_sorts_references_and_scripts_by_path() {
         let doc = json!({});
-        let ctx = AgentState::new(&doc, "test", "test");
-        let thread = Thread::with_initial_state(
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let thread = AgentState::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -237,8 +237,8 @@ mod tests {
     #[tokio::test]
     async fn plugin_filters_injected_skill_materials_by_runtime_policy() {
         let doc = json!({});
-        let ctx = AgentState::new(&doc, "test", "test");
-        let mut thread = Thread::with_initial_state(
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        let mut thread = AgentState::with_initial_state(
             "s",
             json!({
                 "skills": {

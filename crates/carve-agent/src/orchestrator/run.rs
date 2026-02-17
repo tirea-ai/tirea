@@ -17,7 +17,7 @@ impl AgentOs {
 
     /// Load a thread from storage. Returns the thread and its version.
     /// If the thread does not exist, returns `None`.
-    pub async fn load_thread(&self, id: &str) -> Result<Option<ThreadHead>, AgentOsRunError> {
+    pub async fn load_thread(&self, id: &str) -> Result<Option<AgentStateHead>, AgentOsRunError> {
         let thread_store = self.require_thread_store()?;
         Ok(thread_store.load(id).await?)
     }
@@ -25,7 +25,7 @@ impl AgentOs {
     /// Prepare a request for execution.
     ///
     /// This handles all deterministic pre-run logic:
-    /// 1. Thread loading/creation from storage
+    /// 1. AgentState loading/creation from storage
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
     /// 4. Agent resolution and run-context creation
@@ -67,9 +67,9 @@ impl AgentOs {
             }
             None => {
                 let thread = if let Some(state) = frontend_state {
-                    Thread::with_initial_state(thread_id.clone(), state)
+                    AgentState::with_initial_state(thread_id.clone(), state)
                 } else {
-                    Thread::new(thread_id.clone())
+                    AgentState::new(thread_id.clone())
                 };
                 let committed = thread_store.create(&thread).await?;
                 (thread, committed.version)
@@ -96,20 +96,23 @@ impl AgentOs {
         // 5. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
-            let delta = ThreadDelta {
-                run_id: run_id.clone(),
-                parent_run_id: parent_run_id.clone(),
-                reason: CheckpointReason::UserMessage,
-                messages: pending.messages,
-                patches: pending.patches,
-                snapshot: state_snapshot_for_delta,
-            };
-            let committed = thread_store.append(&thread_id, &delta).await?;
+            let changeset = crate::contracts::context::AgentChangeSet::from_parts(
+                version,
+                run_id.clone(),
+                parent_run_id.clone(),
+                CheckpointReason::UserMessage,
+                pending.messages,
+                pending.patches,
+                state_snapshot_for_delta,
+            );
+            let committed = thread_store.append(&thread_id, &changeset.delta).await?;
             version = committed.version;
         }
-        thread.metadata.extra.insert(
-            crate::runtime::loop_runner::AGENT_STATE_VERSION_META_KEY.to_string(),
-            serde_json::Value::from(version),
+        let version_timestamp = thread.metadata.version_timestamp;
+        crate::runtime::loop_runner::set_thread_state_version(
+            &mut thread,
+            version,
+            version_timestamp,
         );
 
         // 6. Resolve static wiring, then merge run-scoped extensions.
@@ -170,7 +173,7 @@ impl AgentOs {
     /// Deduplicate incoming messages against existing thread messages.
     ///
     /// Skips messages whose ID or tool_call_id already exists in the thread.
-    fn dedup_messages(thread: &Thread, incoming: Vec<Message>) -> Vec<Message> {
+    fn dedup_messages(thread: &AgentState, incoming: Vec<Message>) -> Vec<Message> {
         use std::collections::HashSet;
 
         let existing_ids: HashSet<&str> = thread
@@ -209,7 +212,7 @@ impl AgentOs {
     pub(crate) fn run_stream_with_context(
         &self,
         agent_id: &str,
-        thread: Thread,
+        thread: AgentState,
         run_ctx: RunContext,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
         let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;

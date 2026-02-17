@@ -12,7 +12,7 @@
 //! ```ignore
 //! use carve_agent::prelude::*;
 //!
-//! async fn after_tool_execute(&self, ctx: &AgentState<'_>, tool_id: &str, result: &ToolResult) {
+//! async fn after_tool_execute(&self, ctx: &ContextAgentState<'_>, tool_id: &str, result: &ToolResult) {
 //!     if tool_id == "file_read" {
 //!         ctx.add_reminder("Remember to close the file when done");
 //!     }
@@ -20,7 +20,7 @@
 //! ```
 
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::context::AgentState;
+use crate::contracts::context::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ pub trait ReminderContextExt {
     fn remove_reminder(&self, text: &str);
 }
 
-impl ReminderContextExt for AgentState<'_> {
+impl ReminderContextExt for ContextAgentState<'_> {
     fn add_reminder(&self, text: impl Into<String>) {
         let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
         state.items_push(text.into());
@@ -127,7 +127,7 @@ impl AgentPlugin for ReminderPlugin {
         &self,
         phase: crate::contracts::phase::Phase,
         step: &mut crate::contracts::phase::StepContext<'_>,
-        ctx: &AgentState<'_>,
+        ctx: &ContextAgentState<'_>,
     ) {
         use crate::contracts::phase::Phase;
 
@@ -153,7 +153,7 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::context::AgentState;
+    use crate::contracts::context::AgentState as ContextAgentState;
     use serde_json::json;
 
     #[test]
@@ -179,7 +179,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = AgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new(&doc, "call_1", "test");
 
         ctx.add_reminder("Test reminder");
         assert!(ctx.has_changes());
@@ -190,7 +190,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": [] }
         });
-        let ctx = AgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new(&doc, "call_1", "test");
 
         assert!(ctx.reminders().is_empty());
         assert_eq!(ctx.reminder_count(), 0);
@@ -201,7 +201,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = AgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new(&doc, "call_1", "test");
 
         let reminders = ctx.reminders();
         assert_eq!(reminders.len(), 2);
@@ -213,7 +213,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
         });
-        let ctx = AgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new(&doc, "call_1", "test");
 
         assert_eq!(ctx.reminder_count(), 2);
         ctx.clear_reminders();
@@ -225,7 +225,7 @@ mod tests {
         let doc = json!({
             "reminders": { "items": ["Keep", "Remove", "Keep2"] }
         });
-        let ctx = AgentState::new(&doc, "call_1", "test");
+        let ctx = ContextAgentState::new(&doc, "call_1", "test");
 
         ctx.remove_reminder("Remove");
         assert!(ctx.has_changes());
@@ -246,12 +246,12 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
         let doc = json!({ "reminders": { "items": ["Test reminder"] } });
-        let ctx = AgentState::new(&doc, "test", "test");
-        use crate::contracts::conversation::Thread;
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
-        let thread = Thread::with_initial_state(
+        let thread = AgentState::with_initial_state(
             "test",
             json!({ "reminders": { "items": ["Test reminder"] } }),
         );
@@ -268,12 +268,12 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
         let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
-        let ctx = AgentState::new(&doc, "test", "test");
-        use crate::contracts::conversation::Thread;
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
-        let thread = Thread::with_initial_state(
+        let thread = AgentState::with_initial_state(
             "test",
             json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
         );
@@ -297,13 +297,13 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
         let doc = json!({ "reminders": { "items": ["Reminder"] } });
-        let ctx = AgentState::new(&doc, "test", "test");
-        use crate::contracts::conversation::Thread;
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
         let thread =
-            Thread::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
+            AgentState::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
         plugin
@@ -318,12 +318,12 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
         let doc = json!({ "reminders": { "items": [] } });
-        let ctx = AgentState::new(&doc, "test", "test");
-        use crate::contracts::conversation::Thread;
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
-        let thread = Thread::with_initial_state("test", json!({ "reminders": { "items": [] } }));
+        let thread = AgentState::with_initial_state("test", json!({ "reminders": { "items": [] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
         plugin
@@ -337,12 +337,12 @@ mod tests {
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
         let doc = json!({});
-        let ctx = AgentState::new(&doc, "test", "test");
-        use crate::contracts::conversation::Thread;
+        let ctx = ContextAgentState::new(&doc, "test", "test");
+        use crate::contracts::conversation::AgentState;
         use crate::contracts::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
-        let thread = Thread::new("test");
+        let thread = AgentState::new("test");
         let mut step = StepContext::new(&thread, vec![]);
 
         plugin

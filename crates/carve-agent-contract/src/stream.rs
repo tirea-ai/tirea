@@ -1,4 +1,4 @@
-use carve_thread_model::ToolCall;
+use crate::conversation::ToolCall;
 use genai::chat::Usage;
 
 /// Result of stream collection used by runtime and plugin phase contracts.

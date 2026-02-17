@@ -5,7 +5,7 @@
 //!
 //! # Phases
 //!
-//! - `RunStart` / `RunEnd` - Thread lifecycle (called once)
+//! - `RunStart` / `RunEnd` - AgentState lifecycle (called once)
 //! - `StepStart` / `StepEnd` - Step lifecycle
 //! - `BeforeInference` / `AfterInference` - LLM call lifecycle
 //! - `BeforeToolExecute` / `AfterToolExecute` - Tool execution lifecycle
@@ -42,7 +42,7 @@
 
 use crate::extension::phase::{Phase, StepContext};
 use async_trait::async_trait;
-use crate::AgentState;
+use crate::context::AgentState;
 
 /// Plugin trait for extending agent behavior.
 ///
@@ -101,7 +101,8 @@ mod tests {
     use crate::extension::phase::StepContext;
     use crate::extension::state_types::Interaction;
     use crate::extension::traits::tool::ToolDescriptor;
-    use carve_thread_model::{Thread, ToolCall};
+    use crate::change::AgentChangeSet as ContractAgentChangeSet;
+    use crate::conversation::{AgentState as ConversationState, ToolCall};
     use serde_json::json;
 
     // =========================================================================
@@ -124,7 +125,12 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &AgentState<'_>,
+        ) {
             match phase {
                 Phase::StepStart => {
                     step.system("Test system context");
@@ -158,7 +164,12 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &AgentState<'_>,
+        ) {
             match phase {
                 Phase::StepStart => {
                     step.system("Current time: 2024-01-01");
@@ -195,7 +206,12 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &AgentState<'_>,
+        ) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -226,7 +242,12 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState<'_>) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &AgentState<'_>,
+        ) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -245,8 +266,8 @@ mod tests {
     // Helper Functions
     // =========================================================================
 
-    fn mock_thread() -> Thread {
-        Thread::new("test-thread")
+    fn mock_thread() -> ConversationState {
+        ConversationState::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {

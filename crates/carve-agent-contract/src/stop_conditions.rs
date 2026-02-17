@@ -36,7 +36,7 @@
 //! ```
 
 pub use crate::StopReason;
-use carve_thread_model::{Thread, ToolCall};
+use crate::conversation::{AgentState, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -75,7 +75,7 @@ pub struct StopCheckContext<'a> {
     ///
     /// Custom stop conditions can inspect `thread.messages` for patterns,
     /// check `thread.message_count()`, or examine the accumulated state.
-    pub thread: &'a Thread,
+    pub thread: &'a AgentState,
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ mod tests {
     use serde_json::json;
     use std::sync::LazyLock;
 
-    static TEST_SESSION: LazyLock<Thread> = LazyLock::new(|| Thread::new("test"));
+    static TEST_SESSION: LazyLock<AgentState> = LazyLock::new(|| AgentState::new("test"));
 
     fn empty_context() -> StopCheckContext<'static> {
         static EMPTY_TOOL_CALLS: &[ToolCall] = &[];

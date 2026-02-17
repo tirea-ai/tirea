@@ -124,7 +124,7 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::conversation::Thread;
+    use crate::contracts::conversation::AgentState;
     use crate::contracts::conversation::{Message, ToolCall};
     use crate::contracts::phase::{Phase, StepContext};
     use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
@@ -133,7 +133,7 @@ mod tests {
         FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
     };
     use async_trait::async_trait;
-    use crate::contracts::context::AgentState;
+    use crate::contracts::context::AgentState as ContextAgentState;
     use serde_json::json;
     use serde_json::Value;
     use std::fs;
@@ -153,7 +153,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<
             crate::contracts::traits::tool::ToolResult,
             crate::contracts::traits::tool::ToolError,
@@ -237,7 +237,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &AgentState<'_>,
+            _ctx: &ContextAgentState<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }
@@ -265,7 +265,7 @@ mod tests {
         sys.extend_tools(&mut tools).unwrap();
 
         // Activate the skill via the registered "skill" tool.
-        let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+        let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
         let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new("call_1", SKILL_ACTIVATE_TOOL_ID, json!({"skill": "docx"}));
         let activate_tool = tools.get(SKILL_ACTIVATE_TOOL_ID).unwrap().as_ref();
@@ -288,7 +288,7 @@ mod tests {
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});
-        let ctx = AgentState::new(&doc, "test", "test");
+        let ctx = ContextAgentState::new(&doc, "test", "test");
         plugin
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;

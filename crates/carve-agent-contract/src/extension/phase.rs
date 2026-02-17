@@ -9,13 +9,13 @@ use crate::extension::state_types::Interaction;
 use crate::extension::traits::tool::{ToolDescriptor, ToolResult};
 use crate::StreamResult;
 use carve_state::TrackedPatch;
-use carve_thread_model::{Thread, ToolCall};
+use crate::conversation::{AgentState, ToolCall};
 use serde_json::Value;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
-    /// Thread started (called once).
+    /// AgentState started (called once).
     RunStart,
     /// Step started - prepare context.
     StepStart,
@@ -29,7 +29,7 @@ pub enum Phase {
     AfterToolExecute,
     /// Step ended.
     StepEnd,
-    /// Thread ended (called once).
+    /// AgentState ended (called once).
     RunEnd,
 }
 
@@ -53,7 +53,7 @@ impl std::fmt::Display for Phase {
 pub enum StepOutcome {
     /// Continue to next step.
     Continue,
-    /// Thread complete.
+    /// AgentState complete.
     Complete,
     /// Pending user interaction.
     Pending(Interaction),
@@ -112,14 +112,14 @@ impl ToolContext {
 /// It provides access to session state, message building, tool filtering,
 /// and flow control.
 pub struct StepContext<'a> {
-    // === Thread State (read-only) ===
+    // === AgentState State (read-only) ===
     /// Current session.
-    pub thread: &'a Thread,
+    pub thread: &'a AgentState,
 
     // === Message Building ===
     /// System context to append to system prompt [Position 1].
     pub system_context: Vec<String>,
-    /// Thread context messages (before user messages) [Position 2].
+    /// AgentState context messages (before user messages) [Position 2].
     pub session_context: Vec<String>,
     /// System reminders (after tool results) [Position 7].
     pub system_reminders: Vec<String>,
@@ -149,7 +149,7 @@ pub struct StepContext<'a> {
 
 impl<'a> StepContext<'a> {
     /// Create a new step context.
-    pub fn new(thread: &'a Thread, tools: Vec<ToolDescriptor>) -> Self {
+    pub fn new(thread: &'a AgentState, tools: Vec<ToolDescriptor>) -> Self {
         Self {
             thread,
             system_context: Vec::new(),
@@ -330,8 +330,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn mock_thread() -> Thread {
-        Thread::new("test-thread")
+    fn mock_thread() -> AgentState {
+        AgentState::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -455,8 +455,8 @@ mod tests {
         let thread = mock_thread();
         let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.thread("Thread 1");
-        ctx.thread("Thread 2");
+        ctx.thread("AgentState 1");
+        ctx.thread("AgentState 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }
@@ -466,7 +466,7 @@ mod tests {
         let thread = mock_thread();
         let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.thread("Thread 1");
+        ctx.thread("AgentState 1");
         ctx.set_session("Replaced");
 
         assert_eq!(ctx.session_context.len(), 1);
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_step_context_empty_session() {
-        let thread = Thread::new("empty");
+        let thread = AgentState::new("empty");
         let ctx = StepContext::new(&thread, vec![]);
 
         assert!(ctx.tools.is_empty());
@@ -742,8 +742,8 @@ mod tests {
         let thread = mock_thread();
         let mut ctx = StepContext::new(&thread, vec![]);
 
-        ctx.thread("Thread 1");
-        ctx.thread("Thread 2");
+        ctx.thread("AgentState 1");
+        ctx.thread("AgentState 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }

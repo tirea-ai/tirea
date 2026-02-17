@@ -1,4 +1,5 @@
 use super::*;
+use crate::contracts::context::AgentState as ContextAgentState;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
 }
@@ -8,7 +9,7 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
+    async fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
         let state = match step.thread.rebuild_state() {
             Ok(v) => v,
             Err(_) => return,
@@ -82,7 +83,7 @@ impl AgentPlugin for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState<'_>) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState<'_>) {
         match phase {
             Phase::RunStart => self.on_run_start(step, ctx).await,
             Phase::BeforeInference => self.on_before_inference(step).await,

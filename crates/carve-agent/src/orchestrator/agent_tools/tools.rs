@@ -29,19 +29,23 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     }
 }
 
-fn scope_run_id(scope: Option<&carve_state::ScopeState>) -> Option<String> {
+fn scope_string(scope: Option<&carve_state::ScopeState>, key: &str) -> Option<String> {
     scope
-        .and_then(|scope| scope.value(SCOPE_RUN_ID_KEY))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
+        .and_then(|scope: &carve_state::ScopeState| scope.value(key))
+        .and_then(|value: &serde_json::Value| value.as_str())
+        .map(|value| value.to_string())
+}
+
+fn scope_run_id(scope: Option<&carve_state::ScopeState>) -> Option<String> {
+    scope_string(scope, SCOPE_RUN_ID_KEY)
 }
 
 fn bind_child_lineage(
-    mut thread: crate::contracts::conversation::Thread,
+    mut thread: crate::contracts::conversation::AgentState,
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
-) -> crate::contracts::conversation::Thread {
+) -> crate::contracts::conversation::AgentState {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
@@ -147,7 +151,7 @@ struct RunLaunch {
     owner_thread_id: String,
     target_agent_id: String,
     parent_run_id: Option<String>,
-    thread: crate::contracts::conversation::Thread,
+    thread: crate::contracts::conversation::AgentState,
 }
 
 impl AgentRunTool {
@@ -309,10 +313,7 @@ impl Tool for AgentRunTool {
         let fork_context = required_bool(&args, "fork_context", false);
 
         let scope = ctx.scope_ref();
-        let owner_thread_id = scope
-            .and_then(|scope| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        let owner_thread_id = scope_string(scope, SCOPE_CALLER_SESSION_ID_KEY);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
@@ -320,10 +321,7 @@ impl Tool for AgentRunTool {
                 "missing caller thread context",
             ));
         };
-        let caller_agent_id = scope
-            .and_then(|scope| scope.value(SCOPE_CALLER_AGENT_ID_KEY))
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        let caller_agent_id = scope_string(scope, SCOPE_CALLER_AGENT_ID_KEY);
         let caller_run_id = scope_run_id(scope);
 
         if let Some(run_id) = run_id {
@@ -479,17 +477,17 @@ impl Tool for AgentRunTool {
 
         let mut child_thread = if fork_context {
             let fork_state = scope
-                .and_then(|scope| scope.value(SCOPE_CALLER_STATE_KEY))
+                .and_then(|scope: &carve_state::ScopeState| scope.value(SCOPE_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let mut forked =
-                crate::contracts::conversation::Thread::with_initial_state(thread_id, fork_state);
+                crate::contracts::conversation::AgentState::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(scope) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::contracts::conversation::Thread::new(thread_id)
+            crate::contracts::conversation::AgentState::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(
@@ -550,9 +548,9 @@ impl Tool for AgentStopTool {
         };
         let owner_thread_id = ctx
             .scope_ref()
-            .and_then(|scope| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+            .and_then(|scope: &carve_state::ScopeState| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
+            .and_then(|v: &serde_json::Value| v.as_str())
+            .map(|v: &str| v.to_string());
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,

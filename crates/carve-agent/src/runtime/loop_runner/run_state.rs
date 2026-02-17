@@ -1,5 +1,5 @@
 use super::AgentConfig;
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
 use crate::contracts::events::StreamResult;
 use crate::engine::stop_conditions::{StopCheckContext, StopCondition};
 use std::collections::VecDeque;
@@ -58,7 +58,7 @@ impl RunState {
     pub(super) fn to_check_context<'a>(
         &'a self,
         result: &'a StreamResult,
-        thread: &'a Thread,
+        thread: &'a AgentState,
     ) -> StopCheckContext<'a> {
         StopCheckContext {
             rounds: self.completed_steps,

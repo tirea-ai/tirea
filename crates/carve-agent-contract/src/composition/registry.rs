@@ -787,13 +787,13 @@ impl ModelRegistry for CompositeModelRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::extension::agent_plugin::AgentPlugin;
-    use crate::extension::phase::{Phase, StepContext};
-    use crate::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
-    use async_trait::async_trait;
-    use crate::AgentState;
-    use serde_json::json;
+use super::*;
+use crate::extension::agent_plugin::AgentPlugin;
+use crate::extension::phase::{Phase, StepContext};
+use crate::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+use async_trait::async_trait;
+use crate::context::AgentState;
+use serde_json::json;
 
     #[derive(Debug)]
     struct T(&'static str);

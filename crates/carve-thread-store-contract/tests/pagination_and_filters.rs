@@ -1,4 +1,4 @@
-use carve_thread_model::{Message, MessageMetadata, Thread, Visibility};
+use carve_agent_contract::{Message, MessageMetadata, AgentState, Visibility};
 use carve_thread_store_contract::{
     paginate_in_memory, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadStoreError,
 };
@@ -10,8 +10,8 @@ fn make_messages(n: usize) -> Vec<Arc<Message>> {
         .collect()
 }
 
-fn make_mixed_visibility_thread(thread_id: &str) -> Thread {
-    Thread::new(thread_id)
+fn make_mixed_visibility_thread(thread_id: &str) -> AgentState {
+    AgentState::new(thread_id)
         .with_message(Message::user("user-0"))
         .with_message(Message::assistant("assistant-1"))
         .with_message(Message::internal_system("reminder-2"))
@@ -20,8 +20,8 @@ fn make_mixed_visibility_thread(thread_id: &str) -> Thread {
         .with_message(Message::assistant("assistant-5"))
 }
 
-fn make_multi_run_thread(thread_id: &str) -> Thread {
-    Thread::new(thread_id)
+fn make_multi_run_thread(thread_id: &str) -> AgentState {
+    AgentState::new(thread_id)
         .with_message(Message::user("hello"))
         .with_message(
             Message::assistant("thinking...").with_metadata(MessageMetadata {

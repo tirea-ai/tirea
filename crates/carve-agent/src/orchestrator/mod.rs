@@ -7,10 +7,10 @@ use genai::Client;
 
 use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::Message;
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
 use crate::contracts::events::{AgentEvent, RunRequest};
 use crate::contracts::storage::{
-    CheckpointReason, ThreadDelta, ThreadHead, ThreadStore, ThreadStoreError,
+    CheckpointReason, AgentStateHead, ThreadStore, ThreadStoreError,
 };
 use crate::contracts::traits::tool::Tool;
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
@@ -44,7 +44,7 @@ pub use carve_agent_contract::composition::{
     ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
+type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, AgentState);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WiringScope {
@@ -274,7 +274,7 @@ impl RunExtensions {
 /// consume the event stream and use the IDs for protocol encoding.
 ///
 /// The final thread is **not** exposed here; storage is updated incrementally
-/// via `ThreadDelta` appends.
+/// via `AgentChangeSet` appends.
 pub struct RunStream {
     /// Resolved thread ID (may have been auto-generated).
     pub thread_id: String,
@@ -296,7 +296,7 @@ pub struct PreparedRun {
     client: Client,
     config: AgentConfig,
     tools: HashMap<String, Arc<dyn Tool>>,
-    thread: Thread,
+    thread: AgentState,
     run_ctx: RunContext,
 }
 

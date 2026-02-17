@@ -1,6 +1,6 @@
 use crate::protocol::MessageRole;
 use carve_agent_contract::InteractionResponse;
-use carve_thread_model::{gen_message_id, Message, Role, Visibility};
+use carve_agent_contract::{gen_message_id, Message, Role, Visibility};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
@@ -137,7 +137,7 @@ impl AGUIToolDef {
 /// Request to run an AG-UI agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunAgentRequest {
-    /// Thread identifier.
+    /// AgentState identifier.
     #[serde(rename = "threadId")]
     pub thread_id: String,
     /// Run identifier.

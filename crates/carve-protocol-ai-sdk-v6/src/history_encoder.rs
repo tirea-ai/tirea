@@ -1,6 +1,6 @@
 use super::{StreamState, ToolState, UIMessage, UIMessagePart, UIRole};
 use carve_protocol_contract::ProtocolHistoryEncoder;
-use carve_thread_model::{Message, Role};
+use carve_agent_contract::{Message, Role};
 use tracing::warn;
 
 pub struct AiSdkV6HistoryEncoder;
@@ -65,8 +65,7 @@ impl ProtocolHistoryEncoder for AiSdkV6HistoryEncoder {
 mod tests {
     use super::*;
     use carve_protocol_contract::ProtocolHistoryEncoder;
-    use carve_thread_model::{Message, Visibility};
-    use carve_thread_model::{MessageMetadata, ToolCall};
+    use carve_agent_contract::{Message, MessageMetadata, ToolCall, Visibility};
 
     #[test]
     fn test_ai_sdk_history_encoder_user_message() {

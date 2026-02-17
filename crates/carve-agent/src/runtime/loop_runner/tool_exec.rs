@@ -8,8 +8,8 @@ use super::{
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::conversation::Thread;
-use crate::contracts::context::{ActivityManager, AgentState};
+use crate::contracts::conversation::AgentState;
+use crate::contracts::context::ActivityManager;
 use crate::contracts::conversation::{Message, MessageMetadata};
 use crate::contracts::events::StreamResult;
 use crate::contracts::phase::{Phase, StepContext, ToolContext};
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 pub(super) struct AppliedToolResults {
-    pub(super) thread: Thread,
+    pub(super) thread: AgentState,
     pub(super) pending_interaction: Option<Interaction>,
     pub(super) state_snapshot: Option<Value>,
 }
@@ -72,7 +72,7 @@ fn validate_parallel_state_patch_conflicts(
 }
 
 pub(super) fn apply_tool_results_to_session(
-    thread: Thread,
+    thread: AgentState,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     parallel_tools: bool,
@@ -81,7 +81,7 @@ pub(super) fn apply_tool_results_to_session(
 }
 
 pub(super) fn apply_tool_results_impl(
-    thread: Thread,
+    thread: AgentState,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     parallel_tools: bool,
@@ -230,7 +230,7 @@ pub(super) fn apply_tool_results_impl(
     })
 }
 
-fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
+fn tool_result_metadata_from_session(thread: &AgentState) -> Option<MessageMetadata> {
     let run_id = thread
         .scope
         .value("run_id")
@@ -256,7 +256,7 @@ fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata>
     }
 }
 
-pub(super) fn next_step_index(thread: &Thread) -> u32 {
+pub(super) fn next_step_index(thread: &AgentState) -> u32 {
     thread
         .messages
         .iter()
@@ -277,21 +277,21 @@ pub(super) fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageM
 ///
 /// This is the simpler API for tests and cases where plugins aren't needed.
 pub async fn execute_tools(
-    thread: Thread,
+    thread: AgentState,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
-) -> Result<Thread, AgentLoopError> {
+) -> Result<AgentState, AgentLoopError> {
     execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
 }
 
 /// Execute tool calls with phase-based plugin hooks.
 pub async fn execute_tools_with_config(
-    mut thread: Thread,
+    mut thread: AgentState,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-) -> Result<Thread, AgentLoopError> {
+) -> Result<AgentState, AgentLoopError> {
     crate::engine::tool_filter::set_scope_filters_from_definition_if_absent(
         &mut thread.scope,
         config,
@@ -309,7 +309,7 @@ pub async fn execute_tools_with_config(
 }
 
 pub(super) fn scope_with_tool_caller_context(
-    thread: &Thread,
+    thread: &AgentState,
     state: &Value,
     config: Option<&AgentConfig>,
 ) -> Result<carve_state::ScopeState, AgentLoopError> {
@@ -335,12 +335,12 @@ pub(super) fn scope_with_tool_caller_context(
 
 /// Execute tool calls with plugin hooks.
 pub async fn execute_tools_with_plugins(
-    thread: Thread,
+    thread: AgentState,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<Thread, AgentLoopError> {
+) -> Result<AgentState, AgentLoopError> {
     if result.tool_calls.is_empty() {
         return Ok(thread);
     }
@@ -569,15 +569,21 @@ pub(super) async fn execute_single_tool_with_phases(
     state_version: u64,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create a thread stub so plugins see the real thread id and scope.
-    let mut temp_thread = Thread::with_initial_state(thread_id, state.clone());
+    let mut temp_thread = AgentState::with_initial_state(thread_id, state.clone()).with_messages(
+        thread_messages.iter().map(|msg| (**msg).clone()),
+    );
     if let Some(rt) = scope {
         temp_thread.scope = rt.clone();
     }
 
     // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = AgentState::new(state, "plugin_phase", "plugin:tool_phase")
-        .with_scope(scope)
-        .with_thread_data(thread_id.to_string(), thread_messages.to_vec(), state_version);
+    let plugin_ctx = crate::contracts::context::AgentState::from_thread(
+        &temp_thread,
+        state,
+        "plugin_phase",
+        "plugin:tool_phase",
+        state_version,
+    );
 
     // Create StepContext for this tool
     let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
@@ -643,14 +649,14 @@ pub(super) async fn execute_single_tool_with_phases(
     } else {
         // Execute the tool with its own Context (instrumented with tracing span)
         let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
-        let tool_ctx = AgentState::new_with_activity_manager(
+        let tool_ctx = crate::contracts::context::AgentState::from_thread_with_activity_manager(
+            &temp_thread,
             state,
             &call.id,
             format!("tool:{}", call.name),
+            state_version,
             activity_manager,
-        )
-        .with_scope(scope)
-        .with_thread_data(thread_id.to_string(), thread_messages.to_vec(), state_version);
+        );
         let result = async {
             match tool
                 .unwrap()

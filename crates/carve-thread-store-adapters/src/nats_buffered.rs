@@ -21,9 +21,9 @@
 
 use async_nats::jetstream;
 use async_trait::async_trait;
-use carve_thread_model::Thread;
 use carve_thread_store_contract::{
-    Committed, ThreadDelta, ThreadHead, ThreadReader, ThreadStore, ThreadStoreError, ThreadWriter,
+    AgentState, Committed, AgentChangeSet, AgentStateHead, ThreadReader, ThreadStore, ThreadStoreError,
+    ThreadWriter,
 };
 use std::sync::Arc;
 
@@ -105,7 +105,7 @@ impl NatsBufferedThreadWriter {
 
         let mut recovered = 0usize;
         // Collect pending deltas grouped by thread_id.
-        let mut pending: std::collections::HashMap<String, Vec<(ThreadDelta, jetstream::Message)>> =
+        let mut pending: std::collections::HashMap<String, Vec<(AgentChangeSet, jetstream::Message)>> =
             std::collections::HashMap::new();
 
         // Fetch messages in batches.
@@ -130,7 +130,7 @@ impl NatsBufferedThreadWriter {
                     }
                     let thread_id = parts[1].to_string();
 
-                    match serde_json::from_slice::<ThreadDelta>(&msg.payload) {
+                    match serde_json::from_slice::<AgentChangeSet>(&msg.payload) {
                         Ok(delta) => {
                             pending.entry(thread_id).or_default().push((delta, msg));
                         }
@@ -148,7 +148,7 @@ impl NatsBufferedThreadWriter {
         for (thread_id, deltas_with_msgs) in pending {
             let mut thread = match self.inner.load(&thread_id).await {
                 Ok(Some(head)) => head.thread,
-                Ok(None) => Thread::new(thread_id.clone()),
+                Ok(None) => AgentState::new(thread_id.clone()),
                 Err(e) => {
                     tracing::error!(
                         thread_id = %thread_id,
@@ -188,7 +188,7 @@ impl NatsBufferedThreadWriter {
 
 #[async_trait]
 impl ThreadWriter for NatsBufferedThreadWriter {
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         self.inner.create(thread).await
     }
 
@@ -200,7 +200,7 @@ impl ThreadWriter for NatsBufferedThreadWriter {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &ThreadDelta,
+        delta: &AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         let payload = serde_json::to_vec(delta)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
@@ -222,7 +222,7 @@ impl ThreadWriter for NatsBufferedThreadWriter {
 
     /// Run-end flush: saves the final materialized thread to the inner storage
     /// and purges the corresponding NATS JetStream messages.
-    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
         // Write to durable storage.
         self.inner.save(thread).await?;
 
@@ -237,7 +237,7 @@ impl ThreadWriter for NatsBufferedThreadWriter {
 
 #[async_trait]
 impl ThreadReader for NatsBufferedThreadWriter {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         self.inner.load(thread_id).await
     }
 
@@ -251,7 +251,7 @@ impl ThreadReader for NatsBufferedThreadWriter {
 
 /// Apply a delta to a thread in-place (same logic as thread_store::apply_delta but
 /// accessible here without depending on the private function).
-fn apply_delta(thread: &mut Thread, delta: &ThreadDelta) {
+fn apply_delta(thread: &mut AgentState, delta: &AgentChangeSet) {
     thread.messages.extend(delta.messages.iter().cloned());
     thread.patches.extend(delta.patches.iter().cloned());
     if let Some(ref snapshot) = delta.snapshot {

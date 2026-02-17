@@ -8,8 +8,6 @@ description = "Shared agent contracts: runtime, extension SPI, and composition r
 [dependencies]
 carve-state = { path = "../carve-state" }
 carve-state-derive = { path = "../carve-state-derive" }
-carve-thread-model = { path = "../carve-thread-model" }
-carve-thread-store-contract = { path = "../carve-thread-store-contract" }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -18,6 +16,7 @@ genai = "0.5"
 tracing = "0.1"
 tokio-util = "0.7"
 unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4", "v7"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

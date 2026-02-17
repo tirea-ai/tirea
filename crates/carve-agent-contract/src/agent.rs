@@ -134,9 +134,9 @@ pub struct RunContext {
     /// the loop stops at the next check point and emits `RunFinish` with
     /// `TerminationReason::Cancelled`.
     pub cancellation_token: Option<RunCancellationToken>,
-    /// Optional state committer for durable thread deltas.
+    /// Optional state committer for durable state change sets.
     ///
-    /// When configured, the loop emits committed `ThreadDelta` records in
+    /// When configured, the loop emits committed `AgentChangeSet` records in
     /// order and waits for `commit()` success before continuing.
     pub state_committer: Option<Arc<dyn StateCommitter>>,
 }
@@ -179,8 +179,6 @@ pub const TOOL_SCOPE_CALLER_AGENT_ID_KEY: &str = "__agent_tool_caller_agent_id";
 pub const TOOL_SCOPE_CALLER_STATE_KEY: &str = "__agent_tool_caller_state";
 /// Scope key: caller message snapshot visible to tools.
 pub const TOOL_SCOPE_CALLER_MESSAGES_KEY: &str = "__agent_tool_caller_messages";
-/// Thread metadata key: persisted agent-state version cursor.
-pub const AGENT_STATE_VERSION_META_KEY: &str = "__agent_state_version";
 
 impl Default for AgentDefinition {
     fn default() -> Self {

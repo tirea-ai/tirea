@@ -1,7 +1,7 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::conversation::Thread;
+use crate::contracts::conversation::AgentState;
 use crate::contracts::context::AgentChangeSet;
-use crate::contracts::storage::{CheckpointReason, ThreadDelta};
+use crate::contracts::storage::CheckpointReason;
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ impl StateCommitter for ChannelStateCommitter {
 }
 
 pub(super) async fn commit_pending_delta(
-    thread: &mut Thread,
+    thread: &mut AgentState,
     reason: CheckpointReason,
     force: bool,
     run_id: &str,
@@ -48,22 +48,24 @@ pub(super) async fn commit_pending_delta(
         return Ok(());
     }
 
-    let changeset = AgentChangeSet {
-        expected_version: super::thread_state_version(thread),
-        delta: ThreadDelta {
-            run_id: run_id.to_string(),
-            parent_run_id: parent_run_id.map(str::to_string),
-            reason,
-            messages: pending.messages,
-            patches: pending.patches,
-            snapshot: None,
-        },
-    };
+    let changeset = AgentChangeSet::from_parts(
+        super::thread_state_version(thread),
+        run_id.to_string(),
+        parent_run_id.map(str::to_string),
+        reason,
+        pending.messages,
+        pending.patches,
+        None,
+    );
     let committed_version = committer
         .commit(&thread.id, changeset)
         .await
         .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))?;
-    super::set_thread_state_version(thread, committed_version);
+    super::set_thread_state_version(
+        thread,
+        committed_version,
+        Some(super::current_unix_millis()),
+    );
     Ok(())
 }
 
@@ -88,7 +90,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
 
     pub(super) async fn commit(
         &self,
-        thread: &mut Thread,
+        thread: &mut AgentState,
         reason: CheckpointReason,
         force: bool,
     ) -> Result<(), AgentLoopError> {

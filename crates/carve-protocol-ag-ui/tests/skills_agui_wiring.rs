@@ -1,10 +1,10 @@
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::conversation::ToolCall;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::traits::tool::ToolDescriptor;
 use carve_agent::engine::tool_execution::execute_single_tool;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-use carve_agent::prelude::AgentState;
+use carve_agent::prelude::AgentState as RuntimeAgentState;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;
@@ -27,7 +27,7 @@ async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {
     let tools = skills.tools();
     let tool = tools.get("skill").expect("skill tool registered");
 
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = ConversationAgentState::with_initial_state("s", json!({}));
     let state = thread.rebuild_state().unwrap();
     let call = ToolCall::new("call_1", "skill", json!({"skill": "docx"}));
 
@@ -132,13 +132,13 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     let plugin = skills.plugin();
 
     // Even without activation, discovery should inject available_skills.
-    let thread = Thread::with_initial_state("s", json!({}));
+    let thread = ConversationAgentState::with_initial_state("s", json!({}));
     let mut step = carve_agent::contracts::phase::StepContext::new(
         &thread,
         vec![ToolDescriptor::new("t", "t", "t")],
     );
     let doc = json!({});
-    let ctx = AgentState::new(&doc, "test", "test");
+    let ctx = RuntimeAgentState::new(&doc, "test", "test");
     plugin
         .on_phase(
             carve_agent::contracts::phase::Phase::BeforeInference,

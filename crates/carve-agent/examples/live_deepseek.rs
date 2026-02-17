@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use carve_agent::contracts::conversation::Message;
-use carve_agent::contracts::conversation::Thread;
+use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::storage::{ThreadReader, ThreadWriter};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -344,8 +344,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 6: Multi-run with Tools ---");
     test_multi_run_with_tools(&client).await?;
 
-    // Test 7: Thread persistence and restore
-    println!("\n--- Test 7: Thread Persistence & Restore ---");
+    // Test 7: AgentState persistence and restore
+    println!("\n--- Test 7: AgentState Persistence & Restore ---");
     test_session_persistence(&client).await?;
 
     // Test 8: Parallel tool calls
@@ -360,8 +360,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 10: Tool Failure Recovery ---");
     test_tool_failure_recovery(&client).await?;
 
-    // Test 11: Thread snapshot continuation
-    println!("\n--- Test 11: Thread Snapshot Continuation ---");
+    // Test 11: AgentState snapshot continuation
+    println!("\n--- Test 11: AgentState Snapshot Continuation ---");
     test_session_snapshot(&client).await?;
 
     // Test 12: State replay
@@ -379,8 +379,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_simple_conversation(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
-    let thread =
-        Thread::new("test-simple").with_message(Message::user("What is 2 + 2? Reply briefly."));
+    let thread = ConversationAgentState::new("test-simple")
+        .with_message(Message::user("What is 2 + 2? Reply briefly."));
 
     let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
         .await
@@ -399,7 +399,7 @@ async fn test_calculator(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
 
-    let thread = Thread::new("test-calc")
+    let thread = ConversationAgentState::new("test-calc")
         .with_message(Message::system("You are a helpful assistant. Use the calculator tool when asked to perform calculations."))
         .with_message(Message::user("Please calculate 15 * 7 + 23 using the calculator tool."));
 
@@ -427,7 +427,7 @@ async fn test_calculator(
 async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
-    let thread = Thread::new("test-stream")
+    let thread = ConversationAgentState::new("test-stream")
         .with_message(Message::user("Count from 1 to 5, one number per line."));
 
     let tools = std::collections::HashMap::new();
@@ -465,7 +465,7 @@ async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::err
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
     // Create session with initial state
-    let thread = Thread::with_initial_state("test-counter", json!({ "counter": 0 }))
+    let thread = ConversationAgentState::with_initial_state("test-counter", json!({ "counter": 0 }))
         .with_message(Message::system("You are a helpful assistant. Use the counter tool to manage a counter. Always use the tool when asked about the counter."))
         .with_message(Message::user("Please increment the counter by 5, then increment it by 3 more. Tell me the final value."));
 
@@ -495,7 +495,7 @@ async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     // Run 1: Introduce a topic
-    let mut thread = Thread::new("test-multi-run")
+    let mut thread = ConversationAgentState::new("test-multi-run")
         .with_message(Message::system(
             "You are a helpful assistant. Keep your answers brief.",
         ))
@@ -551,7 +551,7 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     let tools = tool_map_from_arc([counter_tool]);
 
     // Start with initial state
-    let mut thread = Thread::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
+    let mut thread = ConversationAgentState::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool to manage a counter. \
              Always use the tool when asked about the counter.",
@@ -641,7 +641,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     // ========== Phase 1: Create session and have a conversation ==========
     println!("\n[Phase 1: Initial conversation]");
 
-    let mut thread = Thread::with_initial_state("persist-test", json!({ "counter": 100 }))
+    let mut thread = ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool. Keep responses brief.",
         ))
@@ -672,7 +672,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     // Save session
     storage.save(&thread).await?;
-    println!("\n✅ Thread saved to disk");
+    println!("\n✅ AgentState saved to disk");
     println!("   Messages: {}", thread.message_count());
     println!("   Patches: {}", thread.patch_count());
 
@@ -686,9 +686,9 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     let loaded_thread = storage
         .load_thread("persist-test")
         .await?
-        .ok_or("Thread not found")?;
+        .ok_or("AgentState not found")?;
 
-    println!("✅ Thread loaded from disk");
+    println!("✅ AgentState loaded from disk");
     println!("   Messages: {}", loaded_thread.message_count());
     println!("   Patches: {}", loaded_thread.patch_count());
 
@@ -742,7 +742,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     if final_counter == 142 {
-        println!("✅ Thread persistence and restore working correctly!");
+        println!("✅ AgentState persistence and restore working correctly!");
     } else {
         println!("⚠️ Counter value unexpected");
     }
@@ -765,7 +765,7 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
     let weather_tool: Arc<dyn Tool> = Arc::new(WeatherTool);
     let tools = tool_map_from_arc([calc_tool, weather_tool]);
 
-    let thread = Thread::new("test-parallel")
+    let thread = ConversationAgentState::new("test-parallel")
         .with_message(Message::system(
             "You are a helpful assistant with access to a calculator and weather tool. \
              When asked to do multiple independent things, call multiple tools in parallel.",
@@ -828,7 +828,7 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
     let loop_tool: Arc<dyn Tool> = Arc::new(InfiniteLoopTool);
     let tools = tool_map_from_arc([loop_tool]);
 
-    let thread = Thread::new("test-max-rounds")
+    let thread = ConversationAgentState::new("test-max-rounds")
         .with_message(Message::system(
             "You are a system monitor. Use the check_status tool to check all components. \
              Keep checking until all components report 'ok'. Always follow the tool's suggestions.",
@@ -886,7 +886,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     let unreliable_tool: Arc<dyn Tool> = Arc::new(UnreliableTool::new(2));
     let tools = tool_map_from_arc([unreliable_tool]);
 
-    let thread = Thread::new("test-failure-recovery")
+    let thread = ConversationAgentState::new("test-failure-recovery")
         .with_message(Message::system(
             "You are a helpful assistant. Use the unreliable_api tool to process queries. \
              If the tool fails, try again. The API may need multiple attempts.",
@@ -932,7 +932,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// Test 11: Thread snapshot - collapse patches and continue
+/// Test 11: AgentState snapshot - collapse patches and continue
 async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
@@ -941,7 +941,7 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
 
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
-    let mut thread = Thread::with_initial_state("test-snapshot", json!({ "counter": 0 }))
+    let mut thread = ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool.",
         ))
@@ -987,7 +987,7 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
         println!("✅ Snapshot collapsed patches to 0");
     }
     if final_counter >= 30 {
-        println!("✅ Thread continued correctly after snapshot");
+        println!("✅ AgentState continued correctly after snapshot");
     }
 
     Ok(())
@@ -1002,7 +1002,7 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     // Build session with multiple state changes
     println!("[Building state history]");
-    let mut thread = Thread::with_initial_state("test-replay", json!({ "counter": 0 }))
+    let mut thread = ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
         .with_message(Message::system(
             "You are a helpful assistant. Use the counter tool.",
         ));
@@ -1086,7 +1086,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let start_time = std::time::Instant::now();
 
     // Create a session with many messages
-    let mut thread = Thread::new("test-long-conv").with_message(Message::system(
+    let mut thread = ConversationAgentState::new("test-long-conv").with_message(Message::system(
         "You are a helpful assistant. Keep answers brief.",
     ));
 

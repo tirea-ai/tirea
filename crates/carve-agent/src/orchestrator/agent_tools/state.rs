@@ -1,6 +1,6 @@
 use super::*;
 pub(super) fn parent_run_id_from_thread(
-    thread: Option<&crate::contracts::conversation::Thread>,
+    thread: Option<&crate::contracts::conversation::AgentState>,
 ) -> Option<String> {
     thread
         .and_then(|s| s.scope.value(SCOPE_PARENT_RUN_ID_KEY))
@@ -10,7 +10,7 @@ pub(super) fn parent_run_id_from_thread(
 
 pub(super) fn as_agent_run_state(
     summary: &AgentRunSummary,
-    thread: Option<crate::contracts::conversation::Thread>,
+    thread: Option<crate::contracts::conversation::AgentState>,
 ) -> AgentRunState {
     let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     AgentRunState {

@@ -4,7 +4,7 @@
 //! the agent about important information.
 
 use async_trait::async_trait;
-use crate::AgentState;
+use crate::context::AgentState;
 
 /// System reminder for generating reminder messages.
 ///

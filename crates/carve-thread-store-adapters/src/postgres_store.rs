@@ -1,7 +1,6 @@
 use async_trait::async_trait;
-use carve_thread_model::{Message, Thread};
 use carve_thread_store_contract::{
-    Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadDelta, ThreadHead,
+    Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, AgentChangeSet, AgentStateHead,
     ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
 };
 use std::collections::HashSet;
@@ -82,7 +81,7 @@ impl PostgresStore {
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl ThreadWriter for PostgresStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         let mut v = serde_json::to_value(thread)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
@@ -140,7 +139,7 @@ impl ThreadWriter for PostgresStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &ThreadDelta,
+        delta: &AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
@@ -248,7 +247,7 @@ impl ThreadWriter for PostgresStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
         // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(thread)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
@@ -328,7 +327,7 @@ impl ThreadWriter for PostgresStore {
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl ThreadReader for PostgresStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(thread_id)
@@ -358,9 +357,9 @@ impl ThreadReader for PostgresStore {
             obj.remove("_version");
         }
 
-        let thread: Thread = serde_json::from_value(v)
+        let thread: AgentState = serde_json::from_value(v)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
-        Ok(Some(ThreadHead { thread, version }))
+        Ok(Some(AgentStateHead { thread, version }))
     }
 
     async fn load_messages(

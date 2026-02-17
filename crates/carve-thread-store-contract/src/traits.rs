@@ -3,10 +3,10 @@ use super::*;
 #[async_trait]
 pub trait ThreadReader: Send + Sync {
     /// Load a thread and its current version.
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError>;
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError>;
 
     /// Load a thread without version info. Convenience wrapper.
-    async fn load_thread(&self, thread_id: &str) -> Result<Option<Thread>, ThreadStoreError> {
+    async fn load_thread(&self, thread_id: &str) -> Result<Option<AgentState>, ThreadStoreError> {
         Ok(self.load(thread_id).await?.map(|h| h.thread))
     }
 
@@ -64,23 +64,23 @@ pub trait ThreadReader: Send + Sync {
 #[async_trait]
 pub trait ThreadWriter: ThreadReader {
     /// Create a new thread. Returns `AlreadyExists` if the id is taken.
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError>;
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError>;
 
-    /// Append a delta to an existing thread.
+    /// Append a change set to an existing thread.
     ///
     /// Version is managed internally by the backend — callers do not need to
     /// track it. Each successful append atomically increments the version.
     async fn append(
         &self,
         thread_id: &str,
-        delta: &ThreadDelta,
+        delta: &AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError>;
 
     /// Delete a thread.
     async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError>;
 
     /// Upsert a thread (delete + create). Convenience wrapper.
-    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
         let _ = self.delete(&thread.id).await;
         self.create(thread).await?;
         Ok(())
@@ -90,12 +90,12 @@ pub trait ThreadWriter: ThreadReader {
 /// Sync operations — for backends with delta replay capability.
 #[async_trait]
 pub trait ThreadSync: ThreadWriter {
-    /// Load deltas appended after `after_version`.
+    /// Load change sets appended after `after_version`.
     async fn load_deltas(
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<ThreadDelta>, ThreadStoreError>;
+    ) -> Result<Vec<AgentChangeSet>, ThreadStoreError>;
 }
 
 /// Full thread store capability (read + write).

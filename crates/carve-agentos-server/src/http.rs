@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::contracts::conversation::{Thread, Visibility};
+use carve_agent::contracts::conversation::{AgentState, Visibility};
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::storage::{
     MessagePage, MessageQuery, SortOrder, ThreadListPage, ThreadListQuery, ThreadReader,
@@ -133,7 +133,7 @@ async fn list_threads(
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Thread>, ApiError> {
+) -> Result<Json<AgentState>, ApiError> {
     let Some(thread) = st
         .read_store
         .load_thread(&id)

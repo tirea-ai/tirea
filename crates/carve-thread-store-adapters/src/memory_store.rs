@@ -1,14 +1,13 @@
 use async_trait::async_trait;
-use carve_thread_model::Thread;
 use carve_thread_store_contract::{
-    Committed, ThreadDelta, ThreadHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    AgentState, Committed, AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader,
     ThreadStoreError, ThreadSync, ThreadWriter, Version,
 };
 
 struct MemoryEntry {
-    thread: Thread,
+    thread: AgentState,
     version: Version,
-    deltas: Vec<ThreadDelta>,
+    deltas: Vec<AgentChangeSet>,
 }
 
 /// In-memory storage for testing and local development.
@@ -26,7 +25,7 @@ impl MemoryStore {
 
 #[async_trait]
 impl ThreadWriter for MemoryStore {
-    async fn create(&self, thread: &Thread) -> Result<Committed, ThreadStoreError> {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
             return Err(ThreadStoreError::AlreadyExists);
@@ -45,7 +44,7 @@ impl ThreadWriter for MemoryStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &ThreadDelta,
+        delta: &AgentChangeSet,
     ) -> Result<Committed, ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let entry = entries
@@ -66,7 +65,7 @@ impl ThreadWriter for MemoryStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &Thread) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
         let mut entries = self.entries.write().await;
         let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
         entries.insert(
@@ -83,9 +82,9 @@ impl ThreadWriter for MemoryStore {
 
 #[async_trait]
 impl ThreadReader for MemoryStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<ThreadHead>, ThreadStoreError> {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let entries = self.entries.read().await;
-        Ok(entries.get(thread_id).map(|e| ThreadHead {
+        Ok(entries.get(thread_id).map(|e| AgentStateHead {
             thread: e.thread.clone(),
             version: e.version,
         }))
@@ -136,7 +135,7 @@ impl ThreadSync for MemoryStore {
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<ThreadDelta>, ThreadStoreError> {
+    ) -> Result<Vec<AgentChangeSet>, ThreadStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(thread_id)
