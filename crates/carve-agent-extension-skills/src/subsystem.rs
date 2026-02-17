@@ -314,7 +314,9 @@ mod tests {
         assert!(exec.result.is_success());
         let thread = thread.with_patch(exec.patch.unwrap());
 
-        // Run the subsystem plugin and verify both discovery and runtime injections exist.
+        // Run the subsystem plugin and verify discovery catalog is injected.
+        // Runtime plugin no longer injects system context; skill instructions are
+        // delivered via append_user_messages and resources via tool results.
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});
@@ -323,9 +325,7 @@ mod tests {
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;
 
-        assert_eq!(step.system_context.len(), 2);
+        assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));
-        assert!(step.system_context[1].contains("<skill_reference"));
-        assert!(step.system_context[1].contains("path=\"references/DOCX-JS.md\""));
     }
 }

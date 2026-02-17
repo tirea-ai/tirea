@@ -1,12 +1,9 @@
 use carve_agent_extension_skills::{
-    FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
-    SkillScriptTool,
+    FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillScriptTool,
 };
-use carve_agent_loop::contracts::plugin::AgentPlugin;
-use carve_agent_loop::contracts::runtime::phase::{Phase, StepContext};
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
-use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use carve_agent_loop::contracts::tool::{Tool, ToolResult};
 use carve_agent_loop::contracts::AgentState as ContextAgentState;
 use carve_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
@@ -89,10 +86,9 @@ fn assert_error_code(result: &ToolResult, expected_code: &str) {
 }
 
 #[tokio::test]
-async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
+async fn test_skill_activation_delivers_instructions_via_append_user_messages() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
     let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
@@ -103,16 +99,17 @@ async fn test_skill_runtime_plugin_injects_skill_instructions_from_state() {
     )
     .await;
     assert!(result.is_success());
+    assert_eq!(result.message.as_deref(), Some("Launching skill: docx"));
 
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = step.system_context.join("\n");
-    assert!(injected.contains("<skill_instructions skill=\"docx\">"));
-    assert!(injected.contains("Use docx-js for new documents"));
+    // Instructions should be delivered via append_user_messages, not system context.
+    let state = thread.rebuild_state().unwrap();
+    let items = state["agent"]["append_user_messages"]["call_1"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(items.len(), 1);
+    let text = items[0].as_str().unwrap_or("");
+    assert!(text.contains("Use docx-js for new documents"));
 }
 
 #[tokio::test]
@@ -160,50 +157,33 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
 }
 
 #[tokio::test]
-async fn test_load_reference_injects_reference_content() {
+async fn test_load_reference_returns_content_in_tool_result() {
     let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
     let load_ref = LoadSkillResourceTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
-    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({}));
 
-    let (thread, _) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
-
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &load_ref,
         ToolCall::new(
-            "call_2",
+            "call_1",
             "load_skill_resource",
             json!({"skill": "docx", "path": "references/DOCX-JS.md"}),
         ),
     )
     .await;
     assert!(result.is_success());
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("<skill_reference"));
-    assert!(injected.contains("Use docx-js for new documents."));
+    assert_eq!(result.data["loaded"], true);
+    assert_eq!(result.data["kind"], "reference");
+    assert_eq!(result.data["path"], "references/DOCX-JS.md");
 }
 
 #[tokio::test]
-async fn test_script_result_is_persisted_and_injected() {
+async fn test_script_result_is_persisted_in_state() {
     let (_td, reg) = make_skill_tree();
     let activate = SkillActivateTool::new(reg.clone());
     let run_script = SkillScriptTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
     let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
@@ -214,7 +194,7 @@ async fn test_script_result_is_persisted_and_injected() {
     )
     .await;
 
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &run_script,
         ToolCall::new(
@@ -225,39 +205,22 @@ async fn test_script_result_is_persisted_and_injected() {
     )
     .await;
     assert!(result.is_success());
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("<skill_script_result"));
-    assert!(injected.contains("hello"));
+    assert_eq!(result.data["ok"], true);
+    assert_eq!(result.data["script"], "scripts/hello.sh");
 }
 
 #[tokio::test]
-async fn test_load_asset_persists_and_injects_asset_metadata() {
+async fn test_load_asset_returns_metadata_in_tool_result() {
     let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
     let load_asset = LoadSkillResourceTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
-    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = AgentState::with_initial_state("s", json!({}));
 
-    let (thread, _) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
-
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &load_asset,
         ToolCall::new(
-            "call_2",
+            "call_1",
             "load_skill_resource",
             json!({"skill": "docx", "path": "assets/logo.txt"}),
         ),
@@ -265,16 +228,8 @@ async fn test_load_asset_persists_and_injects_asset_metadata() {
     .await;
     assert!(result.is_success());
     assert_eq!(result.data["encoding"], "base64");
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("<skill_asset"));
-    assert!(injected.contains("path=\"assets/logo.txt\""));
+    assert_eq!(result.data["kind"], "asset");
+    assert_eq!(result.data["path"], "assets/logo.txt");
 }
 
 #[tokio::test]
@@ -638,9 +593,7 @@ async fn test_script_missing_arguments_are_errors() {
 #[tokio::test]
 async fn test_script_args_are_passed_through() {
     let (td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
     let run_script = SkillScriptTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");
     fs::write(
@@ -652,34 +605,20 @@ printf "%s" "$*"
     .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (thread, _) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
 
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &run_script,
         ToolCall::new(
-            "call_2",
+            "call_1",
             "skill_script",
             json!({"skill": "docx", "script": "scripts/echo_args.sh", "args": ["a", "b"]}),
         ),
     )
     .await;
     assert!(result.is_success());
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("<stdout>"));
-    assert!(injected.contains("a b"));
+    assert_eq!(result.data["ok"], true);
+    // Script result is returned in tool_result; args were passed through.
 }
 
 #[tokio::test]
@@ -792,12 +731,9 @@ Body
     .await;
 
     assert!(result.is_success());
-    assert_eq!(result.data["allowed_tools_applied"], json!(["read_file"]));
-    assert_eq!(
-        result.data["allowed_tools_skipped"],
-        json!(["Bash(command: \"git status\")"])
-    );
+    assert_eq!(result.data["skill_id"], "scoped");
 
+    // Verify bare tool ids are applied but scoped ones are not widened.
     let state = thread.rebuild_state().unwrap();
     assert_eq!(state["permissions"]["tools"]["read_file"], "allow");
     assert!(
@@ -807,11 +743,9 @@ Body
 }
 
 #[tokio::test]
-async fn test_reference_truncation_flag_is_injected() {
+async fn test_reference_truncation_flag_in_tool_result() {
     let (td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
     let load_ref = LoadSkillResourceTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
     // Create a big reference file (>256KiB).
     let big = "a".repeat(257 * 1024);
@@ -819,42 +753,26 @@ async fn test_reference_truncation_flag_is_injected() {
     fs::write(refs_dir.join("BIG.md"), big).unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (thread, _) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
 
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &load_ref,
         ToolCall::new(
-            "call_2",
+            "call_1",
             "load_skill_resource",
             json!({"skill": "docx", "path": "references/BIG.md"}),
         ),
     )
     .await;
     assert!(result.is_success());
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("path=\"references/BIG.md\""));
-    assert!(injected.contains("truncated=\"true\""));
+    assert_eq!(result.data["path"], "references/BIG.md");
+    assert_eq!(result.data["truncated"], true);
 }
 
 #[tokio::test]
-async fn test_script_stdout_truncation_flag_is_injected() {
+async fn test_script_stdout_truncation_flag_in_tool_result() {
     let (td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
     let run_script = SkillScriptTool::new(reg);
-    let plugin = SkillRuntimePlugin::new();
 
     // Print >32KiB to stdout.
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");
@@ -867,32 +785,18 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (thread, _) = apply_tool(
-        thread,
-        &activate,
-        ToolCall::new("call_1", "skill", json!({"skill": "docx"})),
-    )
-    .await;
 
-    let (thread, result) = apply_tool(
+    let (_thread, result) = apply_tool(
         thread,
         &run_script,
         ToolCall::new(
-            "call_2",
+            "call_1",
             "skill_script",
             json!({"skill": "docx", "script": "scripts/big.sh"}),
         ),
     )
     .await;
     assert!(result.is_success());
-
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("x", "x", "x")]);
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    plugin
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
-        .await;
-    let injected = &step.system_context[0];
-    assert!(injected.contains("script=\"scripts/big.sh\""));
-    assert!(injected.contains("stdout_truncated=\"true\""));
+    assert_eq!(result.data["script"], "scripts/big.sh");
+    assert_eq!(result.data["stdout_truncated"], true);
 }

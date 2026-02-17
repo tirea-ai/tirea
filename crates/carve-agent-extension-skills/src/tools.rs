@@ -166,17 +166,16 @@ impl Tool for SkillActivateTool {
             );
         }
 
-        let result = ToolResult::success(
-            SKILL_ACTIVATE_TOOL_ID,
-            json!({
+        let result = ToolResult {
+            tool_name: SKILL_ACTIVATE_TOOL_ID.to_string(),
+            status: ToolStatus::Success,
+            data: json!({
                 "activated": true,
                 "skill_id": meta.id,
-                "name": meta.name,
-                "allowed_tools_declared": meta.allowed_tools,
-                "allowed_tools_applied": applied_tool_ids,
-                "allowed_tools_skipped": skipped_tokens,
             }),
-        );
+            message: Some(format!("Launching skill: {}", meta.id)),
+            metadata: HashMap::new(),
+        };
 
         Ok(result)
     }

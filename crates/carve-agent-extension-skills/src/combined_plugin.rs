@@ -59,7 +59,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn combined_plugin_injects_catalog_and_active_skills() {
+    async fn combined_plugin_injects_catalog_only() {
         let doc = json!({});
         let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let td = TempDir::new().unwrap();
@@ -100,8 +100,8 @@ mod tests {
             .on_phase(Phase::BeforeInference, &mut step, &ctx)
             .await;
 
-        assert_eq!(step.system_context.len(), 2);
+        // Only discovery catalog is injected; runtime plugin no longer injects system context.
+        assert_eq!(step.system_context.len(), 1);
         assert!(step.system_context[0].contains("<available_skills>"));
-        assert!(step.system_context[1].contains("<skill_reference"));
     }
 }
