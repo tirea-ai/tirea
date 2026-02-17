@@ -3,11 +3,10 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
-
+use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::AgentState as ContextAgentState;
-use async_trait::async_trait;
 use carve_state_derive::State;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
@@ -615,11 +614,11 @@ fn inference_error_from_state(ctx: &ContextAgentState) -> Option<AgentInferenceE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::tool::ToolResult;
     use carve_agent_contract::runtime::phase::ToolContext as PhaseToolContext;
     use carve_agent_contract::runtime::StreamResult;
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::state::ToolCall;
+    use carve_agent_contract::tool::ToolResult;
     use carve_agent_contract::AgentState as ContextAgentState;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;

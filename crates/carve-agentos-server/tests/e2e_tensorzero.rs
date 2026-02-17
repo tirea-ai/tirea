@@ -19,12 +19,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
+use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::orchestrator::AgentDefinition;
+use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};

@@ -1,12 +1,12 @@
 use super::AgentLoopError;
-use crate::runtime::control::{
-    AgentControlState, AgentInferenceError, AgentStateControlExt, AGENT_STATE_PATH,
-};
-use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
 use crate::contracts::state::AgentState;
 use crate::contracts::state::{Message, MessageMetadata};
+use crate::contracts::tool::{Tool, ToolDescriptor};
+use crate::runtime::control::{
+    AgentControlState, AgentInferenceError, AgentStateControlExt, AGENT_STATE_PATH,
+};
 use carve_state::{StateContext, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;

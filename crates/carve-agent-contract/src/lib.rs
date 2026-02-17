@@ -9,8 +9,8 @@ pub mod tool_registry;
 
 pub use plugin::AgentPlugin;
 pub use runtime::{
-    AgentEvent, Interaction, InteractionResponse, RunRequest, StopConditionSpec, StopReason, StreamResult,
-    TerminationReason,
+    AgentEvent, Interaction, InteractionResponse, RunRequest, StopConditionSpec, StopReason,
+    StreamResult, TerminationReason,
 };
 pub use state::{
     gen_message_id, AgentChangeSet, AgentState, AgentStateMetadata, CheckpointReason, Message,

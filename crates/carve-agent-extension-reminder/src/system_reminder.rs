@@ -1,7 +1,7 @@
 //! System reminder trait for generating reminder messages.
 
-use carve_agent_contract::AgentState;
 use async_trait::async_trait;
+use carve_agent_contract::AgentState;
 
 /// System reminder for generating reminder messages.
 #[async_trait]

@@ -28,12 +28,6 @@ pub const SKILL_ACTIVATE_TOOL_ID: &str = "skill";
 pub const SKILL_LOAD_RESOURCE_TOOL_ID: &str = "load_skill_resource";
 pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 
-pub use types::{
-    material_key, CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset,
-    LoadedReference, ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry,
-    SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillState,
-    SKILLS_STATE_PATH,
-};
 pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillRegistry};
@@ -42,3 +36,9 @@ pub use registry::FsSkillRegistry;
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
+pub use types::{
+    material_key, CompositeSkillRegistry, CompositeSkillRegistryError, LoadedAsset,
+    LoadedReference, ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry,
+    SkillRegistryError, SkillRegistryWarning, SkillResource, SkillResourceKind, SkillState,
+    SKILLS_STATE_PATH,
+};

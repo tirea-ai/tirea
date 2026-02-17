@@ -35,9 +35,9 @@
 //! }
 //! ```
 
-use crate::contracts::state::{AgentState, ToolCall};
 use crate::contracts::runtime::StopConditionSpec;
 pub use crate::contracts::runtime::StopReason;
+use crate::contracts::state::{AgentState, ToolCall};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;

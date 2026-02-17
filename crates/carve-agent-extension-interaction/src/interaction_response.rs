@@ -7,11 +7,11 @@ use crate::agent_control::{
     AgentControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     AGENT_STATE_PATH,
 };
+use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::runtime::{Interaction, InteractionResponse};
 use carve_agent_contract::AgentState as ContextAgentState;
-use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -111,11 +111,10 @@ impl InteractionResponsePlugin {
         step: &StepContext<'_>,
         ctx: &ContextAgentState,
     ) -> Option<Interaction> {
-        Self::pending_interaction_from_step_thread(step)
-            .or_else(|| {
-                let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
-                agent.pending_interaction().ok().flatten()
-            })
+        Self::pending_interaction_from_step_thread(step).or_else(|| {
+            let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+            agent.pending_interaction().ok().flatten()
+        })
     }
 
     fn push_resolution(ctx: &ContextAgentState, interaction_id: String, result: serde_json::Value) {
@@ -200,11 +199,10 @@ impl InteractionResponsePlugin {
             return;
         }
 
-        if let Some(replay_call) = pending
-            .parameters
-            .get("tool_call")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok())
+        if let Some(replay_call) =
+            pending.parameters.get("tool_call").cloned().and_then(|v| {
+                serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok()
+            })
         {
             Self::queue_replay_call(ctx, replay_call);
             return;
@@ -228,7 +226,9 @@ impl InteractionResponsePlugin {
             .messages
             .iter()
             .rev()
-            .find(|m| m.role == carve_agent_contract::state::Role::Assistant && m.tool_calls.is_some())
+            .find(|m| {
+                m.role == carve_agent_contract::state::Role::Assistant && m.tool_calls.is_some()
+            })
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
                 // Frontend tool interactions use tool call id as interaction id.

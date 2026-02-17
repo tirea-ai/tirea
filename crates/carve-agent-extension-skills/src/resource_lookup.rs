@@ -1,6 +1,4 @@
-use crate::{
-    LoadedAsset, LoadedReference, SkillRegistryError, SkillResource, SkillResourceKind,
-};
+use crate::{LoadedAsset, LoadedReference, SkillRegistryError, SkillResource, SkillResourceKind};
 use std::collections::HashMap;
 
 pub(super) fn load_resource_from_maps(

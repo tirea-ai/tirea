@@ -48,17 +48,17 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-#[cfg(test)]
-use crate::runtime::control::AGENT_STATE_PATH;
-use crate::contracts::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
+use crate::contracts::state::CheckpointReason;
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::state::{ActivityManager, AgentState};
-use crate::contracts::state::CheckpointReason;
+use crate::contracts::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
 use crate::runtime::activity::ActivityHub;
+#[cfg(test)]
+use crate::runtime::control::AGENT_STATE_PATH;
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use async_trait::async_trait;
@@ -76,14 +76,14 @@ use uuid::Uuid;
 use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
-pub use config::{AgentConfig, LlmRetryPolicy};
-pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 pub use crate::runtime::run_context::{
     RunCancellationToken, RunContext, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
+pub use config::{AgentConfig, LlmRetryPolicy};
+pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 #[cfg(test)]
@@ -111,10 +111,14 @@ use tokio_util::sync::CancellationToken;
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    execute_tool_calls_with_phases, next_step_index, scope_with_tool_caller_context, step_metadata,
+    next_step_index, scope_with_tool_caller_context, step_metadata, ToolExecutionRequest,
     ToolExecutionResult,
 };
-pub use tool_exec::{execute_tools, execute_tools_with_config, execute_tools_with_plugins};
+pub use tool_exec::{
+    execute_tools, execute_tools_with_config, execute_tools_with_plugins,
+    execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
+    ToolExecutor,
+};
 
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
@@ -751,7 +755,8 @@ async fn run_loop_with_context_provider(
         };
         active_tool_descriptors = step_tools.descriptors.clone();
 
-        let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, config).await {
+        let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, config).await
+        {
             Ok(v) => v,
             Err(e) => {
                 terminate_run!(move |_| e);
@@ -781,11 +786,8 @@ async fn run_loop_with_context_provider(
             true,
             "unknown llm error",
             |model| {
-                let request = build_request_for_filtered_tools(
-                    &messages,
-                    &step_tools.tools,
-                    &filtered_tools,
-                );
+                let request =
+                    build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
                 async move {
                     provider
                         .exec_chat_response(&model, request, config.chat_options.as_ref())
@@ -854,7 +856,7 @@ async fn run_loop_with_context_provider(
             break;
         }
 
-        // Execute tools with phase hooks (respect config.parallel_tools).
+        // Execute tools with phase hooks using configured execution strategy.
         let tool_context = match prepare_tool_execution_context(&thread, Some(config)) {
             Ok(ctx) => ctx,
             Err(e) => {
@@ -864,19 +866,18 @@ async fn run_loop_with_context_provider(
         let thread_messages_for_tools = thread.messages.clone();
         let thread_version_for_tools = thread_state_version(&thread);
 
-        let tool_exec_future = execute_tool_calls_with_phases(
-            &step_tools.tools,
-            &result.tool_calls,
-            &tool_context.state,
-            &active_tool_descriptors,
-            &config.plugins,
-            config.parallel_tools,
-            None,
-            Some(&tool_context.scope),
-            &thread.id,
-            &thread_messages_for_tools,
-            thread_version_for_tools,
-        );
+        let tool_exec_future = config.tool_executor.execute(ToolExecutionRequest {
+            tools: &step_tools.tools,
+            calls: &result.tool_calls,
+            state: &tool_context.state,
+            tool_descriptors: &active_tool_descriptors,
+            plugins: &config.plugins,
+            activity_manager: None,
+            scope: Some(&tool_context.scope),
+            thread_id: &thread.id,
+            thread_messages: &thread_messages_for_tools,
+            state_version: thread_version_for_tools,
+        });
         let results = if let Some(ref token) = run_cancellation_token {
             tokio::select! {
                 _ = token.cancelled() => {
@@ -902,7 +903,9 @@ async fn run_loop_with_context_provider(
             thread,
             &results,
             Some(step_meta),
-            config.parallel_tools,
+            config
+                .tool_executor
+                .requires_parallel_patch_conflict_check(),
         ) {
             Ok(a) => a,
             Err(e) => {

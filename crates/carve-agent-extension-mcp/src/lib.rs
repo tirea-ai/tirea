@@ -1,6 +1,6 @@
+use async_trait::async_trait;
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_contract::AgentState;
-use async_trait::async_trait;
 use carve_agent_contract::ToolRegistry;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::transport_factory::TransportFactory;

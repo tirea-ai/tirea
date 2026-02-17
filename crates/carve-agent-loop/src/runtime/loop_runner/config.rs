@@ -1,3 +1,4 @@
+use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor, ToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StopConditionSpec;
@@ -51,7 +52,10 @@ pub struct StepToolSnapshot {
 impl StepToolSnapshot {
     /// Build a step snapshot from a concrete tool map.
     pub fn from_tools(tools: HashMap<String, Arc<dyn Tool>>) -> Self {
-        let descriptors = tools.values().map(|tool| tool.descriptor().clone()).collect();
+        let descriptors = tools
+            .values()
+            .map(|tool| tool.descriptor().clone())
+            .collect();
         Self { tools, descriptors }
     }
 }
@@ -93,8 +97,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// Maximum number of tool call rounds before stopping.
     pub max_rounds: usize,
-    /// Whether to execute tools in parallel.
-    pub parallel_tools: bool,
+    /// Tool execution strategy (parallel, sequential, or custom).
+    pub tool_executor: Arc<dyn ToolExecutor>,
     /// Chat options for the LLM.
     pub chat_options: Option<ChatOptions>,
     /// Fallback model ids used when the primary model fails.
@@ -130,7 +134,7 @@ impl Default for AgentConfig {
             model: "gpt-4o-mini".to_string(),
             system_prompt: String::new(),
             max_rounds: 10,
-            parallel_tools: true,
+            tool_executor: Arc::new(ParallelToolExecutor),
             chat_options: Some(
                 ChatOptions::default()
                     .with_capture_usage(true)
@@ -156,7 +160,7 @@ impl std::fmt::Debug for AgentConfig {
                 &format!("[{} chars]", self.system_prompt.len()),
             )
             .field("max_rounds", &self.max_rounds)
-            .field("parallel_tools", &self.parallel_tools)
+            .field("tool_executor", &self.tool_executor.name())
             .field("chat_options", &self.chat_options)
             .field("fallback_models", &self.fallback_models)
             .field("llm_retry_policy", &self.llm_retry_policy)
@@ -206,10 +210,21 @@ impl AgentConfig {
         self
     }
 
-    /// Set parallel tool execution.
+    /// Set tool executor strategy.
+    #[must_use]
+    pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.tool_executor = executor;
+        self
+    }
+
+    /// Set parallel tool execution convenience strategy.
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
-        self.parallel_tools = parallel;
+        self.tool_executor = if parallel {
+            Arc::new(ParallelToolExecutor)
+        } else {
+            Arc::new(SequentialToolExecutor)
+        };
         self
     }
 

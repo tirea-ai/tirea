@@ -10,7 +10,11 @@ pub(super) use crate::contracts::runtime::{
     SCOPE_EXCLUDED_AGENTS_KEY, SCOPE_EXCLUDED_SKILLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
 };
 
-pub(super) fn is_allowed(id: &str, allowed: Option<&[String]>, excluded: Option<&[String]>) -> bool {
+pub(super) fn is_allowed(
+    id: &str,
+    allowed: Option<&[String]>,
+    excluded: Option<&[String]>,
+) -> bool {
     if let Some(allowed) = allowed {
         if !allowed.iter().any(|t| t == id) {
             return false;

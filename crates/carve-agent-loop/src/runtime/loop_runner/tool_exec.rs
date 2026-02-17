@@ -7,17 +7,18 @@ use super::{
     AgentConfig, AgentLoopError, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::runtime::control::AGENT_STATE_PATH;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::runtime::{
     Interaction, StreamResult, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
 };
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::state::{Message, MessageMetadata};
+use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::{collect_patches, ToolExecution};
+use crate::runtime::control::AGENT_STATE_PATH;
+use async_trait::async_trait;
 use carve_state::{PatchExt, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,6 +29,101 @@ pub(super) struct AppliedToolResults {
     pub(super) thread: AgentState,
     pub(super) pending_interaction: Option<Interaction>,
     pub(super) state_snapshot: Option<Value>,
+}
+
+/// Input envelope for tool execution strategy.
+pub struct ToolExecutionRequest<'a> {
+    pub tools: &'a HashMap<String, Arc<dyn Tool>>,
+    pub calls: &'a [crate::contracts::state::ToolCall],
+    pub state: &'a Value,
+    pub tool_descriptors: &'a [ToolDescriptor],
+    pub plugins: &'a [Arc<dyn AgentPlugin>],
+    pub activity_manager: Option<Arc<dyn ActivityManager>>,
+    pub scope: Option<&'a carve_state::ScopeState>,
+    pub thread_id: &'a str,
+    pub thread_messages: &'a [Arc<Message>],
+    pub state_version: u64,
+}
+
+/// Strategy abstraction for tool execution.
+#[async_trait]
+pub trait ToolExecutor: Send + Sync {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest<'_>,
+    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError>;
+
+    /// Stable strategy label for logs/debug output.
+    fn name(&self) -> &'static str;
+
+    /// Whether tool-result apply step should enforce parallel patch conflict checks.
+    fn requires_parallel_patch_conflict_check(&self) -> bool {
+        false
+    }
+}
+
+/// Executes all tool calls concurrently.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParallelToolExecutor;
+
+#[async_trait]
+impl ToolExecutor for ParallelToolExecutor {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest<'_>,
+    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
+        execute_tools_parallel_with_phases(
+            request.tools,
+            request.calls,
+            request.state,
+            request.tool_descriptors,
+            request.plugins,
+            request.activity_manager,
+            request.scope,
+            request.thread_id,
+            request.thread_messages,
+            request.state_version,
+        )
+        .await
+    }
+
+    fn name(&self) -> &'static str {
+        "parallel"
+    }
+
+    fn requires_parallel_patch_conflict_check(&self) -> bool {
+        true
+    }
+}
+
+/// Executes tool calls one-by-one in call order.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SequentialToolExecutor;
+
+#[async_trait]
+impl ToolExecutor for SequentialToolExecutor {
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest<'_>,
+    ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
+        execute_tools_sequential_with_phases(
+            request.tools,
+            request.calls,
+            request.state,
+            request.tool_descriptors,
+            request.plugins,
+            request.activity_manager,
+            request.scope,
+            request.thread_id,
+            request.thread_messages,
+            request.state_version,
+        )
+        .await
+    }
+
+    fn name(&self) -> &'static str {
+        "sequential"
+    }
 }
 
 fn validate_parallel_state_patch_conflicts(
@@ -76,16 +172,22 @@ pub(super) fn apply_tool_results_to_session(
     thread: AgentState,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
-    parallel_tools: bool,
+    check_parallel_patch_conflicts: bool,
 ) -> Result<AppliedToolResults, AgentLoopError> {
-    apply_tool_results_impl(thread, results, metadata, parallel_tools, None)
+    apply_tool_results_impl(
+        thread,
+        results,
+        metadata,
+        check_parallel_patch_conflicts,
+        None,
+    )
 }
 
 pub(super) fn apply_tool_results_impl(
     thread: AgentState,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
-    parallel_tools: bool,
+    check_parallel_patch_conflicts: bool,
     tool_msg_ids: Option<&HashMap<String, String>>,
 ) -> Result<AppliedToolResults, AgentLoopError> {
     let mut pending_interactions = results
@@ -106,7 +208,7 @@ pub(super) fn apply_tool_results_impl(
 
     let pending_interaction = pending_interactions.pop();
 
-    if parallel_tools {
+    if check_parallel_patch_conflicts {
         validate_parallel_state_patch_conflicts(results)?;
     }
 
@@ -293,11 +395,11 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<AgentState, AgentLoopError> {
-    execute_tools_with_plugins(
+    execute_tools_with_plugins_and_executor(
         thread,
         result,
         tools,
-        config.parallel_tools,
+        config.tool_executor.as_ref(),
         &config.plugins,
     )
     .await
@@ -332,6 +434,23 @@ pub async fn execute_tools_with_plugins(
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<AgentState, AgentLoopError> {
+    let parallel_executor = ParallelToolExecutor;
+    let sequential_executor = SequentialToolExecutor;
+    let executor: &dyn ToolExecutor = if parallel {
+        &parallel_executor
+    } else {
+        &sequential_executor
+    };
+    execute_tools_with_plugins_and_executor(thread, result, tools, executor, plugins).await
+}
+
+pub async fn execute_tools_with_plugins_and_executor(
+    thread: AgentState,
+    result: &StreamResult,
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    executor: &dyn ToolExecutor,
+    plugins: &[Arc<dyn AgentPlugin>],
+) -> Result<AgentState, AgentLoopError> {
     if result.tool_calls.is_empty() {
         return Ok(thread);
     }
@@ -343,23 +462,28 @@ pub async fn execute_tools_with_plugins(
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
     let rt_for_tools = scope_with_tool_caller_context(&thread, &state, None)?;
-    let results = execute_tool_calls_with_phases(
-        tools,
-        &result.tool_calls,
-        &state,
-        &tool_descriptors,
-        plugins,
-        parallel,
-        None,
-        Some(&rt_for_tools),
-        &thread.id,
-        &thread.messages,
-        super::thread_state_version(&thread),
-    )
-    .await?;
+    let results = executor
+        .execute(ToolExecutionRequest {
+            tools,
+            calls: &result.tool_calls,
+            state: &state,
+            tool_descriptors: &tool_descriptors,
+            plugins,
+            activity_manager: None,
+            scope: Some(&rt_for_tools),
+            thread_id: &thread.id,
+            thread_messages: &thread.messages,
+            state_version: super::thread_state_version(&thread),
+        })
+        .await?;
 
     let metadata = tool_result_metadata_from_session(&thread);
-    let applied = apply_tool_results_to_session(thread, &results, metadata, parallel)?;
+    let applied = apply_tool_results_to_session(
+        thread,
+        &results,
+        metadata,
+        executor.requires_parallel_patch_conflict_check(),
+    )?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
             thread: Box::new(applied.thread),
@@ -382,22 +506,15 @@ pub(super) async fn execute_tool_calls_with_phases(
     thread_messages: &[Arc<Message>],
     state_version: u64,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
-    if parallel {
-        execute_tools_parallel_with_phases(
-            tools,
-            calls,
-            state,
-            tool_descriptors,
-            plugins,
-            activity_manager,
-            scope,
-            thread_id,
-            thread_messages,
-            state_version,
-        )
-        .await
+    let parallel_executor = ParallelToolExecutor;
+    let sequential_executor = SequentialToolExecutor;
+    let executor: &dyn ToolExecutor = if parallel {
+        &parallel_executor
     } else {
-        execute_tools_sequential_with_phases(
+        &sequential_executor
+    };
+    executor
+        .execute(ToolExecutionRequest {
             tools,
             calls,
             state,
@@ -408,9 +525,8 @@ pub(super) async fn execute_tool_calls_with_phases(
             thread_id,
             thread_messages,
             state_version,
-        )
+        })
         .await
-    }
 }
 
 /// Execute tools in parallel with phase hooks.

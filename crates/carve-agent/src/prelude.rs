@@ -39,9 +39,7 @@ pub use crate::contracts::AgentState;
 pub use carve_state::StateContext;
 
 // Tool trait and types
-pub use crate::contracts::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
-};
+pub use crate::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Message types
 pub use crate::contracts::state::{Message, Role, ToolCall};
@@ -55,9 +53,9 @@ pub use crate::contracts::runtime::{Interaction, InteractionResponse};
 pub use crate::extensions::permission::ToolPermissionBehavior;
 
 // Extension traits - these add helper methods to AgentState
-pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};
 pub use crate::extensions::interaction::{ContextCategory, ContextProvider};
 pub use crate::extensions::reminder::SystemReminder;
+pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};
 
 // State types (for advanced usage)
 pub use crate::extensions::{permission::PermissionState, reminder::ReminderState};

@@ -1,20 +1,16 @@
-use carve_agent_contract::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
-};
-use carve_agent_contract::AgentState;
-use carve_state_derive::State;
-use crate::tool_filter::{
-    is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
-};
-use carve_agent_extension_permission::PermissionContextExt;
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
+use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
     material_key, SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource,
     SkillResourceKind, SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID,
     SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
-use serde_json::{json, Value};
+use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+use carve_agent_contract::AgentState;
+use carve_agent_extension_permission::PermissionContextExt;
+use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;

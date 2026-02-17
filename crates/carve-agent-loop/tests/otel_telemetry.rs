@@ -1,11 +1,9 @@
+use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent_loop::contracts::plugin::AgentPlugin;
-use carve_agent_loop::contracts::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
 use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
-use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
+use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::AgentState as ContextAgentState;
 use carve_agent_loop::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,

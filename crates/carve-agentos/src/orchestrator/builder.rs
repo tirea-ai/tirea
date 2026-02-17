@@ -316,13 +316,7 @@ impl AgentOsBuilder {
             |regs| Ok(Arc::new(CompositeAgentRegistry::try_new(regs)?)),
         )?;
 
-        let registries = RegistrySet::new(
-            agents,
-            base_tools,
-            plugins,
-            providers,
-            models,
-        );
+        let registries = RegistrySet::new(agents, base_tools, plugins, providers, models);
 
         Ok(AgentOs {
             default_client: client.unwrap_or_default(),

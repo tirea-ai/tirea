@@ -4,14 +4,12 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agent::extensions::interaction::{ContextCategory, ContextProvider};
-use carve_agent::extensions::reminder::SystemReminder;
-use carve_agent::contracts::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
 use carve_agent::contracts::runtime::InteractionResponse;
 use carve_agent::contracts::state::AgentState as ConversationAgentState;
+use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::extensions::interaction::InteractionPlugin;
+use carve_agent::extensions::interaction::{ContextCategory, ContextProvider};
+use carve_agent::extensions::reminder::SystemReminder;
 use carve_agent::runtime::activity::ActivityHub;
 use carve_agent::runtime::loop_runner::AgentLoopError;
 use carve_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
@@ -825,7 +823,7 @@ async fn test_agent_config_variations() {
     let config1 = AgentConfig::new("gpt-4o-mini");
     assert_eq!(config1.model, "gpt-4o-mini");
     assert_eq!(config1.max_rounds, 10);
-    assert!(config1.parallel_tools);
+    assert_eq!(config1.tool_executor.name(), "parallel");
 
     let config2 = AgentConfig::new("claude-3-opus")
         .with_max_rounds(5)
@@ -833,7 +831,7 @@ async fn test_agent_config_variations() {
 
     assert_eq!(config2.model, "claude-3-opus");
     assert_eq!(config2.max_rounds, 5);
-    assert!(!config2.parallel_tools);
+    assert_eq!(config2.tool_executor.name(), "sequential");
 }
 
 #[tokio::test]
@@ -1252,9 +1250,7 @@ async fn test_session_incremental_checkpoints() {
 
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
-    use carve_agent::contracts::storage::{
-        AgentStateSync, AgentStateWriter, VersionPrecondition,
-    };
+    use carve_agent::contracts::storage::{AgentStateSync, AgentStateWriter, VersionPrecondition};
     use carve_agent::contracts::{AgentChangeSet, CheckpointReason};
 
     let storage = MemoryStore::new();
@@ -9296,7 +9292,9 @@ fn test_event_sequence_canceled_run() {
     assert!(events
         .iter()
         .any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
-    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AGUIEvent::RunError { .. })));
 }
 
 /// Test: Error during text streaming
@@ -12386,11 +12384,11 @@ fn test_interaction_to_ag_ui_events() {
 
 mod llmmetry_tracing {
     use carve_agent::contracts::plugin::AgentPlugin;
-    use carve_agent::contracts::tool::ToolResult;
     use carve_agent::contracts::runtime::phase::{Phase, StepContext, ToolContext};
     use carve_agent::contracts::runtime::StreamResult;
     use carve_agent::contracts::state::AgentState as ConversationAgentState;
     use carve_agent::contracts::state::ToolCall;
+    use carve_agent::contracts::tool::ToolResult;
     use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use serde_json::json;
     use std::sync::{Arc, Mutex};

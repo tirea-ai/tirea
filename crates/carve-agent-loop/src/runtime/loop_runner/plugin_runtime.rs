@@ -3,13 +3,13 @@ use super::core::{
     set_agent_inference_error, ThreadMutationBatch,
 };
 use super::AgentLoopError;
-use crate::runtime::control::AgentInferenceError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, TerminationReason};
 use crate::contracts::state::AgentState;
+use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::AgentState as ContextAgentState;
+use crate::runtime::control::AgentInferenceError;
 use carve_state::TrackedPatch;
 use std::sync::Arc;
 

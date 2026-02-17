@@ -1,13 +1,9 @@
+use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
+use crate::{SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH};
+use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::AgentState as ContextAgentState;
-use crate::tool_filter::{
-    is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
-};
-use crate::{
-    SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH,
-};
-use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -152,10 +148,10 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::tool::ToolDescriptor;
-    use carve_agent_contract::state::AgentState;
-    use carve_agent_contract::AgentState as ContextAgentState;
     use crate::FsSkillRegistry;
+    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::tool::ToolDescriptor;
+    use carve_agent_contract::AgentState as ContextAgentState;
     use serde_json::json;
     use std::fs;
     use std::io::Write;

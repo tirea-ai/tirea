@@ -10,14 +10,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use bundle::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
-    RegistrySet, ToolPluginBundle,
+    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind, RegistrySet,
+    ToolPluginBundle,
 };
 pub use carve_agent_contract::{ToolRegistry, ToolRegistryError};
 pub use registry::{
     CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
-    InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
+    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
+    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
 };
 
 #[derive(Debug, thiserror::Error)]

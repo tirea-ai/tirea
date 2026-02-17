@@ -1,7 +1,7 @@
-use carve_agent::contracts::tool::ToolDescriptor;
 use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::contracts::state::AgentState as ConversationAgentState;
 use carve_agent::contracts::state::ToolCall;
+use carve_agent::contracts::tool::ToolDescriptor;
 use carve_agent::engine::tool_execution::execute_single_tool;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 use carve_agent::prelude::AgentState as RuntimeAgentState;

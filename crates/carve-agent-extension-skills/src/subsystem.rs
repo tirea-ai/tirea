@@ -1,9 +1,9 @@
-use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::tool::Tool;
 use crate::{
     LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillScriptTool,
 };
+use carve_agent_contract::plugin::AgentPlugin;
+use carve_agent_contract::tool::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -124,15 +124,15 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
-    use carve_agent_contract::runtime::phase::{Phase, StepContext};
-    use carve_agent_contract::state::AgentState;
-    use carve_agent_contract::state::{Message, ToolCall};
-    use carve_agent_contract::AgentState as ContextAgentState;
     use crate::{
         FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
     };
     use async_trait::async_trait;
+    use carve_agent_contract::runtime::phase::{Phase, StepContext};
+    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::state::{Message, ToolCall};
+    use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
+    use carve_agent_contract::AgentState as ContextAgentState;
     use carve_state::TrackedPatch;
     use serde_json::json;
     use serde_json::Value;
@@ -157,8 +157,7 @@ mod tests {
             };
         };
 
-        let ctx =
-            ContextAgentState::new_transient(state, &call.id, format!("tool:{}", call.name));
+        let ctx = ContextAgentState::new_transient(state, &call.id, format!("tool:{}", call.name));
         let result = match tool.execute(call.arguments.clone(), &ctx).await {
             Ok(r) => r,
             Err(e) => ToolResult::error(&call.name, e.to_string()),
@@ -178,28 +177,20 @@ mod tests {
     #[async_trait]
     impl Tool for DummyTool {
         fn descriptor(&self) -> carve_agent_contract::tool::ToolDescriptor {
-            carve_agent_contract::tool::ToolDescriptor::new(
-                SKILL_ACTIVATE_TOOL_ID,
-                "x",
-                "x",
-            )
-            .with_parameters(json!({}))
+            carve_agent_contract::tool::ToolDescriptor::new(SKILL_ACTIVATE_TOOL_ID, "x", "x")
+                .with_parameters(json!({}))
         }
 
         async fn execute(
             &self,
             _args: Value,
             _ctx: &ContextAgentState,
-        ) -> Result<
-            carve_agent_contract::tool::ToolResult,
-            carve_agent_contract::tool::ToolError,
-        > {
-            Ok(
-                carve_agent_contract::tool::ToolResult::success(
-                    SKILL_ACTIVATE_TOOL_ID,
-                    json!({}),
-                ),
-            )
+        ) -> Result<carve_agent_contract::tool::ToolResult, carve_agent_contract::tool::ToolError>
+        {
+            Ok(carve_agent_contract::tool::ToolResult::success(
+                SKILL_ACTIVATE_TOOL_ID,
+                json!({}),
+            ))
         }
     }
 

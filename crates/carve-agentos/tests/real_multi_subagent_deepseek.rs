@@ -1,7 +1,7 @@
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};
 use carve_agent_contract::state::Message;
-use carve_agentos::orchestrator::AgentOs;
 use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::AgentOs;
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::time::Duration;

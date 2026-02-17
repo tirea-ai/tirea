@@ -523,19 +523,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
             let thread_messages_for_tools = thread.messages.clone();
             let thread_version_for_tools = thread_state_version(&thread);
             let mut tool_future: Pin<Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>> =
-                Box::pin(execute_tool_calls_with_phases(
-                    &active_tool_snapshot.tools,
-                    &result.tool_calls,
-                    &tool_context.state,
-                    &active_tool_descriptors,
-                    &config.plugins,
-                    config.parallel_tools,
-                    Some(activity_manager.clone()),
-                    Some(&tool_context.scope),
-                    &sid_for_tools,
-                    &thread_messages_for_tools,
-                    thread_version_for_tools,
-                ));
+                Box::pin(config.tool_executor.execute(ToolExecutionRequest {
+                    tools: &active_tool_snapshot.tools,
+                    calls: &result.tool_calls,
+                    state: &tool_context.state,
+                    tool_descriptors: &active_tool_descriptors,
+                    plugins: &config.plugins,
+                    activity_manager: Some(activity_manager.clone()),
+                    scope: Some(&tool_context.scope),
+                    thread_id: &sid_for_tools,
+                    thread_messages: &thread_messages_for_tools,
+                    state_version: thread_version_for_tools,
+                }));
             let mut activity_closed = false;
             let results = loop {
                 tokio::select! {
@@ -595,7 +594,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 thread,
                 &results,
                 Some(step_meta),
-                config.parallel_tools,
+                config.tool_executor.requires_parallel_patch_conflict_check(),
                 Some(&tool_msg_ids),
             ) {
                 Ok(a) => a,

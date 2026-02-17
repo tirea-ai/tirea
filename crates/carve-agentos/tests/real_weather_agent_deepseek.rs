@@ -1,11 +1,9 @@
 use async_trait::async_trait;
-use carve_agent_contract::tool::{
-    Tool, ToolDescriptor, ToolError, ToolResult,
-};
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};
 use carve_agent_contract::state::Message;
-use carve_agentos::orchestrator::AgentOs;
+use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::AgentOs;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};

@@ -1,7 +1,9 @@
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::StopConditionSpec;
 use crate::engine::stop_conditions::StopCondition;
-use crate::runtime::loop_runner::{AgentConfig, LlmRetryPolicy};
+use crate::runtime::loop_runner::{
+    AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
+};
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 
@@ -273,12 +275,18 @@ impl AgentDefinition {
     }
 
     pub fn into_loop_config(self) -> AgentConfig {
+        let tool_executor: Arc<dyn crate::runtime::loop_runner::ToolExecutor> =
+            if self.parallel_tools {
+                Arc::new(ParallelToolExecutor)
+            } else {
+                Arc::new(SequentialToolExecutor)
+            };
         AgentConfig {
             id: self.id,
             model: self.model,
             system_prompt: self.system_prompt,
             max_rounds: self.max_rounds,
-            parallel_tools: self.parallel_tools,
+            tool_executor,
             chat_options: self.chat_options,
             fallback_models: self.fallback_models,
             llm_retry_policy: self.llm_retry_policy,

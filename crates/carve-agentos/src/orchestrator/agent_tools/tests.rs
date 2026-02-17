@@ -1,6 +1,6 @@
 use super::*;
-use crate::contracts::tool::ToolStatus;
 use crate::contracts::state::AgentState;
+use crate::contracts::tool::ToolStatus;
 use crate::contracts::AgentState as ContextAgentState;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
@@ -15,14 +15,8 @@ use std::time::Duration;
 #[test]
 fn plugin_filters_out_caller_agent() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert(
-        "a",
-        crate::orchestrator::AgentDefinition::new("mock"),
-    );
-    reg.upsert(
-        "b",
-        crate::orchestrator::AgentDefinition::new("mock"),
-    );
+    reg.upsert("a", crate::orchestrator::AgentDefinition::new("mock"));
+    reg.upsert("b", crate::orchestrator::AgentDefinition::new("mock"));
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
     let rendered = plugin.render_available_agents(Some("a"), None);
     assert!(rendered.contains("<id>b</id>"));
@@ -32,10 +26,7 @@ fn plugin_filters_out_caller_agent() {
 #[test]
 fn plugin_filters_agents_by_scope_policy() {
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert(
-        "writer",
-        crate::orchestrator::AgentDefinition::new("mock"),
-    );
+    reg.upsert("writer", crate::orchestrator::AgentDefinition::new("mock"));
     reg.upsert(
         "reviewer",
         crate::orchestrator::AgentDefinition::new("mock"),
@@ -53,10 +44,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let doc = json!({});
     let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let mut reg = InMemoryAgentRegistry::new();
-    reg.upsert(
-        "worker",
-        crate::orchestrator::AgentDefinition::new("mock"),
-    );
+    reg.upsert("worker", crate::orchestrator::AgentDefinition::new("mock"));
     let manager = Arc::new(AgentRunManager::new());
     let plugin = AgentToolsPlugin::new(Arc::new(reg), manager.clone());
 

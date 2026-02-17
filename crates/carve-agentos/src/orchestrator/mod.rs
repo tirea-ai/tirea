@@ -6,14 +6,14 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::Tool;
 use crate::contracts::runtime::{AgentEvent, RunRequest};
 use crate::contracts::state::AgentState;
-use crate::contracts::state::Message;
 use crate::contracts::state::CheckpointReason;
+use crate::contracts::state::Message;
 use crate::contracts::storage::{
     AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };
+use crate::contracts::tool::Tool;
 use crate::extensions::skills::{
     CompositeSkillRegistryError, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
@@ -33,19 +33,18 @@ mod wiring;
 #[cfg(test)]
 mod tests;
 
+pub use agent_definition::AgentDefinition;
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
-pub use agent_definition::AgentDefinition;
 pub use composition::{
     AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
-    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
-    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
-    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
-    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
-    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
-    ProviderRegistryError, RegistryBundle, RegistrySet, ToolPluginBundle, ToolRegistry,
-    ToolRegistryError,
+    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry, CompositeModelRegistry,
+    CompositePluginRegistry, CompositeProviderRegistry, CompositeToolRegistry,
+    InMemoryAgentRegistry, InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry,
+    InMemoryToolRegistry, ModelDefinition, ModelRegistry, ModelRegistryError, PluginRegistry,
+    PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle, RegistrySet,
+    ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
 type ResolvedAgentWiring = (

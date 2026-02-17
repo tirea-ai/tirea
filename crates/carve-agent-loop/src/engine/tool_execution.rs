@@ -1,7 +1,7 @@
 //! Tool execution utilities.
 
-use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::state::ToolCall;
+use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::AgentState;
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;

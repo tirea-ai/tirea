@@ -1,10 +1,10 @@
 use super::*;
-use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::TerminationReason;
 use crate::contracts::state::ActivityManager;
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::VersionPrecondition;
+use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
@@ -171,7 +171,7 @@ fn skill_activation_result(
 fn test_agent_config_default() {
     let config = AgentConfig::default();
     assert_eq!(config.max_rounds, 10);
-    assert!(config.parallel_tools);
+    assert_eq!(config.tool_executor.name(), "parallel");
     assert!(config.system_prompt.is_empty());
 }
 
@@ -184,7 +184,7 @@ fn test_agent_config_builder() {
 
     assert_eq!(config.model, "gpt-4");
     assert_eq!(config.max_rounds, 5);
-    assert!(!config.parallel_tools);
+    assert_eq!(config.tool_executor.name(), "sequential");
     assert_eq!(config.system_prompt, "You are helpful.");
 }
 

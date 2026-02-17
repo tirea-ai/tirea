@@ -202,7 +202,9 @@ mod tests {
     use carve_agent_contract::AgentState as ContextAgentState;
     use serde_json::json;
 
-    fn apply_interaction_intents(_step: &mut carve_agent_contract::runtime::phase::StepContext<'_>) {
+    fn apply_interaction_intents(
+        _step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
+    ) {
         // No-op: permission plugin now sets pending interaction directly.
     }
 

@@ -98,10 +98,10 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::ToolDescriptor;
     use crate::runtime::phase::StepContext;
     use crate::runtime::Interaction;
     use crate::state::ToolCall;
+    use crate::tool::ToolDescriptor;
     use serde_json::json;
 
     // =========================================================================

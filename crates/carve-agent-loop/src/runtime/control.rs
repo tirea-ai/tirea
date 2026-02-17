@@ -290,7 +290,8 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = AgentState::new("child-1").with_message(crate::contracts::state::Message::user("seed"));
+        let child =
+            AgentState::new("child-1").with_message(crate::contracts::state::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),

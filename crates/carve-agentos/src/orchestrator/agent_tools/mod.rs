@@ -1,19 +1,17 @@
+use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
+use crate::contracts::plugin::AgentPlugin;
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::{AgentEvent, Interaction};
+use crate::contracts::state::{Message, Role, ToolCall};
+use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
+use crate::contracts::AgentState;
+use crate::extensions::permission::PermissionContextExt;
+use crate::extensions::permission::ToolPermissionBehavior;
 use crate::runtime::control::{
     AgentRunState, AgentRunStatus, AGENT_RECOVERY_INTERACTION_ACTION,
     AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
-use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::{AgentEvent, Interaction};
-use crate::contracts::state::{Message, Role, ToolCall};
-use crate::contracts::AgentState;
-use super::policy::{
-    is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,
-};
-use crate::extensions::permission::ToolPermissionBehavior;
-use crate::extensions::permission::PermissionContextExt;
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
     ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_SCOPE_CALLER_MESSAGES_KEY,

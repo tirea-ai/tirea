@@ -1,7 +1,7 @@
 //! ContextProvider trait for injecting dynamic context messages.
 
-use carve_agent_contract::AgentState;
 use async_trait::async_trait;
+use carve_agent_contract::AgentState;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.

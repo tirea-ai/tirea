@@ -1,12 +1,10 @@
-use crate::materialize::{
-    load_asset_material, load_reference_material, run_script_material,
-};
+use crate::materialize::{load_asset_material, load_reference_material, run_script_material};
 use crate::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
-use async_trait::async_trait;
 use crate::{
     ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
     SkillRegistryWarning, SkillResource, SkillResourceKind,
 };
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
