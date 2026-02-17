@@ -38,6 +38,7 @@
 //! RunEnd (once)
 //! ```
 
+mod config;
 mod core;
 mod outcome;
 mod plugin_runtime;
@@ -75,7 +76,7 @@ use uuid::Uuid;
 use crate::contracts::extension::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
-pub use carve_agent_contract::agent::{AgentConfig, AgentDefinition, LlmRetryPolicy};
+pub use config::{AgentConfig, LlmRetryPolicy};
 pub use crate::runtime::run_context::{
     RunCancellationToken, RunContext, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,

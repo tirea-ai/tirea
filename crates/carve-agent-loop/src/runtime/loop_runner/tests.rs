@@ -1343,7 +1343,7 @@ fn test_agent_config_debug() {
     let config = AgentConfig::new("gpt-4").with_system_prompt("You are helpful.");
 
     let debug_str = format!("{:?}", config);
-    assert!(debug_str.contains("AgentDefinition"));
+    assert!(debug_str.contains("AgentConfig"));
     assert!(debug_str.contains("gpt-4"));
     // Check that system_prompt is shown as length indicator
     assert!(debug_str.contains("chars]"));

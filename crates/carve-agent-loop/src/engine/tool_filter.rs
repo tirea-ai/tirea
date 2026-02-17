@@ -1,4 +1,4 @@
-use carve_agent_contract::agent::AgentDefinition;
+use crate::runtime::loop_runner::AgentConfig;
 use carve_state::ScopeState;
 use serde_json::Value;
 
@@ -41,35 +41,39 @@ pub fn set_scope_filter_if_absent(
     Ok(())
 }
 
-pub fn set_scope_filters_from_definition_if_absent(
+pub fn set_scope_filters_from_config_if_absent(
     scope: &mut ScopeState,
-    def: &AgentDefinition,
+    config: &AgentConfig,
 ) -> Result<(), carve_state::ScopeStateError> {
-    set_scope_filter_if_absent(scope, SCOPE_ALLOWED_TOOLS_KEY, def.allowed_tools.as_deref())?;
+    set_scope_filter_if_absent(
+        scope,
+        SCOPE_ALLOWED_TOOLS_KEY,
+        config.allowed_tools.as_deref(),
+    )?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_EXCLUDED_TOOLS_KEY,
-        def.excluded_tools.as_deref(),
+        config.excluded_tools.as_deref(),
     )?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_ALLOWED_SKILLS_KEY,
-        def.allowed_skills.as_deref(),
+        config.allowed_skills.as_deref(),
     )?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_EXCLUDED_SKILLS_KEY,
-        def.excluded_skills.as_deref(),
+        config.excluded_skills.as_deref(),
     )?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_ALLOWED_AGENTS_KEY,
-        def.allowed_agents.as_deref(),
+        config.allowed_agents.as_deref(),
     )?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_EXCLUDED_AGENTS_KEY,
-        def.excluded_agents.as_deref(),
+        config.excluded_agents.as_deref(),
     )?;
     Ok(())
 }
@@ -155,9 +159,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_scope_filters_from_definition_if_absent() {
+    fn test_set_scope_filters_from_config_if_absent() {
         let mut rt = ScopeState::new();
-        let def = AgentDefinition::default()
+        let config = AgentConfig::default()
             .with_allowed_tools(vec!["a".to_string()])
             .with_excluded_tools(vec!["b".to_string()])
             .with_allowed_skills(vec!["s1".to_string()])
@@ -165,7 +169,7 @@ mod tests {
             .with_allowed_agents(vec!["agent_a".to_string()])
             .with_excluded_agents(vec!["agent_b".to_string()]);
 
-        set_scope_filters_from_definition_if_absent(&mut rt, &def).unwrap();
+        set_scope_filters_from_config_if_absent(&mut rt, &config).unwrap();
 
         assert_eq!(
             rt.value(SCOPE_ALLOWED_TOOLS_KEY),

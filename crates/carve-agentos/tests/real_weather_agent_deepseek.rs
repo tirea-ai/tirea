@@ -5,7 +5,7 @@ use carve_agent_contract::extension::traits::tool::{
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};
 use carve_agent_contract::state::Message;
 use carve_agentos::orchestrator::AgentOs;
-use carve_agent_loop::runtime::loop_runner::AgentDefinition;
+use carve_agentos::orchestrator::AgentDefinition;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};

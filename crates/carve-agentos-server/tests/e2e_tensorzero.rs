@@ -24,7 +24,7 @@ use carve_agent::contracts::extension::traits::tool::{
 };
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
-use carve_agent::runtime::loop_runner::AgentDefinition;
+use carve_agent::orchestrator::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};

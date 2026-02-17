@@ -477,7 +477,7 @@ impl AgentOs {
                 .scope
                 .set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
-        let _ = set_scope_filters_from_definition_if_absent(&mut thread.scope, &def);
+        let _ = set_scope_filters_from_config_if_absent(&mut thread.scope, &def);
 
         let mut tools = self.base_tools.snapshot();
         let mut cfg = self.wire_into(def, &mut tools)?;

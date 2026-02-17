@@ -1,11 +1,5 @@
-//! Agent composition contracts: registry and bundle interfaces only.
+//! Minimal composition SPI shared outside orchestrator implementations.
 
-mod bundle;
 mod registry;
 
-pub use bundle::RegistryBundle;
-pub use registry::{
-    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, ToolRegistry,
-    ToolRegistryError,
-};
+pub use registry::{ToolRegistry, ToolRegistryError};

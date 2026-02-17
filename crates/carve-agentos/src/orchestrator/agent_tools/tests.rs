@@ -17,11 +17,11 @@ fn plugin_filters_out_caller_agent() {
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "a",
-        crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        crate::orchestrator::AgentDefinition::new("mock"),
     );
     reg.upsert(
         "b",
-        crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        crate::orchestrator::AgentDefinition::new("mock"),
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
     let rendered = plugin.render_available_agents(Some("a"), None);
@@ -34,11 +34,11 @@ fn plugin_filters_agents_by_scope_policy() {
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "writer",
-        crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        crate::orchestrator::AgentDefinition::new("mock"),
     );
     reg.upsert(
         "reviewer",
-        crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        crate::orchestrator::AgentDefinition::new("mock"),
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
     let mut rt = carve_state::ScopeState::new();
@@ -55,7 +55,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert(
         "worker",
-        crate::runtime::loop_runner::AgentDefinition::new("mock"),
+        crate::orchestrator::AgentDefinition::new("mock"),
     );
     let manager = Arc::new(AgentRunManager::new());
     let plugin = AgentToolsPlugin::new(Arc::new(reg), manager.clone());
@@ -164,7 +164,7 @@ async fn agent_run_tool_requires_scope_context() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -190,11 +190,11 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
         )
         .with_agent(
             "reviewer",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini"),
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini"),
         )
         .build()
         .unwrap();
@@ -266,7 +266,7 @@ async fn background_stop_then_resume_completes() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()
@@ -405,7 +405,7 @@ async fn agent_run_tool_persists_run_state_patch() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()
@@ -450,7 +450,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()
@@ -511,7 +511,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()
@@ -555,7 +555,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()
@@ -626,7 +626,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let os = AgentOs::builder()
         .with_agent(
             "worker",
-            crate::runtime::loop_runner::AgentDefinition::new("gpt-4o-mini")
+            crate::orchestrator::AgentDefinition::new("gpt-4o-mini")
                 .with_plugin(Arc::new(SlowSkipPlugin)),
         )
         .build()

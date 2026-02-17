@@ -291,7 +291,7 @@ pub async fn execute_tools_with_config(
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
 ) -> Result<AgentState, AgentLoopError> {
-    crate::engine::tool_filter::set_scope_filters_from_definition_if_absent(
+    crate::engine::tool_filter::set_scope_filters_from_config_if_absent(
         &mut thread.scope,
         config,
     )
@@ -326,7 +326,7 @@ pub(super) fn scope_with_tool_caller_context(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if let Some(cfg) = config {
-        crate::engine::tool_filter::set_scope_filters_from_definition_if_absent(&mut rt, cfg)
+        crate::engine::tool_filter::set_scope_filters_from_config_if_absent(&mut rt, cfg)
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)

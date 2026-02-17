@@ -1,5 +1,5 @@
-use crate::agent::stop::{StopCondition, StopConditionSpec};
-use crate::extension::plugin::AgentPlugin;
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::engine::stop_conditions::{StopCondition, StopConditionSpec};
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 
@@ -27,9 +27,9 @@ impl Default for LlmRetryPolicy {
     }
 }
 
-/// Definition for the agent loop configuration.
+/// Runtime configuration for the agent loop.
 #[derive(Clone)]
-pub struct AgentDefinition {
+pub struct AgentConfig {
     /// Unique identifier for this agent.
     pub id: String,
     /// Model identifier (e.g., "gpt-4", "claude-3-opus").
@@ -52,7 +52,7 @@ pub struct AgentDefinition {
     pub plugins: Vec<Arc<dyn AgentPlugin>>,
     /// Plugin references to resolve via AgentOs wiring.
     ///
-    /// This keeps AgentDefinition decoupled from plugin construction/loading. The AgentOs
+    /// This keeps AgentConfig decoupled from plugin construction/loading. The AgentOs
     /// instance decides how to map these ids to plugin instances.
     pub plugin_ids: Vec<String>,
     /// Policy references to resolve via AgentOs wiring.
@@ -75,7 +75,7 @@ pub struct AgentDefinition {
     /// Composable stop conditions checked after each tool-call round.
     ///
     /// When empty (and `stop_condition_specs` is also empty), a default
-    /// [`crate::agent::stop::MaxRounds`] condition is created from `max_rounds`.
+    /// [`crate::engine::stop_conditions::MaxRounds`] condition is created from `max_rounds`.
     /// When non-empty, `max_rounds` is ignored.
     pub stop_conditions: Vec<Arc<dyn StopCondition>>,
     /// Declarative stop condition specs, resolved to `Arc<dyn StopCondition>`
@@ -85,10 +85,7 @@ pub struct AgentDefinition {
     pub stop_condition_specs: Vec<StopConditionSpec>,
 }
 
-/// Backwards-compatible alias.
-pub type AgentConfig = AgentDefinition;
-
-impl Default for AgentDefinition {
+impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             id: "default".to_string(),
@@ -118,9 +115,9 @@ impl Default for AgentDefinition {
     }
 }
 
-impl std::fmt::Debug for AgentDefinition {
+impl std::fmt::Debug for AgentConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AgentDefinition")
+        f.debug_struct("AgentConfig")
             .field("id", &self.id)
             .field("model", &self.model)
             .field(
@@ -150,8 +147,8 @@ impl std::fmt::Debug for AgentDefinition {
     }
 }
 
-impl AgentDefinition {
-    /// Create a new definition with the given model.
+impl AgentConfig {
+    /// Create a new agent config with the given model.
     pub fn new(model: impl Into<String>) -> Self {
         Self {
             model: model.into(),
@@ -159,7 +156,7 @@ impl AgentDefinition {
         }
     }
 
-    /// Create a new definition with explicit id and model.
+    /// Create a new agent config with explicit id and model.
     pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
             id: id.into(),

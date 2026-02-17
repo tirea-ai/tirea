@@ -15,7 +15,7 @@ use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::AgentOsBuilder;
-use carve_agent::runtime::loop_runner::AgentDefinition;
+use carve_agent::orchestrator::AgentDefinition;
 use carve_agentos_server::nats::NatsGateway;
 use carve_thread_store_adapters::MemoryStore;
 use futures::StreamExt;

@@ -11,7 +11,7 @@ use carve_agent::contracts::storage::{
 };
 use carve_agent::contracts::AgentChangeSet;
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
-use carve_agent::runtime::loop_runner::AgentDefinition;
+use carve_agent::orchestrator::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};

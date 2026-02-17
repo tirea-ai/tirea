@@ -56,6 +56,8 @@ pub use crate::extensions::permission::ToolPermissionBehavior;
 
 // Extension traits - these add helper methods to AgentState
 pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};
+pub use crate::extensions::interaction::{ContextCategory, ContextProvider};
+pub use crate::extensions::reminder::SystemReminder;
 
 // State types (for advanced usage)
 pub use crate::extensions::{permission::PermissionState, reminder::ReminderState};

@@ -25,6 +25,9 @@ use async_trait::async_trait;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 
+mod system_reminder;
+pub use system_reminder::SystemReminder;
+
 /// State path for reminders.
 pub const REMINDER_STATE_PATH: &str = "reminders";
 

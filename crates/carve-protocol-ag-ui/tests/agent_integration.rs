@@ -4,8 +4,8 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agent::contracts::extension::traits::provider::{ContextCategory, ContextProvider};
-use carve_agent::contracts::extension::traits::reminder::SystemReminder;
+use carve_agent::extensions::interaction::{ContextCategory, ContextProvider};
+use carve_agent::extensions::reminder::SystemReminder;
 use carve_agent::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };

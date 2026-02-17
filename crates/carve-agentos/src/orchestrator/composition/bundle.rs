@@ -2,9 +2,9 @@ use super::{
     AgentRegistry, ModelDefinition, ModelRegistry, PluginRegistry, ProviderRegistry,
     RegistryBundle, ToolRegistry,
 };
-use crate::contracts::agent::AgentDefinition;
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::Tool;
+use crate::orchestrator::AgentDefinition;
 use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;

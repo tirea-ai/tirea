@@ -14,15 +14,17 @@ use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::{
     AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };
-use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
+use crate::engine::tool_filter::set_scope_filters_from_config_if_absent;
 use crate::extensions::skills::{
     CompositeSkillRegistryError, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
     SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    run_loop_stream, AgentConfig, AgentDefinition, AgentLoopError, RunContext, StateCommitError,
-    StateCommitter,
+    run_loop_stream, AgentConfig, AgentLoopError, RunContext, StateCommitError, StateCommitter,
 };
+
+/// Agent composition definition owned by AgentOS orchestration.
+pub type AgentDefinition = AgentConfig;
 
 pub(crate) mod agent_tools;
 mod builder;
@@ -36,17 +38,15 @@ mod tests;
 use agent_tools::{
     AgentRecoveryPlugin, AgentRunManager, AgentRunTool, AgentStopTool, AgentToolsPlugin,
 };
-pub use carve_agent_contract::composition::{
-    AgentRegistry, AgentRegistryError, ModelDefinition, ModelRegistry, ModelRegistryError,
-    PluginRegistry, PluginRegistryError, ProviderRegistry, ProviderRegistryError, RegistryBundle,
-    ToolRegistry, ToolRegistryError,
-};
 pub use composition::{
-    BundleComposeError, BundleComposer, BundleRegistryAccumulator, BundleRegistryKind,
-    CompositeAgentRegistry, CompositeModelRegistry, CompositePluginRegistry,
-    CompositeProviderRegistry, CompositeToolRegistry, InMemoryAgentRegistry,
-    InMemoryModelRegistry, InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry,
-    RegistrySet, ToolPluginBundle,
+    AgentRegistry, AgentRegistryError, BundleComposeError, BundleComposer,
+    BundleRegistryAccumulator, BundleRegistryKind, CompositeAgentRegistry,
+    CompositeModelRegistry, CompositePluginRegistry, CompositeProviderRegistry,
+    CompositeToolRegistry, InMemoryAgentRegistry, InMemoryModelRegistry,
+    InMemoryPluginRegistry, InMemoryProviderRegistry, InMemoryToolRegistry, ModelDefinition,
+    ModelRegistry, ModelRegistryError, PluginRegistry, PluginRegistryError, ProviderRegistry,
+    ProviderRegistryError, RegistryBundle, RegistrySet, ToolPluginBundle, ToolRegistry,
+    ToolRegistryError,
 };
 
 type ResolvedAgentWiring = (
