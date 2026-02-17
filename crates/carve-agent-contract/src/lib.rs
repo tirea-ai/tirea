@@ -9,6 +9,7 @@ pub mod change;
 mod stop;
 mod stream;
 mod tool;
+pub mod storage;
 
 pub mod agent;
 pub mod composition;
@@ -28,3 +29,4 @@ pub use run::RunRequest;
 pub use stop::{StopReason, TerminationReason};
 pub use stream::StreamResult;
 pub use tool::{ToolResult, ToolStatus};
+pub use storage::*;

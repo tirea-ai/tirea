@@ -57,7 +57,7 @@ impl AgentOs {
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
         let (mut thread, mut version) = match thread_store.load(&thread_id).await? {
             Some(head) => {
-                let mut t = head.thread;
+                let mut t = head.agent_state;
                 if let Some(state) = frontend_state {
                     t.state = state.clone();
                     t.patches.clear();

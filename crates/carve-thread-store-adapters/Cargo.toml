@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "Thread store adapter implementations for carve-agent"
 
 [dependencies]
-carve-thread-store-contract = { path = "../carve-thread-store-contract" }
+carve-agent-contract = { path = "../carve-agent-contract" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 async-trait = "0.1"

@@ -123,7 +123,7 @@ impl ThreadReader for RecordingStorage {
     async fn load(&self, id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let threads = self.threads.read().await;
         Ok(threads.get(id).map(|t| AgentStateHead {
-            thread: t.clone(),
+            agent_state: t.clone(),
             version: 0,
         }))
     }

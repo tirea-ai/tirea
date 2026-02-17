@@ -7,7 +7,7 @@ use carve_state::{
     parse_path, CarveError, CarveResult, Op, PatchSink, ScopeState, State, StateContext,
 };
 use crate::change::{AgentChangeSet as ContractAgentChangeSet, CheckpointReason};
-use crate::conversation::{AgentState as ConversationState, Message};
+use crate::conversation::Message;
 use serde_json::Value;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
@@ -109,7 +109,7 @@ impl<'a> AgentState<'a> {
 
     /// Create a context object directly from a loaded thread snapshot.
     pub fn from_thread(
-        thread: &'a ConversationState,
+        thread: &'a crate::conversation::AgentState,
         doc: &'a Value,
         call_id: impl Into<String>,
         source: impl Into<String>,
@@ -122,7 +122,7 @@ impl<'a> AgentState<'a> {
 
     /// Create a context object from a loaded thread snapshot with activity wiring.
     pub fn from_thread_with_activity_manager(
-        thread: &'a ConversationState,
+        thread: &'a crate::conversation::AgentState,
         doc: &'a Value,
         call_id: impl Into<String>,
         source: impl Into<String>,

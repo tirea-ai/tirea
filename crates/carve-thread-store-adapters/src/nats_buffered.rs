@@ -21,10 +21,11 @@
 
 use async_nats::jetstream;
 use async_trait::async_trait;
-use carve_thread_store_contract::{
-    AgentState, Committed, AgentChangeSet, AgentStateHead, ThreadReader, ThreadStore, ThreadStoreError,
-    ThreadWriter,
+use carve_agent_contract::storage::{
+    Committed, AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader,
+    ThreadStore, ThreadStoreError, ThreadWriter,
 };
+use carve_agent_contract::AgentState;
 use std::sync::Arc;
 
 /// NATS JetStream stream name for thread deltas.
@@ -147,7 +148,7 @@ impl NatsBufferedThreadWriter {
         // Replay each thread's deltas.
         for (thread_id, deltas_with_msgs) in pending {
             let mut thread = match self.inner.load(&thread_id).await {
-                Ok(Some(head)) => head.thread,
+                Ok(Some(head)) => head.agent_state,
                 Ok(None) => AgentState::new(thread_id.clone()),
                 Err(e) => {
                     tracing::error!(
@@ -243,8 +244,8 @@ impl ThreadReader for NatsBufferedThreadWriter {
 
     async fn list_threads(
         &self,
-        query: &carve_thread_store_contract::ThreadListQuery,
-    ) -> Result<carve_thread_store_contract::ThreadListPage, ThreadStoreError> {
+        query: &ThreadListQuery,
+    ) -> Result<ThreadListPage, ThreadStoreError> {
         self.inner.list_threads(query).await
     }
 }

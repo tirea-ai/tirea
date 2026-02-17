@@ -8,9 +8,10 @@
 #![cfg(feature = "nats")]
 
 use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
-use carve_thread_store_contract::{
-    AgentChangeSet, AgentState, CheckpointReason, Message, MessageQuery, ThreadReader, ThreadWriter,
+use carve_agent_contract::{
+    AgentState, CheckpointReason, Message, MessageQuery, ThreadReader, ThreadWriter,
 };
+use carve_agent_contract::change::AgentChangeSet;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
@@ -55,7 +56,7 @@ async fn test_create_delegates_to_inner() {
 
     let loaded = inner.load("t1").await.unwrap();
     assert!(loaded.is_some());
-    assert_eq!(loaded.unwrap().thread.id, "t1");
+    assert_eq!(loaded.unwrap().agent_state.id, "t1");
 }
 
 #[tokio::test]
@@ -82,8 +83,8 @@ async fn test_append_does_not_write_to_inner() {
 
     // Inner should still have only the original message
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.thread.messages.len(), 1);
-    assert_eq!(loaded.thread.messages[0].content, "hello");
+    assert_eq!(loaded.agent_state.messages.len(), 1);
+    assert_eq!(loaded.agent_state.messages[0].content, "hello");
 }
 
 #[tokio::test]
@@ -115,9 +116,9 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     storage.save(&final_thread).await.unwrap();
 
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.thread.messages.len(), 2);
-    assert_eq!(loaded.thread.messages[0].content, "hello");
-    assert_eq!(loaded.thread.messages[1].content, "world");
+    assert_eq!(loaded.agent_state.messages.len(), 2);
+    assert_eq!(loaded.agent_state.messages[0].content, "hello");
+    assert_eq!(loaded.agent_state.messages[1].content, "world");
 }
 
 #[tokio::test]
@@ -189,7 +190,7 @@ async fn test_recover_replays_unacked_deltas() {
 
     // Inner storage should now have all messages
     let loaded = inner.load("t1").await.unwrap().unwrap();
-    assert_eq!(loaded.thread.messages.len(), 3); // hello + response 1 + response 2
+    assert_eq!(loaded.agent_state.messages.len(), 3); // hello + response 1 + response 2
 }
 
 // ============================================================================
@@ -226,12 +227,12 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     // Query via NatsBufferedThreadWriter.load() — should see first-run snapshot.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(
-        head.thread.messages.len(),
+        head.agent_state.messages.len(),
         2,
         "load() should return the pre-run snapshot (2 messages), not include buffered delta"
     );
-    assert_eq!(head.thread.messages[0].content, "hello");
-    assert_eq!(head.thread.messages[1].content, "first reply");
+    assert_eq!(head.agent_state.messages[0].content, "hello");
+    assert_eq!(head.agent_state.messages[1].content, "first reply");
 }
 
 /// load_messages() (ThreadReader default) also reads from the inner storage,
@@ -297,7 +298,7 @@ async fn test_query_accurate_after_run_end_flush() {
 
     // Before flush: load sees 1 message.
     let pre = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(pre.thread.messages.len(), 1);
+    assert_eq!(pre.agent_state.messages.len(), 1);
 
     // Run-end flush.
     let final_thread = AgentState::new("t1")
@@ -307,8 +308,8 @@ async fn test_query_accurate_after_run_end_flush() {
 
     // After flush: load sees 2 messages.
     let post = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(post.thread.messages.len(), 2);
-    assert_eq!(post.thread.messages[1].content, "world");
+    assert_eq!(post.agent_state.messages.len(), 2);
+    assert_eq!(post.agent_state.messages[1].content, "world");
 
     // load_messages also sees 2.
     let page = ThreadReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
@@ -360,12 +361,12 @@ async fn test_multi_run_query_sees_previous_run_data() {
     // Query during run 2: sees run 1's flushed state (2 messages), not run 2's delta.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(
-        head.thread.messages.len(),
+        head.agent_state.messages.len(),
         2,
         "during run 2, query should see run 1's flushed state (q1 + a1)"
     );
-    assert_eq!(head.thread.messages[0].content, "q1");
-    assert_eq!(head.thread.messages[1].content, "a1");
+    assert_eq!(head.agent_state.messages[0].content, "q1");
+    assert_eq!(head.agent_state.messages[1].content, "a1");
 
     // Flush run 2.
     let run2_thread = AgentState::new("t1")
@@ -376,5 +377,5 @@ async fn test_multi_run_query_sees_previous_run_data() {
 
     // Now query sees all 3 messages.
     let head = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.messages.len(), 3);
+    assert_eq!(head.agent_state.messages.len(), 3);
 }

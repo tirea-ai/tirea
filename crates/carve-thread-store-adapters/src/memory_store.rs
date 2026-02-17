@@ -1,11 +1,14 @@
 use async_trait::async_trait;
-use carve_thread_store_contract::{
-    AgentState, Committed, AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader,
+use carve_agent_contract::{
+    AgentState, Committed,
+};
+use carve_agent_contract::storage::{
+    AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader,
     ThreadStoreError, ThreadSync, ThreadWriter, Version,
 };
 
 struct MemoryEntry {
-    thread: AgentState,
+    agent_state: AgentState,
     version: Version,
     deltas: Vec<AgentChangeSet>,
 }
@@ -33,7 +36,7 @@ impl ThreadWriter for MemoryStore {
         entries.insert(
             thread.id.clone(),
             MemoryEntry {
-                thread: thread.clone(),
+                agent_state: thread.clone(),
                 version: 0,
                 deltas: Vec::new(),
             },
@@ -51,7 +54,7 @@ impl ThreadWriter for MemoryStore {
             .get_mut(thread_id)
             .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
 
-        delta.apply_to(&mut entry.thread);
+        delta.apply_to(&mut entry.agent_state);
         entry.version += 1;
         entry.deltas.push(delta.clone());
         Ok(Committed {
@@ -71,7 +74,7 @@ impl ThreadWriter for MemoryStore {
         entries.insert(
             thread.id.clone(),
             MemoryEntry {
-                thread: thread.clone(),
+                agent_state: thread.clone(),
                 version,
                 deltas: Vec::new(),
             },
@@ -85,7 +88,7 @@ impl ThreadReader for MemoryStore {
     async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
         let entries = self.entries.read().await;
         Ok(entries.get(thread_id).map(|e| AgentStateHead {
-            thread: e.thread.clone(),
+            agent_state: e.agent_state.clone(),
             version: e.version,
         }))
     }
@@ -99,14 +102,14 @@ impl ThreadReader for MemoryStore {
             .iter()
             .filter(|(_, e)| {
                 if let Some(ref rid) = query.resource_id {
-                    e.thread.resource_id.as_deref() == Some(rid.as_str())
+                    e.agent_state.resource_id.as_deref() == Some(rid.as_str())
                 } else {
                     true
                 }
             })
             .filter(|(_, e)| {
                 if let Some(ref pid) = query.parent_thread_id {
-                    e.thread.parent_thread_id.as_deref() == Some(pid.as_str())
+                    e.agent_state.parent_thread_id.as_deref() == Some(pid.as_str())
                 } else {
                     true
                 }

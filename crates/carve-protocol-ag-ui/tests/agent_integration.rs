@@ -1228,8 +1228,8 @@ async fn test_incremental_checkpoints_via_append() {
         .unwrap()
         .unwrap();
     assert_eq!(head.version, 5);
-    assert_eq!(head.thread.message_count(), 50);
-    let state = head.thread.rebuild_state().unwrap();
+    assert_eq!(head.agent_state.message_count(), 50);
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(state["progress"], 50);
 
     // Verify delta replay

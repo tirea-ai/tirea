@@ -1000,7 +1000,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     // Verify initial state
     let head = storage.load("t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.state, json!({"counter": 0}));
+    assert_eq!(head.agent_state.state, json!({"counter": 0}));
 
     // Run with frontend state that replaces the thread state
     let request = RunRequest {
@@ -1019,7 +1019,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     // Verify state was replaced in storage
     let head = storage.load("t1").await.unwrap().unwrap();
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(state, json!({"counter": 42, "new_field": true}));
 }
 
@@ -1069,7 +1069,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     // Verify state was set as initial state
     let head = storage.load("t-new").await.unwrap().unwrap();
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(state, json!({"initial": true}));
 }
 
@@ -1123,7 +1123,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     // Verify state was not changed
     let head = storage.load("t1").await.unwrap().unwrap();
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(state, json!({"counter": 5}));
 }
 
@@ -1181,12 +1181,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     );
 
     let head = storage.load("t-prepare").await.unwrap().unwrap();
-    assert_eq!(head.thread.messages.len(), 1);
+    assert_eq!(head.agent_state.messages.len(), 1);
     assert_eq!(
-        head.thread.messages[0].role,
+        head.agent_state.messages[0].role,
         crate::contracts::conversation::Role::User
     );
-    assert_eq!(head.thread.messages[0].content, "hello");
+    assert_eq!(head.agent_state.messages[0].content, "hello");
 }
 
 #[tokio::test]
@@ -1298,23 +1298,23 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
     );
 
     let head = storage.load("t-checkpoint-fail").await.unwrap().unwrap();
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(
         state,
         json!({"base": 1}),
         "failed checkpoint must not mutate persisted state"
     );
     assert_eq!(
-        head.thread.messages.len(),
+        head.agent_state.messages.len(),
         1,
         "only user message delta should be persisted before checkpoint failure"
     );
     assert_eq!(
-        head.thread.messages[0].role,
+        head.agent_state.messages[0].role,
         crate::contracts::conversation::Role::User
     );
     assert_eq!(
-        head.thread.messages[0].content.as_str(),
+        head.agent_state.messages[0].content.as_str(),
         "hello",
         "unexpected persisted user message content"
     );
@@ -1374,14 +1374,14 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     );
 
     let head = storage.load("t-existing-fail").await.unwrap().unwrap();
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(
         state,
         json!({"counter": 5}),
         "existing state must stay unchanged when first checkpoint append fails"
     );
     assert!(
-        head.thread.state.get("run_end_marker").is_none(),
+        head.agent_state.state.get("run_end_marker").is_none(),
         "failed checkpoint must not persist RunEnd patch"
     );
     assert_eq!(head.version, 0, "failed append must not advance version");

@@ -20,7 +20,7 @@ pub(super) fn as_agent_run_state(
         status: summary.status,
         assistant: summary.assistant.clone(),
         error: summary.error.clone(),
-        thread,
+        agent_state: thread,
     }
 }
 
@@ -228,7 +228,7 @@ pub(super) async fn reconcile_persisted_runs(
         };
         if let Some(summary) = by_id.get(&run_id) {
             let thread = manager.owned_record(owner_thread_id, &run_id).await;
-            let mut next = as_agent_run_state(summary, thread.or_else(|| current.thread.clone()));
+            let mut next = as_agent_run_state(summary, thread.or_else(|| current.agent_state.clone()));
             if next.parent_run_id.is_none() {
                 next.parent_run_id = current.parent_run_id.clone();
             }
@@ -236,7 +236,8 @@ pub(super) async fn reconcile_persisted_runs(
                 || current.assistant != next.assistant
                 || current.error != next.error
                 || current.parent_run_id != next.parent_run_id
-                || current.thread.as_ref().map(|s| &s.id) != next.thread.as_ref().map(|s| &s.id)
+                || current.agent_state.as_ref().map(|s| &s.id)
+                    != next.agent_state.as_ref().map(|s| &s.id)
             {
                 runs.insert(run_id.clone(), next);
                 changed = true;

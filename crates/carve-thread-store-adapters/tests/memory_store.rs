@@ -1,7 +1,10 @@
 use carve_state::{path, Op, Patch, TrackedPatch};
 use carve_thread_store_adapters::MemoryStore;
-use carve_thread_store_contract::{
-    AgentChangeSet, AgentState, CheckpointReason, Message, MessageMetadata, MessageQuery, Role, ThreadListQuery,
+use carve_agent_contract::{
+    AgentState, CheckpointReason, Message, MessageMetadata, MessageQuery, Role, ThreadListQuery,
+};
+use carve_agent_contract::change::AgentChangeSet;
+use carve_agent_contract::storage::{
     ThreadReader, ThreadStore, ThreadStoreError, ThreadSync, ThreadWriter,
 };
 use serde_json::json;
@@ -429,8 +432,8 @@ async fn test_thread_store_create_and_load() {
 
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 0);
-    assert_eq!(head.thread.id, "t1");
-    assert_eq!(head.thread.message_count(), 1);
+    assert_eq!(head.agent_state.id, "t1");
+    assert_eq!(head.agent_state.message_count(), 1);
 }
 
 #[tokio::test]
@@ -452,7 +455,7 @@ async fn test_thread_store_append() {
 
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 1);
-    assert_eq!(head.thread.message_count(), 1); // from delta
+    assert_eq!(head.agent_state.message_count(), 1); // from delta
 }
 
 #[tokio::test]
@@ -488,8 +491,8 @@ async fn test_thread_store_append_with_snapshot() {
     store.append("t1", &delta).await.unwrap();
 
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.state, json!({"counter": 42}));
-    assert!(head.thread.patches.is_empty());
+    assert_eq!(head.agent_state.state, json!({"counter": 42}));
+    assert!(head.agent_state.patches.is_empty());
 }
 
 #[tokio::test]
@@ -680,10 +683,10 @@ async fn test_full_agent_run_via_append() {
     // 6. Verify final state
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 4);
-    assert_eq!(head.thread.message_count(), 4); // user + assistant + tool + assistant
-    assert_eq!(head.thread.patch_count(), 1);
+    assert_eq!(head.agent_state.message_count(), 4); // user + assistant + tool + assistant
+    assert_eq!(head.agent_state.patch_count(), 1);
 
-    let state = head.thread.rebuild_state().unwrap();
+    let state = head.agent_state.rebuild_state().unwrap();
     assert_eq!(state["result"], 4);
 }
 
@@ -801,13 +804,13 @@ async fn test_append_preserves_patch_provenance() {
 
     // Verify provenance survived
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.patches.len(), 1);
+    assert_eq!(head.agent_state.patches.len(), 1);
     assert_eq!(
-        head.thread.patches[0].source.as_deref(),
+        head.agent_state.patches[0].source.as_deref(),
         Some("tool:weather")
     );
     assert_eq!(
-        head.thread.patches[0].description.as_deref(),
+        head.agent_state.patches[0].description.as_deref(),
         Some("Set weather data")
     );
 
@@ -840,7 +843,7 @@ async fn test_append_preserves_parent_run_id() {
     assert_eq!(deltas[0].parent_run_id.as_deref(), Some("parent-run-1"));
 
     let head = ThreadReader::load(&store, "child").await.unwrap().unwrap();
-    assert_eq!(head.thread.parent_thread_id.as_deref(), Some("parent"));
+    assert_eq!(head.agent_state.parent_thread_id.as_deref(), Some("parent"));
 }
 
 /// Empty delta produces no change but still increments version.
@@ -865,7 +868,7 @@ async fn test_append_empty_delta() {
 
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
     assert_eq!(head.version, 1);
-    assert_eq!(head.thread.message_count(), 1); // unchanged
+    assert_eq!(head.agent_state.message_count(), 1); // unchanged
 }
 
 /// Simulates what `run_stream` does when the frontend sends a state snapshot
@@ -892,8 +895,8 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
 
     // Verify current state: base={"counter":0}, 1 patch → rebuilt={"counter":5}
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.rebuild_state().unwrap(), json!({"counter": 5}));
-    assert_eq!(head.thread.patches.len(), 1);
+    assert_eq!(head.agent_state.rebuild_state().unwrap(), json!({"counter": 5}));
+    assert_eq!(head.agent_state.patches.len(), 1);
 
     // 2. Frontend sends state={"counter":10, "name":"Alice"} along with a user message.
     //    This simulates what run_stream does: include snapshot in UserMessage delta.
@@ -910,9 +913,9 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
 
     // 3. Verify: state is fully replaced, patches cleared
     let head = ThreadReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.thread.state, frontend_state);
-    assert!(head.thread.patches.is_empty());
-    assert_eq!(head.thread.rebuild_state().unwrap(), frontend_state);
+    assert_eq!(head.agent_state.state, frontend_state);
+    assert!(head.agent_state.patches.is_empty());
+    assert_eq!(head.agent_state.rebuild_state().unwrap(), frontend_state);
     // User message was also persisted
-    assert!(head.thread.messages.iter().any(|m| m.role == Role::User));
+    assert!(head.agent_state.messages.iter().any(|m| m.role == Role::User));
 }

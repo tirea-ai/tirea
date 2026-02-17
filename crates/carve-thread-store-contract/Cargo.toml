@@ -7,7 +7,6 @@ description = "Thread store traits and shared persistence contract"
 
 [dependencies]
 carve-agent-contract = { path = "../carve-agent-contract" }
-carve-state = { path = "../carve-state" }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 async-trait = "0.1"

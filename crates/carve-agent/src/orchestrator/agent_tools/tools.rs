@@ -244,7 +244,7 @@ impl AgentRunTool {
                 status: AgentRunStatus::Running,
                 assistant: None,
                 error: None,
-                thread: Some(thread),
+                agent_state: Some(thread),
             };
             set_persisted_run(ctx, &run_id, running.clone());
             return to_tool_result(tool_name, as_agent_run_summary(&run_id, &running));
@@ -263,15 +263,15 @@ impl AgentRunTool {
             .await;
         let completion =
             execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
-        let completion_state = AgentRunState {
-            run_id: run_id.clone(),
-            parent_run_id,
-            target_agent_id,
-            status: completion.status,
-            assistant: completion.assistant.clone(),
-            error: completion.error.clone(),
-            thread: Some(completion.thread.clone()),
-        };
+            let completion_state = AgentRunState {
+                run_id: run_id.clone(),
+                parent_run_id,
+                target_agent_id,
+                status: completion.status,
+                assistant: completion.assistant.clone(),
+                error: completion.error.clone(),
+                agent_state: Some(completion.thread.clone()),
+            };
         let summary = self
             .manager
             .update_after_completion(&run_id, epoch, completion)
@@ -421,13 +421,13 @@ impl Tool for AgentRunTool {
                         return Ok(error);
                     }
 
-                    let mut child_thread = match persisted.thread {
+                    let mut child_thread = match persisted.agent_state {
                         Some(s) => s,
                         None => {
                             return Ok(tool_error(
                                 tool_name,
                                 "invalid_state",
-                                format!("Run '{run_id}' cannot be resumed: missing child thread"),
+                                format!("Run '{run_id}' cannot be resumed: missing child agent state"),
                             ))
                         }
                     };

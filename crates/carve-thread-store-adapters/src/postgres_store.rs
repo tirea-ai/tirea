@@ -1,8 +1,9 @@
 use async_trait::async_trait;
-use carve_thread_store_contract::{
-    Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder, AgentChangeSet, AgentStateHead,
+use carve_agent_contract::storage::{
+    AgentChangeSet, AgentStateHead, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
     ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
 };
+use carve_agent_contract::{AgentState, Message, Visibility};
 use std::collections::HashSet;
 
 pub struct PostgresStore {
@@ -357,9 +358,12 @@ impl ThreadReader for PostgresStore {
             obj.remove("_version");
         }
 
-        let thread: AgentState = serde_json::from_value(v)
+        let agent_state: AgentState = serde_json::from_value(v)
             .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
-        Ok(Some(AgentStateHead { thread, version }))
+        Ok(Some(AgentStateHead {
+            agent_state,
+            version,
+        }))
     }
 
     async fn load_messages(
@@ -509,89 +513,50 @@ impl ThreadReader for PostgresStore {
         &self,
         query: &ThreadListQuery,
     ) -> Result<ThreadListPage, ThreadStoreError> {
-        // Enhanced with parent_thread_id filter via JSONB.
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
 
-        let mut where_clauses = Vec::new();
-        let mut param_idx = 3; // $1=limit, $2=offset
-
+        let mut count_filters = Vec::new();
+        let mut data_filters = Vec::new();
         if query.resource_id.is_some() {
-            where_clauses.push(format!("data->>'resource_id' = ${param_idx}"));
-            param_idx += 1;
+            count_filters.push("data->>'resource_id' = $1".to_string());
+            data_filters.push("data->>'resource_id' = $3".to_string());
         }
         if query.parent_thread_id.is_some() {
-            where_clauses.push(format!("data->>'parent_thread_id' = ${param_idx}"));
-            // param_idx += 1; // unused after this
+            let idx = if query.resource_id.is_some() { 2 } else { 1 };
+            count_filters.push(format!("data->>'parent_thread_id' = ${idx}"));
+            let data_idx = if query.resource_id.is_some() { 4 } else { 3 };
+            data_filters.push(format!("data->>'parent_thread_id' = ${data_idx}"));
         }
 
-        let where_sql = if where_clauses.is_empty() {
+        let where_count = if count_filters.is_empty() {
             String::new()
         } else {
-            format!(" WHERE {}", where_clauses.join(" AND "))
-        };
-
-        let count_sql = format!("SELECT COUNT(*)::bigint FROM {}{}", self.table, where_sql);
-        let sql = format!(
-            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
-            self.table, where_sql
-        );
-
-        // Build and execute count query.
-        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
-        // Note: count query does not use $1/$2 (limit/offset) — bind filter params directly.
-        // We need to rebind for the count query which doesn't have $1/$2.
-        // Actually, let's simplify: build count and data queries with proper param ordering.
-
-        // Simpler approach: build WHERE clause starting from $1 for count, $3 for data.
-        let mut filter_clauses_count = Vec::new();
-        let mut count_param_idx = 1;
-        if query.resource_id.is_some() {
-            filter_clauses_count.push(format!("data->>'resource_id' = ${count_param_idx}"));
-            count_param_idx += 1;
-        }
-        if query.parent_thread_id.is_some() {
-            filter_clauses_count.push(format!("data->>'parent_thread_id' = ${count_param_idx}"));
-            // count_param_idx += 1;
-        }
-        let where_count = if filter_clauses_count.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", filter_clauses_count.join(" AND "))
+            format!(" WHERE {}", count_filters.join(" AND "))
         };
 
         let count_sql = format!("SELECT COUNT(*)::bigint FROM {}{}", self.table, where_count);
-        let mut count_q = sqlx::query_as::<_, (i64,)>(&count_sql);
+        let where_data = if data_filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", data_filters.join(" AND "))
+        };
+        let data_sql = format!(
+            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
+            self.table, where_data
+        );
+
+        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
         if let Some(ref rid) = query.resource_id {
             count_q = count_q.bind(rid);
         }
         if let Some(ref pid) = query.parent_thread_id {
             count_q = count_q.bind(pid);
         }
-        let (total,): (i64,) = count_q.fetch_one(&self.pool).await.map_err(Self::sql_err)?;
+        let total = count_q.fetch_one(&self.pool).await.map_err(Self::sql_err)?;
 
-        // Data query: $1=limit, $2=offset, $3+=filters
-        let mut data_clauses = Vec::new();
-        let mut data_param_idx = 3;
-        if query.resource_id.is_some() {
-            data_clauses.push(format!("data->>'resource_id' = ${data_param_idx}"));
-            data_param_idx += 1;
-        }
-        if query.parent_thread_id.is_some() {
-            data_clauses.push(format!("data->>'parent_thread_id' = ${data_param_idx}"));
-            // data_param_idx += 1;
-        }
-        let where_data = if data_clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", data_clauses.join(" AND "))
-        };
-        let data_sql = format!(
-            "SELECT id FROM {}{} ORDER BY id LIMIT $1 OFFSET $2",
-            self.table, where_data
-        );
-        let mut data_q = sqlx::query_as::<_, (String,)>(&data_sql)
+        let mut data_q = sqlx::query_scalar::<_, String>(&data_sql)
             .bind(fetch_limit)
             .bind(offset);
         if let Some(ref rid) = query.resource_id {
@@ -600,10 +565,10 @@ impl ThreadReader for PostgresStore {
         if let Some(ref pid) = query.parent_thread_id {
             data_q = data_q.bind(pid);
         }
-        let rows: Vec<(String,)> = data_q.fetch_all(&self.pool).await.map_err(Self::sql_err)?;
+        let rows: Vec<String> = data_q.fetch_all(&self.pool).await.map_err(Self::sql_err)?;
 
         let has_more = rows.len() > limit;
-        let items: Vec<String> = rows.into_iter().take(limit).map(|(id,)| id).collect();
+        let items = rows.into_iter().take(limit).collect();
 
         Ok(ThreadListPage {
             items,

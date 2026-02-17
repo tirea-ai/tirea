@@ -102,7 +102,7 @@ mod tests {
     use crate::extension::state_types::Interaction;
     use crate::extension::traits::tool::ToolDescriptor;
     use crate::change::AgentChangeSet as ContractAgentChangeSet;
-    use crate::conversation::{AgentState as ConversationState, ToolCall};
+    use crate::conversation::ToolCall;
     use serde_json::json;
 
     // =========================================================================
@@ -266,8 +266,8 @@ mod tests {
     // Helper Functions
     // =========================================================================
 
-    fn mock_thread() -> ConversationState {
-        ConversationState::new("test-thread")
+    fn mock_thread() -> crate::conversation::AgentState {
+        crate::conversation::AgentState::new("test-thread")
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {

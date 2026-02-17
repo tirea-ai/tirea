@@ -6,7 +6,7 @@ use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::conversation::{AgentState as ConversationState, Message, ToolCall};
+use crate::conversation::ToolCall;
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -75,8 +75,8 @@ pub struct AgentRunState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread: Option<ConversationState>,
+    #[serde(default, rename = "thread", skip_serializing_if = "Option::is_none")]
+    pub agent_state: Option<crate::conversation::AgentState>,
 }
 
 /// Inference error emitted by the loop and consumed by telemetry plugins.
@@ -280,7 +280,8 @@ mod tests {
 
     #[test]
     fn test_agent_run_state_serialization_with_session() {
-        let child = ConversationState::new("child-1").with_message(Message::user("seed"));
+        let child = crate::conversation::AgentState::new("child-1")
+            .with_message(crate::conversation::Message::user("seed"));
         let run = AgentRunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),
@@ -288,7 +289,7 @@ mod tests {
             status: AgentRunStatus::Running,
             assistant: None,
             error: None,
-            thread: Some(child),
+            agent_state: Some(child),
         };
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["run_id"], "run-1");

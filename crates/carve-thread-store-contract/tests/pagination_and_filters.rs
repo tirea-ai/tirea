@@ -1,5 +1,5 @@
 use carve_agent_contract::{Message, MessageMetadata, AgentState, Visibility};
-use carve_thread_store_contract::{
+use carve_agent_contract::storage::{
     paginate_in_memory, MessagePage, MessageQuery, MessageWithCursor, SortOrder, ThreadStoreError,
 };
 use std::sync::Arc;

@@ -1,8 +1,8 @@
-use super::*;
-
-// ============================================================================
-// Pagination types
-// ============================================================================
+use crate::conversation::AgentState;
+use crate::Visibility;
+use crate::Message;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Sort order for paginated queries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,9 +25,8 @@ pub struct MessageQuery {
     /// Sort order.
     pub order: SortOrder,
     /// Filter by message visibility. `None` means return all messages.
-    /// Default: `Some(Visibility::All)` (only user-visible messages).
     pub visibility: Option<Visibility>,
-    /// Filter by run ID. `None` means return messages from all runs.
+    /// Filter by run ID. `None` means return all runs.
     pub run_id: Option<String>,
 }
 
@@ -57,15 +56,15 @@ pub struct MessageWithCursor {
 pub struct MessagePage {
     pub messages: Vec<MessageWithCursor>,
     pub has_more: bool,
-    /// Cursor of the last item (use as `after` for next forward page).
+    /// Cursor of the last item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<i64>,
-    /// Cursor of the first item (use as `before` for next backward page).
+    /// Cursor of the first item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_cursor: Option<i64>,
 }
 
-/// Pagination query for session lists.
+/// Pagination query for AgentState lists.
 #[derive(Debug, Clone)]
 pub struct ThreadListQuery {
     /// Number of items to skip (0-based).
@@ -89,7 +88,7 @@ impl Default for ThreadListQuery {
     }
 }
 
-/// Paginated session list response.
+/// Paginated AgentState list response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadListPage {
     pub items: Vec<String>,
@@ -97,10 +96,7 @@ pub struct ThreadListPage {
     pub has_more: bool,
 }
 
-/// Paginate a slice of messages in memory.
-///
-/// Cursor values correspond to the 0-based index in the original slice
-/// (not the filtered slice), so cursors remain stable across visibility filters.
+/// Cursor-based in-memory pagination helper.
 pub fn paginate_in_memory(
     messages: &[std::sync::Arc<Message>],
     query: &MessageQuery,
@@ -115,7 +111,6 @@ pub fn paginate_in_memory(
         };
     }
 
-    // Build (cursor, &Message) pairs filtered by after/before and visibility.
     let start = query.after.map(|c| (c + 1).max(0) as usize).unwrap_or(0);
     let end = query
         .before
@@ -139,9 +134,11 @@ pub fn paginate_in_memory(
             None => true,
         })
         .filter(|(_, m)| match &query.run_id {
-            Some(rid) => {
-                m.metadata.as_ref().and_then(|meta| meta.run_id.as_deref()) == Some(rid.as_str())
-            }
+            Some(rid) => m
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.run_id.as_deref())
+                == Some(rid.as_str()),
             None => true,
         })
         .map(|(i, m)| ((start + i) as i64, m))
@@ -168,7 +165,7 @@ pub fn paginate_in_memory(
     }
 }
 
-/// Storage errors.
+/// Storage-level errors.
 #[derive(Debug, Error)]
 pub enum ThreadStoreError {
     /// AgentState not found.
@@ -183,11 +180,11 @@ pub enum ThreadStoreError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
-    /// Invalid thread ID (path traversal, control chars, etc.).
+    /// Invalid AgentState id (path traversal, control chars, etc.).
     #[error("Invalid thread id: {0}")]
     InvalidId(String),
 
-    /// AgentState already exists (for create operations).
+    /// AgentState already exists.
     #[error("AgentState already exists")]
     AlreadyExists,
 }
@@ -195,17 +192,18 @@ pub enum ThreadStoreError {
 /// Monotonically increasing version for optimistic concurrency.
 pub type Version = u64;
 
-/// Acknowledgement returned after a successful write.
+/// Commit acknowledgement returned after successful write.
 #[derive(Debug, Clone, Copy)]
 pub struct Committed {
     pub version: Version,
 }
 
-/// A thread together with its current storage version.
+/// AgentState plus current storage version.
 #[derive(Debug, Clone)]
 pub struct AgentStateHead {
-    pub thread: AgentState,
+    pub agent_state: AgentState,
     pub version: Version,
 }
 
-pub use carve_agent_contract::change::{AgentChangeSet, CheckpointReason};
+// Re-export for storage-level callers.
+pub use crate::change::{CheckpointReason, AgentChangeSet};
