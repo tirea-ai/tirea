@@ -11,7 +11,7 @@ use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::{AgentEvent, RunRequest};
 use crate::contracts::storage::{
-    AgentStateHead, AgentStateStore, AgentStateStoreError, CheckpointReason,
+    AgentStateHead, AgentStateStore, AgentStateStoreError, CheckpointReason, VersionPrecondition,
 };
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
 use crate::extensions::skills::{
@@ -74,9 +74,10 @@ impl StateCommitter for AgentStateStoreStateCommitter {
         &self,
         thread_id: &str,
         changeset: crate::contracts::AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
         self.agent_state_store
-            .append(thread_id, &changeset)
+            .append(thread_id, &changeset, precondition)
             .await
             .map(|committed| committed.version)
             .map_err(|e| StateCommitError::new(format!("checkpoint append failed: {e}")))

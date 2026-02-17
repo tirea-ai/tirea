@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use super::{
     paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery,
-    AgentStateStoreError, Committed, MessagePage, MessageQuery, Version,
+    AgentStateStoreError, Committed, MessagePage, MessageQuery, Version, VersionPrecondition,
 };
 
 #[async_trait]
@@ -80,6 +80,7 @@ pub trait AgentStateWriter: AgentStateReader {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError>;
 
     /// Delete an AgentState.

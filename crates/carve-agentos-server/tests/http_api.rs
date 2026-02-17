@@ -94,6 +94,7 @@ impl AgentStateWriter for RecordingStorage {
         &self,
         id: &str,
         delta: &AgentChangeSet,
+        _precondition: carve_agent::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
@@ -783,6 +784,7 @@ impl AgentStateWriter for FailingStorage {
         &self,
         _id: &str,
         _delta: &carve_agent::contracts::storage::AgentChangeSet,
+        _precondition: carve_agent::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -903,6 +905,7 @@ impl AgentStateWriter for SaveFailStorage {
         &self,
         _id: &str,
         _delta: &carve_agent::contracts::storage::AgentChangeSet,
+        _precondition: carve_agent::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,

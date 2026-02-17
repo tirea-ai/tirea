@@ -7,5 +7,5 @@ pub use traits::{AgentStateReader, AgentStateStore, AgentStateSync, AgentStateWr
 pub use types::{
     paginate_in_memory, AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery,
     AgentStateStoreError, CheckpointReason, Committed, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder, Version,
+    MessageWithCursor, SortOrder, Version, VersionPrecondition,
 };

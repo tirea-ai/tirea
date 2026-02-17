@@ -21,12 +21,6 @@ pub enum CheckpointReason {
 /// An incremental change to a thread produced by a single step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentChangeSet {
-    /// Expected storage version before applying this delta.
-    ///
-    /// `Some(version)` enables optimistic-concurrency checks on append.
-    /// `None` means append without an explicit version precondition.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected_version: Option<Version>,
     /// Which run produced this delta.
     pub run_id: String,
     /// Parent run (for sub-agent deltas).
@@ -45,9 +39,7 @@ pub struct AgentChangeSet {
 
 impl AgentChangeSet {
     /// Build an `AgentChangeSet` from explicit delta components.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
-        expected_version: Option<Version>,
         run_id: impl Into<String>,
         parent_run_id: Option<String>,
         reason: CheckpointReason,
@@ -56,7 +48,6 @@ impl AgentChangeSet {
         snapshot: Option<Value>,
     ) -> Self {
         Self {
-            expected_version,
             run_id: run_id.into(),
             parent_run_id,
             reason,

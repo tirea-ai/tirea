@@ -8,6 +8,7 @@
 #![cfg(feature = "nats")]
 
 use carve_agent_contract::change::AgentChangeSet;
+use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
     AgentState, AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
 };
@@ -70,7 +71,6 @@ async fn test_append_does_not_write_to_inner() {
     inner.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -80,7 +80,10 @@ async fn test_append_does_not_write_to_inner() {
     };
 
     // append() publishes to NATS, not to inner storage
-    storage.append("t1", &delta).await.unwrap();
+    storage
+        .append("t1", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Inner should still have only the original message
     let loaded = inner.load("t1").await.unwrap().unwrap();
@@ -99,7 +102,6 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     inner.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -107,7 +109,10 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta).await.unwrap();
+    storage
+        .append("t1", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Build final thread with both messages
     let final_thread = AgentState::new("t1")
@@ -167,7 +172,6 @@ async fn test_recover_replays_unacked_deltas() {
 
     // Publish deltas via append (these go to NATS)
     let delta1 = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -176,7 +180,6 @@ async fn test_recover_replays_unacked_deltas() {
         snapshot: None,
     };
     let delta2 = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -184,8 +187,14 @@ async fn test_recover_replays_unacked_deltas() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta1).await.unwrap();
-    storage.append("t1", &delta2).await.unwrap();
+    storage
+        .append("t1", &delta1, VersionPrecondition::Any)
+        .await
+        .unwrap();
+    storage
+        .append("t1", &delta2, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Simulate crash — don't call save(), just recover
     let recovered = storage.recover().await.unwrap();
@@ -219,7 +228,6 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
 
     // Second run starts — new deltas go to NATS only.
     let delta = AgentChangeSet {
-        expected_version: None,
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -227,7 +235,10 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta).await.unwrap();
+    storage
+        .append("t1", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Query via NatsBufferedThreadWriter.load() — should see first-run snapshot.
     let head = storage.load("t1").await.unwrap().unwrap();
@@ -257,7 +268,6 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
     // Buffer 2 new deltas via NATS.
     for i in 2..4 {
         let delta = AgentChangeSet {
-            expected_version: None,
             run_id: "r2".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -265,7 +275,10 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
             patches: vec![],
             snapshot: None,
         };
-        storage.append("t1", &delta).await.unwrap();
+        storage
+            .append("t1", &delta, VersionPrecondition::Any)
+            .await
+            .unwrap();
     }
 
     // Query messages through the inner storage (which NatsBufferedThreadWriter delegates to).
@@ -293,7 +306,6 @@ async fn test_query_accurate_after_run_end_flush() {
 
     // Run produces deltas buffered in NATS.
     let delta = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -301,7 +313,10 @@ async fn test_query_accurate_after_run_end_flush() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta).await.unwrap();
+    storage
+        .append("t1", &delta, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Before flush: load sees 1 message.
     let pre = storage.load("t1").await.unwrap().unwrap();
@@ -339,7 +354,6 @@ async fn test_multi_run_query_sees_previous_run_data() {
     inner.create(&thread).await.unwrap();
 
     let delta1 = AgentChangeSet {
-        expected_version: None,
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -347,7 +361,10 @@ async fn test_multi_run_query_sees_previous_run_data() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta1).await.unwrap();
+    storage
+        .append("t1", &delta1, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Flush run 1.
     let run1_thread = AgentState::new("t1")
@@ -357,7 +374,6 @@ async fn test_multi_run_query_sees_previous_run_data() {
 
     // === Run 2 (in progress) ===
     let delta2 = AgentChangeSet {
-        expected_version: None,
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -365,7 +381,10 @@ async fn test_multi_run_query_sees_previous_run_data() {
         patches: vec![],
         snapshot: None,
     };
-    storage.append("t1", &delta2).await.unwrap();
+    storage
+        .append("t1", &delta2, VersionPrecondition::Any)
+        .await
+        .unwrap();
 
     // Query during run 2: sees run 1's flushed state (2 messages), not run 2's delta.
     let head = storage.load("t1").await.unwrap().unwrap();

@@ -1,4 +1,5 @@
 use crate::change::AgentChangeSet;
+use crate::storage::VersionPrecondition;
 use async_trait::async_trait;
 use std::sync::Arc;
 use thiserror::Error;
@@ -31,6 +32,7 @@ pub trait StateCommitter: Send + Sync {
         &self,
         thread_id: &str,
         changeset: AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError>;
 }
 

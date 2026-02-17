@@ -21,8 +21,9 @@
 //! }
 //! ```
 
-use crate::contracts::control::{Interaction, ToolPermissionBehavior};
+use crate::contracts::control::ToolPermissionBehavior;
 use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::runtime::Interaction;
 use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use carve_state_derive::State;

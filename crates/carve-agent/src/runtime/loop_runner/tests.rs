@@ -3,7 +3,7 @@ use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolR
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::state_access::ActivityManager;
 use crate::contracts::runtime::TerminationReason;
-use crate::contracts::storage::CheckpointReason;
+use crate::contracts::storage::{CheckpointReason, VersionPrecondition};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
@@ -1395,7 +1395,7 @@ impl AgentPlugin for PendingPhasePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            use crate::contracts::control::Interaction;
+            use crate::contracts::runtime::Interaction;
             step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
         }
     }
@@ -3490,6 +3490,7 @@ impl StateCommitter for RecordingStateCommitter {
         &self,
         _thread_id: &str,
         changeset: crate::contracts::AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
         self.reasons
             .lock()
@@ -3506,7 +3507,11 @@ impl StateCommitter for RecordingStateCommitter {
                 changeset.reason
             )));
         }
-        Ok(changeset.expected_version.unwrap_or(0).saturating_add(1))
+        let version = match precondition {
+            VersionPrecondition::Any => 1,
+            VersionPrecondition::Exact(version) => version.saturating_add(1),
+        };
+        Ok(version)
     }
 }
 

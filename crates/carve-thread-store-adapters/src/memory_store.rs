@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateSync, AgentStateWriter, Version,
+    AgentStateStoreError, AgentStateSync, AgentStateWriter, Version, VersionPrecondition,
 };
 use carve_agent_contract::{AgentState, Committed};
 
@@ -46,13 +46,14 @@ impl AgentStateWriter for MemoryStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         let entry = entries
             .get_mut(thread_id)
             .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
-        if let Some(expected) = delta.expected_version {
+        if let VersionPrecondition::Exact(expected) = precondition {
             if entry.version != expected {
                 return Err(AgentStateStoreError::VersionConflict {
                     expected,

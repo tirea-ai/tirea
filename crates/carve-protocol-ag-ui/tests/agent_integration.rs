@@ -4,13 +4,13 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agent::contracts::control::InteractionResponse;
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::extension::traits::provider::{ContextCategory, ContextProvider};
 use carve_agent::contracts::extension::traits::reminder::SystemReminder;
 use carve_agent::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
+use carve_agent::contracts::runtime::InteractionResponse;
 use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::runtime::activity::ActivityHub;
 use carve_agent::runtime::loop_runner::AgentLoopError;
@@ -1248,7 +1248,7 @@ async fn test_session_incremental_checkpoints() {
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
     use carve_agent::contracts::storage::{
-        AgentChangeSet, AgentStateSync, AgentStateWriter, CheckpointReason,
+        AgentChangeSet, AgentStateSync, AgentStateWriter, CheckpointReason, VersionPrecondition,
     };
 
     let storage = MemoryStore::new();
@@ -1271,7 +1271,6 @@ async fn test_incremental_checkpoints_via_append() {
 
         let pending = thread.take_pending();
         let delta = AgentChangeSet {
-            expected_version: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: if checkpoint == 5 {
@@ -1284,7 +1283,10 @@ async fn test_incremental_checkpoints_via_append() {
             snapshot: None,
         };
 
-        storage.append("append-test", &delta).await.unwrap();
+        storage
+            .append("append-test", &delta, VersionPrecondition::Any)
+            .await
+            .unwrap();
     }
 
     // Verify final state matches
@@ -2996,8 +2998,8 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
-    use carve_agent::contracts::control::Interaction;
     use carve_agent::contracts::conversation::AgentState;
+    use carve_agent::contracts::runtime::Interaction;
     use carve_agent::runtime::loop_runner::AgentLoopError;
 
     // LlmError
@@ -4675,8 +4677,8 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
-use carve_agent::contracts::control::Interaction;
 use carve_agent::contracts::runtime::AgentEvent;
+use carve_agent::contracts::runtime::Interaction;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
@@ -12155,7 +12157,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text_emits_tool_calls() {
-    use carve_agent::contracts::control::Interaction;
+    use carve_agent::contracts::runtime::Interaction;
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
@@ -12338,7 +12340,7 @@ fn test_tool_call_start_includes_parent_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_to_ag_ui_events() {
-    use carve_agent::contracts::control::Interaction;
+    use carve_agent::contracts::runtime::Interaction;
 
     let interaction = Interaction::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));

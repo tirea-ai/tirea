@@ -30,8 +30,11 @@ pub use extension::traits::provider::{ContextCategory, ContextProvider};
 pub use extension::traits::reminder::SystemReminder;
 pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError};
 pub use runtime::{
-    ActivityContext, ActivityManager, AgentEvent, Interaction, InteractionResponse, Phase,
-    RunRequest, StepContext, StepOutcome, StopReason, StreamResult, TerminationReason, ToolContext,
-    ToolResult, ToolStatus,
+    AgentEvent, Interaction, InteractionResponse, RunRequest, StopReason, StreamResult,
+    TerminationReason, ToolResult, ToolStatus,
 };
-pub use storage::*;
+pub use storage::{
+    paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter, Committed,
+    MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
+};

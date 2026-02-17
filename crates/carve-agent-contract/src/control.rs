@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::conversation::ToolCall;
+use crate::runtime::interaction::{Interaction, InteractionResponse};
 
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -21,8 +22,6 @@ pub enum ToolPermissionBehavior {
     /// Tool is denied (will not execute).
     Deny,
 }
-
-pub use crate::runtime::interaction::{Interaction, InteractionResponse};
 
 /// Agent-owned state stored in the session document.
 ///

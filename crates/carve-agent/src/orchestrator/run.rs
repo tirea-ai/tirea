@@ -1,4 +1,5 @@
 use super::*;
+use crate::contracts::storage::VersionPrecondition;
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -100,7 +101,6 @@ impl AgentOs {
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
             let changeset = crate::contracts::AgentChangeSet::from_parts(
-                Some(version),
                 run_id.clone(),
                 parent_run_id.clone(),
                 CheckpointReason::UserMessage,
@@ -108,7 +108,9 @@ impl AgentOs {
                 pending.patches,
                 state_snapshot_for_delta,
             );
-            let committed = agent_state_store.append(&thread_id, &changeset).await?;
+            let committed = agent_state_store
+                .append(&thread_id, &changeset, VersionPrecondition::Exact(version))
+                .await?;
             version = committed.version;
         }
         let version_timestamp = thread.metadata.version_timestamp;

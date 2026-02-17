@@ -5,12 +5,12 @@
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agent::contracts::control::Interaction;
 use carve_agent::contracts::extension::plugin::AgentPlugin;
 use carve_agent::contracts::extension::traits::tool::{
     Tool, ToolDescriptor, ToolError, ToolResult,
 };
 use carve_agent::contracts::runtime::phase::{Phase, StepContext};
+use carve_agent::contracts::runtime::Interaction;
 use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::orchestrator::{RunExtensions, ToolPluginBundle};
 use carve_agent::prelude::AgentState as RuntimeAgentState;

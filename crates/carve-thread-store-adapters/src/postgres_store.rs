@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
-    MessageWithCursor, SortOrder,
+    MessageWithCursor, SortOrder, VersionPrecondition,
 };
 use carve_agent_contract::{AgentState, Message, Visibility};
 use std::collections::HashSet;
@@ -142,6 +142,7 @@ impl AgentStateWriter for PostgresStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
@@ -158,7 +159,7 @@ impl AgentStateWriter for PostgresStore {
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
-        if let Some(expected) = delta.expected_version {
+        if let VersionPrecondition::Exact(expected) = precondition {
             if current_version != expected {
                 return Err(AgentStateStoreError::VersionConflict {
                     expected,

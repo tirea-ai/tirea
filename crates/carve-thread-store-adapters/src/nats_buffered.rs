@@ -23,7 +23,7 @@ use async_nats::jetstream;
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed,
+    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
 use carve_agent_contract::AgentState;
 use std::sync::Arc;
@@ -204,6 +204,7 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
+        _precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let payload = serde_json::to_vec(delta)
             .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;

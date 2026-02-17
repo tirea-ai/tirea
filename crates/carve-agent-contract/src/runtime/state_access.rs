@@ -233,7 +233,6 @@ impl AgentState {
             return None;
         }
         Some(AgentChangeSet::from_parts(
-            Some(self.runtime.version),
             run_id.into(),
             parent_run_id,
             reason,

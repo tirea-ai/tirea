@@ -47,7 +47,6 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-use crate::contracts::control::Interaction;
 #[cfg(test)]
 use crate::contracts::control::AGENT_STATE_PATH;
 use crate::contracts::conversation::AgentState;
@@ -55,7 +54,7 @@ use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
 use crate::contracts::extension::traits::tool::Tool;
 use crate::contracts::runtime::phase::Phase;
 use crate::contracts::runtime::state_access::ActivityManager;
-use crate::contracts::runtime::{AgentEvent, StreamResult, TerminationReason};
+use crate::contracts::runtime::{AgentEvent, Interaction, StreamResult, TerminationReason};
 use crate::contracts::storage::CheckpointReason;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};

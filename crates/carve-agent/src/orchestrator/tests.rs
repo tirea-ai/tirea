@@ -96,6 +96,7 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
         &self,
         thread_id: &str,
         changeset: &crate::contracts::storage::AgentChangeSet,
+        precondition: crate::contracts::storage::VersionPrecondition,
     ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
     {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
@@ -110,6 +111,7 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
             self.inner.as_ref(),
             thread_id,
             changeset,
+            precondition,
         )
         .await
     }

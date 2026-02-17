@@ -192,6 +192,17 @@ pub enum AgentStateStoreError {
     VersionConflict { expected: Version, actual: Version },
 }
 
+/// Version check policy for append operations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionPrecondition {
+    /// Skip version check before commit.
+    #[default]
+    Any,
+    /// Require an exact version match before commit.
+    Exact(Version),
+}
+
 /// Commit acknowledgement returned after successful write.
 #[derive(Debug, Clone, Copy)]
 pub struct Committed {

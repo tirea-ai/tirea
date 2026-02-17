@@ -4,11 +4,12 @@
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
 use crate::contracts::control::{
-    AgentControlState as AgentStateDoc, Interaction, InteractionResponse,
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
+    AgentControlState as AgentStateDoc, AGENT_RECOVERY_INTERACTION_ACTION,
+    AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::{Interaction, InteractionResponse};
 use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use serde_json::json;

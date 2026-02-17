@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStoreError, AgentStateWriter, Committed, Version,
+    AgentStateStoreError, AgentStateWriter, Committed, Version, VersionPrecondition,
 };
 use carve_agent_contract::AgentState;
 use serde::Deserialize;
@@ -71,13 +71,14 @@ impl AgentStateWriter for FileStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let head = self
             .load_head(thread_id)
             .await?
             .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
-        if let Some(expected) = delta.expected_version {
+        if let VersionPrecondition::Exact(expected) = precondition {
             if head.version != expected {
                 return Err(AgentStateStoreError::VersionConflict {
                     expected,
@@ -359,7 +360,6 @@ mod tests {
         store.create(&AgentState::new("t1")).await.unwrap();
 
         let d1 = AgentChangeSet {
-            expected_version: Some(0),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::UserMessage,
@@ -367,11 +367,13 @@ mod tests {
             patches: vec![],
             snapshot: None,
         };
-        let c1 = store.append("t1", &d1).await.unwrap();
+        let c1 = store
+            .append("t1", &d1, VersionPrecondition::Exact(0))
+            .await
+            .unwrap();
         assert_eq!(c1.version, 1);
 
         let d2 = AgentChangeSet {
-            expected_version: Some(1),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -381,11 +383,13 @@ mod tests {
             )],
             snapshot: None,
         };
-        let c2 = store.append("t1", &d2).await.unwrap();
+        let c2 = store
+            .append("t1", &d2, VersionPrecondition::Exact(1))
+            .await
+            .unwrap();
         assert_eq!(c2.version, 2);
 
         let d3 = AgentChangeSet {
-            expected_version: Some(2),
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::RunFinished,
@@ -393,7 +397,10 @@ mod tests {
             patches: vec![],
             snapshot: Some(json!({"greeted": true})),
         };
-        let c3 = store.append("t1", &d3).await.unwrap();
+        let c3 = store
+            .append("t1", &d3, VersionPrecondition::Exact(2))
+            .await
+            .unwrap();
         assert_eq!(c3.version, 3);
 
         let store2 = FileStore::new(temp_dir.path());
