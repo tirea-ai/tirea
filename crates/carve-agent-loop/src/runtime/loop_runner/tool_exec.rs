@@ -4,8 +4,8 @@ use super::core::{
 };
 use super::plugin_runtime::emit_phase_checked;
 use super::{
-    AgentConfig, AgentLoopError, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
-    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    AgentConfig, AgentLoopError, RunCancellationToken, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
@@ -43,6 +43,7 @@ pub struct ToolExecutionRequest<'a> {
     pub thread_id: &'a str,
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,
+    pub cancellation_token: Option<&'a RunCancellationToken>,
 }
 
 /// Strategy abstraction for tool execution.
@@ -83,6 +84,7 @@ impl ToolExecutor for ParallelToolExecutor {
             request.thread_id,
             request.thread_messages,
             request.state_version,
+            request.cancellation_token,
         )
         .await
     }
@@ -117,6 +119,7 @@ impl ToolExecutor for SequentialToolExecutor {
             request.thread_id,
             request.thread_messages,
             request.state_version,
+            request.cancellation_token,
         )
         .await
     }
@@ -474,6 +477,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             thread_id: &thread.id,
             thread_messages: &thread.messages,
             state_version: super::thread_state_version(&thread),
+            cancellation_token: None,
         })
         .await?;
 
@@ -525,6 +529,7 @@ pub(super) async fn execute_tool_calls_with_phases(
             thread_id,
             thread_messages,
             state_version,
+            cancellation_token: None,
         })
         .await
 }
@@ -541,8 +546,15 @@ pub(super) async fn execute_tools_parallel_with_phases(
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
+    cancellation_token: Option<&RunCancellationToken>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
+
+    if cancellation_token.is_some_and(|token| token.is_cancelled()) {
+        return Err(AgentLoopError::Cancelled {
+            thread: Box::new(AgentState::new(thread_id.to_string())),
+        });
+    }
 
     // Clone scope state for parallel tasks (ScopeState is Clone).
     let scope_owned = scope.cloned();
@@ -577,7 +589,19 @@ pub(super) async fn execute_tools_parallel_with_phases(
         }
     });
 
-    let results = join_all(futures).await;
+    let join_future = join_all(futures);
+    let results = if let Some(token) = cancellation_token {
+        tokio::select! {
+            _ = token.cancelled() => {
+                return Err(AgentLoopError::Cancelled {
+                    thread: Box::new(AgentState::new(thread_id.clone())),
+                });
+            }
+            results = join_future => results,
+        }
+    } else {
+        join_future.await
+    };
     results.into_iter().collect()
 }
 
@@ -593,27 +617,56 @@ pub(super) async fn execute_tools_sequential_with_phases(
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
+    cancellation_token: Option<&RunCancellationToken>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
+
+    if cancellation_token.is_some_and(|token| token.is_cancelled()) {
+        return Err(AgentLoopError::Cancelled {
+            thread: Box::new(AgentState::new(thread_id.to_string())),
+        });
+    }
 
     let mut state = initial_state.clone();
     let mut results = Vec::with_capacity(calls.len());
 
     for call in calls {
         let tool = tools.get(&call.name).cloned();
-        let result = execute_single_tool_with_phases(
-            tool.as_deref(),
-            call,
-            &state,
-            tool_descriptors,
-            plugins,
-            activity_manager.clone(),
-            scope,
-            thread_id,
-            thread_messages,
-            state_version,
-        )
-        .await?;
+        let result = if let Some(token) = cancellation_token {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    return Err(AgentLoopError::Cancelled {
+                        thread: Box::new(AgentState::new(thread_id.to_string())),
+                    });
+                }
+                result = execute_single_tool_with_phases(
+                    tool.as_deref(),
+                    call,
+                    &state,
+                    tool_descriptors,
+                    plugins,
+                    activity_manager.clone(),
+                    scope,
+                    thread_id,
+                    thread_messages,
+                    state_version,
+                ) => result?
+            }
+        } else {
+            execute_single_tool_with_phases(
+                tool.as_deref(),
+                call,
+                &state,
+                tool_descriptors,
+                plugins,
+                activity_manager.clone(),
+                scope,
+                thread_id,
+                thread_messages,
+                state_version,
+            )
+            .await?
+        };
 
         // Apply patch to state for next tool
         if let Some(ref patch) = result.execution.patch {

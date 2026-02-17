@@ -503,6 +503,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             "test",
             &[],
             0,
+            None,
         )
         .await
         .expect("parallel tool execution should succeed")
@@ -537,6 +538,62 @@ async fn test_parallel_tools_emit_activity_before_completion() {
     for r in results {
         assert!(r.execution.result.is_success());
     }
+}
+
+#[tokio::test]
+async fn test_parallel_tool_executor_honors_cancellation_token() {
+    let ready = Arc::new(Notify::new());
+    let proceed = Arc::new(Notify::new());
+    let tool = ActivityGateTool {
+        id: "activity_gate".to_string(),
+        stream_id: "parallel_cancel".to_string(),
+        ready: ready.clone(),
+        proceed,
+    };
+
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert("activity_gate".to_string(), Arc::new(tool));
+    let calls = vec![crate::contracts::state::ToolCall::new(
+        "call_1",
+        "activity_gate",
+        json!({}),
+    )];
+    let tool_descriptors: Vec<ToolDescriptor> =
+        tools.values().map(|t| t.descriptor().clone()).collect();
+    let token = CancellationToken::new();
+    let token_for_task = token.clone();
+    let ready_for_task = ready.clone();
+
+    let handle = tokio::spawn(async move {
+        let result = execute_tools_parallel_with_phases(
+            &tools,
+            &calls,
+            &json!({}),
+            &tool_descriptors,
+            &[],
+            None,
+            None,
+            "cancel-test",
+            &[],
+            0,
+            Some(&token_for_task),
+        )
+        .await;
+        ready_for_task.notify_one();
+        result
+    });
+
+    ready.notified().await;
+    token.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_millis(300), handle)
+        .await
+        .expect("parallel executor should stop shortly after cancellation")
+        .expect("task should not panic");
+    assert!(
+        matches!(result, Err(AgentLoopError::Cancelled { .. })),
+        "expected cancellation error from tool executor"
+    );
 }
 
 struct CounterTool;

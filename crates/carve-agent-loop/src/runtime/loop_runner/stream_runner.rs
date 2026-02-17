@@ -666,19 +666,11 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     thread_id: &sid_for_tools,
                     thread_messages: &thread_messages_for_tools,
                     state_version: thread_version_for_tools,
+                    cancellation_token: run_cancellation_token.as_ref(),
                 }));
             let mut activity_closed = false;
             let results = loop {
                 tokio::select! {
-                    _ = async {
-                        if let Some(ref token) = run_cancellation_token {
-                            token.cancelled().await;
-                        } else {
-                            futures::future::pending::<()>().await;
-                        }
-                    } => {
-                        finish_run!(TerminationReason::Cancelled, None);
-                    }
                     activity = activity_rx.recv(), if !activity_closed => {
                         match activity {
                             Some(event) => {
@@ -701,6 +693,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             let results = match results {
                 Ok(r) => r,
+                Err(AgentLoopError::Cancelled { .. }) => {
+                    finish_run!(TerminationReason::Cancelled, None);
+                }
                 Err(e) => {
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);

@@ -1011,20 +1011,15 @@ async fn run_loop_outcome_with_context_provider(
             thread_id: &thread.id,
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
+            cancellation_token: run_cancellation_token.as_ref(),
         });
-        let results = if let Some(ref token) = run_cancellation_token {
-            tokio::select! {
-                _ = token.cancelled() => {
-                    terminate_run!(TerminationReason::Cancelled, None, None);
-                }
-                results = tool_exec_future => results,
-            }
-        } else {
-            tool_exec_future.await
-        };
+        let results = tool_exec_future.await;
 
         let results = match results {
             Ok(r) => r,
+            Err(AgentLoopError::Cancelled { .. }) => {
+                terminate_run!(TerminationReason::Cancelled, None, None);
+            }
             Err(e) => {
                 terminate_run!(
                     TerminationReason::Error,
