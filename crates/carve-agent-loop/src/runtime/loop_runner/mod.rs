@@ -1071,7 +1071,6 @@ async fn run_loop_outcome_with_context_provider(
             terminate_run!(TerminationReason::Stopped(reason), None, None);
         }
     }
-
 }
 
 /// Run the agent loop with streaming output.

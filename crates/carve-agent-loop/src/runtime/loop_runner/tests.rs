@@ -13,6 +13,7 @@ use carve_state_derive::State;
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
@@ -47,6 +48,41 @@ impl Tool for EchoTool {
     ) -> Result<ToolResult, ToolError> {
         let msg = args["message"].as_str().unwrap_or("no message");
         Ok(ToolResult::success("echo", json!({ "echoed": msg })))
+    }
+}
+
+struct CountingEchoTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for CountingEchoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(
+            "counting_echo",
+            "Counting Echo",
+            "Echo and increment call counter",
+        )
+        .with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" }
+            },
+            "required": ["message"]
+        }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let msg = args["message"].as_str().unwrap_or("no message");
+        Ok(ToolResult::success(
+            "counting_echo",
+            json!({ "echoed": msg }),
+        ))
     }
 }
 
@@ -2935,6 +2971,27 @@ fn tool_call_chat_response(call_id: &str, name: &str, args: Value) -> genai::cha
     }
 }
 
+fn tool_call_chat_response_object_args(
+    call_id: &str,
+    name: &str,
+    args: Value,
+) -> genai::chat::ChatResponse {
+    let model_iden = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "mock");
+    genai::chat::ChatResponse {
+        content: MessageContent::from_tool_calls(vec![genai::chat::ToolCall {
+            call_id: call_id.to_string(),
+            fn_name: name.to_string(),
+            fn_arguments: args,
+            thought_signatures: None,
+        }]),
+        reasoning_content: None,
+        model_iden: model_iden.clone(),
+        provider_model_iden: model_iden,
+        usage: Usage::default(),
+        captured_raw_body: None,
+    }
+}
+
 #[async_trait]
 impl ChatProvider for MockChatProvider {
     async fn exec_chat_response(
@@ -3342,6 +3399,309 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
     );
 }
 
+#[tokio::test]
+async fn test_golden_run_loop_and_stream_natural_end_alignment() {
+    let thread = AgentState::new("golden-natural").with_message(Message::user("go"));
+    let tools = tool_map([EchoTool]);
+    let nonstream_provider = MockChatProvider::new(vec![
+        Ok(tool_call_chat_response_object_args(
+            "call_1",
+            "echo",
+            json!({"message": "aligned"}),
+        )),
+        Ok(text_chat_response("done")),
+    ]);
+
+    let (nonstream_thread, nonstream_response) = run_loop_with_context_provider(
+        &nonstream_provider,
+        &AgentConfig::new("mock"),
+        thread.clone(),
+        &tools,
+        RunContext::default(),
+    )
+    .await
+    .expect("non-stream run should succeed");
+
+    let (events, stream_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![
+            MockResponse::text("").with_tool_call("call_1", "echo", json!({"message": "aligned"})),
+            MockResponse::text("done"),
+        ]),
+        AgentConfig::new("mock"),
+        thread,
+        tools.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::NaturalEnd)
+    );
+    assert_eq!(
+        extract_run_finish_response(&events),
+        Some(nonstream_response.clone())
+    );
+    assert_eq!(
+        compact_canonical_messages(&nonstream_thread),
+        compact_canonical_messages(&stream_thread),
+        "stream/non-stream should produce equivalent persisted message sequences"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_run_loop_and_stream_cancelled_alignment() {
+    let thread = AgentState::new("golden-cancel").with_message(Message::user("go"));
+    let tools = HashMap::new();
+    let nonstream_provider = MockChatProvider::new(vec![Ok(text_chat_response("unused"))]);
+    let nonstream_token = CancellationToken::new();
+    nonstream_token.cancel();
+
+    let nonstream_result = run_loop_with_context_provider(
+        &nonstream_provider,
+        &AgentConfig::new("mock"),
+        thread.clone(),
+        &tools,
+        RunContext {
+            cancellation_token: Some(nonstream_token),
+            ..RunContext::default()
+        },
+    )
+    .await;
+    let nonstream_thread = match nonstream_result {
+        Err(AgentLoopError::Cancelled { thread }) => *thread,
+        other => panic!("expected non-stream cancellation, got: {other:?}"),
+    };
+
+    let stream_token = CancellationToken::new();
+    stream_token.cancel();
+    let (events, stream_thread) = run_mock_stream_with_final_thread_with_context(
+        MockStreamProvider::new(vec![MockResponse::text("unused")]),
+        AgentConfig::new("mock"),
+        thread,
+        tools,
+        RunContext {
+            cancellation_token: Some(stream_token),
+            ..RunContext::default()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::Cancelled)
+    );
+    assert_eq!(extract_run_finish_response(&events), None);
+    assert_eq!(
+        compact_canonical_messages(&nonstream_thread),
+        compact_canonical_messages(&stream_thread),
+        "stream/non-stream cancellation should leave equivalent persisted messages"
+    );
+}
+
+#[tokio::test]
+async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
+    struct GoldenPendingPlugin;
+
+    #[async_trait]
+    impl AgentPlugin for GoldenPendingPlugin {
+        fn id(&self) -> &str {
+            "golden_pending_plugin"
+        }
+
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+            if phase != Phase::BeforeInference {
+                return;
+            }
+            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let patch = set_agent_pending_interaction(
+                &state,
+                Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
+            );
+            step.pending_patches.push(patch);
+            step.skip_inference = true;
+        }
+    }
+
+    let thread = AgentState::new("golden-resume").with_message(Message::user("continue"));
+    let config =
+        AgentConfig::new("mock").with_plugin(Arc::new(GoldenPendingPlugin) as Arc<dyn AgentPlugin>);
+    let tools = HashMap::new();
+    let nonstream_provider = MockChatProvider::new(vec![Ok(text_chat_response("unused"))]);
+
+    let nonstream_result = run_loop_with_context_provider(
+        &nonstream_provider,
+        &config,
+        thread.clone(),
+        &tools,
+        RunContext::default(),
+    )
+    .await;
+    let (nonstream_thread, nonstream_interaction) = match nonstream_result {
+        Err(AgentLoopError::PendingInteraction {
+            thread,
+            interaction,
+        }) => (*thread, *interaction),
+        other => panic!("expected non-stream pending interaction, got: {other:?}"),
+    };
+
+    let (events, stream_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![MockResponse::text("unused")]),
+        config,
+        thread,
+        tools,
+    )
+    .await;
+
+    assert_eq!(
+        extract_termination(&events),
+        Some(TerminationReason::PendingInteraction)
+    );
+    let stream_interaction =
+        extract_requested_interaction(&events).expect("stream should emit requested interaction");
+    assert_eq!(stream_interaction.id, nonstream_interaction.id);
+    assert_eq!(stream_interaction.action, nonstream_interaction.action);
+    assert_eq!(stream_interaction.message, nonstream_interaction.message);
+
+    assert_eq!(
+        compact_canonical_messages(&nonstream_thread),
+        compact_canonical_messages(&stream_thread),
+        "stream/non-stream pending path should preserve equivalent persisted messages"
+    );
+
+    let nonstream_state = nonstream_thread
+        .rebuild_state()
+        .expect("non-stream state should rebuild");
+    let stream_state = stream_thread
+        .rebuild_state()
+        .expect("stream state should rebuild");
+    assert_eq!(
+        nonstream_state["agent"]["pending_interaction"],
+        stream_state["agent"]["pending_interaction"]
+    );
+}
+
+#[tokio::test]
+async fn test_stream_replay_is_idempotent_across_reruns() {
+    struct SkipInferencePlugin;
+
+    #[async_trait]
+    impl AgentPlugin for SkipInferencePlugin {
+        fn id(&self) -> &str {
+            "skip_inference_replay_idempotent"
+        }
+
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+            if phase == Phase::BeforeInference {
+                step.skip_inference = true;
+            }
+        }
+    }
+
+    fn replay_config() -> AgentConfig {
+        let interaction = carve_agent_extension_interaction::InteractionPlugin::with_responses(
+            vec!["permission_counting_echo".to_string()],
+            Vec::new(),
+        );
+        AgentConfig::new("mock")
+            .with_plugin(Arc::new(interaction))
+            .with_plugin(Arc::new(SkipInferencePlugin) as Arc<dyn AgentPlugin>)
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counting_tool: Arc<dyn Tool> = Arc::new(CountingEchoTool {
+        calls: calls.clone(),
+    });
+    let tools = tool_map_from_arc([counting_tool]);
+
+    let thread = AgentState::with_initial_state(
+        "idempotent-replay",
+        json!({
+            "agent": {
+                "pending_interaction": {
+                    "id": "permission_counting_echo",
+                    "action": "tool:AskUserQuestion",
+                    "parameters": {
+                        "origin_tool_call": {
+                            "id": "call_1",
+                            "name": "counting_echo",
+                            "arguments": { "message": "approved-run" }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(Message::assistant_with_tool_calls(
+        "need permission",
+        vec![crate::contracts::state::ToolCall::new(
+            "call_1",
+            "counting_echo",
+            json!({"message": "approved-run"}),
+        )],
+    ))
+    .with_message(Message::tool(
+        "call_1",
+        "Tool 'counting_echo' is awaiting approval. Execution paused.",
+    ));
+
+    let (first_events, first_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![MockResponse::text("unused")]),
+        replay_config(),
+        thread,
+        tools.clone(),
+    )
+    .await;
+    assert!(
+        first_events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallDone { id, result, .. }
+            if id == "call_1" && result.status == crate::contracts::tool::ToolStatus::Success
+        )),
+        "first run should replay and execute the pending tool call"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "replayed tool should execute exactly once in first run"
+    );
+
+    let (second_events, second_thread) = run_mock_stream_with_final_thread(
+        MockStreamProvider::new(vec![MockResponse::text("unused")]),
+        replay_config(),
+        first_thread,
+        tools,
+    )
+    .await;
+    assert!(
+        !second_events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ToolCallDone { id, .. } if id == "call_1"
+        )),
+        "second run must not replay already-applied tool call"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "tool execution count must remain stable across reruns"
+    );
+
+    let final_state = second_thread.rebuild_state().expect("state should rebuild");
+    let pending = final_state
+        .get("agent")
+        .and_then(|a| a.get("pending_interaction"));
+    assert!(pending.is_none() || pending == Some(&Value::Null));
+}
+
 // ========================================================================
 // Mock ChatStreamProvider for stop condition integration tests
 // ========================================================================
@@ -3589,10 +3949,27 @@ async fn run_mock_stream_with_final_thread(
     thread: AgentState,
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> (Vec<AgentEvent>, AgentState) {
+    run_mock_stream_with_final_thread_with_context(
+        provider,
+        config,
+        thread,
+        tools,
+        RunContext::default(),
+    )
+    .await
+}
+
+/// Helper: run a mock stream and collect events plus final session with explicit run context.
+async fn run_mock_stream_with_final_thread_with_context(
+    provider: MockStreamProvider,
+    config: AgentConfig,
+    thread: AgentState,
+    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
+) -> (Vec<AgentEvent>, AgentState) {
     let mut final_thread = thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
-    let run_ctx = RunContext::default()
-        .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
+    let run_ctx = run_ctx.with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
     let stream =
         run_loop_stream_impl_with_provider(Arc::new(provider), config, thread, tools, run_ctx);
     let events = collect_stream_events(stream).await;
@@ -3660,11 +4037,91 @@ fn extract_termination(events: &[AgentEvent]) -> Option<TerminationReason> {
     })
 }
 
+fn extract_run_finish_response(events: &[AgentEvent]) -> Option<String> {
+    events.iter().find_map(|e| match e {
+        AgentEvent::RunFinish { result, .. } => result
+            .as_ref()
+            .map(|_| AgentEvent::extract_response(result)),
+        _ => None,
+    })
+}
+
+fn extract_requested_interaction(events: &[AgentEvent]) -> Option<Interaction> {
+    events.iter().find_map(|e| match e {
+        AgentEvent::InteractionRequested { interaction } => Some(interaction.clone()),
+        AgentEvent::Pending { interaction } => Some(interaction.clone()),
+        _ => None,
+    })
+}
+
 fn extract_inference_model(events: &[AgentEvent]) -> Option<String> {
     events.iter().find_map(|e| match e {
         AgentEvent::InferenceComplete { model, .. } => Some(model.clone()),
         _ => None,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CanonicalToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CanonicalMessage {
+    role: crate::contracts::state::Role,
+    content: String,
+    tool_call_id: Option<String>,
+    visibility: crate::contracts::state::Visibility,
+    tool_calls: Vec<CanonicalToolCall>,
+}
+
+fn canonical_messages(thread: &AgentState) -> Vec<CanonicalMessage> {
+    thread
+        .messages
+        .iter()
+        .map(|msg| {
+            let mut tool_calls = msg
+                .tool_calls
+                .as_ref()
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .map(|call| CanonicalToolCall {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: call.arguments.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            tool_calls.sort_by(|a, b| {
+                a.id.cmp(&b.id)
+                    .then_with(|| a.name.cmp(&b.name))
+                    .then_with(|| a.arguments.cmp(&b.arguments))
+            });
+
+            CanonicalMessage {
+                role: msg.role,
+                content: msg.content.clone(),
+                tool_call_id: msg.tool_call_id.clone(),
+                visibility: msg.visibility,
+                tool_calls,
+            }
+        })
+        .collect()
+}
+
+fn compact_canonical_messages(thread: &AgentState) -> Vec<CanonicalMessage> {
+    let mut compacted = Vec::new();
+    for msg in canonical_messages(thread) {
+        if compacted.last() == Some(&msg) {
+            continue;
+        }
+        compacted.push(msg);
+    }
+    compacted
 }
 
 #[tokio::test]
