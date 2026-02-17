@@ -47,14 +47,16 @@ fn validate_phase_mutation(
     before: &PhaseMutationSnapshot,
     after: &PhaseMutationSnapshot,
 ) -> Result<(), AgentLoopError> {
-    if before.tool_ids != after.tool_ids && phase != Phase::BeforeInference {
+    let policy = phase.policy();
+
+    if before.tool_ids != after.tool_ids && !policy.allow_tool_filter_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated tool filtering outside BeforeInference ({phase})",
             plugin_id
         )));
     }
 
-    if before.skip_inference != after.skip_inference && phase != Phase::BeforeInference {
+    if before.skip_inference != after.skip_inference && !policy.allow_skip_inference_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated skip_inference outside BeforeInference ({phase})",
             plugin_id
@@ -71,7 +73,7 @@ fn validate_phase_mutation(
     let tool_gate_changed = before.tool_blocked != after.tool_blocked
         || before.tool_pending != after.tool_pending
         || before.tool_pending_interaction_id != after.tool_pending_interaction_id;
-    if tool_gate_changed && phase != Phase::BeforeToolExecute {
+    if tool_gate_changed && !policy.allow_tool_gate_mutation {
         return Err(AgentLoopError::StateError(format!(
             "plugin '{}' mutated tool gate outside BeforeToolExecute ({phase})",
             plugin_id

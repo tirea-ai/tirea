@@ -1,7 +1,7 @@
 use super::AgentConfig;
 use crate::contracts::runtime::StreamResult;
 use crate::contracts::state::AgentState;
-use crate::engine::stop_conditions::{StopCheckContext, StopCondition};
+use crate::engine::stop_conditions::{condition_from_spec, StopCheckContext, StopCondition};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
@@ -81,7 +81,7 @@ impl RunState {
 pub(super) fn effective_stop_conditions(config: &AgentConfig) -> Vec<Arc<dyn StopCondition>> {
     let mut conditions = config.stop_conditions.clone();
     for spec in &config.stop_condition_specs {
-        conditions.push(spec.clone().into_condition());
+        conditions.push(condition_from_spec(spec.clone()));
     }
     if conditions.is_empty() {
         return vec![Arc::new(crate::engine::stop_conditions::MaxRounds(

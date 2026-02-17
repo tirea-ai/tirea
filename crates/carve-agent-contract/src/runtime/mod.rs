@@ -13,4 +13,4 @@ pub use interaction::{Interaction, InteractionResponse};
 pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
 pub use request::RunRequest;
 pub use result::{StreamResult, ToolResult, ToolStatus};
-pub use termination::{StopReason, TerminationReason};
+pub use termination::{StopConditionSpec, StopReason, TerminationReason};

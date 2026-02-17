@@ -36,8 +36,8 @@
 //! ```
 
 use crate::contracts::state::{AgentState, ToolCall};
+use crate::contracts::runtime::StopConditionSpec;
 pub use crate::contracts::runtime::StopReason;
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -255,105 +255,19 @@ impl StopCondition for LoopDetection {
 }
 
 // ---------------------------------------------------------------------------
-// StopConditionSpec – serializable declarative stop conditions
+// StopConditionSpec resolution
 // ---------------------------------------------------------------------------
 
-/// Declarative, serializable representation of a built-in stop condition.
-///
-/// Analogous to `plugin_ids` for plugins: store specs in configuration,
-/// resolve to `Arc<dyn StopCondition>` at runtime via [`into_condition`].
-///
-/// ```
-/// use carve_agent_loop::engine::stop_conditions::StopConditionSpec;
-///
-/// let spec = StopConditionSpec::MaxRounds { rounds: 5 };
-/// let json = serde_json::to_string(&spec).unwrap();
-/// assert_eq!(json, r#"{"type":"max_rounds","rounds":5}"#);
-///
-/// let condition = spec.into_condition();
-/// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StopConditionSpec {
-    /// Stop after a fixed number of tool-call rounds.
-    MaxRounds { rounds: usize },
-    /// Stop after a wall-clock duration (in seconds) elapses.
-    Timeout { seconds: u64 },
-    /// Stop when cumulative token usage exceeds a budget. 0 = unlimited.
-    TokenBudget { max_total: usize },
-    /// Stop after N consecutive rounds where all tool executions failed. 0 = disabled.
-    ConsecutiveErrors { max: usize },
-    /// Stop when a specific tool is called by the LLM.
-    StopOnTool { tool_name: String },
-    /// Stop when LLM output text contains a literal pattern.
-    ContentMatch { pattern: String },
-    /// Stop when identical tool call patterns repeat within a sliding window.
-    LoopDetection { window: usize },
-}
-
-impl StopConditionSpec {
-    /// Convert this spec into a live `Arc<dyn StopCondition>`.
-    pub fn into_condition(self) -> Arc<dyn StopCondition> {
-        match self {
-            Self::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
-            Self::Timeout { seconds } => Arc::new(Timeout(Duration::from_secs(seconds))),
-            Self::TokenBudget { max_total } => Arc::new(TokenBudget { max_total }),
-            Self::ConsecutiveErrors { max } => Arc::new(ConsecutiveErrors(max)),
-            Self::StopOnTool { tool_name } => Arc::new(StopOnTool(tool_name)),
-            Self::ContentMatch { pattern } => Arc::new(ContentMatch(pattern)),
-            Self::LoopDetection { window } => Arc::new(LoopDetection { window }),
-        }
-    }
-}
-
-/// Convert built-in conditions back to specs for introspection.
-impl From<&MaxRounds> for StopConditionSpec {
-    fn from(c: &MaxRounds) -> Self {
-        Self::MaxRounds { rounds: c.0 }
-    }
-}
-
-impl From<&Timeout> for StopConditionSpec {
-    fn from(c: &Timeout) -> Self {
-        Self::Timeout {
-            seconds: c.0.as_secs(),
-        }
-    }
-}
-
-impl From<&TokenBudget> for StopConditionSpec {
-    fn from(c: &TokenBudget) -> Self {
-        Self::TokenBudget {
-            max_total: c.max_total,
-        }
-    }
-}
-
-impl From<&ConsecutiveErrors> for StopConditionSpec {
-    fn from(c: &ConsecutiveErrors) -> Self {
-        Self::ConsecutiveErrors { max: c.0 }
-    }
-}
-
-impl From<&StopOnTool> for StopConditionSpec {
-    fn from(c: &StopOnTool) -> Self {
-        Self::StopOnTool {
-            tool_name: c.0.clone(),
-        }
-    }
-}
-
-impl From<&ContentMatch> for StopConditionSpec {
-    fn from(c: &ContentMatch) -> Self {
-        Self::ContentMatch {
-            pattern: c.0.clone(),
-        }
-    }
-}
-
-impl From<&LoopDetection> for StopConditionSpec {
-    fn from(c: &LoopDetection) -> Self {
-        Self::LoopDetection { window: c.window }
+/// Resolve contract-level declarative stop condition spec to runtime evaluator.
+pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopCondition> {
+    match spec {
+        StopConditionSpec::MaxRounds { rounds } => Arc::new(MaxRounds(rounds)),
+        StopConditionSpec::Timeout { seconds } => Arc::new(Timeout(Duration::from_secs(seconds))),
+        StopConditionSpec::TokenBudget { max_total } => Arc::new(TokenBudget { max_total }),
+        StopConditionSpec::ConsecutiveErrors { max } => Arc::new(ConsecutiveErrors(max)),
+        StopConditionSpec::StopOnTool { tool_name } => Arc::new(StopOnTool(tool_name)),
+        StopConditionSpec::ContentMatch { pattern } => Arc::new(ContentMatch(pattern)),
+        StopConditionSpec::LoopDetection { window } => Arc::new(LoopDetection { window }),
     }
 }
 
@@ -729,7 +643,7 @@ mod tests {
     #[test]
     fn stop_condition_spec_into_condition_max_rounds() {
         let spec = StopConditionSpec::MaxRounds { rounds: 3 };
-        let cond = spec.into_condition();
+        let cond = condition_from_spec(spec);
         assert_eq!(cond.id(), "max_rounds");
         let mut ctx = empty_context();
         ctx.rounds = 3;
@@ -739,7 +653,7 @@ mod tests {
     #[test]
     fn stop_condition_spec_into_condition_timeout() {
         let spec = StopConditionSpec::Timeout { seconds: 10 };
-        let cond = spec.into_condition();
+        let cond = condition_from_spec(spec);
         assert_eq!(cond.id(), "timeout");
         let mut ctx = empty_context();
         ctx.elapsed = Duration::from_secs(10);
@@ -749,7 +663,7 @@ mod tests {
     #[test]
     fn stop_condition_spec_into_condition_token_budget() {
         let spec = StopConditionSpec::TokenBudget { max_total: 100 };
-        let cond = spec.into_condition();
+        let cond = condition_from_spec(spec);
         let mut ctx = empty_context();
         ctx.total_input_tokens = 60;
         ctx.total_output_tokens = 50;
@@ -761,7 +675,7 @@ mod tests {
         let spec = StopConditionSpec::StopOnTool {
             tool_name: "finish".to_string(),
         };
-        let cond = spec.into_condition();
+        let cond = condition_from_spec(spec);
         let calls = vec![make_tool_call("finish")];
         let history = VecDeque::new();
         let ctx = StopCheckContext {
@@ -773,39 +687,5 @@ mod tests {
             cond.check(&ctx),
             Some(StopReason::ToolCalled("finish".to_string()))
         );
-    }
-
-    #[test]
-    fn stop_condition_spec_from_builtin_roundtrip() {
-        let spec = StopConditionSpec::from(&MaxRounds(5));
-        assert_eq!(spec, StopConditionSpec::MaxRounds { rounds: 5 });
-
-        let spec = StopConditionSpec::from(&Timeout(Duration::from_secs(30)));
-        assert_eq!(spec, StopConditionSpec::Timeout { seconds: 30 });
-
-        let spec = StopConditionSpec::from(&TokenBudget { max_total: 1000 });
-        assert_eq!(spec, StopConditionSpec::TokenBudget { max_total: 1000 });
-
-        let spec = StopConditionSpec::from(&ConsecutiveErrors(3));
-        assert_eq!(spec, StopConditionSpec::ConsecutiveErrors { max: 3 });
-
-        let spec = StopConditionSpec::from(&StopOnTool("done".to_string()));
-        assert_eq!(
-            spec,
-            StopConditionSpec::StopOnTool {
-                tool_name: "done".to_string()
-            }
-        );
-
-        let spec = StopConditionSpec::from(&ContentMatch("FINAL".to_string()));
-        assert_eq!(
-            spec,
-            StopConditionSpec::ContentMatch {
-                pattern: "FINAL".to_string()
-            }
-        );
-
-        let spec = StopConditionSpec::from(&LoopDetection { window: 4 });
-        assert_eq!(spec, StopConditionSpec::LoopDetection { window: 4 });
     }
 }

@@ -6,6 +6,39 @@ use crate::extensions::skills::{
     SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
 };
 
+#[derive(Default)]
+struct ResolvedPlugins {
+    global: Vec<Arc<dyn AgentPlugin>>,
+    agent_default: Vec<Arc<dyn AgentPlugin>>,
+    run_override: Vec<Arc<dyn AgentPlugin>>,
+}
+
+impl ResolvedPlugins {
+    fn with_global(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+        self.global.extend(plugins);
+        self
+    }
+
+    fn with_agent_default(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+        self.agent_default.extend(plugins);
+        self
+    }
+
+    fn with_run_override(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+        self.run_override.extend(plugins);
+        self
+    }
+
+    fn into_plugins(self) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+        let mut plugins = Vec::new();
+        plugins.extend(self.global);
+        plugins.extend(self.agent_default);
+        plugins.extend(self.run_override);
+        AgentOs::ensure_unique_plugin_ids(&plugins)?;
+        Ok(plugins)
+    }
+}
+
 impl AgentOs {
     pub fn builder() -> AgentOsBuilder {
         AgentOsBuilder::new()
@@ -83,19 +116,16 @@ impl AgentOs {
         Ok(())
     }
 
-    fn assemble_plugin_chain(
-        system_plugins: Vec<Arc<dyn AgentPlugin>>,
+    fn merge_agent_default_plugins(
         policy_plugins: Vec<Arc<dyn AgentPlugin>>,
         other_plugins: Vec<Arc<dyn AgentPlugin>>,
         explicit_plugins: Vec<Arc<dyn AgentPlugin>>,
-    ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
+    ) -> Vec<Arc<dyn AgentPlugin>> {
         let mut plugins = Vec::new();
-        plugins.extend(system_plugins);
         plugins.extend(policy_plugins);
         plugins.extend(other_plugins);
         plugins.extend(explicit_plugins);
-        Self::ensure_unique_plugin_ids(&plugins)?;
-        Ok(plugins)
+        plugins
     }
 
     fn ensure_skills_plugin_not_installed(
@@ -365,10 +395,14 @@ impl AgentOs {
             return Ok(config);
         }
 
+        let explicit_plugins = std::mem::take(&mut config.plugins);
         let policy_plugins = self.resolve_plugin_id_list(&config.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&config.plugin_ids)?;
-        config.plugins =
-            Self::assemble_plugin_chain(Vec::new(), policy_plugins, other_plugins, config.plugins)?;
+        let agent_default_plugins =
+            Self::merge_agent_default_plugins(policy_plugins, other_plugins, explicit_plugins);
+        config.plugins = ResolvedPlugins::default()
+            .with_agent_default(agent_default_plugins)
+            .into_plugins()?;
         Ok(config)
     }
 
@@ -387,12 +421,12 @@ impl AgentOs {
         system_bundles.extend(self.build_agent_tool_wiring_bundles(&explicit_plugins)?);
         let system_plugins =
             self.merge_wiring_bundles(&system_bundles, tools, WiringScope::System)?;
-        config.plugins = Self::assemble_plugin_chain(
-            system_plugins,
-            policy_plugins,
-            other_plugins,
-            explicit_plugins,
-        )?;
+        let agent_default_plugins =
+            Self::merge_agent_default_plugins(policy_plugins, other_plugins, explicit_plugins);
+        config.plugins = ResolvedPlugins::default()
+            .with_global(system_plugins)
+            .with_agent_default(agent_default_plugins)
+            .into_plugins()?;
         Ok(config)
     }
 
@@ -429,8 +463,10 @@ impl AgentOs {
         let skills_bundles = self.build_skills_wiring_bundles(&explicit_plugins)?;
         let skills_plugins =
             self.merge_wiring_bundles(&skills_bundles, tools, WiringScope::System)?;
-        config.plugins =
-            Self::assemble_plugin_chain(skills_plugins, Vec::new(), Vec::new(), explicit_plugins)?;
+        config.plugins = ResolvedPlugins::default()
+            .with_global(skills_plugins)
+            .with_agent_default(explicit_plugins)
+            .into_plugins()?;
         Ok(config)
     }
 
@@ -453,10 +489,11 @@ impl AgentOs {
         let extension_plugins =
             self.merge_wiring_bundles(&bundles, &mut tools, WiringScope::RunExtension)?;
         if !extension_plugins.is_empty() {
-            let mut merged = config.plugins;
-            merged.extend(extension_plugins);
-            Self::ensure_unique_plugin_ids(&merged)?;
-            config.plugins = merged;
+            let base_plugins = std::mem::take(&mut config.plugins);
+            config.plugins = ResolvedPlugins::default()
+                .with_agent_default(base_plugins)
+                .with_run_override(extension_plugins)
+                .into_plugins()?;
         }
 
         Ok((config, tools))

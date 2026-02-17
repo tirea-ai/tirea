@@ -1,5 +1,6 @@
 use crate::contracts::plugin::AgentPlugin;
-use crate::engine::stop_conditions::{StopCondition, StopConditionSpec};
+use crate::contracts::runtime::StopConditionSpec;
+use crate::engine::stop_conditions::StopCondition;
 use genai::chat::ChatOptions;
 use std::sync::Arc;
 

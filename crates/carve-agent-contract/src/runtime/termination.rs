@@ -42,3 +42,23 @@ pub enum TerminationReason {
     /// Run ended due to an error path.
     Error,
 }
+
+/// Declarative stop-condition configuration used by loop runtimes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StopConditionSpec {
+    /// Stop after a fixed number of tool-call rounds.
+    MaxRounds { rounds: usize },
+    /// Stop after a wall-clock duration (in seconds) elapses.
+    Timeout { seconds: u64 },
+    /// Stop when cumulative token usage exceeds a budget. 0 = unlimited.
+    TokenBudget { max_total: usize },
+    /// Stop after N consecutive rounds where all tool executions failed. 0 = disabled.
+    ConsecutiveErrors { max: usize },
+    /// Stop when a specific tool is called by the LLM.
+    StopOnTool { tool_name: String },
+    /// Stop when LLM output text contains a literal pattern.
+    ContentMatch { pattern: String },
+    /// Stop when identical tool call patterns repeat within a sliding window.
+    LoopDetection { window: usize },
+}

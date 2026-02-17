@@ -48,6 +48,51 @@ impl std::fmt::Display for Phase {
     }
 }
 
+/// Mutation policy enforced for each phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhasePolicy {
+    /// Whether tool filtering (`StepContext::tools`) can be mutated.
+    pub allow_tool_filter_mutation: bool,
+    /// Whether `StepContext::skip_inference` can be mutated.
+    pub allow_skip_inference_mutation: bool,
+    /// Whether tool execution gate (`blocked/pending`) can be mutated.
+    pub allow_tool_gate_mutation: bool,
+}
+
+impl PhasePolicy {
+    pub const fn read_only() -> Self {
+        Self {
+            allow_tool_filter_mutation: false,
+            allow_skip_inference_mutation: false,
+            allow_tool_gate_mutation: false,
+        }
+    }
+}
+
+impl Phase {
+    /// Return mutation policy for this phase.
+    pub const fn policy(self) -> PhasePolicy {
+        match self {
+            Self::BeforeInference => PhasePolicy {
+                allow_tool_filter_mutation: true,
+                allow_skip_inference_mutation: true,
+                allow_tool_gate_mutation: false,
+            },
+            Self::BeforeToolExecute => PhasePolicy {
+                allow_tool_filter_mutation: false,
+                allow_skip_inference_mutation: false,
+                allow_tool_gate_mutation: true,
+            },
+            Self::RunStart
+            | Self::StepStart
+            | Self::AfterInference
+            | Self::AfterToolExecute
+            | Self::StepEnd
+            | Self::RunEnd => PhasePolicy::read_only(),
+        }
+    }
+}
+
 /// Result of a step execution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StepOutcome {
@@ -369,6 +414,22 @@ mod tests {
         let phase = Phase::BeforeInference;
         let cloned = phase;
         assert_eq!(phase, cloned);
+    }
+
+    #[test]
+    fn test_phase_policy() {
+        let before_inference = Phase::BeforeInference.policy();
+        assert!(before_inference.allow_tool_filter_mutation);
+        assert!(before_inference.allow_skip_inference_mutation);
+        assert!(!before_inference.allow_tool_gate_mutation);
+
+        let before_tool_execute = Phase::BeforeToolExecute.policy();
+        assert!(!before_tool_execute.allow_tool_filter_mutation);
+        assert!(!before_tool_execute.allow_skip_inference_mutation);
+        assert!(before_tool_execute.allow_tool_gate_mutation);
+
+        let run_end = Phase::RunEnd.policy();
+        assert_eq!(run_end, PhasePolicy::read_only());
     }
 
     // =========================================================================
