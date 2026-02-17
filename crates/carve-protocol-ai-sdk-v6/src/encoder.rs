@@ -30,7 +30,7 @@ pub const DATA_EVENT_INTERACTION_RESOLVED: &str = "interaction-resolved";
 /// - `TextDelta` with text closed → prepend `text-start`, open text
 /// - `ToolCallStart` with text open → prepend `text-end`, close text
 /// - `RunFinish` with text open → prepend `text-end` before `finish`
-/// - `Error`/`Aborted` → terminal, no `text-end` needed
+/// - `Error` → terminal, no `text-end` needed
 #[derive(Debug)]
 pub struct AiSdkEncoder {
     message_id: String,
@@ -151,11 +151,6 @@ impl AiSdkEncoder {
                 self.finished = true;
                 self.text_open = false;
                 vec![UIStreamEvent::error(message)]
-            }
-            AgentEvent::Aborted { reason } => {
-                self.finished = true;
-                self.text_open = false;
-                vec![UIStreamEvent::abort(reason)]
             }
 
             AgentEvent::StepStart { message_id } => {

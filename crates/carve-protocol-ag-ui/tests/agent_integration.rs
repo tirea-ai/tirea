@@ -7064,19 +7064,21 @@ fn test_error_flow_invalid_request() {
     assert!(valid.validate().is_ok());
 }
 
-/// Test: Agent abort event
+/// Test: Cancelled run finish event
 #[test]
-fn test_error_flow_agent_abort() {
+fn test_error_flow_run_finish_cancelled() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let event = AgentEvent::Aborted {
-        reason: "User cancelled".into(),
+    let event = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: carve_agent::contracts::runtime::TerminationReason::Cancelled,
     };
     let ag_events = ctx.on_agent_event(&event);
 
-    // Should produce some events (depends on implementation)
-    // At minimum, verify it doesn't panic
-    assert!(ag_events.is_empty() || !ag_events.is_empty());
+    assert_eq!(ag_events.len(), 1);
+    assert!(matches!(ag_events[0], AGUIEvent::RunError { .. }));
 }
 
 // ============================================================================
@@ -9280,18 +9282,21 @@ fn test_event_sequence_canceled_run() {
     };
     events.extend(ctx.on_agent_event(&text));
 
-    // Run aborted (simulating cancel)
-    let abort = AgentEvent::Aborted {
-        reason: "User canceled".into(),
+    // Run finished with cancelled termination (simulating external cancel)
+    let cancel = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: carve_agent::contracts::runtime::TerminationReason::Cancelled,
     };
-    let abort_events = ctx.on_agent_event(&abort);
-    events.extend(abort_events);
+    let cancel_events = ctx.on_agent_event(&cancel);
+    events.extend(cancel_events);
 
     // Verify run started
     assert!(events
         .iter()
         .any(|e| matches!(e, AGUIEvent::RunStarted { .. })));
-    // Note: Aborted may or may not produce events depending on implementation
+    assert!(events.iter().any(|e| matches!(e, AGUIEvent::RunError { .. })));
 }
 
 /// Test: Error during text streaming
@@ -12118,22 +12123,25 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         .any(|e| matches!(e, AGUIEvent::RunFinished { .. })));
 }
 
-/// Test: AgentEvent::Aborted produces RUN_ERROR with ABORTED code
-/// Protocol: Aborted maps to RUN_ERROR with code "ABORTED"
+/// Test: AgentEvent::RunFinish(Cancelled) produces RUN_ERROR with CANCELLED code
+/// Protocol: cancellation maps to RUN_ERROR with code "CANCELLED"
 /// Reference: https://docs.ag-ui.com/concepts/events
 #[test]
-fn test_agent_event_aborted_produces_run_error() {
+fn test_agent_event_run_finish_cancelled_produces_run_error() {
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
-    let aborted = AgentEvent::Aborted {
-        reason: "User cancelled".into(),
+    let cancelled = AgentEvent::RunFinish {
+        thread_id: "t1".into(),
+        run_id: "r1".into(),
+        result: None,
+        termination: carve_agent::contracts::runtime::TerminationReason::Cancelled,
     };
-    let events = ctx.on_agent_event(&aborted);
+    let events = ctx.on_agent_event(&cancelled);
 
     assert_eq!(events.len(), 1);
     if let AGUIEvent::RunError { message, code, .. } = &events[0] {
-        assert_eq!(message, "User cancelled");
-        assert_eq!(code.as_deref(), Some("ABORTED"));
+        assert_eq!(message, "Run cancelled");
+        assert_eq!(code.as_deref(), Some("CANCELLED"));
     } else {
         panic!("Expected RunError");
     }

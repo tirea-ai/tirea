@@ -205,6 +205,7 @@ pub enum StreamOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::runtime::TerminationReason;
     use crate::contracts::tool::ToolResult;
     use crate::contracts::runtime::AgentEvent;
     use serde_json::json;
@@ -950,14 +951,17 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_event_aborted() {
-        let event = AgentEvent::Aborted {
-            reason: "Timeout".to_string(),
+    fn test_agent_event_run_finish_cancelled() {
+        let event = AgentEvent::RunFinish {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            result: None,
+            termination: TerminationReason::Cancelled,
         };
-        if let AgentEvent::Aborted { reason } = event {
-            assert_eq!(reason, "Timeout");
+        if let AgentEvent::RunFinish { termination, .. } = event {
+            assert_eq!(termination, TerminationReason::Cancelled);
         } else {
-            panic!("Expected Aborted");
+            panic!("Expected RunFinish");
         }
     }
 

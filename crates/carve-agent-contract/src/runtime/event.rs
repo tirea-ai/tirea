@@ -101,8 +101,6 @@ pub enum AgentEvent {
     /// Pending interaction request.
     Pending { interaction: Interaction },
 
-    /// Stream aborted.
-    Aborted { reason: String },
     /// Error occurred.
     Error { message: String },
 }

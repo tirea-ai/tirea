@@ -25,6 +25,7 @@ use carve_protocol_contract::{
 };
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -284,25 +285,38 @@ where
     tokio::spawn(async move {
         let tx_events = tx.clone();
         let event_cancel_token = cancellation_token.clone();
+        let downstream_closed = Arc::new(AtomicBool::new(false));
+        let send_state = downstream_closed.clone();
         pump_encoded_stream(run.events, encoder, move |event| {
             let tx = tx_events.clone();
             let token = event_cancel_token.clone();
+            let closed = send_state.clone();
             async move {
+                if closed.load(Ordering::Relaxed) {
+                    // Client connection is already gone. Keep draining run events
+                    // so loop cancellation/finalization can complete cleanly.
+                    return Ok(());
+                }
+
                 let json = match serde_json::to_string(&event) {
                     Ok(json) => json,
                     Err(err) => {
                         warn!(error = %err, "failed to serialize SSE protocol event");
+                        closed.store(true, Ordering::Relaxed);
                         token.cancel();
-                        return Err(());
+                        return Ok(());
                     }
                 };
-                tx.send(Bytes::from(format!("data: {json}\n\n")))
-                    .await
-                    .map_err(|_| {
+                match tx.send(Bytes::from(format!("data: {json}\n\n"))).await {
+                    Ok(_) => Ok(()),
+                    Err(_) => {
                         // Receiver dropped (client disconnected / aborted request).
                         // Cancel run cooperatively so loop/runtime are transport-agnostic.
+                        closed.store(true, Ordering::Relaxed);
                         token.cancel();
-                    })
+                        Ok(())
+                    }
+                }
             }
         })
         .await;

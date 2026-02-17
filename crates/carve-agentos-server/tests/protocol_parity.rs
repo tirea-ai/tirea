@@ -61,7 +61,6 @@ fn collect_kinds(events: &[AgentEvent]) -> Vec<&'static str> {
             AgentEvent::Pending { .. } => "Pending",
             AgentEvent::InteractionResolved { .. } => "InteractionResolved",
             AgentEvent::Error { .. } => "Error",
-            AgentEvent::Aborted { .. } => "Aborted",
             AgentEvent::StateDelta { .. } => "StateDelta",
             AgentEvent::StateSnapshot { .. } => "StateSnapshot",
             AgentEvent::MessagesSnapshot { .. } => "MessagesSnapshot",

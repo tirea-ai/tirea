@@ -27,7 +27,7 @@ pub struct AGUIContext {
     text_ever_ended: bool,
     /// Current step name.
     current_step: Option<String>,
-    /// Whether a terminal event (Error/Aborted) has been emitted.
+    /// Whether a terminal event (RunFinish/Error) has been emitted.
     /// After this, all subsequent events are suppressed.
     stopped: bool,
     /// Last emitted state snapshot, used to compute RFC 6902 deltas.
@@ -125,14 +125,14 @@ impl AGUIContext {
     /// Handles full stream lifecycle: text start/end pairs, step counters,
     /// terminal event suppression (after Error), and Pending event filtering.
     pub fn on_agent_event(&mut self, ev: &AgentEvent) -> Vec<AGUIEvent> {
-        // After a terminal event (Error/Aborted), suppress everything.
+        // After a terminal event (RunFinish/Error), suppress everything.
         if self.stopped {
             return Vec::new();
         }
 
         // Lifecycle bookkeeping before conversion.
         match ev {
-            AgentEvent::Error { .. } | AgentEvent::Aborted { .. } => {
+            AgentEvent::RunFinish { .. } | AgentEvent::Error { .. } => {
                 self.stopped = true;
             }
             AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
@@ -303,9 +303,6 @@ impl AGUIContext {
             // Pending is handled above (early return).
             AgentEvent::Pending { .. } => unreachable!(),
 
-            AgentEvent::Aborted { reason } => {
-                vec![AGUIEvent::run_error(reason, Some("ABORTED".to_string()))]
-            }
             AgentEvent::Error { message } => {
                 vec![AGUIEvent::run_error(message, None)]
             }
