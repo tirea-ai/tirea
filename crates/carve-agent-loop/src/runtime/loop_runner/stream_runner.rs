@@ -139,6 +139,109 @@ fn drain_loop_tick_outbox(thread: AgentState) -> Result<(AgentState, Vec<AgentEv
     Ok((next_thread, events))
 }
 
+#[derive(Debug)]
+struct StreamEventEmitter {
+    run_id: String,
+    thread_id: String,
+    parent_run_id: Option<String>,
+    seq: u64,
+    step_index: u32,
+    current_step_id: Option<String>,
+}
+
+impl StreamEventEmitter {
+    fn new(run_id: String, thread_id: String, parent_run_id: Option<String>) -> Self {
+        Self {
+            run_id,
+            thread_id,
+            parent_run_id,
+            seq: 0,
+            step_index: 0,
+            current_step_id: None,
+        }
+    }
+
+    fn run_start(&mut self) -> AgentEvent {
+        self.emit(AgentEvent::RunStart {
+            thread_id: self.thread_id.clone(),
+            run_id: self.run_id.clone(),
+            parent_run_id: self.parent_run_id.clone(),
+        })
+    }
+
+    fn run_finish(&mut self, outcome: LoopOutcome) -> AgentEvent {
+        self.emit(outcome.to_run_finish_event(self.run_id.clone()))
+    }
+
+    fn step_start(&mut self, message_id: String) -> AgentEvent {
+        self.current_step_id = Some(format!("step:{}", self.step_index));
+        self.emit(AgentEvent::StepStart { message_id })
+    }
+
+    fn step_end(&mut self) -> AgentEvent {
+        let event = self.emit(AgentEvent::StepEnd);
+        self.step_index = self.step_index.saturating_add(1);
+        self.current_step_id = None;
+        event
+    }
+
+    fn emit_existing(&mut self, event: AgentEvent) -> AgentEvent {
+        self.emit(event)
+    }
+
+    fn emit(&mut self, event: AgentEvent) -> AgentEvent {
+        let seq = self.seq;
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        crate::contracts::runtime::event::register_runtime_event_envelope_meta(
+            &event,
+            &self.run_id,
+            &self.thread_id,
+            seq,
+            timestamp_ms,
+            self.current_step_id.clone(),
+        );
+        self.seq = self.seq.saturating_add(1);
+        tracing::trace!(
+            run_id = %self.run_id,
+            thread_id = %self.thread_id,
+            parent_run_id = %self.parent_run_id.clone().unwrap_or_default(),
+            seq,
+            timestamp_ms,
+            step_id = %self.current_step_id.clone().unwrap_or_default(),
+            event_type = %event_type_name(&event),
+            "emit agent event"
+        );
+        event
+    }
+}
+
+fn event_type_name(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::RunStart { .. } => "run_start",
+        AgentEvent::RunFinish { .. } => "run_finish",
+        AgentEvent::TextDelta { .. } => "text_delta",
+        AgentEvent::ToolCallStart { .. } => "tool_call_start",
+        AgentEvent::ToolCallDelta { .. } => "tool_call_delta",
+        AgentEvent::ToolCallReady { .. } => "tool_call_ready",
+        AgentEvent::ToolCallDone { .. } => "tool_call_done",
+        AgentEvent::StepStart { .. } => "step_start",
+        AgentEvent::StepEnd => "step_end",
+        AgentEvent::InferenceComplete { .. } => "inference_complete",
+        AgentEvent::StateSnapshot { .. } => "state_snapshot",
+        AgentEvent::StateDelta { .. } => "state_delta",
+        AgentEvent::MessagesSnapshot { .. } => "messages_snapshot",
+        AgentEvent::ActivitySnapshot { .. } => "activity_snapshot",
+        AgentEvent::ActivityDelta { .. } => "activity_delta",
+        AgentEvent::InteractionRequested { .. } => "interaction_requested",
+        AgentEvent::InteractionResolved { .. } => "interaction_resolved",
+        AgentEvent::Pending { .. } => "pending",
+        AgentEvent::Error { .. } => "error",
+    }
+}
+
 pub(super) fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
@@ -170,13 +273,15 @@ pub(super) fn run_loop_stream_impl_with_provider(
             parent_run_id.as_deref(),
             state_committer.as_ref(),
         );
+        let mut emitter =
+            StreamEventEmitter::new(run_id.clone(), thread.id.clone(), parent_run_id.clone());
         let mut active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 let message = e.to_string();
-                yield AgentEvent::Error {
+                yield emitter.emit_existing(AgentEvent::Error {
                     message: message.clone(),
-                };
+                });
                 let outcome = build_loop_outcome(
                     thread,
                     TerminationReason::Error,
@@ -184,7 +289,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     &run_state,
                     Some(outcome::LoopFailure::State(message)),
                 );
-                yield outcome.to_run_finish_event(run_id.clone());
+                yield emitter.run_finish(outcome);
                 return;
             }
         };
@@ -207,9 +312,9 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     .commit(&mut thread, CheckpointReason::RunFinished, true)
                     .await
                 {
-                    yield AgentEvent::Error {
+                    yield emitter.emit_existing(AgentEvent::Error {
                         message: e.to_string(),
-                    };
+                    });
                     return;
                 }
             };
@@ -228,10 +333,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     &run_state,
                     Some(failure),
                 );
-                yield AgentEvent::Error {
+                yield emitter.emit_existing(AgentEvent::Error {
                     message: message.clone(),
-                };
-                yield outcome.to_run_finish_event(run_id.clone());
+                });
+                yield emitter.run_finish(outcome);
                 return;
             }};
         }
@@ -249,7 +354,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     &run_state,
                     None,
                 );
-                yield outcome.to_run_finish_event(run_id.clone());
+                yield emitter.run_finish(outcome);
                 return;
             }};
         }
@@ -273,11 +378,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
         }
 
-        yield AgentEvent::RunStart {
-            thread_id: thread.id.clone(),
-            run_id: run_id.clone(),
-            parent_run_id: parent_run_id.clone(),
-        };
+        yield emitter.run_start();
 
         // Resume pending tool execution requested by plugins at run start.
         let (next_thread, run_start_events) = match drain_run_start_outbox_and_replay(
@@ -296,7 +397,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         };
         thread = next_thread;
         for event in run_start_events {
-            yield event;
+            yield emitter.emit_existing(event);
         }
 
         loop {
@@ -309,7 +410,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             };
             thread = next_thread;
             for event in loop_tick_events {
-                yield event;
+                yield emitter.emit_existing(event);
             }
 
             // Check cancellation at the top of each iteration.
@@ -342,7 +443,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 let pending_interaction = pending_interaction_from_thread(&thread);
                 if let Some(interaction) = pending_interaction.clone() {
                     for event in interaction_requested_pending_events(&interaction) {
-                        yield event;
+                        yield emitter.emit_existing(event);
                     }
                 }
                 finish_run!(
@@ -357,7 +458,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             // Step boundary: starting LLM call
             let assistant_msg_id = gen_message_id();
-            yield AgentEvent::StepStart { message_id: assistant_msg_id.clone() };
+            yield emitter.step_start(assistant_msg_id.clone());
 
             // Stream LLM response with unified retry + fallback model strategy.
             let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
@@ -446,13 +547,13 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         if let Some(output) = collector.process(event) {
                             match output {
                                 crate::runtime::streaming::StreamOutput::TextDelta(delta) => {
-                                    yield AgentEvent::TextDelta { delta };
+                                    yield emitter.emit_existing(AgentEvent::TextDelta { delta });
                                 }
                                 crate::runtime::streaming::StreamOutput::ToolCallStart { id, name } => {
-                                    yield AgentEvent::ToolCallStart { id, name };
+                                    yield emitter.emit_existing(AgentEvent::ToolCallStart { id, name });
                                 }
                                 crate::runtime::streaming::StreamOutput::ToolCallDelta { id, args_delta } => {
-                                    yield AgentEvent::ToolCallDelta { id, args_delta };
+                                    yield emitter.emit_existing(AgentEvent::ToolCallDelta { id, args_delta });
                                 }
                             }
                         }
@@ -485,11 +586,11 @@ pub(super) fn run_loop_stream_impl_with_provider(
             run_state.update_from_response(&result);
             let inference_duration_ms = inference_start.elapsed().as_millis() as u64;
 
-            yield AgentEvent::InferenceComplete {
+            yield emitter.emit_existing(AgentEvent::InferenceComplete {
                 model: inference_model,
                 usage: result.usage.clone(),
                 duration_ms: inference_duration_ms,
-            };
+            });
 
             let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
             if let Err(e) = complete_step_after_inference(
@@ -515,7 +616,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             // Step boundary: finished LLM call
-            yield AgentEvent::StepEnd;
+            yield emitter.step_end();
 
             mark_step_completed(&mut run_state);
 
@@ -534,11 +635,11 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             // Emit ToolCallReady for each finalized tool call
             for tc in &result.tool_calls {
-                yield AgentEvent::ToolCallReady {
+                yield emitter.emit_existing(AgentEvent::ToolCallReady {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
                     arguments: tc.arguments.clone(),
-                };
+                });
             }
 
             // Execute tools with phase hooks
@@ -580,7 +681,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     activity = activity_rx.recv(), if !activity_closed => {
                         match activity {
                             Some(event) => {
-                                yield event;
+                                yield emitter.emit_existing(event);
                             }
                             None => {
                                 activity_closed = true;
@@ -594,7 +695,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             };
 
             while let Ok(event) = activity_rx.try_recv() {
-                yield event;
+                yield emitter.emit_existing(event);
             }
 
             let results = match results {
@@ -608,12 +709,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
-                    yield AgentEvent::InteractionRequested {
+                    yield emitter.emit_existing(AgentEvent::InteractionRequested {
                         interaction: interaction.clone(),
-                    };
-                    yield AgentEvent::Pending {
+                    });
+                    yield emitter.emit_existing(AgentEvent::Pending {
                         interaction: interaction.clone(),
-                    };
+                    });
                 }
             }
             let thread_before_apply = thread.clone();
@@ -648,18 +749,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
             // Emit non-pending tool results (pending ones pause the run).
             for exec_result in &results {
                 if exec_result.pending_interaction.is_none() {
-                    yield AgentEvent::ToolCallDone {
+                    yield emitter.emit_existing(AgentEvent::ToolCallDone {
                         id: exec_result.execution.call.id.clone(),
                         result: exec_result.execution.result.clone(),
                         patch: exec_result.execution.patch.clone(),
                         message_id: tool_msg_ids.get(&exec_result.execution.call.id).cloned().unwrap_or_default(),
-                    };
+                    });
                 }
             }
 
             // Emit state snapshot when we mutated state (tool patches or AgentState pending/clear).
             if let Some(snapshot) = applied.state_snapshot {
-                yield AgentEvent::StateSnapshot { snapshot };
+                yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }
 
             // If there are pending interactions, pause the loop.

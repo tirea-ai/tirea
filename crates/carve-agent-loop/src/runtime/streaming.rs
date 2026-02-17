@@ -971,6 +971,8 @@ mod tests {
             delta: "Hello".to_string(),
         };
         let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"type\":\"text_delta\""));
+        assert!(json.contains("\"data\""));
         assert!(json.contains("text_delta"));
         assert!(json.contains("Hello"));
 
@@ -993,11 +995,11 @@ mod tests {
 
     #[test]
     fn test_agent_event_deserialization() {
-        let json = r#"{"event_type":"step_start"}"#;
+        let json = r#"{"type":"step_start"}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
         assert!(matches!(event, AgentEvent::StepStart { .. }));
 
-        let json = r#"{"event_type":"text_delta","delta":"Hello"}"#;
+        let json = r#"{"type":"text_delta","data":{"delta":"Hello"}}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
         if let AgentEvent::TextDelta { delta } = event {
             assert_eq!(delta, "Hello");
@@ -1005,7 +1007,7 @@ mod tests {
             panic!("Expected TextDelta");
         }
 
-        let json = r#"{"event_type":"activity_snapshot","message_id":"activity_1","activity_type":"progress","content":{"progress":0.3},"replace":true}"#;
+        let json = r#"{"type":"activity_snapshot","data":{"message_id":"activity_1","activity_type":"progress","content":{"progress":0.3},"replace":true}}"#;
         let event: AgentEvent = serde_json::from_str(json).unwrap();
         if let AgentEvent::ActivitySnapshot {
             message_id,

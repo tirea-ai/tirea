@@ -3872,6 +3872,58 @@ async fn run_mock_stream(
 }
 
 #[tokio::test]
+async fn test_stream_serialization_emits_seq_timestamp_and_step_id() {
+    let events = run_mock_stream(
+        MockStreamProvider::new(vec![MockResponse::text("hello")]),
+        AgentConfig::new("mock"),
+        AgentState::new("test").with_message(Message::user("go")),
+        HashMap::new(),
+    )
+    .await;
+
+    let serialized: Vec<Value> = events
+        .iter()
+        .map(|event| serde_json::to_value(event).expect("serialize event"))
+        .collect();
+    assert!(!serialized.is_empty());
+
+    for (idx, event) in serialized.iter().enumerate() {
+        assert_eq!(
+            event.get("seq").and_then(Value::as_u64),
+            Some(idx as u64),
+            "seq mismatch at index {idx}: {event:?}"
+        );
+        assert!(
+            event.get("timestamp_ms").and_then(Value::as_u64).is_some(),
+            "timestamp_ms missing at index {idx}: {event:?}"
+        );
+    }
+
+    let step_start = serialized
+        .iter()
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("step_start"))
+        .expect("step_start event");
+    assert_eq!(
+        step_start.get("step_id").and_then(Value::as_str),
+        Some("step:0")
+    );
+
+    let text_delta = serialized
+        .iter()
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("text_delta"))
+        .expect("text_delta event");
+    assert_eq!(
+        text_delta.get("step_id").and_then(Value::as_str),
+        Some("step:0")
+    );
+    assert!(text_delta.get("run_id").and_then(Value::as_str).is_some());
+    assert!(text_delta
+        .get("thread_id")
+        .and_then(Value::as_str)
+        .is_some());
+}
+
+#[tokio::test]
 async fn test_stream_retries_startup_error_then_succeeds() {
     let provider = Arc::new(FailingStartProvider::new(1));
     let config = AgentConfig::new("mock").with_llm_retry_policy(LlmRetryPolicy {
