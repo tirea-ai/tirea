@@ -270,7 +270,7 @@ fn test_agent_loop_error_display() {
     assert!(err.to_string().contains("timeout"));
 
     let err = AgentLoopError::Stopped {
-        thread: Box::new(AgentState::new("test")),
+        state: Box::new(AgentState::new("test")),
         reason: StopReason::MaxRoundsReached,
     };
     assert!(err.to_string().contains("MaxRoundsReached"));
@@ -279,7 +279,7 @@ fn test_agent_loop_error_display() {
 #[test]
 fn test_agent_loop_error_termination_reason_mapping() {
     let stopped = AgentLoopError::Stopped {
-        thread: Box::new(AgentState::new("test")),
+        state: Box::new(AgentState::new("test")),
         reason: StopReason::MaxRoundsReached,
     };
     assert_eq!(
@@ -288,12 +288,12 @@ fn test_agent_loop_error_termination_reason_mapping() {
     );
 
     let cancelled = AgentLoopError::Cancelled {
-        thread: Box::new(AgentState::new("test")),
+        state: Box::new(AgentState::new("test")),
     };
     assert_eq!(cancelled.termination_reason(), TerminationReason::Cancelled);
 
     let pending = AgentLoopError::PendingInteraction {
-        thread: Box::new(AgentState::new("test")),
+        state: Box::new(AgentState::new("test")),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     assert_eq!(
@@ -656,12 +656,12 @@ fn test_step_result_variants() {
     let thread = AgentState::new("test");
 
     let done = StepResult::Done {
-        thread: thread.clone(),
+        state: thread.clone(),
         response: "Hello".to_string(),
     };
 
     let tools_executed = StepResult::ToolsExecuted {
-        thread,
+        state: thread,
         text: "Calling tools".to_string(),
         tool_calls: vec![],
     };
@@ -1511,7 +1511,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
 
         let (thread, interaction) = match err {
             AgentLoopError::PendingInteraction {
-                thread,
+                state: thread,
                 interaction,
             } => (thread, interaction),
             other => panic!("Expected PendingInteraction error, got: {:?}", other),
@@ -1982,7 +1982,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
 
         let (thread, interaction) = match err {
             AgentLoopError::PendingInteraction {
-                thread,
+                state: thread,
                 interaction,
             } => (thread, interaction),
             other => panic!("Expected PendingInteraction error, got: {:?}", other),
@@ -2693,7 +2693,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let result = run_loop(&client, &config, thread, &tools).await;
     let (thread, interaction) = match result {
         Err(AgentLoopError::PendingInteraction {
-            thread,
+            state: thread,
             interaction,
         }) => (thread, interaction),
         other => panic!("expected PendingInteraction on skip_inference, got: {other:?}"),
@@ -3218,7 +3218,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
             .expect_err("timeout stop condition should stop non-stream run");
 
     match err {
-        AgentLoopError::Stopped { thread, reason } => {
+        AgentLoopError::Stopped { state: thread, reason } => {
             assert_eq!(reason, StopReason::TimeoutReached);
             assert!(
                 thread
@@ -3276,7 +3276,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
 #[test]
 fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
     let outcome = LoopOutcome {
-        thread: AgentState::new("thread-1"),
+        state: AgentState::new("thread-1"),
         termination: TerminationReason::NaturalEnd,
         response: Some("final text".to_string()),
         usage: LoopUsage::default(),
@@ -3304,7 +3304,7 @@ fn test_loop_outcome_run_finish_projection_natural_end_has_result_payload() {
 #[test]
 fn test_loop_outcome_run_finish_projection_non_natural_has_no_result_payload() {
     let outcome = LoopOutcome {
-        thread: AgentState::new("thread-2"),
+        state: AgentState::new("thread-2"),
         termination: TerminationReason::Cancelled,
         response: Some("ignored".to_string()),
         usage: LoopUsage::default(),
@@ -3353,7 +3353,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
     assert_eq!(outcome.stats.tool_calls, 0);
     assert_eq!(outcome.stats.tool_errors, 0);
     assert!(outcome
-        .thread
+        .state
         .messages
         .iter()
         .any(|m| m.role == crate::contracts::state::Role::Assistant && m.content == "done"));
@@ -3437,7 +3437,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
         .expect("run task should not panic");
 
     let thread = match result {
-        Err(AgentLoopError::Cancelled { thread }) => thread,
+        Err(AgentLoopError::Cancelled { state: thread }) => thread,
         other => panic!("expected Cancelled during tool execution, got: {other:?}"),
     };
     assert!(
@@ -3525,7 +3525,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     )
     .await;
     let nonstream_thread = match nonstream_result {
-        Err(AgentLoopError::Cancelled { thread }) => *thread,
+        Err(AgentLoopError::Cancelled { state: thread }) => *thread,
         other => panic!("expected non-stream cancellation, got: {other:?}"),
     };
 
@@ -3600,7 +3600,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     .await;
     let (nonstream_thread, nonstream_interaction) = match nonstream_result {
         Err(AgentLoopError::PendingInteraction {
-            thread,
+            state: thread,
             interaction,
         }) => (*thread, *interaction),
         other => panic!("expected non-stream pending interaction, got: {other:?}"),
@@ -5465,7 +5465,7 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
         .expect_err("sequential mode should pause on first pending interaction");
     let (thread, interaction) = match err {
         AgentLoopError::PendingInteraction {
-            thread,
+            state: thread,
             interaction,
         } => (thread, interaction),
         other => panic!("expected PendingInteraction, got: {other:?}"),
@@ -5878,7 +5878,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     let result = run_step(&Client::default(), &config, thread, &tools).await;
     let (thread, interaction) = match result {
         Err(AgentLoopError::PendingInteraction {
-            thread,
+            state: thread,
             interaction,
         }) => (thread, interaction),
         other => panic!("expected PendingInteraction on skip_inference, got: {other:?}"),

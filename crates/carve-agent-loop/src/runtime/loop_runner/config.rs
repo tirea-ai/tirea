@@ -40,7 +40,7 @@ impl Default for LlmRetryPolicy {
 /// Input context passed to per-step tool providers.
 pub struct StepToolInput<'a> {
     /// Current AgentState at step boundary.
-    pub thread: &'a AgentState,
+    pub state: &'a AgentState,
 }
 
 /// Tool snapshot resolved for one step.

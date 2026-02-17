@@ -60,12 +60,12 @@ pub(super) async fn commit_pending_delta(
         pending.patches,
         None,
     );
-    let precondition = VersionPrecondition::Exact(super::thread_state_version(thread));
+    let precondition = VersionPrecondition::Exact(super::agent_state_version(thread));
     let committed_version = committer
         .commit(&thread.id, changeset, precondition)
         .await
         .map_err(|e| AgentLoopError::StateError(format!("state commit failed: {e}")))?;
-    super::set_thread_state_version(
+    super::set_agent_state_version(
         thread,
         committed_version,
         Some(super::current_unix_millis()),

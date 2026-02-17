@@ -128,7 +128,7 @@ where
         &current_state,
         "phase",
         "plugin:phase",
-        super::thread_state_version(thread),
+        super::agent_state_version(thread),
     );
     let mut step = StepContext::new(thread, tool_descriptors.to_vec());
     setup(&mut step);
@@ -223,7 +223,7 @@ pub(super) async fn emit_run_end_phase(
             &current_state,
             "phase",
             "plugin:run_end",
-            super::thread_state_version(&thread),
+            super::agent_state_version(&thread),
         );
         let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
         if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {

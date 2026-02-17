@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 pub enum StepResult {
     /// LLM responded with text, no tools needed.
     Done {
-        thread: AgentState,
+        state: AgentState,
         response: String,
     },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
-        thread: AgentState,
+        state: AgentState,
         text: String,
         tool_calls: Vec<crate::contracts::state::ToolCall>,
     },
@@ -47,7 +47,7 @@ pub(super) enum LoopFailure {
 /// Unified terminal state for loop execution.
 #[derive(Debug, Clone)]
 pub struct LoopOutcome {
-    pub thread: AgentState,
+    pub state: AgentState,
     pub termination: TerminationReason,
     pub response: Option<String>,
     pub usage: LoopUsage,
@@ -70,7 +70,7 @@ impl LoopOutcome {
     /// Project unified outcome into stream `RunFinish` event.
     pub fn to_run_finish_event(self, run_id: String) -> AgentEvent {
         AgentEvent::RunFinish {
-            thread_id: self.thread.id.clone(),
+            thread_id: self.state.id.clone(),
             run_id,
             result: self.run_finish_result(),
             termination: self.termination,
@@ -84,24 +84,24 @@ impl LoopOutcome {
 pub async fn run_step_cycle(
     client: &Client,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<StepResult, AgentLoopError> {
     // Run one step
-    let (thread, result) = run_step(client, config, thread, tools).await?;
+    let (state, result) = run_step(client, config, state, tools).await?;
 
     if !result.needs_tools() {
         return Ok(StepResult::Done {
-            thread,
+            state,
             response: result.text,
         });
     }
 
     // Execute tools
-    let thread = execute_tools_with_config(thread, &result, tools, config).await?;
+    let state = execute_tools_with_config(state, &result, tools, config).await?;
 
     Ok(StepResult::ToolsExecuted {
-        thread,
+        state,
         text: result.text,
         tool_calls: result.tool_calls,
     })
@@ -116,25 +116,25 @@ pub enum AgentLoopError {
     StateError(String),
     /// The agent loop terminated normally due to a stop condition.
     ///
-    /// This is not an error but a structured stop with a reason. The run thread
+    /// This is not an error but a structured stop with a reason. The run state
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
-        thread: Box<AgentState>,
+        state: Box<AgentState>,
         reason: StopReason,
     },
     /// Pending user interaction; execution should pause until the client responds.
     ///
-    /// The returned thread includes any patches applied up to the point where the
+    /// The returned state includes any patches applied up to the point where the
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        thread: Box<AgentState>,
+        state: Box<AgentState>,
         interaction: Box<Interaction>,
     },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]
-    Cancelled { thread: Box<AgentState> },
+    Cancelled { state: Box<AgentState> },
 }
 
 impl AgentLoopError {

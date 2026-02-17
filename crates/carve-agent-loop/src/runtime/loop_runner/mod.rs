@@ -149,18 +149,18 @@ fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
 
-pub(super) fn thread_state_version(thread: &AgentState) -> u64 {
-    thread.metadata.version.unwrap_or(0)
+pub(super) fn agent_state_version(state: &AgentState) -> u64 {
+    state.metadata.version.unwrap_or(0)
 }
 
-pub fn set_thread_state_version(
-    thread: &mut AgentState,
+pub fn set_agent_state_version(
+    state: &mut AgentState,
     version: u64,
     version_timestamp: Option<u64>,
 ) {
-    thread.metadata.version = Some(version);
+    state.metadata.version = Some(version);
     if let Some(timestamp) = version_timestamp {
-        thread.metadata.version_timestamp = Some(timestamp);
+        state.metadata.version_timestamp = Some(timestamp);
     }
 }
 
@@ -291,9 +291,9 @@ pub(super) fn llm_executor_for_run(config: &AgentConfig) -> Arc<dyn LlmExecutor>
 
 pub(super) async fn resolve_step_tool_snapshot(
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    thread: &AgentState,
+    state: &AgentState,
 ) -> Result<StepToolSnapshot, AgentLoopError> {
-    step_tool_provider.provide(StepToolInput { thread }).await
+    step_tool_provider.provide(StepToolInput { state }).await
 }
 
 fn mark_step_completed(run_state: &mut RunState) {
@@ -301,14 +301,14 @@ fn mark_step_completed(run_state: &mut RunState) {
 }
 
 fn build_loop_outcome(
-    thread: AgentState,
+    state: AgentState,
     termination: TerminationReason,
     response: Option<String>,
     run_state: &RunState,
     failure: Option<outcome::LoopFailure>,
 ) -> LoopOutcome {
     LoopOutcome {
-        thread,
+        state,
         termination,
         response: response.filter(|text| !text.is_empty()),
         usage: run_state.usage(),
@@ -320,10 +320,10 @@ fn build_loop_outcome(
 fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
-    thread: &AgentState,
+    state: &AgentState,
     stop_conditions: &[Arc<dyn crate::engine::stop_conditions::StopCondition>],
 ) -> Option<StopReason> {
-    let stop_input = run_state.to_policy_input(result, thread);
+    let stop_input = run_state.to_policy_input(result, state);
     check_stop_policies(stop_conditions, &stop_input)
 }
 
@@ -673,41 +673,41 @@ fn assistant_turn_message(
 /// 3. Send messages to LLM
 /// 4. Emit AfterInference phase
 /// 5. Emit StepEnd phase
-/// 6. Return the thread and result (caller handles tool execution)
+/// 6. Return the state and result (caller handles tool execution)
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(AgentState, StreamResult), AgentLoopError> {
-    run_step_with_provider(client, config, thread, tools).await
+    run_step_with_provider(client, config, state, tools).await
 }
 
 async fn run_step_with_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(AgentState, StreamResult), AgentLoopError> {
     let step_tool_provider = step_tool_provider_for_run(config, tools);
-    let mut thread = thread;
-    let step_tools = resolve_step_tool_snapshot(&step_tool_provider, &thread).await?;
+    let mut state = state;
+    let step_tools = resolve_step_tool_snapshot(&step_tool_provider, &state).await?;
     let tool_descriptors = step_tools.descriptors.clone();
-    let prepared = prepare_step_execution(&thread, &tool_descriptors, config).await?;
-    thread = apply_pending_patches(thread, prepared.pending_patches);
+    let prepared = prepare_step_execution(&state, &tool_descriptors, config).await?;
+    state = apply_pending_patches(state, prepared.pending_patches);
     let messages = prepared.messages;
     let filtered_tools = prepared.filtered_tools;
 
     // Skip inference if requested
     if prepared.skip_inference {
-        if let Some(interaction) = pending_interaction_from_thread(&thread) {
+        if let Some(interaction) = pending_interaction_from_thread(&state) {
             return Err(AgentLoopError::PendingInteraction {
-                thread: Box::new(thread),
+                state: Box::new(state),
                 interaction: Box::new(interaction),
             });
         }
         return Ok((
-            thread,
+            state,
             StreamResult {
                 text: String::new(),
                 tool_calls: vec![],
@@ -734,12 +734,12 @@ async fn run_step_with_provider(
         LlmAttemptOutcome::Success { value, .. } => value,
         LlmAttemptOutcome::Cancelled => {
             return Err(AgentLoopError::Cancelled {
-                thread: Box::new(thread),
+                state: Box::new(state),
             });
         }
         LlmAttemptOutcome::Exhausted { last_error, .. } => {
             apply_llm_error_cleanup(
-                &mut thread,
+                &mut state,
                 &tool_descriptors,
                 &config.plugins,
                 "llm_exec_error",
@@ -754,14 +754,14 @@ async fn run_step_with_provider(
 
     // Add assistant message
     let step_meta = step_metadata(
-        thread
+        state
             .scope
             .value("run_id")
             .and_then(|v| v.as_str().map(String::from)),
-        next_step_index(&thread),
+        next_step_index(&state),
     );
     complete_step_after_inference(
-        &mut thread,
+        &mut state,
         &result,
         step_meta,
         None,
@@ -770,19 +770,19 @@ async fn run_step_with_provider(
     )
     .await?;
 
-    Ok((thread, result))
+    Ok((state, result))
 }
 
 /// Run the full agent loop until completion or a stop condition is met.
 ///
-/// Returns the final thread and the last response text.
+/// Returns the final state and the last response text.
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(AgentState, String), AgentLoopError> {
-    run_loop_with_context(client, config, thread, tools, RunContext::default()).await
+    run_loop_with_context(client, config, state, tools, RunContext::default()).await
 }
 
 /// Run the full agent loop using executors and providers declared in [`AgentConfig`].
@@ -815,18 +815,18 @@ pub async fn run_loop_with_input(
 pub async fn run_loop_with_context(
     client: &Client,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Result<(AgentState, String), AgentLoopError> {
-    run_loop_with_context_provider(client, config, thread, tools, run_ctx).await
+    run_loop_with_context_provider(client, config, state, tools, run_ctx).await
 }
 
 fn legacy_result_from_outcome(
     outcome: LoopOutcome,
 ) -> Result<(AgentState, String), AgentLoopError> {
     let LoopOutcome {
-        thread,
+        state,
         termination,
         response,
         failure,
@@ -835,19 +835,19 @@ fn legacy_result_from_outcome(
 
     match termination {
         TerminationReason::NaturalEnd | TerminationReason::PluginRequested => {
-            Ok((thread, response.unwrap_or_default()))
+            Ok((state, response.unwrap_or_default()))
         }
         TerminationReason::Stopped(reason) => Err(AgentLoopError::Stopped {
-            thread: Box::new(thread),
+            state: Box::new(state),
             reason,
         }),
         TerminationReason::Cancelled => Err(AgentLoopError::Cancelled {
-            thread: Box::new(thread),
+            state: Box::new(state),
         }),
         TerminationReason::PendingInteraction => {
-            if let Some(interaction) = pending_interaction_from_thread(&thread) {
+            if let Some(interaction) = pending_interaction_from_thread(&state) {
                 Err(AgentLoopError::PendingInteraction {
-                    thread: Box::new(thread),
+                    state: Box::new(state),
                     interaction: Box::new(interaction),
                 })
             } else {
@@ -869,12 +869,12 @@ fn legacy_result_from_outcome(
 async fn run_loop_with_context_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    thread: AgentState,
+    state: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Result<(AgentState, String), AgentLoopError> {
     let outcome =
-        run_loop_outcome_with_context_provider(provider, config, thread, tools, run_ctx).await;
+        run_loop_outcome_with_context_provider(provider, config, state, tools, run_ctx).await;
     legacy_result_from_outcome(outcome)
 }
 
@@ -1091,7 +1091,7 @@ async fn run_loop_outcome_with_context_provider(
             }
         };
         let thread_messages_for_tools = thread.messages.clone();
-        let thread_version_for_tools = thread_state_version(&thread);
+        let thread_version_for_tools = agent_state_version(&thread);
 
         let tool_exec_future = config.tool_executor.execute(ToolExecutionRequest {
             tools: &step_tools.tools,

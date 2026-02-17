@@ -476,7 +476,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             scope: Some(&rt_for_tools),
             thread_id: &thread.id,
             thread_messages: &thread.messages,
-            state_version: super::thread_state_version(&thread),
+            state_version: super::agent_state_version(&thread),
             cancellation_token: None,
         })
         .await?;
@@ -490,7 +490,7 @@ pub async fn execute_tools_with_plugins_and_executor(
     )?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            thread: Box::new(applied.thread),
+            state: Box::new(applied.thread),
             interaction: Box::new(interaction),
         });
     }
@@ -552,7 +552,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            thread: Box::new(AgentState::new(thread_id.to_string())),
+            state: Box::new(AgentState::new(thread_id.to_string())),
         });
     }
 
@@ -594,7 +594,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         tokio::select! {
             _ = token.cancelled() => {
                 return Err(AgentLoopError::Cancelled {
-                    thread: Box::new(AgentState::new(thread_id.clone())),
+                    state: Box::new(AgentState::new(thread_id.clone())),
                 });
             }
             results = join_future => results,
@@ -623,7 +623,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            thread: Box::new(AgentState::new(thread_id.to_string())),
+            state: Box::new(AgentState::new(thread_id.to_string())),
         });
     }
 
@@ -636,7 +636,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
             tokio::select! {
                 _ = token.cancelled() => {
                     return Err(AgentLoopError::Cancelled {
-                        thread: Box::new(AgentState::new(thread_id.to_string())),
+                        state: Box::new(AgentState::new(thread_id.to_string())),
                     });
                 }
                 result = execute_single_tool_with_phases(
