@@ -1,5 +1,5 @@
 use crate::{
-    LoadSkillResourceTool, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
+    LoadSkillResourceTool, Skill, SkillActivateTool, SkillDiscoveryPlugin, SkillPlugin,
     SkillRuntimePlugin, SkillScriptTool,
 };
 use carve_agent_contract::plugin::AgentPlugin;
@@ -24,14 +24,13 @@ pub enum SkillSubsystemError {
 ///
 /// ```ignore
 /// use carve_agent::contracts::tool::Tool;
-/// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-/// use carve_agent::runtime::loop_runner::AgentConfig;
+/// use carve_agent::extensions::skills::{FsSkill, SkillSubsystem};
 /// use std::collections::HashMap;
 /// use std::sync::Arc;
 ///
-/// // 1) Build a registry and wire it into the subsystem.
-/// let reg = FsSkillRegistry::discover_root("skills").unwrap();
-/// let skills = SkillSubsystem::new(Arc::new(reg));
+/// // 1) Discover skills and wire into subsystem.
+/// let result = FsSkill::discover("skills").unwrap();
+/// let skills = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
 ///
 /// // 2) Register tools (skill activation + reference/script utilities).
 /// let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
@@ -44,27 +43,46 @@ pub enum SkillSubsystemError {
 /// ```
 #[derive(Debug, Clone)]
 pub struct SkillSubsystem {
-    registry: Arc<dyn SkillRegistry>,
+    skills: HashMap<String, Arc<dyn Skill>>,
 }
 
 impl SkillSubsystem {
-    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+    pub fn new(skills: Vec<Arc<dyn Skill>>) -> Self {
+        let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
+        for skill in skills {
+            map.insert(skill.meta().id.clone(), skill);
+        }
+        Self { skills: map }
     }
 
-    pub fn registry(&self) -> Arc<dyn SkillRegistry> {
-        self.registry.clone()
+    pub fn from_map(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
+        Self { skills }
+    }
+
+    pub fn skills(&self) -> &HashMap<String, Arc<dyn Skill>> {
+        &self.skills
+    }
+
+    fn skills_list(&self) -> Vec<Arc<dyn Skill>> {
+        let mut list: Vec<_> = self.skills.values().cloned().collect();
+        list.sort_by(|a, b| a.meta().id.cmp(&b.meta().id));
+        list
     }
 
     /// Build the combined skills plugin (discovery + runtime).
     pub fn plugin(&self) -> Arc<dyn AgentPlugin> {
-        let discovery = SkillDiscoveryPlugin::new(self.registry.clone());
+        let discovery = SkillDiscoveryPlugin::new(self.skills_list());
         SkillPlugin::new(discovery).boxed()
     }
 
     /// Build only the runtime plugin (inject activated skills).
     pub fn runtime_plugin(&self) -> Arc<dyn AgentPlugin> {
         Arc::new(SkillRuntimePlugin::new())
+    }
+
+    /// Build only the discovery plugin.
+    pub fn discovery_plugin(&self) -> SkillDiscoveryPlugin {
+        SkillDiscoveryPlugin::new(self.skills_list())
     }
 
     /// Construct the skills tools map.
@@ -83,30 +101,15 @@ impl SkillSubsystem {
     /// Add skills tools to an existing tool map.
     ///
     /// Returns an error if any tool id is already present.
-    ///
-    /// ```ignore
-    /// use carve_agent::contracts::tool::Tool;
-    /// use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
-    /// use std::collections::HashMap;
-    /// use std::sync::Arc;
-    ///
-    /// let reg = FsSkillRegistry::discover_root("skills").unwrap();
-    /// let skills = SkillSubsystem::new(Arc::new(reg));
-    ///
-    /// // Conflict example: `tools()` already contains the skill tool ids.
-    /// let mut tools: HashMap<String, Arc<dyn Tool>> = skills.tools();
-    /// let err = skills.extend_tools(&mut tools).unwrap_err();
-    /// assert!(err.to_string().contains("tool id already registered"));
-    /// ```
     pub fn extend_tools(
         &self,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<(), SkillSubsystemError> {
-        let reg = self.registry.clone();
+        let skills = self.skills.clone();
         let tool_defs: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(SkillActivateTool::new(reg.clone())),
-            Arc::new(LoadSkillResourceTool::new(reg.clone())),
-            Arc::new(SkillScriptTool::new(reg)),
+            Arc::new(SkillActivateTool::new(skills.clone())),
+            Arc::new(LoadSkillResourceTool::new(skills.clone())),
+            Arc::new(SkillScriptTool::new(skills)),
         ];
 
         for t in tool_defs {
@@ -125,7 +128,8 @@ impl SkillSubsystem {
 mod tests {
     use super::*;
     use crate::{
-        FsSkillRegistry, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+        FsSkill, SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
+        SKILL_SCRIPT_TOOL_ID,
     };
     use async_trait::async_trait;
     use carve_agent_contract::runtime::phase::{Phase, StepContext};
@@ -194,8 +198,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn subsystem_extend_tools_detects_conflict() {
+    fn make_subsystem() -> (TempDir, SkillSubsystem) {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
@@ -205,7 +208,14 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
+        let result = FsSkill::discover(root).unwrap();
+        let sys = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+        (td, sys)
+    }
+
+    #[test]
+    fn subsystem_extend_tools_detects_conflict() {
+        let (_td, sys) = make_subsystem();
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert(SKILL_ACTIVATE_TOOL_ID.to_string(), Arc::new(DummyTool));
         let err = sys.extend_tools(&mut tools).unwrap_err();
@@ -214,16 +224,7 @@ mod tests {
 
     #[test]
     fn subsystem_tools_returns_expected_ids() {
-        let td = TempDir::new().unwrap();
-        let root = td.path().join("skills");
-        fs::create_dir_all(root.join("s1")).unwrap();
-        fs::write(
-            root.join("s1").join("SKILL.md"),
-            "---\nname: s1\ndescription: ok\n---\nBody\n",
-        )
-        .unwrap();
-
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
+        let (_td, sys) = make_subsystem();
         let tools = sys.tools();
         assert!(tools.contains_key(SKILL_ACTIVATE_TOOL_ID));
         assert!(tools.contains_key(SKILL_LOAD_RESOURCE_TOOL_ID));
@@ -233,16 +234,7 @@ mod tests {
 
     #[test]
     fn subsystem_extend_tools_inserts_tools_into_existing_map() {
-        let td = TempDir::new().unwrap();
-        let root = td.path().join("skills");
-        fs::create_dir_all(root.join("s1")).unwrap();
-        fs::write(
-            root.join("s1").join("SKILL.md"),
-            "---\nname: s1\ndescription: ok\n---\nBody\n",
-        )
-        .unwrap();
-
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
+        let (_td, sys) = make_subsystem();
         let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
         tools.insert("other".to_string(), Arc::new(DummyOtherTool));
         sys.extend_tools(&mut tools).unwrap();
@@ -289,9 +281,9 @@ mod tests {
         )
         .unwrap();
 
-        let sys = SkillSubsystem::new(Arc::new(FsSkillRegistry::discover_root(root).unwrap()));
-        let mut tools = HashMap::<String, Arc<dyn Tool>>::new();
-        sys.extend_tools(&mut tools).unwrap();
+        let result = FsSkill::discover(root).unwrap();
+        let sys = SkillSubsystem::new(FsSkill::into_arc_skills(result.skills));
+        let tools = sys.tools();
 
         // Activate the skill via the registered "skill" tool.
         let thread =
@@ -315,8 +307,6 @@ mod tests {
         let thread = thread.with_patch(exec.patch.unwrap());
 
         // Run the subsystem plugin and verify discovery catalog is injected.
-        // Runtime plugin no longer injects system context; skill instructions are
-        // delivered via append_user_messages and resources via tool results.
         let plugin = sys.plugin();
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         let doc = json!({});

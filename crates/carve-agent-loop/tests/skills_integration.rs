@@ -1,5 +1,5 @@
 use carve_agent_extension_skills::{
-    FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillScriptTool,
+    FsSkill, LoadSkillResourceTool, Skill, SkillActivateTool, SkillScriptTool,
 };
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
@@ -9,12 +9,13 @@ use carve_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
 };
 use serde_json::json;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-fn make_skill_tree() -> (TempDir, Arc<dyn SkillRegistry>) {
+fn make_skill_tree() -> (TempDir, HashMap<String, Arc<dyn Skill>>) {
     let td = TempDir::new().unwrap();
     let skills_root = td.path().join("skills");
     let docx_root = skills_root.join("docx");
@@ -44,9 +45,13 @@ echo "hello"
     )
     .unwrap();
 
-    let reg: Arc<dyn SkillRegistry> =
-        Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
-    (td, reg)
+    let result = FsSkill::discover(skills_root).unwrap();
+    let skills: HashMap<String, Arc<dyn Skill>> = result
+        .skills
+        .into_iter()
+        .map(|s| (s.meta().id.clone(), Arc::new(s) as Arc<dyn Skill>))
+        .collect();
+    (td, skills)
 }
 
 async fn apply_tool(
@@ -87,8 +92,8 @@ fn assert_error_code(result: &ToolResult, expected_code: &str) {
 
 #[tokio::test]
 async fn test_skill_activation_delivers_instructions_via_append_user_messages() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
@@ -114,8 +119,8 @@ async fn test_skill_activation_delivers_instructions_via_append_user_messages() 
 
 #[tokio::test]
 async fn test_skill_activation_respects_scope_skill_policy() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
     let mut scope = carve_state::ScopeState::new();
     scope
@@ -134,8 +139,8 @@ async fn test_skill_activation_respects_scope_skill_policy() {
 
 #[tokio::test]
 async fn test_load_skill_resource_respects_scope_skill_policy() {
-    let (_td, reg) = make_skill_tree();
-    let load = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load = LoadSkillResourceTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
     let mut scope = carve_state::ScopeState::new();
     scope
@@ -158,8 +163,8 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
 
 #[tokio::test]
 async fn test_load_reference_returns_content_in_tool_result() {
-    let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
 
@@ -181,9 +186,9 @@ async fn test_load_reference_returns_content_in_tool_result() {
 
 #[tokio::test]
 async fn test_script_result_is_persisted_in_state() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg.clone());
-    let run_script = SkillScriptTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills.clone());
+    let run_script = SkillScriptTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
@@ -211,8 +216,8 @@ async fn test_script_result_is_persisted_in_state() {
 
 #[tokio::test]
 async fn test_load_asset_returns_metadata_in_tool_result() {
-    let (_td, reg) = make_skill_tree();
-    let load_asset = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_asset = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
 
@@ -234,8 +239,8 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
 
 #[tokio::test]
 async fn test_load_reference_rejects_escape() {
-    let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -254,8 +259,8 @@ async fn test_load_reference_rejects_escape() {
 
 #[tokio::test]
 async fn test_load_resource_requires_supported_prefix() {
-    let (_td, reg) = make_skill_tree();
-    let load_asset = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_asset = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -274,8 +279,8 @@ async fn test_load_resource_requires_supported_prefix() {
 
 #[tokio::test]
 async fn test_load_resource_kind_mismatch_is_error() {
-    let (_td, reg) = make_skill_tree();
-    let load_resource = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_resource = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -294,8 +299,8 @@ async fn test_load_resource_kind_mismatch_is_error() {
 
 #[tokio::test]
 async fn test_load_resource_explicit_kind_asset_works() {
-    let (_td, reg) = make_skill_tree();
-    let load_resource = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_resource = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -315,8 +320,8 @@ async fn test_load_resource_explicit_kind_asset_works() {
 
 #[tokio::test]
 async fn test_skill_activation_requires_exact_skill_name() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -331,8 +336,8 @@ async fn test_skill_activation_requires_exact_skill_name() {
 
 #[tokio::test]
 async fn test_skill_activation_unknown_skill_errors() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -347,8 +352,8 @@ async fn test_skill_activation_unknown_skill_errors() {
 
 #[tokio::test]
 async fn test_skill_activation_missing_skill_argument_is_error() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -363,8 +368,8 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
 
 #[tokio::test]
 async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
@@ -381,8 +386,8 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
 
 #[tokio::test]
 async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
-    let (_td, reg) = make_skill_tree();
-    let activate = SkillActivateTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
@@ -405,12 +410,12 @@ async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
 
 #[tokio::test]
 async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
-    let (td, reg) = make_skill_tree();
+    let (td, skills) = make_skill_tree();
     // Ensure discovery has produced the meta and cached SKILL.md content.
-    assert_eq!(reg.list().len(), 1);
+    assert_eq!(skills.len(), 1);
     fs::remove_file(td.path().join("skills").join("docx").join("SKILL.md")).unwrap();
 
-    let activate = SkillActivateTool::new(reg);
+    let activate = SkillActivateTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
@@ -424,8 +429,8 @@ async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
 
 #[tokio::test]
 async fn test_load_reference_requires_references_prefix() {
-    let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -444,8 +449,8 @@ async fn test_load_reference_requires_references_prefix() {
 
 #[tokio::test]
 async fn test_load_reference_missing_arguments_are_errors() {
-    let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
 
@@ -472,8 +477,8 @@ async fn test_load_reference_missing_arguments_are_errors() {
 
 #[tokio::test]
 async fn test_load_reference_invalid_utf8_is_error() {
-    let (td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BAD.bin"), vec![0xff, 0xfe, 0xfd]).unwrap();
@@ -495,8 +500,8 @@ async fn test_load_reference_invalid_utf8_is_error() {
 
 #[tokio::test]
 async fn test_load_reference_missing_file_is_error() {
-    let (_td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -518,8 +523,8 @@ async fn test_load_reference_missing_file_is_error() {
 async fn test_load_reference_symlink_escape_is_error() {
     use std::os::unix::fs as unix_fs;
 
-    let (td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     let outside = td.path().join("outside.md");
     fs::write(&outside, "outside").unwrap();
@@ -544,8 +549,8 @@ async fn test_load_reference_symlink_escape_is_error() {
 
 #[tokio::test]
 async fn test_script_requires_scripts_prefix() {
-    let (_td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
@@ -564,8 +569,8 @@ async fn test_script_requires_scripts_prefix() {
 
 #[tokio::test]
 async fn test_script_missing_arguments_are_errors() {
-    let (_td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
 
@@ -592,8 +597,8 @@ async fn test_script_missing_arguments_are_errors() {
 
 #[tokio::test]
 async fn test_script_args_are_passed_through() {
-    let (td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");
     fs::write(
@@ -618,13 +623,12 @@ printf "%s" "$*"
     .await;
     assert!(result.is_success());
     assert_eq!(result.data["ok"], true);
-    // Script result is returned in tool_result; args were passed through.
 }
 
 #[tokio::test]
 async fn test_script_nonzero_exit_sets_ok_false() {
-    let (td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");
     fs::write(
@@ -655,12 +659,12 @@ exit 2
 
 #[tokio::test]
 async fn test_script_unsupported_runtime_is_error() {
-    let (td, reg) = make_skill_tree();
+    let (td, skills) = make_skill_tree();
     // Create a script with an unsupported extension.
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");
     fs::write(scripts_dir.join("bad.rb"), "puts 'hi'\n").unwrap();
 
-    let run_script = SkillScriptTool::new(reg);
+    let run_script = SkillScriptTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
@@ -678,8 +682,8 @@ async fn test_script_unsupported_runtime_is_error() {
 
 #[tokio::test]
 async fn test_script_rejects_excessive_argument_count() {
-    let (_td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (_td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     let mut args = Vec::new();
     for i in 0..70 {
@@ -718,9 +722,13 @@ Body
 "#,
     )
     .unwrap();
-    let reg: Arc<dyn SkillRegistry> =
-        Arc::new(FsSkillRegistry::discover_root(skills_root).unwrap());
-    let activate = SkillActivateTool::new(reg);
+    let result = FsSkill::discover(skills_root).unwrap();
+    let skills: HashMap<String, Arc<dyn Skill>> = result
+        .skills
+        .into_iter()
+        .map(|s| (s.meta().id.clone(), Arc::new(s) as Arc<dyn Skill>))
+        .collect();
+    let activate = SkillActivateTool::new(skills);
 
     let thread = AgentState::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
@@ -744,8 +752,8 @@ Body
 
 #[tokio::test]
 async fn test_reference_truncation_flag_in_tool_result() {
-    let (td, reg) = make_skill_tree();
-    let load_ref = LoadSkillResourceTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let load_ref = LoadSkillResourceTool::new(skills);
 
     // Create a big reference file (>256KiB).
     let big = "a".repeat(257 * 1024);
@@ -771,8 +779,8 @@ async fn test_reference_truncation_flag_in_tool_result() {
 
 #[tokio::test]
 async fn test_script_stdout_truncation_flag_in_tool_result() {
-    let (td, reg) = make_skill_tree();
-    let run_script = SkillScriptTool::new(reg);
+    let (td, skills) = make_skill_tree();
+    let run_script = SkillScriptTool::new(skills);
 
     // Print >32KiB to stdout.
     let scripts_dir = td.path().join("skills").join("docx").join("scripts");

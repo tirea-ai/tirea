@@ -5,7 +5,7 @@ use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
-use crate::extensions::skills::FsSkillRegistry;
+use crate::extensions::skills::FsSkill;
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
 use serde_json::json;
@@ -168,7 +168,7 @@ async fn wire_skills_inserts_tools_and_plugin() {
     let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -217,7 +217,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::RuntimeOnly,
             ..SkillsConfig::default()
@@ -259,7 +259,7 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
 fn wire_skills_disabled_is_noop() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::Disabled,
             ..SkillsConfig::default()
@@ -361,7 +361,7 @@ impl AgentPlugin for FakeSkillsPlugin {
 fn wire_skills_errors_if_plugin_already_installed() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -471,7 +471,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
 
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -612,7 +612,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
 
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -797,7 +797,7 @@ async fn resolve_wires_policies_before_plugins() {
 async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills_registry(Arc::new(FsSkillRegistry::discover_root(root).unwrap()))
+        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()

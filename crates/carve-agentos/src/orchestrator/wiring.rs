@@ -5,7 +5,8 @@ use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_
 use super::*;
 use crate::runtime::loop_runner::GenaiLlmExecutor;
 use crate::extensions::skills::{
-    SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
+    Skill, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
+    SKILLS_RUNTIME_PLUGIN_ID,
 };
 
 #[derive(Default)]
@@ -50,8 +51,8 @@ impl AgentOs {
         self.default_client.clone()
     }
 
-    pub fn skill_registry(&self) -> Option<Arc<dyn SkillRegistry>> {
-        self.skills_registry.clone()
+    pub fn skill_list(&self) -> Option<&[Arc<dyn Skill>]> {
+        self.skills.as_deref()
     }
 
     pub(crate) fn agents_registry(&self) -> Arc<dyn AgentRegistry> {
@@ -164,20 +165,23 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(&self, reg: Arc<dyn SkillRegistry>) -> Vec<Arc<dyn AgentPlugin>> {
-        match self.skills.mode {
+    fn build_skills_plugins(
+        &self,
+        skills: Vec<Arc<dyn Skill>>,
+    ) -> Vec<Arc<dyn AgentPlugin>> {
+        match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
-                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                    self.skills.discovery_max_entries,
-                    self.skills.discovery_max_chars,
+                let discovery = SkillDiscoveryPlugin::new(skills).with_limits(
+                    self.skills_config.discovery_max_entries,
+                    self.skills_config.discovery_max_chars,
                 );
                 vec![SkillPlugin::new(discovery).boxed()]
             }
             SkillsMode::DiscoveryOnly => {
-                let discovery = SkillDiscoveryPlugin::new(reg).with_limits(
-                    self.skills.discovery_max_entries,
-                    self.skills.discovery_max_chars,
+                let discovery = SkillDiscoveryPlugin::new(skills).with_limits(
+                    self.skills_config.discovery_max_entries,
+                    self.skills_config.discovery_max_chars,
                 );
                 vec![Arc::new(discovery)]
             }
@@ -189,18 +193,19 @@ impl AgentOs {
         &self,
         explicit_plugins: &[Arc<dyn AgentPlugin>],
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
-        if self.skills.mode == SkillsMode::Disabled {
+        if self.skills_config.mode == SkillsMode::Disabled {
             return Ok(Vec::new());
         }
 
         Self::ensure_skills_plugin_not_installed(explicit_plugins)?;
-        let reg = self
-            .skills_registry
+        let skills = self
+            .skills
             .clone()
             .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
 
+        let subsystem = SkillSubsystem::new(skills.clone());
         let mut tool_defs = HashMap::new();
-        SkillSubsystem::new(reg.clone())
+        subsystem
             .extend_tools(&mut tool_defs)
             .map_err(|e| match e {
                 SkillSubsystemError::ToolIdConflict(id) => {
@@ -209,7 +214,7 @@ impl AgentOs {
             })?;
 
         let mut bundle = ToolPluginBundle::new(SKILLS_BUNDLE_ID).with_tools(tool_defs);
-        for plugin in self.build_skills_plugins(reg) {
+        for plugin in self.build_skills_plugins(skills) {
             bundle = bundle.with_plugin(plugin);
         }
         Ok(vec![Arc::new(bundle)])

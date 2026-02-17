@@ -1,9 +1,9 @@
 use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
-    material_key, SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource,
-    SkillResourceKind, SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID,
-    SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
+    material_key, Skill, SkillError, SkillMaterializeError, SkillResource, SkillResourceKind,
+    SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
+    SKILL_SCRIPT_TOOL_ID,
 };
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use carve_agent_contract::AgentState;
@@ -26,12 +26,16 @@ struct AgentStateDoc {
 
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {
-    registry: Arc<dyn SkillRegistry>,
+    skills: HashMap<String, Arc<dyn Skill>>,
 }
 
 impl SkillActivateTool {
-    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
+        Self { skills }
+    }
+
+    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
+        self.skills.get(key.trim()).cloned()
     }
 }
 
@@ -59,17 +63,18 @@ impl Tool for SkillActivateTool {
             Err(r) => return Ok(r),
         };
 
-        let meta = self.registry.resolve(&key).ok_or_else(|| {
+        let skill = self.resolve(&key).ok_or_else(|| {
             tool_error(
                 SKILL_ACTIVATE_TOOL_ID,
                 "unknown_skill",
                 format!("Unknown skill: {key}"),
             )
         });
-        let meta = match meta {
-            Ok(m) => m,
+        let skill = match skill {
+            Ok(s) => s,
             Err(r) => return Ok(r),
         };
+        let meta = skill.meta();
         if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
@@ -83,11 +88,10 @@ impl Tool for SkillActivateTool {
             ));
         }
 
-        let raw = self
-            .registry
-            .read_skill_md(&meta.id)
+        let raw = skill
+            .read_instructions()
             .await
-            .map_err(|e| map_registry_error(SKILL_ACTIVATE_TOOL_ID, e));
+            .map_err(|e| map_skill_error(SKILL_ACTIVATE_TOOL_ID, e));
         let raw = match raw {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -114,11 +118,6 @@ impl Tool for SkillActivateTool {
         }
         state.instructions_insert(meta.id.clone(), instructions);
 
-        // Apply allowed-tools to the existing permission model.
-        //
-        // Important: scoped declarations like `Bash(git status)` cannot be represented by the
-        // current permission model. We must NOT widen them into plain `Bash`; instead, we keep
-        // full token fidelity in result payload and only auto-apply bare tool IDs.
         let mut applied_tool_ids: Vec<String> = Vec::new();
         let mut skipped_tokens: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -157,8 +156,6 @@ impl Tool for SkillActivateTool {
         }
 
         if !instruction_for_message.trim().is_empty() {
-            // Route follow-up user messages through AgentState so the runtime can
-            // append them deterministically after tool execution.
             let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
             agent.append_user_messages_insert(
                 ctx.call_id().to_string(),
@@ -183,12 +180,16 @@ impl Tool for SkillActivateTool {
 
 #[derive(Debug, Clone)]
 pub struct LoadSkillResourceTool {
-    registry: Arc<dyn SkillRegistry>,
+    skills: HashMap<String, Arc<dyn Skill>>,
 }
 
 impl LoadSkillResourceTool {
-    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
+        Self { skills }
+    }
+
+    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
+        self.skills.get(key.trim()).cloned()
     }
 }
 
@@ -226,14 +227,14 @@ impl Tool for LoadSkillResourceTool {
             Err(r) => return Ok(r),
         };
 
-        let meta = self
-            .registry
+        let skill = self
             .resolve(&key)
             .ok_or_else(|| tool_error(tool_name, "unknown_skill", format!("Unknown skill: {key}")));
-        let meta = match meta {
+        let skill = match skill {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
+        let meta = skill.meta();
         if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
@@ -247,11 +248,10 @@ impl Tool for LoadSkillResourceTool {
             ));
         }
 
-        let resource = self
-            .registry
-            .load_resource(&meta.id, kind, &path)
+        let resource = skill
+            .load_resource(kind, &path)
             .await
-            .map_err(|e| map_registry_error(tool_name, e));
+            .map_err(|e| map_skill_error(tool_name, e));
         let resource = match resource {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -321,12 +321,16 @@ impl Tool for LoadSkillResourceTool {
 
 #[derive(Debug, Clone)]
 pub struct SkillScriptTool {
-    registry: Arc<dyn SkillRegistry>,
+    skills: HashMap<String, Arc<dyn Skill>>,
 }
 
 impl SkillScriptTool {
-    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
-        Self { registry }
+    pub fn new(skills: HashMap<String, Arc<dyn Skill>>) -> Self {
+        Self { skills }
+    }
+
+    fn resolve(&self, key: &str) -> Option<Arc<dyn Skill>> {
+        self.skills.get(key.trim()).cloned()
     }
 }
 
@@ -368,17 +372,18 @@ impl Tool for SkillScriptTool {
             })
             .unwrap_or_default();
 
-        let meta = self.registry.resolve(&key).ok_or_else(|| {
+        let skill = self.resolve(&key).ok_or_else(|| {
             tool_error(
                 SKILL_SCRIPT_TOOL_ID,
                 "unknown_skill",
                 format!("Unknown skill: {key}"),
             )
         });
-        let meta = match meta {
+        let skill = match skill {
             Ok(v) => v,
             Err(r) => return Ok(r),
         };
+        let meta = skill.meta();
         if !is_scope_allowed(
             ctx.scope_ref(),
             &meta.id,
@@ -392,11 +397,10 @@ impl Tool for SkillScriptTool {
             ));
         }
 
-        let res = self
-            .registry
-            .run_script(&meta.id, &script, &argv)
+        let res = skill
+            .run_script(&script, &argv)
             .await
-            .map_err(|e| map_registry_error(SKILL_SCRIPT_TOOL_ID, e));
+            .map_err(|e| map_skill_error(SKILL_SCRIPT_TOOL_ID, e));
         let res = match res {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -536,13 +540,13 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     }
 }
 
-fn map_registry_error(tool_name: &str, e: SkillRegistryError) -> ToolResult {
+fn map_skill_error(tool_name: &str, e: SkillError) -> ToolResult {
     match e {
-        SkillRegistryError::UnknownSkill(id) => {
+        SkillError::UnknownSkill(id) => {
             tool_error(tool_name, "unknown_skill", format!("Unknown skill: {id}"))
         }
-        SkillRegistryError::InvalidSkillMd(msg) => tool_error(tool_name, "invalid_skill_md", msg),
-        SkillRegistryError::Materialize(err) => match err {
+        SkillError::InvalidSkillMd(msg) => tool_error(tool_name, "invalid_skill_md", msg),
+        SkillError::Materialize(err) => match err {
             SkillMaterializeError::InvalidPath(msg) => tool_error(tool_name, "invalid_path", msg),
             SkillMaterializeError::PathEscapesRoot => {
                 tool_error(tool_name, "path_escapes_root", "path is outside skill root")
@@ -565,12 +569,12 @@ fn map_registry_error(tool_name: &str, e: SkillRegistryError) -> ToolResult {
                 tool_error(tool_name, "invalid_arguments", msg)
             }
         },
-        SkillRegistryError::Io(msg) => tool_error(tool_name, "io_error", msg),
-        SkillRegistryError::DuplicateSkillId(id) => tool_error(
+        SkillError::Io(msg) => tool_error(tool_name, "io_error", msg),
+        SkillError::DuplicateSkillId(id) => tool_error(
             tool_name,
             "duplicate_skill_id",
             format!("duplicate skill id: {id}"),
         ),
-        SkillRegistryError::Unsupported(msg) => tool_error(tool_name, "unsupported_operation", msg),
+        SkillError::Unsupported(msg) => tool_error(tool_name, "unsupported_operation", msg),
     }
 }

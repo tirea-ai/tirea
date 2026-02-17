@@ -1,5 +1,5 @@
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
-use crate::{SkillRegistry, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH};
+use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
@@ -9,18 +9,18 @@ use std::sync::Arc;
 
 /// Injects a skills catalog into the LLM context so the model can discover and activate skills.
 ///
-/// This is intentionally non-persistent: the catalog is rebuilt from `SkillRegistry` per step.
+/// This is intentionally non-persistent: the catalog is rebuilt from the skill list per step.
 #[derive(Debug, Clone)]
 pub struct SkillDiscoveryPlugin {
-    registry: Arc<dyn SkillRegistry>,
+    skills: Vec<Arc<dyn Skill>>,
     max_entries: usize,
     max_chars: usize,
 }
 
 impl SkillDiscoveryPlugin {
-    pub fn new(registry: Arc<dyn SkillRegistry>) -> Self {
+    pub fn new(skills: Vec<Arc<dyn Skill>>) -> Self {
         Self {
-            registry,
+            skills,
             max_entries: 32,
             max_chars: 16 * 1024,
         }
@@ -33,8 +33,6 @@ impl SkillDiscoveryPlugin {
     }
 
     fn escape_text(s: &str) -> String {
-        // Minimal XML-ish escaping for text nodes.
-        // (We intentionally avoid emitting attributes to keep the prompt closer to agentskills examples.)
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
@@ -45,20 +43,24 @@ impl SkillDiscoveryPlugin {
         _active: &HashSet<String>,
         runtime: Option<&carve_state::ScopeState>,
     ) -> String {
-        let mut metas = self.registry.list();
-        metas.retain(|m| {
-            is_scope_allowed(
-                runtime,
-                &m.id,
-                SCOPE_ALLOWED_SKILLS_KEY,
-                SCOPE_EXCLUDED_SKILLS_KEY,
-            )
-        });
+        let mut metas: Vec<SkillMeta> = self
+            .skills
+            .iter()
+            .map(|s| s.meta().clone())
+            .filter(|m| {
+                is_scope_allowed(
+                    runtime,
+                    &m.id,
+                    SCOPE_ALLOWED_SKILLS_KEY,
+                    SCOPE_EXCLUDED_SKILLS_KEY,
+                )
+            })
+            .collect();
+
         if metas.is_empty() {
             return String::new();
         }
 
-        // Keep ordering stable.
         metas.sort_by(|a, b| a.id.cmp(&b.id));
 
         let total = metas.len();
@@ -83,7 +85,6 @@ impl SkillDiscoveryPlugin {
             if !desc.trim().is_empty() {
                 out.push_str(&format!("<description>{}</description>\n", desc));
             }
-            // Tool-based integration: omit <location> to keep tokens low.
             out.push_str("</skill>\n");
             shown += 1;
 
@@ -126,7 +127,6 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             return;
         }
 
-        // Read active skills from session state (if present) to annotate the catalog.
         let skill_state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
         let active: HashSet<String> = skill_state
             .active()
@@ -140,7 +140,6 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             return;
         }
 
-        // Treat the catalog as system-level guidance so the model can select skills.
         step.system(rendered);
     }
 }
@@ -148,7 +147,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FsSkillRegistry;
+    use crate::FsSkill;
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::AgentState as ContextAgentState;
@@ -157,7 +156,7 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    fn make_registry() -> (TempDir, Arc<dyn SkillRegistry>) {
+    fn make_skills() -> (TempDir, Vec<Arc<dyn Skill>>) {
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("a-skill")).unwrap();
@@ -171,16 +170,17 @@ mod tests {
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        (td, reg)
+        let result = FsSkill::discover(root).unwrap();
+        let skills = FsSkill::into_arc_skills(result.skills);
+        (td, skills)
     }
 
     #[tokio::test]
     async fn injects_catalog_with_usage() {
         let doc = json!({});
         let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        let (_td, reg) = make_registry();
-        let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 8 * 1024);
+        let (_td, skills) = make_skills();
+        let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 8 * 1024);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
@@ -188,7 +188,6 @@ mod tests {
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("<skills_usage>"));
-        // Escaping is applied.
         assert!(s.contains("&amp;"));
         assert!(s.contains("&lt;"));
         assert!(s.contains("&gt;"));
@@ -198,8 +197,8 @@ mod tests {
     async fn marks_active_skills() {
         let doc = json!({});
         let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        let (_td, reg) = make_registry();
-        let p = SkillDiscoveryPlugin::new(reg);
+        let (_td, skills) = make_skills();
+        let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state(
             "s",
             json!({
@@ -214,19 +213,14 @@ mod tests {
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
-        // Does not include active annotations; active skills are handled by runtime plugin injection.
         assert!(s.contains("<name>a-skill</name>"));
     }
 
     #[tokio::test]
-    async fn does_not_inject_when_registry_empty() {
+    async fn does_not_inject_when_skills_empty() {
         let doc = json!({});
         let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        let td = TempDir::new().unwrap();
-        let root = td.path().join("skills");
-        fs::create_dir_all(&root).unwrap();
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        let p = SkillDiscoveryPlugin::new(reg);
+        let p = SkillDiscoveryPlugin::new(vec![]);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
@@ -246,10 +240,11 @@ mod tests {
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        assert!(reg.list().is_empty());
+        let result = FsSkill::discover(root).unwrap();
+        assert!(result.skills.is_empty());
 
-        let p = SkillDiscoveryPlugin::new(reg);
+        let skills = FsSkill::into_arc_skills(result.skills);
+        let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
@@ -275,8 +270,9 @@ mod tests {
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        let p = SkillDiscoveryPlugin::new(reg);
+        let result = FsSkill::discover(root).unwrap();
+        let skills = FsSkill::into_arc_skills(result.skills);
+        let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
@@ -304,15 +300,15 @@ mod tests {
             )
             .unwrap();
         }
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        let p = SkillDiscoveryPlugin::new(reg).with_limits(2, 8 * 1024);
+        let result = FsSkill::discover(root).unwrap();
+        let skills = FsSkill::into_arc_skills(result.skills);
+        let p = SkillDiscoveryPlugin::new(skills).with_limits(2, 8 * 1024);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
         assert!(s.contains("truncated"));
-        // Only 2 entries should be present.
         assert_eq!(s.matches("<skill>").count(), 2);
     }
 
@@ -328,8 +324,9 @@ mod tests {
             "---\nname: s\ndescription: A very long description\n---\nBody",
         )
         .unwrap();
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        let p = SkillDiscoveryPlugin::new(reg).with_limits(10, 256);
+        let result = FsSkill::discover(root).unwrap();
+        let skills = FsSkill::into_arc_skills(result.skills);
+        let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 256);
         let thread = AgentState::with_initial_state("s", json!({}));
         let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
@@ -341,8 +338,8 @@ mod tests {
     async fn filters_catalog_by_runtime_skill_policy() {
         let doc = json!({});
         let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        let (_td, reg) = make_registry();
-        let p = SkillDiscoveryPlugin::new(reg);
+        let (_td, skills) = make_skills();
+        let p = SkillDiscoveryPlugin::new(skills);
         let mut thread = AgentState::with_initial_state("s", json!({}));
         thread
             .scope
@@ -355,6 +352,4 @@ mod tests {
         assert!(s.contains("<name>a-skill</name>"));
         assert!(!s.contains("<name>b-skill</name>"));
     }
-
-    // Registry warnings are logged during discovery; they are intentionally not injected into prompts.
 }

@@ -1,132 +1,97 @@
 use crate::materialize::{load_asset_material, load_reference_material, run_script_material};
 use crate::skill_md::{parse_allowed_tools, parse_skill_md, SkillFrontmatter};
 use crate::{
-    ScriptResult, SkillMaterializeError, SkillMeta, SkillRegistry, SkillRegistryError,
-    SkillRegistryWarning, SkillResource, SkillResourceKind,
+    ScriptResult, Skill, SkillError, SkillMaterializeError, SkillMeta, SkillResource,
+    SkillResourceKind, SkillWarning,
 };
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use unicode_normalization::UnicodeNormalization;
 
-type DiscoveryResult = (
-    Vec<SkillMeta>,
-    HashMap<String, PathBuf>,
-    HashMap<String, PathBuf>,
-    Vec<SkillRegistryWarning>,
-);
-
-#[derive(Debug, Clone, Default)]
-struct FsIndex {
-    metas: Vec<SkillMeta>,
-    by_id: HashMap<String, SkillMeta>,
-    by_id_root: HashMap<String, PathBuf>,
-    by_id_skill_md: HashMap<String, PathBuf>,
-    warnings: Vec<SkillRegistryWarning>,
-}
-
-/// A registry for skills discovered from the local filesystem.
+/// A filesystem-backed skill.
 ///
-/// Construction performs IO and builds an immutable in-memory index.
+/// Each `FsSkill` owns its root directory and SKILL.md path. Resource loading
+/// and script execution are performed relative to `root_dir`.
+///
+/// Use [`FsSkill::discover`] to scan a directory for skills, or
+/// [`FsSkill::discover_roots`] for multiple directories.
 #[derive(Debug, Clone)]
-pub struct FsSkillRegistry {
-    index: FsIndex,
+pub struct FsSkill {
+    meta: SkillMeta,
+    root_dir: PathBuf,
+    skill_md_path: PathBuf,
 }
 
-impl FsSkillRegistry {
-    pub fn discover_root(root: impl Into<PathBuf>) -> Result<Self, SkillRegistryError> {
+/// Result of a discovery scan: found skills and any warnings.
+#[derive(Debug, Clone)]
+pub struct DiscoveryResult {
+    pub skills: Vec<FsSkill>,
+    pub warnings: Vec<SkillWarning>,
+}
+
+impl FsSkill {
+    /// Discover all valid skills under a single root directory.
+    pub fn discover(root: impl Into<PathBuf>) -> Result<DiscoveryResult, SkillError> {
         Self::discover_roots(vec![root.into()])
     }
 
-    pub fn discover_roots(roots: Vec<PathBuf>) -> Result<Self, SkillRegistryError> {
-        let mut metas: Vec<SkillMeta> = Vec::new();
-        let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
-        let mut by_id_root: HashMap<String, PathBuf> = HashMap::new();
-        let mut by_id_skill_md: HashMap<String, PathBuf> = HashMap::new();
+    /// Discover skills under multiple root directories.
+    ///
+    /// Returns an error if duplicate skill IDs are found across roots.
+    pub fn discover_roots(roots: Vec<PathBuf>) -> Result<DiscoveryResult, SkillError> {
+        let mut skills: Vec<FsSkill> = Vec::new();
+        let mut warnings: Vec<SkillWarning> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for root in roots {
-            let (m, roots_by_id, docs_by_id, w) = discover_under_root(&root)?;
+            let (found, w) = discover_under_root(&root)?;
             warnings.extend(w);
 
-            for meta in m {
-                if by_id_root.contains_key(&meta.id) {
-                    return Err(SkillRegistryError::DuplicateSkillId(meta.id));
+            for skill in found {
+                if !seen_ids.insert(skill.meta.id.clone()) {
+                    return Err(SkillError::DuplicateSkillId(skill.meta.id));
                 }
-                let root_dir = roots_by_id.get(&meta.id).cloned().ok_or_else(|| {
-                    SkillRegistryError::Io(format!("missing root dir for skill {}", meta.id))
-                })?;
-                let skill_md = docs_by_id.get(&meta.id).cloned().ok_or_else(|| {
-                    SkillRegistryError::Io(format!("missing SKILL.md for skill {}", meta.id))
-                })?;
-                by_id_root.insert(meta.id.clone(), root_dir);
-                by_id_skill_md.insert(meta.id.clone(), skill_md);
-                metas.push(meta);
+                skills.push(skill);
             }
         }
 
-        metas.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut by_id: HashMap<String, SkillMeta> = HashMap::new();
-        for m in &metas {
-            by_id.insert(m.id.clone(), m.clone());
-        }
+        skills.sort_by(|a, b| a.meta.id.cmp(&b.meta.id));
         warnings.sort_by(|a, b| a.path.cmp(&b.path));
 
-        Ok(Self {
-            index: FsIndex {
-                metas,
-                by_id,
-                by_id_root,
-                by_id_skill_md,
-                warnings,
-            },
-        })
+        Ok(DiscoveryResult { skills, warnings })
+    }
+
+    /// Collect discovered skills into a vec of trait objects.
+    pub fn into_arc_skills(skills: Vec<FsSkill>) -> Vec<Arc<dyn Skill>> {
+        skills.into_iter().map(|s| Arc::new(s) as Arc<dyn Skill>).collect()
     }
 }
 
 #[async_trait]
-impl SkillRegistry for FsSkillRegistry {
-    fn list(&self) -> Vec<SkillMeta> {
-        self.index.metas.clone()
+impl Skill for FsSkill {
+    fn meta(&self) -> &SkillMeta {
+        &self.meta
     }
 
-    fn warnings(&self) -> Vec<SkillRegistryWarning> {
-        self.index.warnings.clone()
-    }
-
-    fn get(&self, skill_id: &str) -> Option<SkillMeta> {
-        self.index.by_id.get(skill_id).cloned()
-    }
-
-    async fn read_skill_md(&self, skill_id: &str) -> Result<String, SkillRegistryError> {
-        let path = self
-            .index
-            .by_id_skill_md
-            .get(skill_id)
-            .cloned()
-            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
-
-        fs::read_to_string(&path).map_err(|e| {
-            SkillRegistryError::Io(format!(
-                "failed to read SKILL.md for skill '{skill_id}': {e}"
+    async fn read_instructions(&self) -> Result<String, SkillError> {
+        fs::read_to_string(&self.skill_md_path).map_err(|e| {
+            SkillError::Io(format!(
+                "failed to read SKILL.md for skill '{}': {e}",
+                self.meta.id
             ))
         })
     }
 
     async fn load_resource(
         &self,
-        skill_id: &str,
         kind: SkillResourceKind,
         path: &str,
-    ) -> Result<SkillResource, SkillRegistryError> {
-        let root = self
-            .index
-            .by_id_root
-            .get(skill_id)
-            .cloned()
-            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
-        let skill_id = skill_id.to_string();
+    ) -> Result<SkillResource, SkillError> {
+        let root = self.root_dir.clone();
+        let skill_id = self.meta.id.clone();
         let path = path.to_string();
 
         let materialized: Result<SkillResource, SkillMaterializeError> =
@@ -139,40 +104,31 @@ impl SkillRegistry for FsSkillRegistry {
                 }
             })
             .await
-            .map_err(|e| SkillRegistryError::Io(e.to_string()))?;
+            .map_err(|e| SkillError::Io(e.to_string()))?;
 
-        materialized.map_err(SkillRegistryError::from)
+        materialized.map_err(SkillError::from)
     }
 
     async fn run_script(
         &self,
-        skill_id: &str,
         script: &str,
         args: &[String],
-    ) -> Result<ScriptResult, SkillRegistryError> {
-        let root = self
-            .index
-            .by_id_root
-            .get(skill_id)
-            .cloned()
-            .ok_or_else(|| SkillRegistryError::UnknownSkill(skill_id.to_string()))?;
+    ) -> Result<ScriptResult, SkillError> {
         let result: Result<ScriptResult, SkillMaterializeError> =
-            run_script_material(skill_id, &root, script, args).await;
-        result.map_err(SkillRegistryError::from)
+            run_script_material(&self.meta.id, &self.root_dir, script, args).await;
+        result.map_err(SkillError::from)
     }
 }
 
-fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryError> {
-    let mut metas: Vec<SkillMeta> = Vec::new();
-    let mut roots_by_id: HashMap<String, PathBuf> = HashMap::new();
-    let mut docs_by_id: HashMap<String, PathBuf> = HashMap::new();
-    let mut warnings: Vec<SkillRegistryWarning> = Vec::new();
+fn discover_under_root(root: &Path) -> Result<(Vec<FsSkill>, Vec<SkillWarning>), SkillError> {
+    let mut skills: Vec<FsSkill> = Vec::new();
+    let mut warnings: Vec<SkillWarning> = Vec::new();
 
     let root = fs::canonicalize(root)
-        .map_err(|e| SkillRegistryError::Io(format!("failed to access skills root: {e}")))?;
+        .map_err(|e| SkillError::Io(format!("failed to access skills root: {e}")))?;
 
     let entries = fs::read_dir(&root)
-        .map_err(|e| SkillRegistryError::Io(format!("failed to read skills root: {e}")))?;
+        .map_err(|e| SkillError::Io(format!("failed to read skills root: {e}")))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -193,7 +149,7 @@ fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryErro
 
         let dir_name = normalize_name(&dir_name_raw);
         if let Err(reason) = validate_dir_name(&dir_name) {
-            warnings.push(SkillRegistryWarning {
+            warnings.push(SkillWarning {
                 path: path.clone(),
                 reason,
             });
@@ -202,33 +158,26 @@ fn discover_under_root(root: &Path) -> Result<DiscoveryResult, SkillRegistryErro
 
         let skill_md = path.join("SKILL.md");
         if !skill_md.is_file() {
-            warnings.push(SkillRegistryWarning {
+            warnings.push(SkillWarning {
                 path: path.clone(),
                 reason: "missing SKILL.md".to_string(),
             });
             continue;
         }
 
-        match meta_from_skill_md_path(&dir_name, &skill_md) {
-            Ok((meta, root_dir, skill_md_path)) => {
-                roots_by_id.insert(meta.id.clone(), root_dir);
-                docs_by_id.insert(meta.id.clone(), skill_md_path);
-                metas.push(meta);
-            }
-            Err(reason) => warnings.push(SkillRegistryWarning {
+        match build_fs_skill(&dir_name, &skill_md) {
+            Ok(skill) => skills.push(skill),
+            Err(reason) => warnings.push(SkillWarning {
                 path: skill_md,
                 reason,
             }),
         }
     }
 
-    Ok((metas, roots_by_id, docs_by_id, warnings))
+    Ok((skills, warnings))
 }
 
-fn meta_from_skill_md_path(
-    dir_name: &str,
-    skill_md: &Path,
-) -> Result<(SkillMeta, PathBuf, PathBuf), String> {
+fn build_fs_skill(dir_name: &str, skill_md: &Path) -> Result<FsSkill, String> {
     let root_dir = skill_md
         .parent()
         .ok_or_else(|| "invalid skill path".to_string())?
@@ -258,16 +207,16 @@ fn meta_from_skill_md_path(
         .map(|t| t.raw)
         .collect::<Vec<_>>();
 
-    Ok((
-        SkillMeta {
+    Ok(FsSkill {
+        meta: SkillMeta {
             id: name.clone(),
             name,
             description,
             allowed_tools,
         },
         root_dir,
-        skill_md.to_path_buf(),
-    ))
+        skill_md_path: skill_md.to_path_buf(),
+    })
 }
 
 fn read_frontmatter_from_skill_md_path(skill_md: &Path) -> Result<SkillFrontmatter, String> {
@@ -309,9 +258,6 @@ fn normalize_name(s: &str) -> String {
 }
 
 fn validate_dir_name(dir_name: &str) -> Result<(), String> {
-    // Name validation is enforced by `parse_skill_md` too, but we validate directory
-    // names early to produce clearer diagnostics (and to avoid reading SKILL.md).
-    // See agentskills spec: i18n letters/digits/hyphens, lowercase, length limit.
     if dir_name.is_empty() {
         return Err("directory name must be non-empty".to_string());
     }
@@ -345,7 +291,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn registry_discovers_skills_and_parses_frontmatter() {
+    fn discover_skills_and_parses_frontmatter() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("docx-processing")).unwrap();
@@ -361,16 +307,18 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        let list = reg.list();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "docx-processing");
-        assert_eq!(list[0].name, "docx-processing");
-        assert_eq!(list[0].allowed_tools, vec!["read_file".to_string()]);
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].meta.id, "docx-processing");
+        assert_eq!(result.skills[0].meta.name, "docx-processing");
+        assert_eq!(
+            result.skills[0].meta.allowed_tools,
+            vec!["read_file".to_string()]
+        );
     }
 
     #[test]
-    fn registry_skips_invalid_skills_and_reports_warnings() {
+    fn discover_skips_invalid_skills_and_reports_warnings() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("good-skill")).unwrap();
@@ -387,19 +335,22 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        assert_eq!(reg.list().len(), 1);
-        assert_eq!(reg.list()[0].id, "good-skill");
-        let warnings = reg.warnings();
-        assert!(!warnings.is_empty());
-        assert!(warnings.iter().any(|w| w.reason.contains("directory name")));
-        assert!(warnings
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].meta.id, "good-skill");
+        assert!(!result.warnings.is_empty());
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.reason.contains("directory name")));
+        assert!(result
+            .warnings
             .iter()
             .any(|w| w.reason.contains("missing SKILL.md")));
     }
 
     #[test]
-    fn registry_skips_name_mismatch() {
+    fn discover_skips_name_mismatch() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("good-skill")).unwrap();
@@ -409,16 +360,16 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        assert!(reg.list().is_empty());
-        let warnings = reg.warnings();
-        assert!(warnings
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert!(result.skills.is_empty());
+        assert!(result
+            .warnings
             .iter()
             .any(|w| w.reason.contains("does not match directory")));
     }
 
     #[test]
-    fn registry_does_not_recurse_into_nested_dirs() {
+    fn discover_does_not_recurse_into_nested_dirs() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("good-skill").join("nested")).unwrap();
@@ -436,15 +387,13 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        let list = reg.list();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "good-skill");
-        assert!(reg.get("nested-skill").is_none());
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].meta.id, "good-skill");
     }
 
     #[test]
-    fn registry_skips_hidden_dirs_and_root_files() {
+    fn discover_skips_hidden_dirs_and_root_files() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join(".hidden")).unwrap();
@@ -459,12 +408,12 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        assert!(reg.list().is_empty());
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert!(result.skills.is_empty());
     }
 
     #[test]
-    fn registry_allows_i18n_directory_names() {
+    fn discover_allows_i18n_directory_names() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("技能")).unwrap();
@@ -474,30 +423,29 @@ Body
         )
         .unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        let list = reg.list();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "技能");
-        assert_eq!(list[0].name, "技能");
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].meta.id, "技能");
     }
 
     #[tokio::test]
-    async fn registry_read_skill_md_reads_from_disk_lazily() {
+    async fn read_instructions_reads_from_disk_lazily() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("s1")).unwrap();
         let skill_md = skills_root.join("s1").join("SKILL.md");
         fs::write(&skill_md, "---\nname: s1\ndescription: ok\n---\nBody\n").unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
+        let result = FsSkill::discover(&skills_root).unwrap();
+        let skill = &result.skills[0];
         fs::remove_file(&skill_md).unwrap();
 
-        let err = reg.read_skill_md("s1").await.unwrap_err();
-        assert!(matches!(err, SkillRegistryError::Io(_)));
+        let err = skill.read_instructions().await.unwrap_err();
+        assert!(matches!(err, SkillError::Io(_)));
     }
 
     #[test]
-    fn registry_discovery_does_not_parse_markdown_body() {
+    fn discover_does_not_parse_markdown_body() {
         let td = TempDir::new().unwrap();
         let skills_root = td.path().join("skills");
         fs::create_dir_all(skills_root.join("s1")).unwrap();
@@ -506,22 +454,21 @@ Body
         bytes.extend_from_slice(&[0xff, 0xfe, 0xfd]); // invalid UTF-8 body
         fs::write(&skill_md, bytes).unwrap();
 
-        let reg = FsSkillRegistry::discover_root(&skills_root).unwrap();
-        let list = reg.list();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "s1");
+        let result = FsSkill::discover(&skills_root).unwrap();
+        assert_eq!(result.skills.len(), 1);
+        assert_eq!(result.skills[0].meta.id, "s1");
     }
 
     #[test]
-    fn registry_discovery_errors_for_missing_root() {
+    fn discover_errors_for_missing_root() {
         let td = TempDir::new().unwrap();
         let missing = td.path().join("missing");
-        let err = FsSkillRegistry::discover_root(&missing).unwrap_err();
-        assert!(matches!(err, SkillRegistryError::Io(_)));
+        let err = FsSkill::discover(&missing).unwrap_err();
+        assert!(matches!(err, SkillError::Io(_)));
     }
 
     #[test]
-    fn registry_discovery_rejects_duplicate_ids_across_roots() {
+    fn discover_rejects_duplicate_ids_across_roots() {
         let td = TempDir::new().unwrap();
         let root1 = td.path().join("skills1");
         let root2 = td.path().join("skills2");
@@ -538,13 +485,12 @@ Body
         )
         .unwrap();
 
-        let err = FsSkillRegistry::discover_roots(vec![root1, root2]).unwrap_err();
-        assert!(matches!(err, SkillRegistryError::DuplicateSkillId(ref id) if id == "s1"));
+        let err = FsSkill::discover_roots(vec![root1, root2]).unwrap_err();
+        assert!(matches!(err, SkillError::DuplicateSkillId(ref id) if id == "s1"));
     }
 
     #[test]
     fn normalize_relative_name_nfkc() {
-        // Full-width hyphen should normalize; exact behavior is implementation-defined but should be stable.
         let s = "a\u{FF0D}b";
         let norm = normalize_name(s);
         assert!(!norm.is_empty());
@@ -552,7 +498,6 @@ Body
 
     #[test]
     fn validate_dir_name_rejects_parent_dir_like_segments() {
-        // Sanity: validate_dir_name doesn't allow slashes; this is enforced by the filesystem anyway.
         assert!(validate_dir_name("a/b").is_err());
         assert!(validate_dir_name("..").is_err());
     }

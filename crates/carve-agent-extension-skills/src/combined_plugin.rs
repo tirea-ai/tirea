@@ -50,7 +50,7 @@ impl AgentPlugin for SkillPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FsSkillRegistry, SkillRegistry};
+    use crate::{FsSkill, Skill};
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::AgentState as ContextAgentState;
@@ -71,8 +71,9 @@ mod tests {
         )
         .unwrap();
 
-        let reg: Arc<dyn SkillRegistry> = Arc::new(FsSkillRegistry::discover_root(root).unwrap());
-        let discovery = SkillDiscoveryPlugin::new(reg);
+        let result = FsSkill::discover(root).unwrap();
+        let skills: Vec<Arc<dyn Skill>> = FsSkill::into_arc_skills(result.skills);
+        let discovery = SkillDiscoveryPlugin::new(skills);
         let plugin = SkillPlugin::new(discovery);
 
         let thread = AgentState::with_initial_state(

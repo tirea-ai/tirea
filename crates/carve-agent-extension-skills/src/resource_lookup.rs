@@ -1,4 +1,4 @@
-use crate::{LoadedAsset, LoadedReference, SkillRegistryError, SkillResource, SkillResourceKind};
+use crate::{LoadedAsset, LoadedReference, SkillError, SkillResource, SkillResourceKind};
 use std::collections::HashMap;
 
 pub(super) fn load_resource_from_maps(
@@ -7,7 +7,7 @@ pub(super) fn load_resource_from_maps(
     skill_id: &str,
     kind: SkillResourceKind,
     path: &str,
-) -> Result<SkillResource, SkillRegistryError> {
+) -> Result<SkillResource, SkillError> {
     let key = (skill_id.to_string(), path.to_string());
     match kind {
         SkillResourceKind::Reference => references
@@ -23,13 +23,13 @@ pub(super) fn load_resource_from_maps(
     }
 }
 
-fn unsupported_resource(kind: SkillResourceKind, path: &str) -> SkillRegistryError {
+fn unsupported_resource(kind: SkillResourceKind, path: &str) -> SkillError {
     match kind {
         SkillResourceKind::Reference => {
-            SkillRegistryError::Unsupported(format!("reference not available: {path}"))
+            SkillError::Unsupported(format!("reference not available: {path}"))
         }
         SkillResourceKind::Asset => {
-            SkillRegistryError::Unsupported(format!("asset not available: {path}"))
+            SkillError::Unsupported(format!("asset not available: {path}"))
         }
     }
 }

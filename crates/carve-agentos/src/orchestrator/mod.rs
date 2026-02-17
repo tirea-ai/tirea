@@ -15,8 +15,8 @@ use crate::contracts::storage::{
 };
 use crate::contracts::tool::Tool;
 use crate::extensions::skills::{
-    CompositeSkillRegistryError, SkillDiscoveryPlugin, SkillPlugin, SkillRegistry,
-    SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
+    Skill, SkillDiscoveryPlugin, SkillError, SkillPlugin, SkillRuntimePlugin, SkillSubsystem,
+    SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
     run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunContext,
@@ -105,7 +105,7 @@ pub struct SkillsConfig {
 impl Default for SkillsConfig {
     fn default() -> Self {
         Self {
-            // Skills are opt-in. If enabled, the caller must provide a SkillRegistry.
+            // Skills are opt-in. If enabled, the caller must provide skills.
             mode: SkillsMode::Disabled,
             discovery_max_entries: 32,
             discovery_max_chars: 16 * 1024,
@@ -145,7 +145,7 @@ pub enum AgentOsWiringError {
     #[error("skills plugin already installed: {0}")]
     SkillsPluginAlreadyInstalled(String),
 
-    #[error("skills enabled but no SkillRegistry configured")]
+    #[error("skills enabled but no skills configured")]
     SkillsNotConfigured,
 
     #[error("agent tool id already registered: {0}")]
@@ -195,7 +195,7 @@ pub enum AgentOsBuildError {
     Models(#[from] ModelRegistryError),
 
     #[error(transparent)]
-    SkillsRegistry(#[from] CompositeSkillRegistryError),
+    Skills(#[from] SkillError),
 
     #[error("agent {agent_id} references an empty plugin id")]
     AgentEmptyPluginRef { agent_id: String },
@@ -218,7 +218,7 @@ pub enum AgentOsBuildError {
         model_id: String,
     },
 
-    #[error("skills enabled but no SkillRegistry configured")]
+    #[error("skills enabled but no skills configured")]
     SkillsNotConfigured,
 }
 
@@ -333,8 +333,8 @@ pub struct AgentOs {
     plugins: Arc<dyn PluginRegistry>,
     providers: Arc<dyn ProviderRegistry>,
     models: Arc<dyn ModelRegistry>,
-    skills_registry: Option<Arc<dyn SkillRegistry>>,
-    skills: SkillsConfig,
+    skills: Option<Vec<Arc<dyn Skill>>>,
+    skills_config: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn AgentStateStore>>,
@@ -354,8 +354,8 @@ pub struct AgentOsBuilder {
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
     model_registries: Vec<Arc<dyn ModelRegistry>>,
-    skills_registry: Option<Arc<dyn SkillRegistry>>,
-    skills: SkillsConfig,
+    skills: Option<Vec<Arc<dyn Skill>>>,
+    skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn AgentStateStore>>,
 }
