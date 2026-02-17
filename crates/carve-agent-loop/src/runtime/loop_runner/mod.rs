@@ -82,7 +82,7 @@ pub use crate::runtime::run_context::{
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
-pub use config::{AgentConfig, LlmRetryPolicy};
+pub use config::{AgentConfig, GenaiLlmExecutor, LlmExecutor, LlmRetryPolicy};
 pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
@@ -119,6 +119,31 @@ pub use tool_exec::{
     execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
     ToolExecutor,
 };
+
+/// Canonical loop invocation input.
+///
+/// `state` carries persisted + runtime scope state, while `run_ctx` carries
+/// cooperative runtime controls (cancellation/state commit sink).
+#[derive(Clone, Debug)]
+pub struct LoopRunInput {
+    pub state: AgentState,
+    pub run_ctx: RunContext,
+}
+
+impl LoopRunInput {
+    pub fn new(state: AgentState) -> Self {
+        Self {
+            state,
+            run_ctx: RunContext::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_run_context(mut self, run_ctx: RunContext) -> Self {
+        self.run_ctx = run_ctx;
+        self
+    }
+}
 
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
@@ -257,6 +282,13 @@ pub(super) fn step_tool_provider_for_run(
     })
 }
 
+pub(super) fn llm_executor_for_run(config: &AgentConfig) -> Arc<dyn LlmExecutor> {
+    config
+        .llm_executor
+        .clone()
+        .unwrap_or_else(|| Arc::new(GenaiLlmExecutor::new(Client::default())))
+}
+
 pub(super) async fn resolve_step_tool_snapshot(
     step_tool_provider: &Arc<dyn StepToolProvider>,
     thread: &AgentState,
@@ -378,6 +410,44 @@ trait ChatProvider: Send + Sync {
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
     ) -> genai::Result<genai::chat::ChatResponse>;
+}
+
+struct ExecutorChatProvider {
+    executor: Arc<dyn LlmExecutor>,
+}
+
+#[async_trait]
+impl ChatProvider for ExecutorChatProvider {
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        self.executor
+            .exec_chat_response(model, chat_req, options)
+            .await
+    }
+}
+
+struct ExecutorStreamProvider {
+    executor: Arc<dyn LlmExecutor>,
+}
+
+#[async_trait]
+impl ChatStreamProvider for ExecutorStreamProvider {
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<
+        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+    > {
+        self.executor
+            .exec_chat_stream_events(model, chat_req, options)
+            .await
+    }
 }
 
 #[async_trait]
@@ -713,6 +783,29 @@ pub async fn run_loop(
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(AgentState, String), AgentLoopError> {
     run_loop_with_context(client, config, thread, tools, RunContext::default()).await
+}
+
+/// Run the full agent loop using executors and providers declared in [`AgentConfig`].
+///
+/// This is the recommended entry point for orchestration layers. Tools are
+/// sourced from `config.step_tool_provider`, and LLM calls are delegated to
+/// `config.llm_executor` (or a default `GenaiLlmExecutor` when unset).
+pub async fn run_loop_with_input(
+    config: &AgentConfig,
+    input: LoopRunInput,
+) -> Result<(AgentState, String), AgentLoopError> {
+    let provider = ExecutorChatProvider {
+        executor: llm_executor_for_run(config),
+    };
+    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    run_loop_with_context_provider(
+        &provider,
+        config,
+        input.state,
+        &no_static_tools,
+        input.run_ctx,
+    )
+    .await
 }
 
 /// Run the full agent loop with explicit run context.
@@ -1085,6 +1178,25 @@ pub fn run_loop_stream(
         thread,
         tools,
         run_ctx,
+    )
+}
+
+/// Run the agent loop with streaming output using [`LoopRunInput`].
+///
+/// This is the streaming counterpart of [`run_loop_with_input`].
+pub fn run_loop_stream_with_input(
+    config: AgentConfig,
+    input: LoopRunInput,
+) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
+    let provider: Arc<dyn ChatStreamProvider> = Arc::new(ExecutorStreamProvider {
+        executor: llm_executor_for_run(&config),
+    });
+    stream_runner::run_loop_stream_impl_with_provider(
+        provider,
+        config,
+        input.state,
+        HashMap::new(),
+        input.run_ctx,
     )
 }
 

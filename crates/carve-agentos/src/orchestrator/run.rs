@@ -1,5 +1,6 @@
 use super::*;
 use crate::contracts::storage::VersionPrecondition;
+use crate::runtime::loop_runner::StaticStepToolProvider;
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -121,11 +122,12 @@ impl AgentOs {
         );
 
         // 6. Resolve static wiring, then merge run-scoped extensions.
-        let (client, cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-        let (cfg, tools) = self
+        let (cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
+        let (mut cfg, tools) = self
             .apply_run_extensions(cfg, tools, extensions)
             .map_err(AgentOsResolveError::from)
             .map_err(AgentOsRunError::from)?;
+        cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
             AgentStateStoreStateCommitter::new(agent_state_store.clone()),
         ));
@@ -133,9 +135,7 @@ impl AgentOs {
         Ok(PreparedRun {
             thread_id,
             run_id,
-            client,
             config: cfg,
-            tools,
             thread,
             run_ctx,
         })
@@ -143,12 +143,9 @@ impl AgentOs {
 
     /// Execute a previously prepared run.
     pub fn execute_prepared(prepared: PreparedRun) -> RunStream {
-        let events = run_loop_stream(
-            prepared.client,
+        let events = run_loop_stream_with_input(
             prepared.config,
-            prepared.thread,
-            prepared.tools,
-            prepared.run_ctx,
+            LoopRunInput::new(prepared.thread).with_run_context(prepared.run_ctx),
         );
         RunStream {
             thread_id: prepared.thread_id,
@@ -220,7 +217,11 @@ impl AgentOs {
         thread: AgentState,
         run_ctx: RunContext,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
-        let (client, cfg, tools, thread) = self.resolve(agent_id, thread)?;
-        Ok(run_loop_stream(client, cfg, thread, tools, run_ctx))
+        let (cfg, tools, thread) = self.resolve(agent_id, thread)?;
+        let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
+        Ok(run_loop_stream_with_input(
+            cfg,
+            LoopRunInput::new(thread).with_run_context(run_ctx),
+        ))
     }
 }

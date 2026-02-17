@@ -294,6 +294,7 @@ impl AgentDefinition {
             stop_conditions: self.stop_conditions,
             stop_condition_specs: self.stop_condition_specs,
             step_tool_provider: None,
+            llm_executor: None,
         }
     }
 }

@@ -6,8 +6,11 @@ use crate::contracts::state::AgentState;
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use crate::engine::stop_conditions::StopCondition;
 use async_trait::async_trait;
+use futures::Stream;
 use genai::chat::ChatOptions;
+use genai::Client;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 
 /// Retry strategy for LLM inference calls.
@@ -65,6 +68,81 @@ impl StepToolSnapshot {
 pub trait StepToolProvider: Send + Sync {
     /// Resolve tool map + descriptors for the current step.
     async fn provide(&self, input: StepToolInput<'_>) -> Result<StepToolSnapshot, AgentLoopError>;
+}
+
+/// Abstraction over LLM execution backend.
+///
+/// This keeps loop execution independent from concrete provider SDK clients.
+#[async_trait]
+pub trait LlmExecutor: Send + Sync {
+    /// Execute a non-streaming chat completion call.
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse>;
+
+    /// Execute a streaming chat completion call.
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<
+        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+    >;
+
+    /// Stable executor label for debug/telemetry output.
+    fn name(&self) -> &'static str {
+        "llm_executor"
+    }
+}
+
+/// Default LLM executor backed by `genai::Client`.
+#[derive(Clone)]
+pub struct GenaiLlmExecutor {
+    client: Client,
+}
+
+impl GenaiLlmExecutor {
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+}
+
+impl std::fmt::Debug for GenaiLlmExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenaiLlmExecutor").finish()
+    }
+}
+
+#[async_trait]
+impl LlmExecutor for GenaiLlmExecutor {
+    async fn exec_chat_response(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<genai::chat::ChatResponse> {
+        self.client.exec_chat(model, chat_req, options).await
+    }
+
+    async fn exec_chat_stream_events(
+        &self,
+        model: &str,
+        chat_req: genai::chat::ChatRequest,
+        options: Option<&ChatOptions>,
+    ) -> genai::Result<
+        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
+    > {
+        let resp = self.client.exec_chat_stream(model, chat_req, options).await?;
+        Ok(Box::pin(resp.stream))
+    }
+
+    fn name(&self) -> &'static str {
+        "genai_client"
+    }
 }
 
 /// Static provider that always returns the same tool map.
@@ -125,6 +203,10 @@ pub struct AgentConfig {
     /// When not set, the loop uses a static provider derived from the `tools`
     /// map passed to `run_step` / `run_loop` / `run_loop_stream`.
     pub step_tool_provider: Option<Arc<dyn StepToolProvider>>,
+    /// Optional LLM executor override.
+    ///
+    /// When not set, the loop uses [`GenaiLlmExecutor`] with `Client::default()`.
+    pub llm_executor: Option<Arc<dyn LlmExecutor>>,
 }
 
 impl Default for AgentConfig {
@@ -146,6 +228,7 @@ impl Default for AgentConfig {
             stop_conditions: Vec::new(),
             stop_condition_specs: Vec::new(),
             step_tool_provider: None,
+            llm_executor: None,
         }
     }
 }
@@ -173,6 +256,14 @@ impl std::fmt::Debug for AgentConfig {
             .field(
                 "step_tool_provider",
                 &self.step_tool_provider.as_ref().map(|_| "<set>"),
+            )
+            .field(
+                "llm_executor",
+                &self
+                    .llm_executor
+                    .as_ref()
+                    .map(|executor| executor.name())
+                    .unwrap_or("genai_client(default)"),
             )
             .finish()
     }
@@ -308,6 +399,13 @@ impl AgentConfig {
     #[must_use]
     pub fn with_step_tool_provider(mut self, provider: Arc<dyn StepToolProvider>) -> Self {
         self.step_tool_provider = Some(provider);
+        self
+    }
+
+    /// Set LLM executor.
+    #[must_use]
+    pub fn with_llm_executor(mut self, executor: Arc<dyn LlmExecutor>) -> Self {
+        self.llm_executor = Some(executor);
         self
     }
 

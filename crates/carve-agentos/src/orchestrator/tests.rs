@@ -481,7 +481,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
 
     assert_eq!(cfg.id, "a1");
     assert!(tools.contains_key("base_tool"));
@@ -558,7 +558,7 @@ fn resolve_sets_runtime_caller_agent_id() {
         .build()
         .unwrap();
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, _cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
+    let (_cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(
         thread
             .scope
@@ -638,7 +638,7 @@ async fn resolve_wires_agent_tools_by_default() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("agent_run"));
     assert!(tools.contains_key("agent_stop"));
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
@@ -723,7 +723,7 @@ async fn resolve_rewrites_model_when_registry_present() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.model, "gpt-4o-mini");
 }
 
@@ -757,7 +757,7 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, _tools, _thread) = os.resolve("a1", thread.clone()).unwrap();
+    let (cfg, _tools, _thread) = os.resolve("a1", thread.clone()).unwrap();
     assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
     let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
@@ -782,7 +782,7 @@ async fn resolve_wires_policies_before_plugins() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
     assert_eq!(cfg.plugins[1].id(), "agent_recovery");
     assert_eq!(cfg.plugins[2].id(), "policy1");
@@ -811,7 +811,7 @@ async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (_client, cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("skill"));
     assert!(tools.contains_key("load_skill_resource"));
     assert!(tools.contains_key("skill_script"));
@@ -1560,7 +1560,19 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
         .await
         .unwrap();
 
-    assert!(prepared.tools.contains_key("runtime_tool"));
+    let provider = prepared
+        .config
+        .step_tool_provider
+        .as_ref()
+        .expect("runtime extensions should inject step tool provider")
+        .clone();
+    let snapshot = provider
+        .provide(crate::runtime::loop_runner::StepToolInput {
+            thread: &prepared.thread,
+        })
+        .await
+        .expect("step tool provider should resolve");
+    assert!(snapshot.tools.contains_key("runtime_tool"));
     assert!(prepared
         .config
         .plugins

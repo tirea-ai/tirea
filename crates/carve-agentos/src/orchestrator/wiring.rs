@@ -3,6 +3,7 @@ use super::agent_tools::{
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
 use super::*;
+use crate::runtime::loop_runner::GenaiLlmExecutor;
 use crate::extensions::skills::{
     SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
 };
@@ -431,9 +432,12 @@ impl AgentOs {
         Ok(definition.into_loop_config())
     }
 
-    fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<Client, AgentOsResolveError> {
+    fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<(), AgentOsResolveError> {
         if self.models.is_empty() {
-            return Ok(self.default_client.clone());
+            cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(
+                self.default_client.clone(),
+            )));
+            return Ok(());
         }
 
         let Some(def) = self.models.get(&cfg.model) else {
@@ -451,7 +455,8 @@ impl AgentOs {
         if let Some(opts) = def.chat_options {
             cfg.chat_options = Some(opts);
         }
-        Ok(client)
+        cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(client)));
+        Ok(())
     }
 
     #[cfg(test)]
@@ -526,7 +531,7 @@ impl AgentOs {
             allowed_tools.as_deref(),
             excluded_tools.as_deref(),
         );
-        let client = self.resolve_model(&mut cfg)?;
-        Ok((client, cfg, tools, thread))
+        self.resolve_model(&mut cfg)?;
+        Ok((cfg, tools, thread))
     }
 }

@@ -19,7 +19,8 @@ use crate::extensions::skills::{
     SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    run_loop_stream, AgentConfig, AgentLoopError, RunContext, StateCommitError, StateCommitter,
+    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunContext,
+    StateCommitError, StateCommitter,
 };
 
 mod agent_definition;
@@ -48,7 +49,6 @@ pub use composition::{
 };
 
 type ResolvedAgentWiring = (
-    Client,
     AgentConfig,
     HashMap<String, Arc<dyn Tool>>,
     AgentState,
@@ -305,9 +305,7 @@ pub struct PreparedRun {
     pub thread_id: String,
     /// Resolved run ID (may have been auto-generated).
     pub run_id: String,
-    client: Client,
     config: AgentConfig,
-    tools: HashMap<String, Arc<dyn Tool>>,
     thread: AgentState,
     run_ctx: RunContext,
 }
