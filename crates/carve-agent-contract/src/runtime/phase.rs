@@ -149,6 +149,13 @@ impl ToolContext {
     pub fn is_pending(&self) -> bool {
         self.pending
     }
+
+    /// Stable idempotency key for this tool invocation.
+    ///
+    /// This is the same value as `tool_call_id`.
+    pub fn idempotency_key(&self) -> &str {
+        &self.id
+    }
 }
 
 /// Step context - mutable state passed through all phases.
@@ -291,6 +298,13 @@ impl<'a> StepContext<'a> {
     /// Get the current tool call ID (e.g., `"call_abc123"`).
     pub fn tool_call_id(&self) -> Option<&str> {
         self.tool.as_ref().map(|t| t.id.as_str())
+    }
+
+    /// Get the current tool idempotency key.
+    ///
+    /// This is an alias of `tool_call_id`.
+    pub fn tool_idempotency_key(&self) -> Option<&str> {
+        self.tool_call_id()
     }
 
     /// Get current tool arguments.
@@ -598,6 +612,7 @@ mod tests {
 
         assert_eq!(ctx.tool_name(), Some("read_file"));
         assert_eq!(ctx.tool_call_id(), Some("call_1"));
+        assert_eq!(ctx.tool_idempotency_key(), Some("call_1"));
         assert_eq!(ctx.tool_args().unwrap()["path"], "/test");
         assert!(!ctx.tool_blocked());
         assert!(!ctx.tool_pending());
@@ -719,6 +734,7 @@ mod tests {
         let tool_ctx = ToolContext::new(&call);
 
         assert_eq!(tool_ctx.id, "call_1");
+        assert_eq!(tool_ctx.idempotency_key(), "call_1");
         assert_eq!(tool_ctx.name, "test_tool");
         assert_eq!(tool_ctx.args["arg"], "value");
         assert!(tool_ctx.result.is_none());
@@ -921,6 +937,7 @@ mod tests {
 
         assert!(ctx.tool_name().is_none());
         assert!(ctx.tool_call_id().is_none());
+        assert!(ctx.tool_idempotency_key().is_none());
     }
 
     #[test]

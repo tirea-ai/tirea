@@ -256,7 +256,9 @@ pub trait Tool: Send + Sync {
     /// # Arguments
     ///
     /// - `args`: Tool arguments as JSON value
-    /// - `ctx`: AgentState for state access (framework extracts patch after execution)
+    /// - `ctx`: AgentState for state access (framework extracts patch after execution).
+    ///   `ctx.idempotency_key()` is the current `tool_call_id`.
+    ///   Tools should use it as the idempotency key for side effects.
     ///
     /// # Returns
     ///

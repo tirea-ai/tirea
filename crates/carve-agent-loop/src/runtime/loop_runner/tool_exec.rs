@@ -811,6 +811,7 @@ pub(super) async fn execute_single_tool_with_phases(
         let tool_ctx = crate::contracts::AgentState::from_thread_with_activity_manager(
             &temp_thread,
             state,
+            // `tool_call_id` is the stable idempotency key seen by the tool.
             &call.id,
             format!("tool:{}", call.name),
             state_version,

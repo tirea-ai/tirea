@@ -150,6 +150,14 @@ impl AgentState {
         &self.transient.call_id
     }
 
+    /// Stable idempotency key for the current tool invocation.
+    ///
+    /// The loop sets this to the current `tool_call_id`.
+    /// Tools should use this value when implementing idempotent side effects.
+    pub fn idempotency_key(&self) -> &str {
+        self.call_id()
+    }
+
     /// Source identifier used for tracked patches.
     pub fn source(&self) -> &str {
         &self.transient.source
