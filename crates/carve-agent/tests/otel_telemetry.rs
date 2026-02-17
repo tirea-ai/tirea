@@ -1,8 +1,10 @@
-use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::conversation::{Message, ToolCall};
-use carve_agent::contracts::events::{AgentEvent, StreamResult};
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
+use carve_agent::contracts::runtime::{AgentEvent, StreamResult};
 use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent::prelude::AgentState as ContextAgentState;
 use carve_agent::runtime::loop_runner::{
@@ -75,7 +77,9 @@ async fn start_single_response_server(
     Some((base_url, handle))
 }
 
-async fn start_sse_server(events: Vec<&'static str>) -> Option<(String, tokio::task::JoinHandle<()>)> {
+async fn start_sse_server(
+    events: Vec<&'static str>,
+) -> Option<(String, tokio::task::JoinHandle<()>)> {
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(listener) => listener,
         Err(err) if err.kind() == ErrorKind::PermissionDenied => return None,
@@ -310,7 +314,8 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         "application/json",
         r#"{"error":"fail"}"#,
     )
-    .await else {
+    .await
+    else {
         eprintln!("skipping test: sandbox does not permit local TCP listeners");
         return;
     };
@@ -372,7 +377,8 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
         "data: {invalid-json}\n\n",
     ])
-    .await else {
+    .await
+    else {
         eprintln!("skipping test: sandbox does not permit local TCP listeners");
         return;
     };

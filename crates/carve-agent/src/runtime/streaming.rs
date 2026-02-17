@@ -205,8 +205,8 @@ pub enum StreamOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::events::AgentEvent;
-    use crate::contracts::traits::tool::ToolResult;
+    use crate::contracts::extension::traits::tool::ToolResult;
+    use crate::contracts::runtime::AgentEvent;
     use serde_json::json;
 
     #[test]
@@ -354,7 +354,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final response"})),
-            termination: crate::contracts::events::TerminationReason::NaturalEnd,
+            termination: crate::contracts::runtime::TerminationReason::NaturalEnd,
         };
         if let AgentEvent::RunFinish { result, .. } = &event {
             assert_eq!(AgentEvent::extract_response(result), "Final response");

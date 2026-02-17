@@ -6,7 +6,10 @@ use super::*;
 #[derive(Debug)]
 pub enum StepResult {
     /// LLM responded with text, no tools needed.
-    Done { thread: AgentState, response: String },
+    Done {
+        thread: AgentState,
+        response: String,
+    },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
         thread: AgentState,

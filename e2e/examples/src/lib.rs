@@ -8,7 +8,7 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agent::contracts::agent_plugin::AgentPlugin;
+use carve_agent::contracts::extension::plugin::AgentPlugin;
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agent::prelude::Tool;

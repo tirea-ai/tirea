@@ -17,7 +17,10 @@ impl AgentOs {
 
     /// Load a thread from storage. Returns the thread and its version.
     /// If the thread does not exist, returns `None`.
-    pub async fn load_agent_state(&self, id: &str) -> Result<Option<AgentStateHead>, AgentOsRunError> {
+    pub async fn load_agent_state(
+        &self,
+        id: &str,
+    ) -> Result<Option<AgentStateHead>, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
         Ok(agent_state_store.load(id).await?)
     }
@@ -96,7 +99,7 @@ impl AgentOs {
         // 5. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
-            let changeset = crate::contracts::context::CheckpointChangeSet::from_parts(
+            let changeset = crate::contracts::CheckpointChangeSet::from_parts(
                 version,
                 run_id.clone(),
                 parent_run_id.clone(),
@@ -105,7 +108,9 @@ impl AgentOs {
                 pending.patches,
                 state_snapshot_for_delta,
             );
-            let committed = agent_state_store.append(&thread_id, &changeset.delta).await?;
+            let committed = agent_state_store
+                .append(&thread_id, &changeset.delta)
+                .await?;
             version = committed.version;
         }
         let version_timestamp = thread.metadata.version_timestamp;

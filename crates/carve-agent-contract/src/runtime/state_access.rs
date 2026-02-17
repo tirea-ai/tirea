@@ -2,7 +2,7 @@
 //!
 //! This module adds runtime-only operations onto the unified `AgentState`.
 
-use crate::change::{AgentChangeSet as ContractAgentChangeSet, CheckpointReason};
+use crate::change::{CheckpointChangeSet, CheckpointReason};
 use crate::conversation::{AgentState, Message};
 use carve_state::{
     parse_path, CarveError, CarveResult, Op, Patch, PatchSink, ScopeState, State, TrackedPatch,
@@ -19,40 +19,6 @@ pub trait ActivityManager: Send + Sync {
 
     /// Handle an activity operation for a stream.
     fn on_activity_op(&self, stream_id: &str, activity_type: &str, op: &Op);
-}
-
-/// Checkpoint payload generated from runtime `AgentState`.
-#[derive(Debug, Clone)]
-pub struct CheckpointChangeSet {
-    /// Storage version expected by this change set.
-    pub expected_version: u64,
-    /// Incremental delta payload for persistence.
-    pub delta: ContractAgentChangeSet,
-}
-
-impl CheckpointChangeSet {
-    /// Build a `CheckpointChangeSet` from explicit delta components.
-    pub fn from_parts(
-        expected_version: u64,
-        run_id: impl Into<String>,
-        parent_run_id: Option<String>,
-        reason: CheckpointReason,
-        messages: Vec<Arc<Message>>,
-        patches: Vec<TrackedPatch>,
-        snapshot: Option<Value>,
-    ) -> Self {
-        Self {
-            expected_version,
-            delta: ContractAgentChangeSet {
-                run_id: run_id.into(),
-                parent_run_id,
-                reason,
-                messages,
-                patches,
-                snapshot,
-            },
-        }
-    }
 }
 
 impl AgentState {
@@ -118,14 +84,10 @@ impl AgentState {
         version: u64,
         activity_manager: Option<Arc<dyn ActivityManager>>,
     ) -> Self {
-        let mut state = Self::new_runtime_with_activity_manager(
-            doc,
-            call_id,
-            source,
-            activity_manager,
-        )
-        .with_runtime_scope(Some(&thread.scope))
-        .with_thread_data(thread.id.clone(), thread.messages.clone(), version);
+        let mut state =
+            Self::new_runtime_with_activity_manager(doc, call_id, source, activity_manager)
+                .with_runtime_scope(Some(&thread.scope))
+                .with_thread_data(thread.id.clone(), thread.messages.clone(), version);
         state.resource_id = thread.resource_id.clone();
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();

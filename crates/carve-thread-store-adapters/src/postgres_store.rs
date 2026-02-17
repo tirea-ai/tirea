@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
-    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError, AgentStateWriter,
+    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
+    MessageWithCursor, SortOrder,
 };
 use carve_agent_contract::{AgentState, Message, Visibility};
 use std::collections::HashSet;

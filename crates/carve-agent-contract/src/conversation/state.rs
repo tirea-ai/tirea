@@ -2,7 +2,7 @@
 //!
 //! A `AgentState` represents a conversation with messages and state history.
 
-use super::types::Message;
+use super::message::Message;
 use carve_state::{apply_patches, CarveError, CarveResult, Op, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +28,7 @@ pub(crate) struct RuntimeState {
     pub scope_attached: bool,
     pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
     pub ops: Arc<Mutex<Vec<Op>>>,
-    pub activity_manager: Option<Arc<dyn crate::context::ActivityManager>>,
+    pub activity_manager: Option<Arc<dyn crate::runtime::state_access::ActivityManager>>,
 }
 
 impl Default for RuntimeState {

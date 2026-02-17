@@ -2,9 +2,9 @@
 //!
 //! Tools execute actions and can modify state through `AgentState`.
 
+use crate::AgentState;
 pub use crate::{ToolResult, ToolStatus};
 use async_trait::async_trait;
-use crate::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -96,7 +96,7 @@ impl ToolDescriptor {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
+/// use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
 /// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///
@@ -116,7 +116,7 @@ impl ToolDescriptor {
 ///     async fn execute(
 ///         &self,
 ///         args: Value,
-    ///         ctx: &AgentState,
+///         ctx: &AgentState,
 ///     ) -> Result<ToolResult, ToolError> {
 ///         let state = ctx.call_state::<MyToolState>();
 ///         let current = state.count().unwrap_or(0);

@@ -3,8 +3,8 @@ use crate::conversation::AgentState;
 use async_trait::async_trait;
 
 use super::{
-    AgentStateHead, Committed, MessagePage, MessageQuery, AgentStateListPage, AgentStateListQuery, AgentStateStoreError,
-    Version, paginate_in_memory,
+    paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery,
+    AgentStateStoreError, Committed, MessagePage, MessageQuery, Version,
 };
 
 #[async_trait]

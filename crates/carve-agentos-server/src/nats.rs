@@ -1,4 +1,4 @@
-use carve_agent::contracts::events::{AgentEvent, RunRequest};
+use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
 use carve_agent::orchestrator::{AgentOs, RunExtensions};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
 use carve_protocol_ag_ui_runtime::build_agui_extensions;

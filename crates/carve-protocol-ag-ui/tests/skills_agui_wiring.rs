@@ -1,7 +1,7 @@
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::conversation::ToolCall;
-use carve_agent::contracts::events::AgentEvent;
-use carve_agent::contracts::traits::tool::ToolDescriptor;
+use carve_agent::contracts::extension::traits::tool::ToolDescriptor;
+use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::engine::tool_execution::execute_single_tool;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 use carve_agent::prelude::AgentState as RuntimeAgentState;
@@ -133,7 +133,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
 
     // Even without activation, discovery should inject available_skills.
     let thread = ConversationAgentState::with_initial_state("s", json!({}));
-    let mut step = carve_agent::contracts::phase::StepContext::new(
+    let mut step = carve_agent::contracts::runtime::phase::StepContext::new(
         &thread,
         vec![ToolDescriptor::new("t", "t", "t")],
     );
@@ -141,7 +141,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     let ctx = RuntimeAgentState::new_runtime(&doc, "test", "test");
     plugin
         .on_phase(
-            carve_agent::contracts::phase::Phase::BeforeInference,
+            carve_agent::contracts::runtime::phase::Phase::BeforeInference,
             &mut step,
             &ctx,
         )

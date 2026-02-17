@@ -1,12 +1,12 @@
-use carve_state::{path, Op, Patch, TrackedPatch};
-use carve_thread_store_adapters::MemoryStore;
-use carve_agent_contract::{
-    AgentState, CheckpointReason, Message, MessageMetadata, MessageQuery, Role, AgentStateListQuery,
-};
 use carve_agent_contract::change::AgentChangeSet;
 use carve_agent_contract::storage::{
     AgentStateReader, AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter,
 };
+use carve_agent_contract::{
+    AgentState, AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role,
+};
+use carve_state::{path, Op, Patch, TrackedPatch};
+use carve_thread_store_adapters::MemoryStore;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -471,7 +471,10 @@ async fn test_thread_store_delete() {
     let store = MemoryStore::new();
     store.create(&AgentState::new("t1")).await.unwrap();
     AgentStateWriter::delete(&store, "t1").await.unwrap();
-    assert!(AgentStateReader::load(&store, "t1").await.unwrap().is_none());
+    assert!(AgentStateReader::load(&store, "t1")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -842,7 +845,10 @@ async fn test_append_preserves_parent_run_id() {
     assert_eq!(deltas[0].run_id, "child-run-1");
     assert_eq!(deltas[0].parent_run_id.as_deref(), Some("parent-run-1"));
 
-    let head = AgentStateReader::load(&store, "child").await.unwrap().unwrap();
+    let head = AgentStateReader::load(&store, "child")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(head.agent_state.parent_thread_id.as_deref(), Some("parent"));
 }
 
@@ -895,7 +901,10 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
 
     // Verify current state: base={"counter":0}, 1 patch → rebuilt={"counter":5}
     let head = AgentStateReader::load(&store, "t1").await.unwrap().unwrap();
-    assert_eq!(head.agent_state.rebuild_state().unwrap(), json!({"counter": 5}));
+    assert_eq!(
+        head.agent_state.rebuild_state().unwrap(),
+        json!({"counter": 5})
+    );
     assert_eq!(head.agent_state.patches.len(), 1);
 
     // 2. Frontend sends state={"counter":10, "name":"Alice"} along with a user message.
@@ -917,5 +926,9 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     assert!(head.agent_state.patches.is_empty());
     assert_eq!(head.agent_state.rebuild_state().unwrap(), frontend_state);
     // User message was also persisted
-    assert!(head.agent_state.messages.iter().any(|m| m.role == Role::User));
+    assert!(head
+        .agent_state
+        .messages
+        .iter()
+        .any(|m| m.role == Role::User));
 }

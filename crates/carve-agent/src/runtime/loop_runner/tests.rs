@@ -1,12 +1,12 @@
 use super::*;
-use crate::contracts::events::TerminationReason;
-use crate::contracts::phase::Phase;
+use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::runtime::phase::Phase;
+use crate::contracts::runtime::state_access::ActivityManager;
+use crate::contracts::runtime::TerminationReason;
 use crate::contracts::storage::CheckpointReason;
-use crate::contracts::traits::tool::{ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use crate::contracts::context::ActivityManager;
-use crate::contracts::AgentState as ContextAgentState;
 use carve_state::{Op, Patch};
 use carve_state_derive::State;
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
@@ -39,7 +39,11 @@ impl Tool for EchoTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
         let msg = args["message"].as_str().unwrap_or("no message");
         Ok(ToolResult::success("echo", json!({ "echoed": msg })))
     }
@@ -57,7 +61,11 @@ impl Tool for ScopeSnapshotTool {
         )
     }
 
-    async fn execute(&self, _args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
         let rt = ctx.scope_ref().expect("scope should exist");
         let thread_id = rt
             .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
@@ -98,7 +106,11 @@ impl Tool for ActivityGateTool {
         ToolDescriptor::new(&self.id, "Activity Gate", "Emits activity updates")
     }
 
-    async fn execute(&self, _args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
         let activity = ctx.activity(self.stream_id.clone(), "progress");
         let progress = activity.state::<ActivityProgressState>("");
         progress.set_progress(0.1);
@@ -130,8 +142,8 @@ fn skill_activation_result(
     let patch = instruction.map(|text| {
         let base = json!({});
         let ctx = ContextAgentState::new_runtime(&base, call_id, "skill_test");
-        let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-            crate::contracts::state_types::AGENT_STATE_PATH,
+        let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+            crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
         );
         agent.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
         ctx.take_patch()
@@ -337,7 +349,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
             serde_json::from_str(&tool_msg.content).expect("tool result json");
         assert_eq!(
             tool_result.status,
-            crate::contracts::traits::tool::ToolStatus::Success
+            crate::contracts::extension::traits::tool::ToolStatus::Success
         );
         assert_eq!(tool_result.data["thread_id"], json!("caller-s"));
         assert_eq!(tool_result.data["state"]["k"], json!("v"));
@@ -347,7 +359,7 @@ fn test_execute_tools_injects_caller_scope_context_for_tools() {
 
 #[tokio::test]
 async fn test_activity_event_emitted_before_tool_completion() {
-    use crate::contracts::events::AgentEvent;
+    use crate::contracts::runtime::AgentEvent;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(tx));
@@ -402,7 +414,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
 
 #[tokio::test]
 async fn test_parallel_tools_emit_activity_before_completion() {
-    use crate::contracts::events::AgentEvent;
+    use crate::contracts::runtime::AgentEvent;
     use std::collections::HashSet;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -582,7 +594,11 @@ impl Tool for FailingTool {
         ToolDescriptor::new("failing", "Failing Tool", "Always fails")
     }
 
-    async fn execute(&self, _args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed(
             "Intentional failure".to_string(),
         ))
@@ -877,7 +893,12 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             "guarded"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -942,7 +963,12 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             "session_check"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread.id, "real-thread-42");
                 assert_eq!(step.thread.scope.value("user_id"), Some(&json!("u-abc")),);
@@ -992,7 +1018,12 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             "state_channel"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             match phase {
                 Phase::BeforeToolExecute => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1063,7 +1094,12 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             "phase_block"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::StepStart => {
@@ -1127,12 +1163,19 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             "cleanup_plugin"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent =
-                        ctx.state::<crate::contracts::state_types::PersistedAgentState>(AGENT_STATE_PATH);
+                    let agent = ctx
+                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                        AGENT_STATE_PATH,
+                    );
                     let err = agent
                         .inference_error()
                         .ok()
@@ -1194,7 +1237,12 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             "run_scoped_state"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             match phase {
                 Phase::RunStart => {
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1325,7 +1373,13 @@ fn test_agent_config_with_plugins() {
         fn id(&self) -> &str {
             "dummy"
         }
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+        async fn on_phase(
+            &self,
+            _phase: Phase,
+            _step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+        }
     }
 
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(DummyPlugin), Arc::new(DummyPlugin)];
@@ -1343,7 +1397,7 @@ impl AgentPlugin for PendingPhasePlugin {
 
     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
-            use crate::contracts::state_types::Interaction;
+            use crate::contracts::extension::persisted_state::Interaction;
             step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
         }
     }
@@ -1468,9 +1522,9 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-        let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-        crate::contracts::state_types::AGENT_STATE_PATH,
+    let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
         "call_1".to_string(),
@@ -1512,9 +1566,9 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
-        let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
-    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-        crate::contracts::state_types::AGENT_STATE_PATH,
+    let ctx = ContextAgentState::new_runtime(&state, "call_1", "test");
+    let agent = ctx.state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
     );
     agent.append_user_messages_insert(
         "call_1".to_string(),
@@ -1937,7 +1991,12 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             "first_call_intermediate_patch"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
             }
@@ -2038,8 +2097,8 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
 
     let stream = run_loop_stream(
@@ -2089,8 +2148,8 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
 
     let stream = run_loop_stream(
@@ -2125,7 +2184,12 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             "pending_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -2142,8 +2206,8 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
 
     let events = collect_stream_events(run_loop_stream(
@@ -2186,7 +2250,12 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2247,7 +2316,12 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             "skip_inference_for_permission_approval"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2315,7 +2389,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
         events.iter().any(|e| matches!(
             e,
             AgentEvent::ToolCallDone { id, result, .. }
-                if id == "call_1" && result.status == crate::contracts::traits::tool::ToolStatus::Success
+                if id == "call_1" && result.status == crate::contracts::extension::traits::tool::ToolStatus::Success
         )),
         "approved flow must replay and execute original tool call: {events:?}"
     );
@@ -2359,7 +2433,12 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             "skip_inference_for_permission_denial"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -2460,8 +2539,8 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2496,7 +2575,12 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_non_stream"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             self.phases.lock().unwrap().push(phase);
             if phase != Phase::BeforeInference {
                 return;
@@ -2516,8 +2600,8 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     let config = AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(PendingSkipPlugin {
         phases: phases.clone(),
     }) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2555,8 +2639,8 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2590,8 +2674,8 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
 
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2622,7 +2706,12 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2631,8 +2720,8 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(InvalidStepStartSkipPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
 
@@ -2657,7 +2746,12 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
             "invalid_step_start_skip"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
             }
@@ -2771,10 +2865,7 @@ fn test_scope_run_id_in_session() {
         Some("my-run")
     );
     assert_eq!(
-        thread
-            .scope
-            .value("parent_run_id")
-            .and_then(|v| v.as_str()),
+        thread.scope.value("parent_run_id").and_then(|v| v.as_str()),
         Some("parent-run")
     );
 }
@@ -2923,15 +3014,21 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
             "cleanup_on_llm_error_nonstream"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            _step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             self.phases.lock().expect("lock poisoned").push(phase);
             if phase != Phase::AfterInference {
                 return;
             }
 
-            let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-                crate::contracts::state_types::AGENT_STATE_PATH,
-            );
+            let agent = ctx
+                .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                    crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+                );
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
         }
@@ -3395,7 +3492,7 @@ impl StateCommitter for RecordingStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: crate::contracts::context::CheckpointChangeSet,
+        changeset: crate::contracts::CheckpointChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.reasons
             .lock()
@@ -3565,7 +3662,12 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             "invalid_replay_payload"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     carve_state::TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -3628,11 +3730,17 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             "replay_state_failure"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            _step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-                    crate::contracts::state_types::AGENT_STATE_PATH,
-                );
+                let agent = ctx
+                    .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+                    );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -3690,11 +3798,17 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             "replay_blocking"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             match phase {
                 Phase::RunStart => {
-                    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-                        crate::contracts::state_types::AGENT_STATE_PATH,
+                    let agent = ctx
+                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
                     );
                     agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                         "replay_call_1",
@@ -3758,11 +3872,17 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             "replay_without_placeholder"
         }
 
-        async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            _step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-                    crate::contracts::state_types::AGENT_STATE_PATH,
-                );
+                let agent = ctx
+                    .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
+                    );
                 agent.replay_tool_calls_push(crate::contracts::conversation::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -3818,7 +3938,12 @@ async fn test_stream_apply_error_still_runs_run_end_phase() {
             "pending_and_run_end"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             match phase {
                 Phase::BeforeToolExecute => {
                     if let Some(call_id) = step.tool_call_id() {
@@ -3996,7 +4121,11 @@ async fn test_stop_on_tool_condition() {
         fn descriptor(&self) -> ToolDescriptor {
             ToolDescriptor::new("finish_tool", "Finish", "Finishes the run")
         }
-        async fn execute(&self, _args: Value, _ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+        async fn execute(
+            &self,
+            _args: Value,
+            _ctx: &ContextAgentState,
+        ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("finish_tool", json!({"done": true})))
         }
     }
@@ -4231,8 +4360,8 @@ async fn test_run_loop_with_context_cancellation_token() {
     let (recorder, _phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools = HashMap::new();
     let client = Client::default();
     let token = CancellationToken::new();
@@ -4599,7 +4728,12 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
             "pending_every_tool"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -4994,8 +5128,8 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
     let (recorder, phases) = RecordAndSkipPlugin::new();
     let config =
         AgentConfig::new("gpt-4o-mini").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let (next_thread, result) = run_step(&Client::default(), &config, thread, &tools)
@@ -5021,7 +5155,12 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             "pending_skip_step"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase != Phase::BeforeInference {
                 return;
             }
@@ -5038,8 +5177,8 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 
     let config = AgentConfig::new("gpt-4o-mini")
         .with_plugin(Arc::new(PendingSkipStepPlugin) as Arc<dyn AgentPlugin>);
-    let thread =
-        AgentState::new("test").with_message(crate::contracts::conversation::Message::user("hello"));
+    let thread = AgentState::new("test")
+        .with_message(crate::contracts::conversation::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
     let result = run_step(&Client::default(), &config, thread, &tools).await;
@@ -5091,7 +5230,7 @@ async fn test_stream_tool_execution_injects_scope_context_for_tools() {
         serde_json::from_str(&tool_msg.content).expect("tool result json");
     assert_eq!(
         tool_result.status,
-        crate::contracts::traits::tool::ToolStatus::Success
+        crate::contracts::extension::traits::tool::ToolStatus::Success
     );
     assert_eq!(tool_result.data["thread_id"], json!("stream-caller"));
     assert_eq!(tool_result.data["state"]["k"], json!("v"));
@@ -5110,12 +5249,18 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             "cleanup_on_start_error"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            ctx: &ContextAgentState,
+        ) {
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::contracts::state_types::PersistedAgentState>(
-                        crate::contracts::state_types::AGENT_STATE_PATH,
+                    let agent = ctx
+                        .state::<crate::contracts::extension::persisted_state::PersistedAgentState>(
+                        crate::contracts::extension::persisted_state::AGENT_STATE_PATH,
                     );
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));

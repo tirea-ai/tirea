@@ -3,15 +3,15 @@
 //! System reminders generate messages based on state to remind
 //! the agent about important information.
 
-use async_trait::async_trait;
 use crate::AgentState;
+use async_trait::async_trait;
 
 /// System reminder for generating reminder messages.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::traits::reminder::SystemReminder;
+/// use carve_agent::contracts::extension::traits::reminder::SystemReminder;
 /// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///
@@ -28,7 +28,7 @@ use crate::AgentState;
 ///         "todo_reminder"
 ///     }
 ///
-    ///     async fn remind(&self, ctx: &AgentState) -> Option<String> {
+///     async fn remind(&self, ctx: &AgentState) -> Option<String> {
 ///         let state = ctx.state::<TodoState>("components.todos");
 ///
 ///         let pending = state.pending_count().unwrap_or(0);

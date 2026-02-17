@@ -1,11 +1,11 @@
 use super::*;
 use crate::contracts::conversation::AgentState;
+use crate::contracts::extension::traits::tool::ToolStatus;
 use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::traits::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
-    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
-    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
+    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
 use carve_state::apply_patches;

@@ -10,9 +10,9 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::phase::Phase;
-use carve_agent::contracts::phase::StepContext;
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::runtime::phase::Phase;
+use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agent::runtime::loop_runner::AgentDefinition;

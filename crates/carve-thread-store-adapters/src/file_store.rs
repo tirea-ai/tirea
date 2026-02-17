@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, Committed,
-    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError, AgentStateWriter, Version,
+    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStoreError, AgentStateWriter, Committed, Version,
 };
 use carve_agent_contract::AgentState;
 use serde::Deserialize;
@@ -145,12 +145,7 @@ impl AgentStateReader for FileStore {
             let mut filtered = Vec::new();
             for id in &all {
                 if let Some(head) = self.load(id).await? {
-                    if head
-                        .agent_state
-                        .resource_id
-                        .as_deref()
-                        == Some(resource_id.as_str())
-                    {
+                    if head.agent_state.resource_id.as_deref() == Some(resource_id.as_str()) {
                         filtered.push(id.clone());
                     }
                 }
@@ -163,10 +158,7 @@ impl AgentStateReader for FileStore {
             let mut filtered = Vec::new();
             for id in &all {
                 if let Some(head) = self.load(id).await? {
-                    if head
-                        .agent_state
-                        .parent_thread_id
-                        .as_deref()
+                    if head.agent_state.parent_thread_id.as_deref()
                         == Some(parent_thread_id.as_str())
                     {
                         filtered.push(id.clone());
@@ -194,7 +186,10 @@ impl AgentStateReader for FileStore {
 
 impl FileStore {
     /// Load a thread head (thread + version) from file.
-    async fn load_head(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
+    async fn load_head(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
         let path = self.thread_path(thread_id)?;
         if !path.exists() {
             return Ok(None);
@@ -276,10 +271,10 @@ struct VersionedThread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_state::{path, Op, Patch, TrackedPatch};
     use carve_agent_contract::{
-        storage::AgentStateReader, Message, CheckpointReason, MessageQuery, AgentStateWriter,
+        storage::AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
     };
+    use carve_state::{path, Op, Patch, TrackedPatch};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;

@@ -1,6 +1,6 @@
 use super::{AGUIMessage, MessageRole};
-use carve_protocol_contract::ProtocolHistoryEncoder;
 use carve_agent_contract::{Message, Role};
+use carve_protocol_contract::ProtocolHistoryEncoder;
 
 pub struct AgUiHistoryEncoder;
 

@@ -1,8 +1,8 @@
 //! Tool execution utilities.
 
 use crate::contracts::conversation::ToolCall;
+use crate::contracts::extension::traits::tool::{Tool, ToolResult};
 use crate::contracts::AgentState;
-use crate::contracts::traits::tool::{Tool, ToolResult};
 use carve_state::{ScopeState, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -170,7 +170,7 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::traits::tool::{ToolDescriptor, ToolError};
+    use crate::contracts::extension::traits::tool::{ToolDescriptor, ToolError};
     use async_trait::async_trait;
     use carve_state_derive::State;
     use serde::{Deserialize, Serialize};
@@ -517,8 +517,7 @@ mod tests {
         let call = ToolCall::new("call_1", "sensitive", json!({}));
         let state = json!({});
 
-        let exec =
-            execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
+        let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
 
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["token_len"], 18);

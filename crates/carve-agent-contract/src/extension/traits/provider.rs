@@ -3,8 +3,8 @@
 //! Context providers inject dynamic content into the agent's context
 //! based on the current state.
 
-use async_trait::async_trait;
 use crate::AgentState;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.
@@ -24,7 +24,7 @@ pub enum ContextCategory {
 /// # Example
 ///
 /// ```ignore
-/// use carve_agent::contracts::traits::provider::{ContextCategory, ContextProvider};
+/// use carve_agent::contracts::extension::traits::provider::{ContextCategory, ContextProvider};
 /// use carve_agent::prelude::AgentState;
 /// use carve_state_derive::State;
 ///
@@ -50,7 +50,7 @@ pub enum ContextCategory {
 ///         100
 ///     }
 ///
-    ///     async fn provide(&self, ctx: &AgentState) -> Vec<String> {
+///     async fn provide(&self, ctx: &AgentState) -> Vec<String> {
 ///         let state = ctx.state::<BuildStatusState>("components.build_status");
 ///
 ///         // Update last check time

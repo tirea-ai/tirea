@@ -3,13 +3,13 @@
 //! Handles client responses to pending interactions (approvals/denials).
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
-use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::phase::{Phase, StepContext};
-use crate::contracts::state_types::{
-    PersistedAgentState as AgentStateDoc, Interaction, InteractionResponse, AGENT_RECOVERY_INTERACTION_ACTION,
-    AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
+use crate::contracts::extension::persisted_state::{
+    Interaction, InteractionResponse, PersistedAgentState as AgentStateDoc,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;

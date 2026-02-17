@@ -1,4 +1,4 @@
-use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState;
 use async_trait::async_trait;
 use carve_agent_contract::composition::ToolRegistry;
@@ -85,11 +85,7 @@ impl Tool for McpTool {
         self.descriptor()
     }
 
-    async fn execute(
-        &self,
-        args: Value,
-        _ctx: &AgentState,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
         let res = self
             .transport
             .call_tool(&self.tool_name, args)

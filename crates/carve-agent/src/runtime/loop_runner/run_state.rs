@@ -1,6 +1,6 @@
 use super::AgentConfig;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::events::StreamResult;
+use crate::contracts::runtime::StreamResult;
 use crate::engine::stop_conditions::{StopCheckContext, StopCondition};
 use std::collections::VecDeque;
 use std::sync::Arc;

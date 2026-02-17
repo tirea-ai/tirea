@@ -1,6 +1,8 @@
 //! Extension SPI contracts.
 
-pub mod agent_plugin;
-pub mod phase;
-pub mod state_types;
+pub mod persisted_state;
+pub mod plugin;
 pub mod traits;
+
+pub use persisted_state::*;
+pub use plugin::AgentPlugin;

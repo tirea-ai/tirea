@@ -232,8 +232,7 @@ impl AgentPlugin for AgentToolsPlugin {
                     .scope
                     .value(SCOPE_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
-                let rendered =
-                    self.render_available_agents(caller_agent, Some(&step.thread.scope));
+                let rendered = self.render_available_agents(caller_agent, Some(&step.thread.scope));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }

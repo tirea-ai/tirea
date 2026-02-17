@@ -1,6 +1,6 @@
 use crate::conversation::AgentState;
-use crate::Visibility;
 use crate::Message;
+use crate::Visibility;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -135,11 +135,9 @@ pub fn paginate_in_memory(
             None => true,
         })
         .filter(|(_, m)| match &query.run_id {
-            Some(rid) => m
-                .metadata
-                .as_ref()
-                .and_then(|meta| meta.run_id.as_deref())
-                == Some(rid.as_str()),
+            Some(rid) => {
+                m.metadata.as_ref().and_then(|meta| meta.run_id.as_deref()) == Some(rid.as_str())
+            }
             None => true,
         })
         .map(|(i, m)| ((start + i) as i64, m))

@@ -1,65 +1,37 @@
-//! Shared agent contracts for runtime events, extension SPI, and composition wiring.
-
-pub mod context;
-mod event;
-mod interaction;
-pub mod conversation;
-mod run;
-pub mod change;
-mod stop;
-mod stream;
-mod tool;
-pub mod storage;
-pub mod events {
-    pub use crate::{AgentEvent, RunRequest, StopReason, StreamResult, TerminationReason};
-}
-pub mod phase {
-    pub use crate::extension::phase::*;
-}
-pub mod agent_plugin {
-    pub use crate::extension::agent_plugin::*;
-}
-pub mod state_types {
-    pub use crate::extension::state_types::*;
-}
-pub mod traits {
-    pub use crate::extension::traits::{provider, reminder, tool};
-}
-pub mod tools {
-    pub use crate::extension::traits::tool::{
-        Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
-    };
-}
-pub mod plugin {
-    pub use crate::agent_plugin::AgentPlugin;
-    pub use crate::phase::{Phase, StepContext, StepOutcome, ToolContext};
-    pub use crate::traits::provider::{ContextCategory, ContextProvider};
-    pub use crate::traits::reminder::SystemReminder;
-}
-pub mod state {
-    pub use crate::state_types::{
-        AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
-        AgentRunState, AgentRunStatus, Interaction, InteractionResponse, PersistedAgentState,
-        ToolPermissionBehavior,
-    };
-}
+//! Shared agent contracts for conversation state, runtime protocol, extension SPI, and storage.
 
 pub mod agent;
+pub mod change;
 pub mod composition;
+pub mod conversation;
 pub mod extension;
+pub mod runtime;
 pub mod skills;
 pub mod stop_conditions;
+pub mod storage;
 
-pub use change::CheckpointReason;
-pub use conversation::{
-    AgentState, AgentStateMetadata, PendingDelta, ToolCall, Visibility, gen_message_id, Message,
-    MessageMetadata, Role,
+pub use agent::{
+    AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
+    StateCommitError, StateCommitter, TOOL_SCOPE_CALLER_AGENT_ID_KEY,
+    TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-pub use context::{ActivityContext, ActivityManager, CheckpointChangeSet};
-pub use event::AgentEvent;
-pub use interaction::{Interaction, InteractionResponse};
-pub use run::RunRequest;
-pub use stop::{StopReason, TerminationReason};
-pub use stream::StreamResult;
-pub use tool::{ToolResult, ToolStatus};
+pub use change::{AgentChangeSet, CheckpointChangeSet, CheckpointReason, Version};
+pub use conversation::{
+    gen_message_id, AgentState, AgentStateMetadata, Message, MessageMetadata, PendingDelta, Role,
+    ToolCall, Visibility,
+};
+pub use extension::persisted_state::{
+    AgentInferenceError, AgentRunState, AgentRunStatus, PersistedAgentState,
+    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_STATE_PATH,
+};
+pub use extension::plugin::AgentPlugin;
+pub use extension::traits::provider::{ContextCategory, ContextProvider};
+pub use extension::traits::reminder::SystemReminder;
+pub use extension::traits::tool::{Tool, ToolDescriptor, ToolError};
+pub use runtime::{
+    ActivityContext, ActivityManager, AgentEvent, Interaction, InteractionResponse, Phase,
+    RunRequest, StepContext, StepOutcome, StopReason, StreamResult, TerminationReason, ToolContext,
+    ToolResult, ToolStatus,
+};
 pub use storage::*;

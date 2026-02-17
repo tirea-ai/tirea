@@ -4,12 +4,14 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agent::contracts::state_types::InteractionResponse;
-use carve_agent::contracts::traits::provider::{ContextCategory, ContextProvider};
-use carve_agent::contracts::traits::reminder::SystemReminder;
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
+use carve_agent::contracts::extension::persisted_state::InteractionResponse;
+use carve_agent::contracts::extension::traits::provider::{ContextCategory, ContextProvider};
+use carve_agent::contracts::extension::traits::reminder::SystemReminder;
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
+use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::runtime::activity::ActivityHub;
 use carve_agent::runtime::loop_runner::AgentLoopError;
 use carve_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
@@ -63,7 +65,11 @@ impl Tool for IncrementTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let path = args["path"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("path is required".to_string()))?;
@@ -87,7 +93,11 @@ impl Tool for AddTaskTool {
         ToolDescriptor::new("add_task", "Add Task", "Adds a new task item")
     }
 
-    async fn execute(&self, args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let item = args["item"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("item is required".to_string()))?;
@@ -112,7 +122,11 @@ impl Tool for UpdateCallStateTool {
         ToolDescriptor::new("update_call", "Update Call State", "Updates the call state")
     }
 
-    async fn execute(&self, args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let label = args["label"].as_str().unwrap_or("updated");
 
         // Use call_state() for per-call state
@@ -202,7 +216,8 @@ async fn test_tool_basic_execution() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "tool:increment");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "tool:increment");
 
     let result = tool
         .execute(json!({"path": "counter"}), &ctx)
@@ -230,7 +245,11 @@ async fn test_tool_multiple_executions() {
 
     for i in 1..=5 {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, format!("call_{}", i), "tool:increment");
+        let ctx = carve_agent::prelude::AgentState::new_runtime(
+            &snapshot,
+            format!("call_{}", i),
+            "tool:increment",
+        );
 
         let result = tool
             .execute(json!({"path": "counter"}), &ctx)
@@ -260,7 +279,11 @@ async fn test_tool_with_call_state() {
     // First execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_abc", "tool:update_call");
+        let ctx = carve_agent::prelude::AgentState::new_runtime(
+            &snapshot,
+            "call_abc",
+            "tool:update_call",
+        );
 
         let result = tool.execute(json!({"label": "step1"}), &ctx).await.unwrap();
 
@@ -273,7 +296,11 @@ async fn test_tool_with_call_state() {
     // Second execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_abc", "tool:update_call");
+        let ctx = carve_agent::prelude::AgentState::new_runtime(
+            &snapshot,
+            "call_abc",
+            "tool:update_call",
+        );
 
         let result = tool.execute(json!({"label": "step2"}), &ctx).await.unwrap();
 
@@ -294,7 +321,8 @@ async fn test_tool_error_handling() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "tool:increment");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "tool:increment");
 
     // Missing required argument
     let result = tool.execute(json!({}), &ctx).await;
@@ -321,7 +349,8 @@ async fn test_context_provider_basic() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "provider:counter");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "provider:counter");
 
     let messages = provider.provide(&ctx).await;
     assert!(messages.is_empty()); // value <= 10
@@ -343,7 +372,8 @@ async fn test_context_provider_with_high_value() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "provider:counter");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_001", "provider:counter");
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -498,7 +528,8 @@ async fn test_full_tool_workflow() {
     for i in 1..=3 {
         let call_id = format!("call_{}", i);
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, &call_id, "tool:add_task");
+        let ctx =
+            carve_agent::prelude::AgentState::new_runtime(&snapshot, &call_id, "tool:add_task");
 
         let result = tool
             .execute(json!({"item": format!("Task {}", i)}), &ctx)
@@ -544,7 +575,8 @@ async fn test_tool_provider_reminder_integration() {
     // Execute increment tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_1", "tool:increment");
+        let ctx =
+            carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_1", "tool:increment");
         let _ = increment_tool
             .execute(json!({"path": "counter"}), &ctx)
             .await
@@ -555,7 +587,8 @@ async fn test_tool_provider_reminder_integration() {
     // Execute add task tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_2", "tool:add_task");
+        let ctx =
+            carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_2", "tool:add_task");
         let _ = task_tool
             .execute(json!({"item": "New task"}), &ctx)
             .await
@@ -566,7 +599,8 @@ async fn test_tool_provider_reminder_integration() {
     // Run context provider
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_3", "provider:counter");
+        let ctx =
+            carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_3", "provider:counter");
         let messages = provider.provide(&ctx).await;
         assert!(messages.is_empty()); // value is only 1
         manager.commit(ctx.take_patch()).await.unwrap();
@@ -575,7 +609,8 @@ async fn test_tool_provider_reminder_integration() {
     // Run system reminder
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_4", "reminder:task");
+        let ctx =
+            carve_agent::prelude::AgentState::new_runtime(&snapshot, "call_4", "reminder:task");
         let message = reminder.remind(&ctx).await;
         assert!(message.is_some());
         assert!(message.unwrap().contains("1")); // 1 pending task
@@ -593,7 +628,7 @@ async fn test_tool_provider_reminder_integration() {
 // ============================================================================
 
 use carve_agent::contracts::conversation::{Message, Role};
-use carve_agent::contracts::events::StreamResult;
+use carve_agent::contracts::runtime::StreamResult;
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
 use carve_state::{path, Op, Patch, TrackedPatch};
@@ -687,7 +722,11 @@ async fn test_session_storage_roundtrip() {
     storage.save(&thread).await.unwrap();
 
     // Load session
-    let loaded = storage.load_agent_state("storage-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("storage-test")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Verify
     assert_eq!(loaded.id, "storage-test");
@@ -727,7 +766,11 @@ async fn test_file_storage_session_persistence() {
     assert!(path.exists());
 
     // Load and verify
-    let loaded = storage.load_agent_state("persist-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("persist-test")
+        .await
+        .unwrap()
+        .unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert_eq!(state["user"]["level"], 2);
@@ -756,7 +799,11 @@ async fn test_session_snapshot_and_continue() {
 
     // Save and load
     storage.save(&thread).await.unwrap();
-    let loaded = storage.load_agent_state("snapshot-test").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("snapshot-test")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Continue with more patches
     let thread = loaded.with_patch(TrackedPatch::new(
@@ -814,9 +861,18 @@ async fn test_storage_list_and_delete() {
     let storage = MemoryStore::new();
 
     // Create multiple sessions
-    storage.save(&ConversationAgentState::new("thread-1")).await.unwrap();
-    storage.save(&ConversationAgentState::new("thread-2")).await.unwrap();
-    storage.save(&ConversationAgentState::new("thread-3")).await.unwrap();
+    storage
+        .save(&ConversationAgentState::new("thread-1"))
+        .await
+        .unwrap();
+    storage
+        .save(&ConversationAgentState::new("thread-2"))
+        .await
+        .unwrap();
+    storage
+        .save(&ConversationAgentState::new("thread-3"))
+        .await
+        .unwrap();
 
     let ids = storage.list().await.unwrap();
     assert_eq!(ids.len(), 3);
@@ -906,7 +962,11 @@ async fn test_concurrent_tool_execution_stress() {
         let manager = manager.clone();
         let handle = tokio::spawn(async move {
             let snapshot = manager.snapshot().await;
-            let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, format!("call_{}", i), "tool:increment");
+            let ctx = carve_agent::prelude::AgentState::new_runtime(
+                &snapshot,
+                format!("call_{}", i),
+                "tool:increment",
+            );
 
             // Create counter path for this task
             let path = format!("counters.c{}", i % 10);
@@ -1137,7 +1197,11 @@ async fn test_session_recovery_after_partial_save() {
     // "Crash" happens here - we don't save
 
     // Recovery: load from last checkpoint
-    let recovered = storage.load_agent_state("recovery-test").await.unwrap().unwrap();
+    let recovered = storage
+        .load_agent_state("recovery-test")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Should have state from checkpoint (step 2, not step 3)
     let state = recovered.rebuild_state().unwrap();
@@ -1184,7 +1248,7 @@ async fn test_session_incremental_checkpoints() {
 #[tokio::test]
 async fn test_incremental_checkpoints_via_append() {
     use carve_agent::contracts::storage::{
-        CheckpointReason, AgentChangeSet, AgentStateSync, AgentStateWriter,
+        AgentChangeSet, AgentStateSync, AgentStateWriter, CheckpointReason,
     };
 
     let storage = MemoryStore::new();
@@ -1433,7 +1497,11 @@ impl Tool for SlowTool {
         ToolDescriptor::new("slow_tool", "Slow Tool", "A tool that takes time")
     }
 
-    async fn execute(&self, _args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
 
         let counter = ctx.state::<CounterState>("counter");
@@ -1667,7 +1735,11 @@ impl Tool for NetworkErrorTool {
         ToolDescriptor::new("network_tool", "Network Tool", "Tool that may fail")
     }
 
-    async fn execute(&self, _args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let count = self
             .fail_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1729,7 +1801,11 @@ async fn test_tool_error_does_not_corrupt_state() {
 
     for i in 0..5 {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, format!("call_{}", i), "tool:network");
+        let ctx = carve_agent::prelude::AgentState::new_runtime(
+            &snapshot,
+            format!("call_{}", i),
+            "tool:network",
+        );
 
         let result = tool.execute(json!({}), &ctx).await;
         assert!(result.is_err());
@@ -1799,7 +1875,11 @@ async fn test_storage_error_recovery() {
     assert!(result.unwrap().is_none());
 
     // Original session should still be loadable
-    let loaded = storage.load_agent_state("valid-thread").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("valid-thread")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.message_count(), 1);
 }
 
@@ -1808,7 +1888,8 @@ async fn test_concurrent_errors_dont_corrupt_storage() {
     let storage = Arc::new(MemoryStore::new());
 
     // Save initial session
-    let thread = ConversationAgentState::new("concurrent-test").with_message(Message::user("Initial"));
+    let thread =
+        ConversationAgentState::new("concurrent-test").with_message(Message::user("Initial"));
     storage.save(&thread).await.unwrap();
 
     let mut handles = vec![];
@@ -1971,7 +2052,7 @@ async fn test_file_storage_corrupted_json() {
 
 #[test]
 fn test_tool_error_variants_display() {
-    use carve_agent::contracts::traits::tool::ToolError;
+    use carve_agent::contracts::extension::traits::tool::ToolError;
 
     let invalid_args = ToolError::InvalidArguments("Missing required field 'name'".to_string());
     assert!(invalid_args.to_string().contains("Invalid arguments"));
@@ -2051,7 +2132,7 @@ async fn test_execute_tools_empty_result() {
 
 #[test]
 fn test_agent_event_all_variants() {
-    use carve_agent::contracts::events::AgentEvent;
+    use carve_agent::contracts::runtime::AgentEvent;
 
     // TextDelta
     let text_delta = AgentEvent::TextDelta {
@@ -2161,7 +2242,7 @@ fn test_agent_event_all_variants() {
         thread_id: "t1".to_string(),
         run_id: "r1".to_string(),
         result: Some(serde_json::json!({"response": "Final response"})),
-        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+        termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
     };
     match finish {
         AgentEvent::RunFinish { result, .. } => {
@@ -2173,7 +2254,7 @@ fn test_agent_event_all_variants() {
 
 #[tokio::test]
 async fn test_activity_context_emits_snapshot_on_update() {
-    use carve_agent::contracts::events::AgentEvent;
+    use carve_agent::contracts::runtime::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2253,7 +2334,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
 #[tokio::test]
 async fn test_activity_context_multiple_streams_emit_separately() {
-    use carve_agent::contracts::events::AgentEvent;
+    use carve_agent::contracts::runtime::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2389,7 +2470,8 @@ fn test_storage_error_variants() {
     assert!(display.contains("IO error") || display.contains("Permission") || !display.is_empty());
 
     // Test Serialization error variant
-    let serialization_error = AgentStateStoreError::Serialization("Invalid JSON at line 5".to_string());
+    let serialization_error =
+        AgentStateStoreError::Serialization("Invalid JSON at line 5".to_string());
     let display = serialization_error.to_string();
     assert!(
         display.contains("Serialization")
@@ -2425,7 +2507,11 @@ impl Tool for NestedStateTool {
         ToolDescriptor::new("nested_state", "Nested State Tool", "Modifies nested state")
     }
 
-    async fn execute(&self, _args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         // Modify deeply nested state
         let nested = ctx.state::<NestedState>("deeply.nested");
         let current = nested.value().unwrap_or(0);
@@ -2830,7 +2916,11 @@ impl Tool for ReadOnlyTool {
         ToolDescriptor::new("read_only", "Read Only", "Reads state without modification")
     }
 
-    async fn execute(&self, _args: Value, ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         // Only read, don't modify
         let counter = ctx.state::<CounterState>("counter");
         let value = counter.value().unwrap_or(-1);
@@ -2906,7 +2996,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 #[test]
 fn test_agent_loop_error_all_variants() {
     use carve_agent::contracts::conversation::AgentState;
-    use carve_agent::contracts::state_types::Interaction;
+    use carve_agent::contracts::extension::persisted_state::Interaction;
     use carve_agent::runtime::loop_runner::AgentLoopError;
 
     // LlmError
@@ -3138,7 +3228,8 @@ async fn test_e2e_multi_step_with_state() {
 /// Simulate tool failure and error message
 #[tokio::test]
 async fn test_e2e_tool_failure_handling() {
-    let thread = ConversationAgentState::new("e2e-failure").with_message(Message::user("Call a non-existent tool"));
+    let thread = ConversationAgentState::new("e2e-failure")
+        .with_message(Message::user("Call a non-existent tool"));
 
     // LLM calls a tool that doesn't exist
     let llm_response = StreamResult {
@@ -3205,7 +3296,11 @@ async fn test_e2e_session_persistence_restore() {
     let state_before = thread.rebuild_state().unwrap();
 
     // Phase 2: "Restart" - load and continue
-    let mut loaded = storage.load_agent_state("e2e-persist").await.unwrap().unwrap();
+    let mut loaded = storage
+        .load_agent_state("e2e-persist")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Verify state preserved
     let state_after_load = loaded.rebuild_state().unwrap();
@@ -3464,7 +3559,11 @@ async fn test_e2e_context_provider_integration() {
 
     // 1. Provider runs and may modify state
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "provider_call", "provider:counter");
+    let ctx = carve_agent::prelude::AgentState::new_runtime(
+        &snapshot,
+        "provider_call",
+        "provider:counter",
+    );
 
     let messages = provider.provide(&ctx).await;
 
@@ -3481,7 +3580,8 @@ async fn test_e2e_context_provider_integration() {
 
     // 3. Now a tool runs and sees the provider's changes
     let tool = IncrementTool;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&new_snapshot, "tool_call", "tool:increment");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&new_snapshot, "tool_call", "tool:increment");
     let result = tool
         .execute(json!({"path": "counter"}), &ctx)
         .await
@@ -3503,7 +3603,8 @@ async fn test_e2e_system_reminder_integration() {
 
     // Reminder checks state and returns message
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "reminder_call", "reminder:task");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "reminder_call", "reminder:task");
 
     let message = reminder.remind(&ctx).await;
 
@@ -3610,7 +3711,8 @@ async fn test_e2e_conditional_context_provider() {
     // Test with negative value
     let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agent::prelude::AgentState::new_runtime(&snapshot, "test", "provider:conditional");
+    let ctx =
+        carve_agent::prelude::AgentState::new_runtime(&snapshot, "test", "provider:conditional");
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -3640,7 +3742,11 @@ impl Tool for ConfirmationTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, _ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let confirmed = args["confirmed"].as_bool().unwrap_or(false);
 
         if confirmed {
@@ -3666,7 +3772,11 @@ impl Tool for PartialSuccessTool {
         ToolDescriptor::new("batch_process", "Batch Process", "Process multiple items")
     }
 
-    async fn execute(&self, args: Value, _ctx: &carve_agent::prelude::AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
         let items = args["items"].as_array().map(|a| a.len()).unwrap_or(0);
 
         // Simulate: some items succeed, some fail
@@ -3740,7 +3850,8 @@ async fn test_e2e_tool_warning_status() {
 
 #[tokio::test]
 async fn test_e2e_pending_tool_in_session_flow() {
-    let thread = ConversationAgentState::new("pending-test").with_message(Message::user("Delete all files"));
+    let thread =
+        ConversationAgentState::new("pending-test").with_message(Message::user("Delete all files"));
 
     // Simulate LLM calling dangerous action without confirmation
     let llm_response = StreamResult {
@@ -3909,7 +4020,8 @@ async fn test_concurrent_read_write_same_session() {
     let storage = Arc::new(MemoryStore::new());
 
     // Create initial session
-    let thread = ConversationAgentState::new("shared-thread").with_message(Message::user("Initial message"));
+    let thread =
+        ConversationAgentState::new("shared-thread").with_message(Message::user("Initial message"));
     storage.save(&thread).await.unwrap();
 
     let mut handles = vec![];
@@ -3924,7 +4036,11 @@ async fn test_concurrent_read_write_same_session() {
                 loaded.is_some()
             } else {
                 // Writer (updates the thread)
-                let mut thread = storage.load_agent_state("shared-thread").await.unwrap().unwrap();
+                let mut thread = storage
+                    .load_agent_state("shared-thread")
+                    .await
+                    .unwrap()
+                    .unwrap();
                 thread = thread.with_message(Message::user(format!("Update {}", i)));
                 storage.save(&thread).await.unwrap();
                 true
@@ -3943,7 +4059,11 @@ async fn test_concurrent_read_write_same_session() {
     assert!(results.iter().all(|&r| r));
 
     // Final session should have messages
-    let final_thread = storage.load_agent_state("shared-thread").await.unwrap().unwrap();
+    let final_thread = storage
+        .load_agent_state("shared-thread")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -4017,7 +4137,8 @@ async fn test_storage_overwrite_session() {
     let storage = MemoryStore::new();
 
     // Create and save
-    let session1 = ConversationAgentState::new("overwrite-test").with_message(Message::user("First version"));
+    let session1 =
+        ConversationAgentState::new("overwrite-test").with_message(Message::user("First version"));
     storage.save(&session1).await.unwrap();
 
     // Overwrite
@@ -4042,7 +4163,8 @@ async fn test_file_storage_special_characters_in_id() {
     let storage = FileStore::new(temp_dir.path());
 
     // AgentState ID with special characters (but filesystem-safe)
-    let thread = ConversationAgentState::new("session_with-special.chars_123").with_message(Message::user("Test"));
+    let thread = ConversationAgentState::new("session_with-special.chars_123")
+        .with_message(Message::user("Test"));
 
     storage.save(&thread).await.unwrap();
     let loaded = storage
@@ -4103,8 +4225,8 @@ async fn test_file_storage_concurrent_writes_same_session() {
     for i in 0..10 {
         let s = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
-            let thread =
-                ConversationAgentState::new("shared_session").with_message(Message::user(&format!("Write {}", i)));
+            let thread = ConversationAgentState::new("shared_session")
+                .with_message(Message::user(&format!("Write {}", i)));
             s.save(&thread).await.unwrap();
         }));
     }
@@ -4159,7 +4281,11 @@ async fn test_file_storage_read_write_interleaved() {
     }
 
     // After all writes complete, a final read should succeed.
-    let final_thread = storage.load_agent_state("interleaved").await.unwrap().unwrap();
+    let final_thread = storage
+        .load_agent_state("interleaved")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(final_thread.message_count() >= 1);
 }
 
@@ -4171,7 +4297,11 @@ async fn test_storage_empty_session() {
     let thread = ConversationAgentState::new("empty-thread");
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load_agent_state("empty-thread").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("empty-thread")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loaded.message_count(), 0);
     assert_eq!(loaded.patch_count(), 0);
 }
@@ -4198,7 +4328,11 @@ async fn test_storage_large_state() {
 
     storage.save(&thread).await.unwrap();
 
-    let loaded = storage.load_agent_state("large-state").await.unwrap().unwrap();
+    let loaded = storage
+        .load_agent_state("large-state")
+        .await
+        .unwrap()
+        .unwrap();
     let state = loaded.rebuild_state().unwrap();
 
     assert!(state.as_object().unwrap().len() >= 1000);
@@ -4540,8 +4674,8 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
-use carve_agent::contracts::events::AgentEvent;
-use carve_agent::contracts::state_types::Interaction;
+use carve_agent::contracts::extension::persisted_state::Interaction;
+use carve_agent::contracts::runtime::AgentEvent;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
@@ -4739,9 +4873,9 @@ fn test_scenario_various_interaction_types() {
 // InteractionPlugin Scenario Tests
 // ============================================================================
 
-use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::conversation::ToolCall;
-use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
 use std::collections::HashSet;
 
@@ -4772,7 +4906,12 @@ impl AgentPlugin for TestFrontendToolPlugin {
         "test_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &carve_agent::prelude::AgentState) {
+    async fn on_phase(
+        &self,
+        phase: Phase,
+        step: &mut StepContext<'_>,
+        _ctx: &carve_agent::prelude::AgentState,
+    ) {
         if phase != Phase::BeforeToolExecute {
             return;
         }
@@ -6397,7 +6536,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::agent_plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // execute_tools_with_plugins should return PendingInteraction error
@@ -6467,7 +6606,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::agent_plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6493,7 +6632,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Resume with only InteractionPlugin — denial should block the tool
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::agent_plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -6562,7 +6701,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     };
 
     let tools = tool_map([IncrementTool]);
-    let plugins: Vec<Arc<dyn carve_agent::contracts::agent_plugin::AgentPlugin>> =
+    let plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
         vec![Arc::new(PermissionPlugin)];
 
     // Phase 1: Suspend
@@ -6588,7 +6727,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Resume with only InteractionPlugin (no PermissionPlugin)
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::agent_plugin::AgentPlugin>> =
+    let resume_plugins: Vec<Arc<dyn carve_agent::contracts::extension::plugin::AgentPlugin>> =
         vec![Arc::new(response_plugin)];
 
     let resume_result = StreamResult {
@@ -9187,7 +9326,7 @@ fn test_multiple_text_messages() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "First message"})),
-        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+        termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish1));
 
@@ -10126,7 +10265,7 @@ fn test_run_started_is_first_event() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Hello"})),
-        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+        termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish));
 
@@ -10311,7 +10450,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: Some(serde_json::json!({"response": "Hello"})),
-            termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+            termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
         },
     ]
     .iter()
@@ -11908,7 +12047,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(json!({"ok": true})),
-        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+        termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 
@@ -11956,7 +12095,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Response"})),
-        termination: carve_agent::contracts::events::TerminationReason::NaturalEnd,
+        termination: carve_agent::contracts::runtime::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 
@@ -12015,7 +12154,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text_emits_tool_calls() {
-    use carve_agent::contracts::state_types::Interaction;
+    use carve_agent::contracts::extension::persisted_state::Interaction;
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
@@ -12198,7 +12337,7 @@ fn test_tool_call_start_includes_parent_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_to_ag_ui_events() {
-    use carve_agent::contracts::state_types::Interaction;
+    use carve_agent::contracts::extension::persisted_state::Interaction;
 
     let interaction = Interaction::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));
@@ -12227,12 +12366,12 @@ fn test_interaction_to_ag_ui_events() {
 // ============================================================================
 
 mod llmmetry_tracing {
-    use carve_agent::contracts::agent_plugin::AgentPlugin;
     use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
     use carve_agent::contracts::conversation::ToolCall;
-    use carve_agent::contracts::events::StreamResult;
-    use carve_agent::contracts::phase::{Phase, StepContext, ToolContext};
-    use carve_agent::contracts::traits::tool::ToolResult;
+    use carve_agent::contracts::extension::plugin::AgentPlugin;
+    use carve_agent::contracts::extension::traits::tool::ToolResult;
+    use carve_agent::contracts::runtime::phase::{Phase, StepContext, ToolContext};
+    use carve_agent::contracts::runtime::StreamResult;
     use carve_agent::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use serde_json::json;
     use std::sync::{Arc, Mutex};

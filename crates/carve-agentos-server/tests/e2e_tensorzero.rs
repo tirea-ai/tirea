@@ -19,8 +19,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};

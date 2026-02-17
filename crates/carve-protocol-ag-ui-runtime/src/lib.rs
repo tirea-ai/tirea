@@ -5,10 +5,12 @@
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::phase::{Phase, StepContext};
-use carve_agent::contracts::state_types::Interaction;
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::contracts::extension::persisted_state::Interaction;
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
+use carve_agent::contracts::runtime::phase::{Phase, StepContext};
 use carve_agent::extensions::interaction::InteractionPlugin;
 use carve_agent::orchestrator::{RunExtensions, ToolPluginBundle};
 use carve_agent::prelude::AgentState as RuntimeAgentState;
@@ -81,7 +83,11 @@ impl Tool for FrontendToolStub {
         self.descriptor.clone()
     }
 
-    async fn execute(&self, _args: Value, _ctx: &RuntimeAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _args: Value,
+        _ctx: &RuntimeAgentState,
+    ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::error(
             &self.descriptor.id,
             "frontend tool stub should be intercepted before backend execution",
@@ -134,7 +140,7 @@ mod tests {
     use super::*;
     use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
     use carve_agent::contracts::conversation::ToolCall;
-    use carve_agent::contracts::phase::{Phase, ToolContext};
+    use carve_agent::contracts::runtime::phase::{Phase, ToolContext};
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 

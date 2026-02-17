@@ -1,13 +1,13 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::conversation::AgentState;
-use carve_agent::contracts::phase::Phase;
-use carve_agent::contracts::phase::StepContext;
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::runtime::phase::Phase;
+use carve_agent::contracts::runtime::phase::StepContext;
 use carve_agent::contracts::storage::{
-    Committed, AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
-    AgentStateStoreError, AgentStateWriter,
+    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed,
 };
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_agent::runtime::loop_runner::AgentDefinition;
@@ -90,7 +90,11 @@ impl AgentStateWriter for RecordingStorage {
         Ok(Committed { version: 0 })
     }
 
-    async fn append(&self, id: &str, delta: &AgentChangeSet) -> Result<Committed, AgentStateStoreError> {
+    async fn append(
+        &self,
+        id: &str,
+        delta: &AgentChangeSet,
+    ) -> Result<Committed, AgentStateStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
             for msg in &delta.messages {

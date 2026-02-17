@@ -1,15 +1,11 @@
 use super::AgentLoopError;
 use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{Message, MessageMetadata};
-use crate::contracts::phase::StepContext;
-use crate::contracts::state_types::{
-    AgentInferenceError,
-    PersistedAgentState,
-    Interaction,
-    InteractionResponse,
-    AGENT_STATE_PATH,
+use crate::contracts::extension::persisted_state::{
+    AgentInferenceError, Interaction, InteractionResponse, PersistedAgentState, AGENT_STATE_PATH,
 };
-use crate::contracts::traits::tool::{Tool, ToolDescriptor};
+use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor};
+use crate::contracts::runtime::phase::StepContext;
 use carve_state::{StateContext, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,7 +39,10 @@ impl ThreadMutationBatch {
     }
 }
 
-pub(super) fn reduce_thread_mutations(thread: AgentState, batch: ThreadMutationBatch) -> AgentState {
+pub(super) fn reduce_thread_mutations(
+    thread: AgentState,
+    batch: ThreadMutationBatch,
+) -> AgentState {
     let mut thread = thread;
     if !batch.patches.is_empty() {
         thread = thread.with_patches(batch.patches);

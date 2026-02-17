@@ -1,7 +1,7 @@
-use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::runtime::phase::Phase;
+use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::phase::Phase;
-use crate::contracts::phase::StepContext;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
@@ -163,7 +163,7 @@ impl AgentPlugin for SkillRuntimePlugin {
 mod tests {
     use super::*;
     use crate::contracts::conversation::AgentState;
-    use crate::contracts::traits::tool::ToolDescriptor;
+    use crate::contracts::extension::traits::tool::ToolDescriptor;
     use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
 

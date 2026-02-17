@@ -49,20 +49,20 @@ mod tool_exec;
 
 use crate::contracts::conversation::AgentState;
 use crate::contracts::conversation::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::events::{AgentEvent, StreamResult, TerminationReason};
-use crate::contracts::phase::Phase;
-use crate::contracts::state_types::Interaction;
+use crate::contracts::extension::persisted_state::Interaction;
 #[cfg(test)]
-use crate::contracts::state_types::AGENT_STATE_PATH;
+use crate::contracts::extension::persisted_state::AGENT_STATE_PATH;
+use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::runtime::phase::Phase;
+use crate::contracts::runtime::state_access::ActivityManager;
+use crate::contracts::runtime::{AgentEvent, StreamResult, TerminationReason};
 use crate::contracts::storage::CheckpointReason;
-use crate::contracts::traits::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::{check_stop_conditions, StopReason};
 use crate::runtime::activity::ActivityHub;
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use async_trait::async_trait;
-use crate::contracts::context::ActivityManager;
 use futures::{Stream, StreamExt};
 use genai::chat::ChatOptions;
 use genai::Client;
@@ -74,19 +74,18 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::extension::plugin::AgentPlugin;
 #[cfg(test)]
-use crate::contracts::phase::StepContext;
+use crate::contracts::runtime::phase::StepContext;
 pub use carve_agent_contract::agent::{
     AgentConfig, AgentDefinition, LlmRetryPolicy, RunCancellationToken, RunContext,
     StateCommitError, StateCommitter,
 };
 pub(crate) use carve_agent_contract::agent::{
-    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY,
-    TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
+    TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use carve_state::TrackedPatch;
-use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use core::build_messages;
 #[cfg(test)]
@@ -105,6 +104,7 @@ use plugin_runtime::{
 };
 use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
+use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use stream_runner::run_loop_stream_impl_with_provider;
 #[cfg(test)]
@@ -113,8 +113,8 @@ use tokio_util::sync::CancellationToken;
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    execute_tool_calls_with_phases, next_step_index, scope_with_tool_caller_context,
-    step_metadata, ToolExecutionResult,
+    execute_tool_calls_with_phases, next_step_index, scope_with_tool_caller_context, step_metadata,
+    ToolExecutionResult,
 };
 pub use tool_exec::{execute_tools, execute_tools_with_config, execute_tools_with_plugins};
 
@@ -360,7 +360,7 @@ impl ChatStreamProvider for Client {
 
 async fn run_step_prepare_phases(
     thread: &AgentState,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
     (
@@ -400,7 +400,7 @@ pub(super) struct PreparedStep {
 
 pub(super) async fn prepare_step_execution(
     thread: &AgentState,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
     let (messages, filtered_tools, skip_inference, tracing_span, pending) =
@@ -416,8 +416,8 @@ pub(super) async fn prepare_step_execution(
 
 pub(super) async fn apply_llm_error_cleanup(
     thread: &mut AgentState,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
@@ -437,8 +437,8 @@ pub(super) async fn complete_step_after_inference(
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     let pending = emit_phase_block(
         Phase::AfterInference,
@@ -499,8 +499,8 @@ pub(super) fn prepare_tool_execution_context(
 
 pub(super) async fn finalize_run_end(
     thread: AgentState,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
-    plugins: &[Arc<dyn crate::contracts::agent_plugin::AgentPlugin>],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
+    plugins: &[Arc<dyn crate::contracts::extension::plugin::AgentPlugin>],
 ) -> AgentState {
     emit_run_end_phase(thread, tool_descriptors, plugins).await
 }
@@ -735,10 +735,12 @@ async fn run_loop_with_context_provider(
 
         if prepared.skip_inference {
             if let Some(interaction) = pending_interaction_from_thread(&thread) {
-                terminate_run!(move |thread: AgentState| AgentLoopError::PendingInteraction {
-                    thread: Box::new(thread),
-                    interaction: Box::new(interaction),
-                });
+                terminate_run!(
+                    move |thread: AgentState| AgentLoopError::PendingInteraction {
+                        thread: Box::new(thread),
+                        interaction: Box::new(interaction),
+                    }
+                );
             }
             break;
         }
@@ -882,10 +884,12 @@ async fn run_loop_with_context_provider(
 
         // Pause if any tool is waiting for client response.
         if let Some(interaction) = applied.pending_interaction {
-            terminate_run!(move |thread: AgentState| AgentLoopError::PendingInteraction {
-                thread: Box::new(thread),
-                interaction: Box::new(interaction),
-            });
+            terminate_run!(
+                move |thread: AgentState| AgentLoopError::PendingInteraction {
+                    thread: Box::new(thread),
+                    interaction: Box::new(interaction),
+                }
+            );
         }
 
         // Track tool-step metrics for post-tool stop condition evaluation.

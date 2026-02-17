@@ -35,8 +35,8 @@
 //! }
 //! ```
 
-pub use crate::StopReason;
 use crate::conversation::{AgentState, ToolCall};
+pub use crate::StopReason;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;

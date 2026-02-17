@@ -5,11 +5,11 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Context for the currently executing tool
 
-use crate::extension::state_types::Interaction;
-use crate::extension::traits::tool::{ToolDescriptor, ToolResult};
-use crate::StreamResult;
-use carve_state::TrackedPatch;
 use crate::conversation::{AgentState, ToolCall};
+use crate::extension::traits::tool::{ToolDescriptor, ToolResult};
+use crate::runtime::interaction::Interaction;
+use crate::runtime::result::StreamResult;
+use carve_state::TrackedPatch;
 use serde_json::Value;
 
 /// Execution phase in the agent loop.

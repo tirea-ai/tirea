@@ -9,8 +9,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
 use carve_agent::contracts::storage::AgentStateReader;
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{router, AppState};
@@ -466,7 +468,11 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session has messages from turn 1.
-    let saved = storage.load_agent_state("e2e-sdk-multi").await.unwrap().unwrap();
+    let saved = storage
+        .load_agent_state("e2e-sdk-multi")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         saved.messages.len() >= 2,
         "turn 1 should persist at least user + assistant messages, got {}",

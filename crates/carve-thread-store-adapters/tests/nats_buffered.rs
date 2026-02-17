@@ -7,11 +7,11 @@
 
 #![cfg(feature = "nats")]
 
-use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
-use carve_agent_contract::{
-    AgentState, CheckpointReason, Message, MessageQuery, AgentStateReader, AgentStateWriter,
-};
 use carve_agent_contract::change::AgentChangeSet;
+use carve_agent_contract::{
+    AgentState, AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
+};
+use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;

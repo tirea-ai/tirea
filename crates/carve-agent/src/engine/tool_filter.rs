@@ -45,11 +45,7 @@ pub(crate) fn set_scope_filters_from_definition_if_absent(
     scope: &mut ScopeState,
     def: &AgentDefinition,
 ) -> Result<(), carve_state::ScopeStateError> {
-    set_scope_filter_if_absent(
-        scope,
-        SCOPE_ALLOWED_TOOLS_KEY,
-        def.allowed_tools.as_deref(),
-    )?;
+    set_scope_filter_if_absent(scope, SCOPE_ALLOWED_TOOLS_KEY, def.allowed_tools.as_deref())?;
     set_scope_filter_if_absent(
         scope,
         SCOPE_EXCLUDED_TOOLS_KEY,

@@ -3,12 +3,12 @@
 //! Captures per-inference and per-tool metrics via the Phase system,
 //! forwarding them to a pluggable [`MetricsSink`].
 
-use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::phase::{Phase, StepContext};
-use crate::contracts::state_types::{
+use crate::contracts::extension::persisted_state::{
     AgentInferenceError, PersistedAgentState as AgentStateDoc, AGENT_STATE_PATH,
 };
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
@@ -511,7 +511,7 @@ impl AgentPlugin for LLMMetryPlugin {
                     let status = tc.result.as_ref().map(|r| r.status.clone());
                     let message = tc.result.as_ref().and_then(|r| r.message.clone());
                     let error_type = match status {
-                        Some(crate::contracts::traits::tool::ToolStatus::Error) => {
+                        Some(crate::contracts::extension::traits::tool::ToolStatus::Error) => {
                             Some("tool_error".to_string())
                         }
                         _ => None,
@@ -603,9 +603,9 @@ mod tests {
     use super::*;
     use crate::contracts::conversation::AgentState;
     use crate::contracts::conversation::ToolCall;
-    use crate::contracts::events::StreamResult;
-    use crate::contracts::phase::ToolContext as PhaseToolContext;
-    use crate::contracts::traits::tool::ToolResult;
+    use crate::contracts::extension::traits::tool::ToolResult;
+    use crate::contracts::runtime::phase::ToolContext as PhaseToolContext;
+    use crate::contracts::runtime::StreamResult;
     use crate::contracts::AgentState as ContextAgentState;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;

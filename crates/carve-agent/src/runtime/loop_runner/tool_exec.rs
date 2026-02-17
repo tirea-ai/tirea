@@ -7,14 +7,14 @@ use super::{
     AgentConfig, AgentLoopError, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
-use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::context::ActivityManager;
 use crate::contracts::conversation::{Message, MessageMetadata};
-use crate::contracts::events::StreamResult;
-use crate::contracts::phase::{Phase, StepContext, ToolContext};
-use crate::contracts::state_types::{Interaction, AGENT_STATE_PATH};
-use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::extension::persisted_state::{Interaction, AGENT_STATE_PATH};
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::runtime::state_access::ActivityManager;
+use crate::contracts::runtime::StreamResult;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::{collect_patches, ToolExecution};
 use carve_state::{PatchExt, TrackedPatch};
@@ -569,9 +569,8 @@ pub(super) async fn execute_single_tool_with_phases(
     state_version: u64,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create a thread stub so plugins see the real thread id and scope.
-    let mut temp_thread = AgentState::with_initial_state(thread_id, state.clone()).with_messages(
-        thread_messages.iter().map(|msg| (**msg).clone()),
-    );
+    let mut temp_thread = AgentState::with_initial_state(thread_id, state.clone())
+        .with_messages(thread_messages.iter().map(|msg| (**msg).clone()));
     if let Some(rt) = scope {
         temp_thread.scope = rt.clone();
     }

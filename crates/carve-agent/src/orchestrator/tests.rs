@@ -1,13 +1,13 @@
 use super::*;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::phase::{Phase, StepContext};
+use crate::contracts::extension::traits::tool::ToolDescriptor;
+use crate::contracts::extension::traits::tool::{ToolError, ToolResult};
+use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
-use crate::contracts::traits::tool::ToolDescriptor;
-use crate::contracts::traits::tool::{ToolError, ToolResult};
+use crate::contracts::AgentState as ContextAgentState;
 use crate::extensions::skills::FsSkillRegistry;
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use async_trait::async_trait;
-use crate::contracts::AgentState as ContextAgentState;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -100,9 +100,11 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if append_idx == self.fail_on_nth_append {
-            return Err(crate::contracts::storage::AgentStateStoreError::Serialization(
-                format!("injected append failure on call {append_idx}"),
-            ));
+            return Err(
+                crate::contracts::storage::AgentStateStoreError::Serialization(format!(
+                    "injected append failure on call {append_idx}"
+                )),
+            );
         }
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::append(
             self.inner.as_ref(),
@@ -278,7 +280,13 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+        async fn on_phase(
+            &self,
+            _phase: Phase,
+            _step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+        }
     }
 
     let os = AgentOs::builder()
@@ -308,7 +316,13 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             self.0
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+        async fn on_phase(
+            &self,
+            _phase: Phase,
+            _step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+        }
     }
 
     let os = AgentOs::builder()
@@ -333,7 +347,8 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    }
 }
 
 #[test]
@@ -364,7 +379,8 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    }
 }
 
 #[test]
@@ -395,7 +411,8 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {}
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    }
 }
 
 #[test]
@@ -488,7 +505,12 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             "skip_inference"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -988,7 +1010,12 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -997,7 +1024,9 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1047,7 +1076,12 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1056,7 +1090,9 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1097,7 +1133,12 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1106,7 +1147,9 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1150,7 +1193,12 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1159,7 +1207,9 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1213,7 +1263,12 @@ async fn execute_prepared_runs_stream() {
         fn id(&self) -> &str {
             "skip"
         }
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }
@@ -1222,7 +1277,9 @@ async fn execute_prepared_runs_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1265,7 +1322,9 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 
     let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
@@ -1346,7 +1405,9 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()
-        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
+        .with_agent_state_store(
+            storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>
+        )
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
@@ -1442,7 +1503,12 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
             "runtime_only"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+        async fn on_phase(
+            &self,
+            phase: Phase,
+            step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
             }

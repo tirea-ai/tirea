@@ -263,15 +263,15 @@ impl AgentRunTool {
             .await;
         let completion =
             execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
-            let completion_state = AgentRunState {
-                run_id: run_id.clone(),
-                parent_run_id,
-                target_agent_id,
-                status: completion.status,
-                assistant: completion.assistant.clone(),
-                error: completion.error.clone(),
-                agent_state: Some(completion.thread.clone()),
-            };
+        let completion_state = AgentRunState {
+            run_id: run_id.clone(),
+            parent_run_id,
+            target_agent_id,
+            status: completion.status,
+            assistant: completion.assistant.clone(),
+            error: completion.error.clone(),
+            agent_state: Some(completion.thread.clone()),
+        };
         let summary = self
             .manager
             .update_after_completion(&run_id, epoch, completion)
@@ -306,7 +306,7 @@ impl Tool for AgentRunTool {
         &self,
         args: Value,
         ctx: &AgentState,
-    ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
         let run_id = optional_string(&args, "run_id");
         let background = required_bool(&args, "background", false);
@@ -421,16 +421,17 @@ impl Tool for AgentRunTool {
                         return Ok(error);
                     }
 
-                    let mut child_thread = match persisted.agent_state {
-                        Some(s) => s,
-                        None => {
-                            return Ok(tool_error(
+                    let mut child_thread =
+                        match persisted.agent_state {
+                            Some(s) => s,
+                            None => return Ok(tool_error(
                                 tool_name,
                                 "invalid_state",
-                                format!("Run '{run_id}' cannot be resumed: missing child agent state"),
-                            ))
-                        }
-                    };
+                                format!(
+                                    "Run '{run_id}' cannot be resumed: missing child agent state"
+                                ),
+                            )),
+                        };
                     child_thread = bind_child_lineage(
                         child_thread,
                         &run_id,
@@ -480,8 +481,9 @@ impl Tool for AgentRunTool {
                 .and_then(|scope: &carve_state::ScopeState| scope.value(SCOPE_CALLER_STATE_KEY))
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let mut forked =
-                crate::contracts::conversation::AgentState::with_initial_state(thread_id, fork_state);
+            let mut forked = crate::contracts::conversation::AgentState::with_initial_state(
+                thread_id, fork_state,
+            );
             if let Some(messages) = parse_caller_messages(scope) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
@@ -540,7 +542,7 @@ impl Tool for AgentStopTool {
         &self,
         args: Value,
         ctx: &AgentState,
-    ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+    ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id", tool_name) {
             Ok(v) => v,

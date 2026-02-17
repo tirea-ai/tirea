@@ -5,14 +5,14 @@ use std::sync::Arc;
 use futures::Stream;
 use genai::Client;
 
-use crate::contracts::agent_plugin::AgentPlugin;
-use crate::contracts::conversation::Message;
 use crate::contracts::conversation::AgentState;
-use crate::contracts::events::{AgentEvent, RunRequest};
+use crate::contracts::conversation::Message;
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::extension::traits::tool::Tool;
+use crate::contracts::runtime::{AgentEvent, RunRequest};
 use crate::contracts::storage::{
-    CheckpointReason, AgentStateHead, AgentStateStore, AgentStateStoreError,
+    AgentStateHead, AgentStateStore, AgentStateStoreError, CheckpointReason,
 };
-use crate::contracts::traits::tool::Tool;
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
 use crate::extensions::skills::{
     SkillDiscoveryPlugin, SkillPlugin, SkillRegistry, SkillRuntimePlugin, SkillSubsystem,
@@ -44,7 +44,12 @@ pub use carve_agent_contract::composition::{
     ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (Client, AgentConfig, HashMap<String, Arc<dyn Tool>>, AgentState);
+type ResolvedAgentWiring = (
+    Client,
+    AgentConfig,
+    HashMap<String, Arc<dyn Tool>>,
+    AgentState,
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WiringScope {
@@ -68,7 +73,7 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: crate::contracts::context::CheckpointChangeSet,
+        changeset: crate::contracts::CheckpointChangeSet,
     ) -> Result<u64, StateCommitError> {
         self.agent_state_store
             .append(thread_id, &changeset.delta)

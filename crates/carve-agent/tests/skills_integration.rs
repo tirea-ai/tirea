@@ -1,9 +1,9 @@
-use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::conversation::AgentState;
 use carve_agent::contracts::conversation::{Message, ToolCall};
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use carve_agent::contracts::runtime::phase::{Phase, StepContext};
 use carve_agent::contracts::AgentState as ContextAgentState;
-use carve_agent::contracts::phase::{Phase, StepContext};
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use carve_agent::engine::tool_execution::{execute_single_tool, execute_single_tool_with_scope};
 use carve_agent::extensions::skills::{
     FsSkillRegistry, LoadSkillResourceTool, SkillActivateTool, SkillRegistry, SkillRuntimePlugin,
@@ -50,7 +50,11 @@ echo "hello"
     (td, reg)
 }
 
-async fn apply_tool(thread: AgentState, tool: &dyn Tool, call: ToolCall) -> (AgentState, ToolResult) {
+async fn apply_tool(
+    thread: AgentState,
+    tool: &dyn Tool,
+    call: ToolCall,
+) -> (AgentState, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
     let thread = if let Some(patch) = exec.patch.clone() {

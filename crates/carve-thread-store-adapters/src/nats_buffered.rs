@@ -22,8 +22,8 @@
 use async_nats::jetstream;
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
-    Committed, AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
-    AgentStateStore, AgentStateStoreError, AgentStateWriter,
+    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStore, AgentStateStoreError, AgentStateWriter, Committed,
 };
 use carve_agent_contract::AgentState;
 use std::sync::Arc;
@@ -106,8 +106,10 @@ impl NatsBufferedThreadWriter {
 
         let mut recovered = 0usize;
         // Collect pending deltas grouped by thread_id.
-        let mut pending: std::collections::HashMap<String, Vec<(AgentChangeSet, jetstream::Message)>> =
-            std::collections::HashMap::new();
+        let mut pending: std::collections::HashMap<
+            String,
+            Vec<(AgentChangeSet, jetstream::Message)>,
+        > = std::collections::HashMap::new();
 
         // Fetch messages in batches.
         use futures::StreamExt;
@@ -209,9 +211,13 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
         self.jetstream
             .publish(delta_subject(thread_id), payload.into())
             .await
-            .map_err(|e| AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+            .map_err(|e| {
+                AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?
             .await
-            .map_err(|e| AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| {
+                AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
 
         // Version is cosmetic here — the real version lives in the inner storage.
         Ok(Committed { version: 0 })

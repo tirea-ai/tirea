@@ -39,22 +39,24 @@ pub use crate::contracts::AgentState;
 pub use carve_state::StateContext;
 
 // Tool trait and types
-pub use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use crate::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
+};
 
 // Message types
 pub use crate::contracts::conversation::{Message, Role, ToolCall};
 
 // Plugin trait
-pub use crate::contracts::agent_plugin::AgentPlugin;
+pub use crate::contracts::extension::plugin::AgentPlugin;
 
 // Phase types for plugins
-pub use crate::contracts::phase::{Phase, StepContext, StepOutcome, ToolContext};
+pub use crate::contracts::runtime::phase::{Phase, StepContext, StepOutcome, ToolContext};
 
 // State types (for plugin developers)
-pub use crate::contracts::state_types::{
-    AgentRunState, AgentRunStatus, PersistedAgentState as AgentStateDoc, Interaction, InteractionResponse,
-    ToolPermissionBehavior, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_STATE_PATH,
+pub use crate::contracts::extension::persisted_state::{
+    AgentRunState, AgentRunStatus, Interaction, InteractionResponse,
+    PersistedAgentState as AgentStateDoc, ToolPermissionBehavior,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
 
 // Extension traits - these add helper methods to AgentState

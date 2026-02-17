@@ -1,7 +1,7 @@
 //! Shared protocol adapter traits.
 
-use carve_agent_contract::RunRequest;
 use carve_agent_contract::Message;
+use carve_agent_contract::RunRequest;
 use serde::Serialize;
 
 /// Protocol input boundary: protocol request -> internal runtime `RunRequest`.

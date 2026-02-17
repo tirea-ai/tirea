@@ -21,7 +21,7 @@ pub enum ToolPermissionBehavior {
     Deny,
 }
 
-pub use crate::{Interaction, InteractionResponse};
+pub use crate::runtime::interaction::{Interaction, InteractionResponse};
 
 /// Agent-owned state stored in the session document.
 ///

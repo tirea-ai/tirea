@@ -7,11 +7,13 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
-use carve_agent::contracts::events::AgentEvent;
+use carve_agent::contracts::conversation::Message;
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
+use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateWriter};
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::prelude::AgentState;
 use carve_agent::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError, RunContext,
@@ -551,11 +553,12 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     let tools = tool_map_from_arc([counter_tool]);
 
     // Start with initial state
-    let mut thread = ConversationAgentState::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
-        .with_message(Message::system(
-            "You are a helpful assistant. Use the counter tool to manage a counter. \
+    let mut thread =
+        ConversationAgentState::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
+            .with_message(Message::system(
+                "You are a helpful assistant. Use the counter tool to manage a counter. \
              Always use the tool when asked about the counter.",
-        ));
+            ));
 
     // Run 1: Get current value
     thread = thread.with_message(Message::user("What is the current counter value?"));
@@ -641,13 +644,14 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     // ========== Phase 1: Create session and have a conversation ==========
     println!("\n[Phase 1: Initial conversation]");
 
-    let mut thread = ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }))
-        .with_message(Message::system(
-            "You are a helpful assistant. Use the counter tool. Keep responses brief.",
-        ))
-        .with_message(Message::user(
-            "My favorite number is 42. Remember it. Also, what is the counter?",
-        ));
+    let mut thread =
+        ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }))
+            .with_message(Message::system(
+                "You are a helpful assistant. Use the counter tool. Keep responses brief.",
+            ))
+            .with_message(Message::user(
+                "My favorite number is 42. Remember it. Also, what is the counter?",
+            ));
 
     let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
@@ -941,13 +945,14 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
 
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
-    let mut thread = ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }))
-        .with_message(Message::system(
-            "You are a helpful assistant. Use the counter tool.",
-        ))
-        .with_message(Message::user(
-            "Increment the counter 3 times by 10 each time.",
-        ));
+    let mut thread =
+        ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }))
+            .with_message(Message::system(
+                "You are a helpful assistant. Use the counter tool.",
+            ))
+            .with_message(Message::user(
+                "Increment the counter 3 times by 10 each time.",
+            ));
 
     let (new_thread, response) = run_loop(client, &config, thread, &tools)
         .await
@@ -1002,10 +1007,11 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
 
     // Build session with multiple state changes
     println!("[Building state history]");
-    let mut thread = ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
-        .with_message(Message::system(
-            "You are a helpful assistant. Use the counter tool.",
-        ));
+    let mut thread =
+        ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
+            .with_message(Message::system(
+                "You are a helpful assistant. Use the counter tool.",
+            ));
 
     // Run 1: Set counter to 10
     thread = thread.with_message(Message::user("Set the counter to 10."));

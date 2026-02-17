@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::events::{AgentEvent, RunRequest};
-use carve_agent::contracts::phase::Phase;
-use carve_agent::contracts::phase::StepContext;
+use carve_agent::contracts::extension::plugin::AgentPlugin;
+use carve_agent::contracts::runtime::phase::Phase;
+use carve_agent::contracts::runtime::phase::StepContext;
+use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_protocol_ag_ui::{AGUIMessage, AgUiInputAdapter, RunAgentRequest};

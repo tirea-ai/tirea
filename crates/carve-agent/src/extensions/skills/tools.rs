@@ -1,5 +1,10 @@
-use crate::contracts::state_types::{PersistedAgentState as AgentStateDoc, AGENT_STATE_PATH};
-use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+use crate::contracts::extension::persisted_state::{
+    PersistedAgentState as AgentStateDoc, AGENT_STATE_PATH,
+};
+use crate::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus,
+};
+use crate::contracts::AgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
 };
@@ -10,7 +15,6 @@ use crate::extensions::skills::{
     SkillMaterializeError, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
     SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
-use crate::contracts::AgentState;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};

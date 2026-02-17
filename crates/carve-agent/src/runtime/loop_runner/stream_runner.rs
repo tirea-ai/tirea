@@ -13,7 +13,7 @@ async fn drain_run_start_outbox_and_replay(
     mut thread: AgentState,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-    tool_descriptors: &[crate::contracts::traits::tool::ToolDescriptor],
+    tool_descriptors: &[crate::contracts::extension::traits::tool::ToolDescriptor],
 ) -> Result<(AgentState, Vec<AgentEvent>), String> {
     let (next_thread, outbox) =
         drain_agent_outbox(thread.clone(), "agent_outbox_run_start").map_err(|e| e.to_string())?;

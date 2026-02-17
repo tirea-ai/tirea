@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::AgentState as ContextAgentState;
 use async_trait::async_trait;
 use carve_state_derive::State;
@@ -125,11 +125,11 @@ impl AgentPlugin for ReminderPlugin {
 
     async fn on_phase(
         &self,
-        phase: crate::contracts::phase::Phase,
-        step: &mut crate::contracts::phase::StepContext<'_>,
+        phase: crate::contracts::runtime::phase::Phase,
+        step: &mut crate::contracts::runtime::phase::StepContext<'_>,
         ctx: &ContextAgentState,
     ) {
-        use crate::contracts::phase::Phase;
+        use crate::contracts::runtime::phase::Phase;
 
         if phase != Phase::BeforeInference {
             return;
@@ -248,7 +248,7 @@ mod tests {
         let doc = json!({ "reminders": { "items": ["Test reminder"] } });
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
-        use crate::contracts::phase::{Phase, StepContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
         let thread = AgentState::with_initial_state(
@@ -270,7 +270,7 @@ mod tests {
         let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
-        use crate::contracts::phase::{Phase, StepContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
         let thread = AgentState::with_initial_state(
@@ -299,11 +299,13 @@ mod tests {
         let doc = json!({ "reminders": { "items": ["Reminder"] } });
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
-        use crate::contracts::phase::{Phase, StepContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
-        let thread =
-            AgentState::with_initial_state("test", json!({ "reminders": { "items": ["Reminder"] } }));
+        let thread = AgentState::with_initial_state(
+            "test",
+            json!({ "reminders": { "items": ["Reminder"] } }),
+        );
         let mut step = StepContext::new(&thread, vec![]);
 
         plugin
@@ -320,10 +322,11 @@ mod tests {
         let doc = json!({ "reminders": { "items": [] } });
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
-        use crate::contracts::phase::{Phase, StepContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
-        let thread = AgentState::with_initial_state("test", json!({ "reminders": { "items": [] } }));
+        let thread =
+            AgentState::with_initial_state("test", json!({ "reminders": { "items": [] } }));
         let mut step = StepContext::new(&thread, vec![]);
 
         plugin
@@ -339,7 +342,7 @@ mod tests {
         let doc = json!({});
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
-        use crate::contracts::phase::{Phase, StepContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext};
 
         let plugin = ReminderPlugin::new();
         let thread = AgentState::new("test");

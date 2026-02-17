@@ -21,9 +21,9 @@
 //! }
 //! ```
 
-use crate::contracts::agent_plugin::AgentPlugin;
+use crate::contracts::extension::persisted_state::{Interaction, ToolPermissionBehavior};
+use crate::contracts::extension::plugin::AgentPlugin;
 use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::state_types::{Interaction, ToolPermissionBehavior};
 use async_trait::async_trait;
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -127,11 +127,11 @@ impl AgentPlugin for PermissionPlugin {
 
     async fn on_phase(
         &self,
-        phase: crate::contracts::phase::Phase,
-        step: &mut crate::contracts::phase::StepContext<'_>,
+        phase: crate::contracts::runtime::phase::Phase,
+        step: &mut crate::contracts::runtime::phase::StepContext<'_>,
         ctx: &ContextAgentState,
     ) {
-        use crate::contracts::phase::Phase;
+        use crate::contracts::runtime::phase::Phase;
 
         if phase != Phase::BeforeToolExecute {
             return;
@@ -197,7 +197,7 @@ mod tests {
     use crate::contracts::AgentState as ContextAgentState;
     use serde_json::json;
 
-    fn apply_interaction_intents(_step: &mut crate::contracts::phase::StepContext<'_>) {
+    fn apply_interaction_intents(_step: &mut crate::contracts::runtime::phase::StepContext<'_>) {
         // No-op: permission plugin now sets pending interaction directly.
     }
 
@@ -379,7 +379,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -406,7 +406,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -432,7 +432,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -512,7 +512,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -538,7 +538,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -564,7 +564,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -590,7 +590,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -618,7 +618,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         let thread = AgentState::with_initial_state(
             "test",
@@ -645,7 +645,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // AgentState with no permission state at all — should default to Ask
         let thread = AgentState::new("test");
@@ -673,7 +673,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // "tools" is a string instead of an object — should not panic,
         // falls back to default_behavior.
@@ -704,7 +704,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // "default_behavior" is an unrecognized string — should fall back to Ask
         let thread = AgentState::with_initial_state(
@@ -732,7 +732,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // "default_behavior" is a number instead of string — should fall back to Ask
         let thread = AgentState::with_initial_state(
@@ -761,7 +761,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // Tool permission value is a number — should fall back to default_behavior
         let thread = AgentState::with_initial_state(
@@ -791,7 +791,7 @@ mod tests {
         let ctx = ContextAgentState::new_runtime(&doc, "test", "test");
         use crate::contracts::conversation::AgentState;
         use crate::contracts::conversation::ToolCall;
-        use crate::contracts::phase::{Phase, StepContext, ToolContext};
+        use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 
         // "permissions" is an array instead of object — should fall back to Ask
         let thread = AgentState::with_initial_state("test", json!({ "permissions": [1, 2, 3] }));

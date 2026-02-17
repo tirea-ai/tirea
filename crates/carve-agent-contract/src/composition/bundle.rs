@@ -2,7 +2,7 @@ use super::{
     AgentRegistry, ModelDefinition, ModelRegistry, PluginRegistry, ProviderRegistry, ToolRegistry,
 };
 use crate::agent::AgentDefinition;
-use crate::extension::agent_plugin::AgentPlugin;
+use crate::extension::plugin::AgentPlugin;
 use crate::extension::traits::tool::Tool;
 use crate::skills::{CompositeSkillRegistry, CompositeSkillRegistryError, SkillRegistry};
 use genai::Client;

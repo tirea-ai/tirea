@@ -1,13 +1,14 @@
 use super::{AgentOs, AgentRegistry};
-use crate::contracts::agent_plugin::AgentPlugin;
 use crate::contracts::conversation::{Message, Role, ToolCall};
-use crate::contracts::events::AgentEvent;
-use crate::contracts::phase::{Phase, StepContext};
-use crate::contracts::state_types::{
+use crate::contracts::extension::persisted_state::{
     AgentRunState, AgentRunStatus, Interaction, ToolPermissionBehavior,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
 };
-use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
+use crate::contracts::extension::plugin::AgentPlugin;
+use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
+use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::runtime::AgentEvent;
+use crate::contracts::AgentState;
 use crate::engine::tool_filter::{
     is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,
 };
@@ -18,7 +19,6 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use crate::contracts::AgentState;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};

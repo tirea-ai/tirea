@@ -1,7 +1,7 @@
 //! Pure functions for converting between carve-agent and genai types.
 
 use crate::contracts::conversation::{Message, Role, ToolCall};
-use crate::contracts::traits::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolResult};
 use genai::chat::{ChatMessage, ChatRequest, MessageContent, ToolResponse};
 
 /// Convert a ToolDescriptor to a genai Tool.
@@ -115,7 +115,7 @@ mod tests {
             &self,
             _args: serde_json::Value,
             _ctx: &crate::contracts::AgentState,
-        ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+        ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError> {
             Ok(ToolResult::success("mock", json!({"result": "ok"})))
         }
     }
@@ -235,7 +235,8 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            {
                 Ok(ToolResult::success("tool1", json!({})))
             }
         }
@@ -249,7 +250,8 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            {
                 Ok(ToolResult::success("tool2", json!({})))
             }
         }
@@ -263,7 +265,8 @@ mod tests {
                 &self,
                 _: serde_json::Value,
                 _: &crate::contracts::AgentState,
-            ) -> Result<ToolResult, crate::contracts::traits::tool::ToolError> {
+            ) -> Result<ToolResult, crate::contracts::extension::traits::tool::ToolError>
+            {
                 Ok(ToolResult::success("tool3", json!({})))
             }
         }

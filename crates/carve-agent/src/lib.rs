@@ -52,7 +52,7 @@
 //! # Example: Implementing a Tool
 //!
 //! ```ignore
-//! use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+//! use carve_agent::contracts::extension::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 //! use carve_agent::prelude::AgentState;
 //! use async_trait::async_trait;
 //! use serde_json::{json, Value};

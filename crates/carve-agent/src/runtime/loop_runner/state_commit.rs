@@ -1,7 +1,7 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
 use crate::contracts::conversation::AgentState;
-use crate::contracts::context::CheckpointChangeSet;
 use crate::contracts::storage::CheckpointReason;
+use crate::contracts::CheckpointChangeSet;
 use async_trait::async_trait;
 use std::sync::Arc;
 

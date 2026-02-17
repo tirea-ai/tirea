@@ -40,9 +40,9 @@
 //! }
 //! ```
 
-use crate::extension::phase::{Phase, StepContext};
-use async_trait::async_trait;
+use crate::runtime::phase::{Phase, StepContext};
 use crate::AgentState;
+use async_trait::async_trait;
 
 /// Plugin trait for extending agent behavior.
 ///
@@ -98,11 +98,10 @@ pub trait AgentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extension::phase::StepContext;
-    use crate::extension::state_types::Interaction;
-    use crate::extension::traits::tool::ToolDescriptor;
-    use crate::change::AgentChangeSet as ContractAgentChangeSet;
     use crate::conversation::ToolCall;
+    use crate::extension::persisted_state::Interaction;
+    use crate::extension::traits::tool::ToolDescriptor;
+    use crate::runtime::phase::StepContext;
     use serde_json::json;
 
     // =========================================================================
@@ -125,12 +124,7 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-            _ctx: &AgentState,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
             match phase {
                 Phase::StepStart => {
                     step.system("Test system context");
@@ -164,12 +158,7 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-            _ctx: &AgentState,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
             match phase {
                 Phase::StepStart => {
                     step.system("Current time: 2024-01-01");
@@ -206,12 +195,7 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-            _ctx: &AgentState,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -242,12 +226,7 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-            _ctx: &AgentState,
-        ) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -344,7 +323,7 @@ mod tests {
 
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
         plugin
             .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
             .await;
@@ -360,7 +339,7 @@ mod tests {
         let ctx = test_ctx(&doc);
 
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
         plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
@@ -378,7 +357,7 @@ mod tests {
         let ctx = test_ctx(&doc);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
         plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
@@ -396,7 +375,7 @@ mod tests {
         let ctx = test_ctx(&doc);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
         plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
@@ -414,7 +393,7 @@ mod tests {
         let ctx = test_ctx(&doc);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
         plugin
             .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
@@ -453,7 +432,7 @@ mod tests {
 
         // Run all plugins for BeforeToolExecute with dangerous tool
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
-        step.tool = Some(crate::extension::phase::ToolContext::new(&call));
+        step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
         for plugin in &plugins {
             plugin
                 .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)

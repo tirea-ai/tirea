@@ -11,10 +11,12 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
-use carve_agent::contracts::events::AgentEvent;
-use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::contracts::conversation::Message;
+use carve_agent::contracts::extension::traits::tool::{
+    Tool, ToolDescriptor, ToolError, ToolResult,
+};
+use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::extensions::skills::{FsSkillRegistry, SkillSubsystem};
 use carve_agent::prelude::AgentState as RuntimeAgentState;
 use carve_agent::runtime::loop_runner::{
@@ -121,11 +123,7 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(
-        &self,
-        args: Value,
-        ctx: &RuntimeAgentState,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &RuntimeAgentState) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;
@@ -282,17 +280,18 @@ async fn test_todo_manager_streaming(
         .with_max_rounds(8)
         .with_plugin(subsystem.plugin());
 
-    let thread = ConversationAgentState::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
-        .with_message(Message::system(
-            "You are a helpful assistant with access to skills and tools. \
+    let thread =
+        ConversationAgentState::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
+            .with_message(Message::system(
+                "You are a helpful assistant with access to skills and tools. \
              When managing tasks, first activate the todo-manager skill, \
              then use its instructions and the counter tool.",
-        ))
-        .with_message(Message::user(
-            "I want to manage my todo list. Activate the todo-manager skill, \
+            ))
+            .with_message(Message::user(
+                "I want to manage my todo list. Activate the todo-manager skill, \
              then add 3 tasks: buy groceries, clean house, and exercise. \
              Use the counter to track the task count.",
-        ));
+            ));
 
     print!("User: Add 3 tasks to todo list.\nAssistant: ");
 
@@ -343,11 +342,12 @@ async fn test_multi_skill(
         .with_plugin(subsystem.plugin());
 
     // Multi-turn conversation activating both skills
-    let mut thread = ConversationAgentState::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
-        .with_message(Message::system(
-            "You are a helpful assistant with skills and tools. \
+    let mut thread =
+        ConversationAgentState::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
+            .with_message(Message::system(
+                "You are a helpful assistant with skills and tools. \
              Activate the appropriate skill before performing related tasks.",
-        ));
+            ));
 
     // Turn 1: Use unit converter
     thread = thread.with_message(Message::user(

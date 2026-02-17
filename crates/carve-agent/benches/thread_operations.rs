@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench --package carve-agent --bench session_operations
 
-use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::conversation::AgentState;
+use carve_agent::contracts::conversation::Message;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;
@@ -332,7 +332,8 @@ fn bench_agent_loop_simulation(c: &mut Criterion) {
             &initial_msgs,
             |b, &msg_count| {
                 b.iter(|| {
-                    let mut thread = AgentState::with_initial_state("test", generate_state("medium"));
+                    let mut thread =
+                        AgentState::with_initial_state("test", generate_state("medium"));
 
                     // Add initial messages
                     for msg in generate_messages(msg_count) {
