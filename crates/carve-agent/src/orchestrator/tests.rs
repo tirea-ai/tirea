@@ -1,7 +1,7 @@
 use super::*;
 use crate::contracts::conversation::AgentState;
 use crate::contracts::phase::{Phase, StepContext};
-use crate::contracts::storage::{ThreadReader, ThreadWriter};
+use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::traits::tool::ToolDescriptor;
 use crate::contracts::traits::tool::{ToolError, ToolResult};
 use crate::extensions::skills::FsSkillRegistry;
@@ -48,29 +48,29 @@ impl FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
+impl crate::contracts::storage::AgentStateReader for FailOnNthAppendStorage {
     async fn load(
         &self,
         thread_id: &str,
     ) -> Result<
         Option<crate::contracts::storage::AgentStateHead>,
-        crate::contracts::storage::ThreadStoreError,
+        crate::contracts::storage::AgentStateStoreError,
     > {
-        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::load(
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateReader>::load(
             self.inner.as_ref(),
             thread_id,
         )
         .await
     }
 
-    async fn list_threads(
+    async fn list_agent_states(
         &self,
-        query: &crate::contracts::storage::ThreadListQuery,
+        query: &crate::contracts::storage::AgentStateListQuery,
     ) -> Result<
-        crate::contracts::storage::ThreadListPage,
-        crate::contracts::storage::ThreadStoreError,
+        crate::contracts::storage::AgentStateListPage,
+        crate::contracts::storage::AgentStateStoreError,
     > {
-        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadReader>::list_threads(
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateReader>::list_agent_states(
             self.inner.as_ref(),
             query,
         )
@@ -79,13 +79,13 @@ impl crate::contracts::storage::ThreadReader for FailOnNthAppendStorage {
 }
 
 #[async_trait]
-impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
+impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     async fn create(
         &self,
         thread: &AgentState,
-    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
     {
-        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::create(
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::create(
             self.inner.as_ref(),
             thread,
         )
@@ -96,15 +96,15 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
         &self,
         thread_id: &str,
         changeset: &crate::contracts::storage::AgentChangeSet,
-    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::ThreadStoreError>
+    ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
     {
         let append_idx = self.append_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if append_idx == self.fail_on_nth_append {
-            return Err(crate::contracts::storage::ThreadStoreError::Serialization(
+            return Err(crate::contracts::storage::AgentStateStoreError::Serialization(
                 format!("injected append failure on call {append_idx}"),
             ));
         }
-        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::append(
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::append(
             self.inner.as_ref(),
             thread_id,
             changeset,
@@ -115,8 +115,8 @@ impl crate::contracts::storage::ThreadWriter for FailOnNthAppendStorage {
     async fn delete(
         &self,
         thread_id: &str,
-    ) -> Result<(), crate::contracts::storage::ThreadStoreError> {
-        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::ThreadWriter>::delete(
+    ) -> Result<(), crate::contracts::storage::AgentStateStoreError> {
+        <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::delete(
             self.inner.as_ref(),
             thread_id,
         )
@@ -487,7 +487,7 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
     let def = AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipInferencePlugin));
     let os = AgentOs::builder()
         .with_agent("a1", def)
-        .with_thread_store(Arc::new(carve_thread_store_adapters::MemoryStore::new()))
+        .with_agent_state_store(Arc::new(carve_thread_store_adapters::MemoryStore::new()))
         .build()
         .unwrap();
 
@@ -986,7 +986,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1045,7 +1045,7 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1095,7 +1095,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1148,7 +1148,7 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1211,7 +1211,7 @@ async fn execute_prepared_runs_stream() {
 
     let storage = Arc::new(MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipPlugin)),
@@ -1254,7 +1254,7 @@ async fn run_stream_checkpoint_append_failure_keeps_persisted_prefix_consistent(
 
     let storage = Arc::new(FailOnNthAppendStorage::new(2));
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
@@ -1335,7 +1335,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()
-        .with_thread_store(storage.clone() as Arc<dyn crate::contracts::storage::ThreadStore>)
+        .with_agent_state_store(storage.clone() as Arc<dyn crate::contracts::storage::AgentStateStore>)
         .with_agent(
             "a1",
             AgentDefinition::new("gpt-4o-mini").with_plugin(Arc::new(SkipWithRunEndPatchPlugin)),
@@ -1405,21 +1405,21 @@ fn build_errors_on_reserved_plugin_id_agent_recovery_in_builder_agent() {
 }
 
 #[test]
-fn builder_with_thread_store_exposes_thread_store_accessor() {
-    let thread_store = Arc::new(carve_thread_store_adapters::MemoryStore::new())
-        as Arc<dyn crate::contracts::storage::ThreadStore>;
+fn builder_with_agent_state_store_exposes_accessor() {
+    let agent_state_store = Arc::new(carve_thread_store_adapters::MemoryStore::new())
+        as Arc<dyn crate::contracts::storage::AgentStateStore>;
     let os = AgentOs::builder()
-        .with_thread_store(thread_store)
+        .with_agent_state_store(agent_state_store)
         .build()
         .unwrap();
-    assert!(os.thread_store().is_some());
+    assert!(os.agent_state_store().is_some());
 }
 
 #[tokio::test]
-async fn load_thread_without_thread_store_returns_not_configured() {
+async fn load_agent_state_without_store_returns_not_configured() {
     let os = AgentOs::builder().build().unwrap();
-    let err = os.load_thread("t1").await.unwrap_err();
-    assert!(matches!(err, AgentOsRunError::ThreadStoreNotConfigured));
+    let err = os.load_agent_state("t1").await.unwrap_err();
+    assert!(matches!(err, AgentOsRunError::AgentStateStoreNotConfigured));
 }
 
 #[tokio::test]
@@ -1457,7 +1457,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
 
     let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage)
+        .with_agent_state_store(storage)
         .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
         .build()
         .unwrap();
@@ -1525,7 +1525,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
 
     let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
     let os = AgentOs::builder()
-        .with_thread_store(storage)
+        .with_agent_state_store(storage)
         .with_tools(HashMap::from([(
             "dup_tool".to_string(),
             Arc::new(BaseTool) as Arc<dyn Tool>,

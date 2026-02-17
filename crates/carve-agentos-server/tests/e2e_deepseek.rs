@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::storage::ThreadReader;
+use carve_agent::contracts::storage::AgentStateReader;
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agent::runtime::loop_runner::AgentDefinition;
@@ -234,7 +234,7 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_thread("e2e-sdk").await.unwrap();
+    let saved = storage.load_agent_state("e2e-sdk").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -287,7 +287,7 @@ async fn e2e_ag_ui_sse_with_deepseek() {
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_thread("e2e-agui").await.unwrap();
+    let saved = storage.load_agent_state("e2e-agui").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -350,7 +350,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 
     // AgentState should be persisted with tool call history.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_thread("e2e-sdk-tool").await.unwrap();
+    let saved = storage.load_agent_state("e2e-sdk-tool").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -466,7 +466,7 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Verify session has messages from turn 1.
-    let saved = storage.load_thread("e2e-sdk-multi").await.unwrap().unwrap();
+    let saved = storage.load_agent_state("e2e-sdk-multi").await.unwrap().unwrap();
     assert!(
         saved.messages.len() >= 2,
         "turn 1 should persist at least user + assistant messages, got {}",

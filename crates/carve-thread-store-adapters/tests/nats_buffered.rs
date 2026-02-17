@@ -9,7 +9,7 @@
 
 use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
 use carve_agent_contract::{
-    AgentState, CheckpointReason, Message, MessageQuery, ThreadReader, ThreadWriter,
+    AgentState, CheckpointReason, Message, MessageQuery, AgentStateReader, AgentStateWriter,
 };
 use carve_agent_contract::change::AgentChangeSet;
 use std::sync::Arc;
@@ -235,7 +235,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     assert_eq!(head.agent_state.messages[1].content, "first reply");
 }
 
-/// load_messages() (ThreadReader default) also reads from the inner storage,
+/// load_messages() (AgentStateReader default) also reads from the inner storage,
 /// so during a run it returns the last-flushed message list.
 #[tokio::test]
 async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
@@ -263,7 +263,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
     }
 
     // Query messages through the inner storage (which NatsBufferedThreadWriter delegates to).
-    let page = ThreadReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    let page = AgentStateReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(
@@ -312,7 +312,7 @@ async fn test_query_accurate_after_run_end_flush() {
     assert_eq!(post.agent_state.messages[1].content, "world");
 
     // load_messages also sees 2.
-    let page = ThreadReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
+    let page = AgentStateReader::load_messages(inner.as_ref(), "t1", &MessageQuery::default())
         .await
         .unwrap();
     assert_eq!(page.messages.len(), 2);

@@ -1,4 +1,4 @@
-use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::{AgentOs, AgentOsBuilder, ModelDefinition};
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::http::{self, AppState};
@@ -47,9 +47,9 @@ struct AgentConfigFile {
 fn build_os(
     cfg: Option<Config>,
     tensorzero_url: Option<String>,
-    write_store: Arc<dyn ThreadStore>,
+    write_store: Arc<dyn AgentStateStore>,
 ) -> AgentOs {
-    let mut builder = AgentOsBuilder::new().with_thread_store(write_store);
+    let mut builder = AgentOsBuilder::new().with_agent_state_store(write_store);
 
     let agents = match cfg {
         Some(c) => c.agents,
@@ -146,8 +146,8 @@ async fn main() {
     };
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    let write_store: Arc<dyn ThreadStore> = file_store.clone();
-    let read_store: Arc<dyn ThreadReader> = file_store.clone();
+    let write_store: Arc<dyn AgentStateStore> = file_store.clone();
+    let read_store: Arc<dyn AgentStateReader> = file_store.clone();
     let os = Arc::new(build_os(cfg, args.tensorzero_url, write_store));
 
     let app = http::router(AppState {

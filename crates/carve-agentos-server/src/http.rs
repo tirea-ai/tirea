@@ -8,7 +8,7 @@ use bytes::Bytes;
 use carve_agent::contracts::conversation::{AgentState, Visibility};
 use carve_agent::contracts::events::AgentEvent;
 use carve_agent::contracts::storage::{
-    MessagePage, MessageQuery, SortOrder, ThreadListPage, ThreadListQuery, ThreadReader,
+    MessagePage, MessageQuery, SortOrder, AgentStateListPage, AgentStateListQuery, AgentStateReader,
 };
 use carve_agent::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use carve_agent::runtime::loop_runner::RunCancellationToken;
@@ -33,7 +33,7 @@ use crate::transport::pump_encoded_stream;
 #[derive(Clone)]
 pub struct AppState {
     pub os: Arc<AgentOs>,
-    pub read_store: Arc<dyn ThreadReader>,
+    pub read_store: Arc<dyn AgentStateReader>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +79,7 @@ impl From<AgentOsRunError> for ApiError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/v1/threads", get(list_threads))
+        .route("/v1/threads", get(list_agent_states))
         .route("/v1/threads/:id", get(get_thread))
         .route("/v1/threads/:id/messages", get(get_thread_messages))
         .route(
@@ -113,11 +113,11 @@ struct ThreadListParams {
     parent_thread_id: Option<String>,
 }
 
-async fn list_threads(
+async fn list_agent_states(
     State(st): State<AppState>,
     Query(params): Query<ThreadListParams>,
-) -> Result<Json<ThreadListPage>, ApiError> {
-    let query = ThreadListQuery {
+) -> Result<Json<AgentStateListPage>, ApiError> {
+    let query = AgentStateListQuery {
         offset: params.offset.unwrap_or(0),
         limit: params.limit.clamp(1, 200),
         resource_id: None,
@@ -136,7 +136,7 @@ async fn get_thread(
 ) -> Result<Json<AgentState>, ApiError> {
     let Some(thread) = st
         .read_store
-        .load_thread(&id)
+        .load_agent_state(&id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
     else {
@@ -178,7 +178,7 @@ async fn get_thread_messages(
         .await
         .map(Json)
         .map_err(|e| match e {
-            carve_agent::contracts::storage::ThreadStoreError::NotFound(_) => {
+            carve_agent::contracts::storage::AgentStateStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(id)
             }
             other => ApiError::Internal(other.to_string()),
@@ -218,7 +218,7 @@ fn parse_message_query(params: &MessageQueryParams) -> MessageQuery {
 }
 
 async fn load_message_page(
-    read_store: &Arc<dyn ThreadReader>,
+    read_store: &Arc<dyn AgentStateReader>,
     thread_id: &str,
     params: &MessageQueryParams,
 ) -> Result<MessagePage, ApiError> {
@@ -227,7 +227,7 @@ async fn load_message_page(
         .load_messages(thread_id, &query)
         .await
         .map_err(|e| match e {
-            carve_agent::contracts::storage::ThreadStoreError::NotFound(_) => {
+            carve_agent::contracts::storage::AgentStateStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(thread_id.to_string())
             }
             other => ApiError::Internal(other.to_string()),

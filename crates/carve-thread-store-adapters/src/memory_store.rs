@@ -3,8 +3,8 @@ use carve_agent_contract::{
     AgentState, Committed,
 };
 use carve_agent_contract::storage::{
-    AgentChangeSet, AgentStateHead, ThreadListPage, ThreadListQuery, ThreadReader,
-    ThreadStoreError, ThreadSync, ThreadWriter, Version,
+    AgentChangeSet, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
+    AgentStateStoreError, AgentStateSync, AgentStateWriter, Version,
 };
 
 struct MemoryEntry {
@@ -27,11 +27,11 @@ impl MemoryStore {
 }
 
 #[async_trait]
-impl ThreadWriter for MemoryStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
+impl AgentStateWriter for MemoryStore {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
-            return Err(ThreadStoreError::AlreadyExists);
+            return Err(AgentStateStoreError::AlreadyExists);
         }
         entries.insert(
             thread.id.clone(),
@@ -48,11 +48,11 @@ impl ThreadWriter for MemoryStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
-    ) -> Result<Committed, ThreadStoreError> {
+    ) -> Result<Committed, AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         let entry = entries
             .get_mut(thread_id)
-            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
         delta.apply_to(&mut entry.agent_state);
         entry.version += 1;
@@ -62,13 +62,13 @@ impl ThreadWriter for MemoryStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         entries.remove(thread_id);
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
         entries.insert(
@@ -84,8 +84,8 @@ impl ThreadWriter for MemoryStore {
 }
 
 #[async_trait]
-impl ThreadReader for MemoryStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
+impl AgentStateReader for MemoryStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
         let entries = self.entries.read().await;
         Ok(entries.get(thread_id).map(|e| AgentStateHead {
             agent_state: e.agent_state.clone(),
@@ -93,10 +93,10 @@ impl ThreadReader for MemoryStore {
         }))
     }
 
-    async fn list_threads(
+    async fn list_agent_states(
         &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, ThreadStoreError> {
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
         let entries = self.entries.read().await;
         let mut ids: Vec<String> = entries
             .iter()
@@ -124,7 +124,7 @@ impl ThreadReader for MemoryStore {
         let slice = &ids[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(ThreadListPage {
+        Ok(AgentStateListPage {
             items,
             total,
             has_more,
@@ -133,16 +133,16 @@ impl ThreadReader for MemoryStore {
 }
 
 #[async_trait]
-impl ThreadSync for MemoryStore {
+impl AgentStateSync for MemoryStore {
     async fn load_deltas(
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<AgentChangeSet>, ThreadStoreError> {
+    ) -> Result<Vec<AgentChangeSet>, AgentStateStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(thread_id)
-            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
         // Deltas are 1-indexed: delta[0] produced version 1, delta[1] produced version 2, etc.
         let skip = after_version as usize;
         Ok(entry.deltas[skip..].to_vec())

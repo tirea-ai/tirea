@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, Committed, MessagePage, MessageQuery, MessageWithCursor, SortOrder,
-    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter,
+    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError, AgentStateWriter,
 };
 use carve_agent_contract::{AgentState, Message, Visibility};
 use std::collections::HashSet;
@@ -40,7 +40,7 @@ impl PostgresStore {
     }
 
     /// Ensure the storage tables exist (idempotent).
-    pub async fn ensure_table(&self) -> Result<(), ThreadStoreError> {
+    pub async fn ensure_table(&self) -> Result<(), AgentStateStoreError> {
         let sql = format!(
             r#"
             CREATE TABLE IF NOT EXISTS {threads} (
@@ -70,21 +70,21 @@ impl PostgresStore {
         sqlx::query(&sql)
             .execute(&self.pool)
             .await
-            .map_err(|e| ThreadStoreError::Io(std::io::Error::other(e.to_string())))?;
+            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e.to_string())))?;
         Ok(())
     }
 
-    fn sql_err(e: sqlx::Error) -> ThreadStoreError {
-        ThreadStoreError::Io(std::io::Error::other(e.to_string()))
+    fn sql_err(e: sqlx::Error) -> AgentStateStoreError {
+        AgentStateStoreError::Io(std::io::Error::other(e.to_string()))
     }
 }
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadWriter for PostgresStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
+impl AgentStateWriter for PostgresStore {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
         let mut v = serde_json::to_value(thread)
-            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
             obj.insert("_version".to_string(), serde_json::Value::Number(0.into()));
@@ -103,7 +103,7 @@ impl ThreadWriter for PostgresStore {
                 if e.to_string().contains("duplicate key")
                     || e.to_string().contains("unique constraint")
                 {
-                    ThreadStoreError::AlreadyExists
+                    AgentStateStoreError::AlreadyExists
                 } else {
                     Self::sql_err(e)
                 }
@@ -116,7 +116,7 @@ impl ThreadWriter for PostgresStore {
         );
         for msg in &thread.messages {
             let data = serde_json::to_value(msg.as_ref())
-                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             let message_id = msg.id.as_deref();
             let (run_id, step_index) = msg
                 .metadata
@@ -141,7 +141,7 @@ impl ThreadWriter for PostgresStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
-    ) -> Result<Committed, ThreadStoreError> {
+    ) -> Result<Committed, AgentStateStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;
 
         // Lock the row for atomic read-modify-write.
@@ -153,7 +153,7 @@ impl ThreadWriter for PostgresStore {
             .map_err(Self::sql_err)?;
 
         let Some((mut v,)) = row else {
-            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
+            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
         };
 
         let current_version = v.get("_version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -212,7 +212,7 @@ impl ThreadWriter for PostgresStore {
             );
             for msg in &delta.messages {
                 let data = serde_json::to_value(msg.as_ref())
-                    .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+                    .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
                 let message_id = msg.id.as_deref();
                 let (run_id, step_index) = msg
                     .metadata
@@ -237,7 +237,7 @@ impl ThreadWriter for PostgresStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
         // CASCADE will delete messages automatically.
         let sql = format!("DELETE FROM {} WHERE id = $1", self.table);
         sqlx::query(&sql)
@@ -248,10 +248,10 @@ impl ThreadWriter for PostgresStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), ThreadStoreError> {
+    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
         // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(thread)
-            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("messages".to_string(), serde_json::Value::Array(Vec::new()));
         }
@@ -301,7 +301,7 @@ impl ThreadWriter for PostgresStore {
         );
         for msg in &new_messages {
             let data = serde_json::to_value(msg)
-                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             let message_id = msg.id.as_deref();
             let (run_id, step_index) = msg
                 .metadata
@@ -327,8 +327,8 @@ impl ThreadWriter for PostgresStore {
 
 #[cfg(feature = "postgres")]
 #[async_trait]
-impl ThreadReader for PostgresStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
+impl AgentStateReader for PostgresStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
         let sql = format!("SELECT data FROM {} WHERE id = $1", self.table);
         let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
             .bind(thread_id)
@@ -359,7 +359,7 @@ impl ThreadReader for PostgresStore {
         }
 
         let agent_state: AgentState = serde_json::from_value(v)
-            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         Ok(Some(AgentStateHead {
             agent_state,
             version,
@@ -370,7 +370,7 @@ impl ThreadReader for PostgresStore {
         &self,
         thread_id: &str,
         query: &MessageQuery,
-    ) -> Result<MessagePage, ThreadStoreError> {
+    ) -> Result<MessagePage, AgentStateStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -379,7 +379,7 @@ impl ThreadReader for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
+            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
         }
 
         let limit = query.limit.min(200).max(1);
@@ -485,7 +485,7 @@ impl ThreadReader for PostgresStore {
         })
     }
 
-    async fn message_count(&self, thread_id: &str) -> Result<usize, ThreadStoreError> {
+    async fn message_count(&self, thread_id: &str) -> Result<usize, AgentStateStoreError> {
         // Check session exists.
         let exists_sql = format!("SELECT 1 FROM {} WHERE id = $1", self.table);
         let exists: Option<(i32,)> = sqlx::query_as(&exists_sql)
@@ -494,7 +494,7 @@ impl ThreadReader for PostgresStore {
             .await
             .map_err(Self::sql_err)?;
         if exists.is_none() {
-            return Err(ThreadStoreError::NotFound(thread_id.to_string()));
+            return Err(AgentStateStoreError::NotFound(thread_id.to_string()));
         }
 
         let sql = format!(
@@ -509,10 +509,10 @@ impl ThreadReader for PostgresStore {
         Ok(row.0 as usize)
     }
 
-    async fn list_threads(
+    async fn list_agent_states(
         &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, ThreadStoreError> {
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
         let limit = query.limit.clamp(1, 200);
         let fetch_limit = (limit + 1) as i64;
         let offset = query.offset as i64;
@@ -570,7 +570,7 @@ impl ThreadReader for PostgresStore {
         let has_more = rows.len() > limit;
         let items = rows.into_iter().take(limit).collect();
 
-        Ok(ThreadListPage {
+        Ok(AgentStateListPage {
             items,
             total: total as usize,
             has_more,

@@ -1,14 +1,14 @@
 use super::*;
 
 impl AgentOs {
-    pub fn thread_store(&self) -> Option<&Arc<dyn ThreadStore>> {
-        self.thread_store.as_ref()
+    pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
+        self.agent_state_store.as_ref()
     }
 
-    fn require_thread_store(&self) -> Result<&Arc<dyn ThreadStore>, AgentOsRunError> {
-        self.thread_store
+    fn require_agent_state_store(&self) -> Result<&Arc<dyn AgentStateStore>, AgentOsRunError> {
+        self.agent_state_store
             .as_ref()
-            .ok_or(AgentOsRunError::ThreadStoreNotConfigured)
+            .ok_or(AgentOsRunError::AgentStateStoreNotConfigured)
     }
 
     fn generate_id() -> String {
@@ -17,9 +17,9 @@ impl AgentOs {
 
     /// Load a thread from storage. Returns the thread and its version.
     /// If the thread does not exist, returns `None`.
-    pub async fn load_thread(&self, id: &str) -> Result<Option<AgentStateHead>, AgentOsRunError> {
-        let thread_store = self.require_thread_store()?;
-        Ok(thread_store.load(id).await?)
+    pub async fn load_agent_state(&self, id: &str) -> Result<Option<AgentStateHead>, AgentOsRunError> {
+        let agent_state_store = self.require_agent_state_store()?;
+        Ok(agent_state_store.load(id).await?)
     }
 
     /// Prepare a request for execution.
@@ -40,7 +40,7 @@ impl AgentOs {
         mut request: RunRequest,
         extensions: RunExtensions,
     ) -> Result<PreparedRun, AgentOsRunError> {
-        let thread_store = self.require_thread_store()?;
+        let agent_state_store = self.require_agent_state_store()?;
 
         // 0. Validate agent exists (fail fast before creating thread)
         self.validate_agent(&request.agent_id)?;
@@ -55,7 +55,7 @@ impl AgentOs {
         //    - Existing thread: replaces current state (persisted in UserMessage delta)
         let frontend_state = request.state.take();
         let mut state_snapshot_for_delta: Option<serde_json::Value> = None;
-        let (mut thread, mut version) = match thread_store.load(&thread_id).await? {
+        let (mut thread, mut version) = match agent_state_store.load(&thread_id).await? {
             Some(head) => {
                 let mut t = head.agent_state;
                 if let Some(state) = frontend_state {
@@ -71,7 +71,7 @@ impl AgentOs {
                 } else {
                     AgentState::new(thread_id.clone())
                 };
-                let committed = thread_store.create(&thread).await?;
+                let committed = agent_state_store.create(&thread).await?;
                 (thread, committed.version)
             }
         };
@@ -105,7 +105,7 @@ impl AgentOs {
                 pending.patches,
                 state_snapshot_for_delta,
             );
-            let committed = thread_store.append(&thread_id, &changeset.delta).await?;
+            let committed = agent_state_store.append(&thread_id, &changeset.delta).await?;
             version = committed.version;
         }
         let version_timestamp = thread.metadata.version_timestamp;
@@ -122,7 +122,7 @@ impl AgentOs {
             .map_err(AgentOsResolveError::from)
             .map_err(AgentOsRunError::from)?;
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
-            ThreadStoreStateCommitter::new(thread_store.clone()),
+            AgentStateStoreStateCommitter::new(agent_state_store.clone()),
         ));
 
         Ok(PreparedRun {

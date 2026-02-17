@@ -36,7 +36,7 @@ impl std::fmt::Debug for AgentOs {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
-            .field("thread_store", &self.thread_store.is_some())
+            .field("agent_state_store", &self.agent_state_store.is_some())
             .finish()
     }
 }
@@ -54,7 +54,7 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("skills_registry", &self.skills_registry.is_some())
             .field("skills", &self.skills)
             .field("agent_tools", &self.agent_tools)
-            .field("thread_store", &self.thread_store.is_some())
+            .field("agent_state_store", &self.agent_state_store.is_some())
             .finish()
     }
 }
@@ -77,7 +77,7 @@ impl AgentOsBuilder {
             skills_registry: None,
             skills: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
-            thread_store: None,
+            agent_state_store: None,
         }
     }
 
@@ -169,8 +169,8 @@ impl AgentOsBuilder {
         self
     }
 
-    pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
-        self.thread_store = Some(thread_store);
+    pub fn with_agent_state_store(mut self, agent_state_store: Arc<dyn AgentStateStore>) -> Self {
+        self.agent_state_store = Some(agent_state_store);
         self
     }
 
@@ -191,7 +191,7 @@ impl AgentOsBuilder {
             skills_registry,
             skills,
             agent_tools,
-            thread_store,
+            agent_state_store,
         } = self;
 
         let mut skill_registries: Vec<Arc<dyn SkillRegistry>> =
@@ -340,7 +340,7 @@ impl AgentOsBuilder {
             skills,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,
-            thread_store,
+            agent_state_store,
         })
     }
 }

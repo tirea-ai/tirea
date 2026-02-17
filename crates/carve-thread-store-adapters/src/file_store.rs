@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::storage::{
     AgentChangeSet, AgentStateHead, Committed,
-    ThreadListPage, ThreadListQuery, ThreadReader, ThreadStoreError, ThreadWriter, Version,
+    AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError, AgentStateWriter, Version,
 };
 use carve_agent_contract::AgentState;
 use serde::Deserialize;
@@ -20,16 +20,16 @@ impl FileStore {
         }
     }
 
-    pub(super) fn thread_path(&self, thread_id: &str) -> Result<PathBuf, ThreadStoreError> {
+    pub(super) fn thread_path(&self, thread_id: &str) -> Result<PathBuf, AgentStateStoreError> {
         Self::validate_thread_id(thread_id)?;
         Ok(self.base_path.join(format!("{}.json", thread_id)))
     }
 
     /// Validate that a session ID is safe for use as a filename.
     /// Rejects path separators, `..`, and control characters.
-    fn validate_thread_id(thread_id: &str) -> Result<(), ThreadStoreError> {
+    fn validate_thread_id(thread_id: &str) -> Result<(), AgentStateStoreError> {
         if thread_id.is_empty() {
-            return Err(ThreadStoreError::InvalidId(
+            return Err(AgentStateStoreError::InvalidId(
                 "thread id cannot be empty".to_string(),
             ));
         }
@@ -38,12 +38,12 @@ impl FileStore {
             || thread_id.contains("..")
             || thread_id.contains('\0')
         {
-            return Err(ThreadStoreError::InvalidId(format!(
+            return Err(AgentStateStoreError::InvalidId(format!(
                 "thread id contains invalid characters: {thread_id:?}"
             )));
         }
         if thread_id.chars().any(|c| c.is_control()) {
-            return Err(ThreadStoreError::InvalidId(format!(
+            return Err(AgentStateStoreError::InvalidId(format!(
                 "thread id contains control characters: {thread_id:?}"
             )));
         }
@@ -52,11 +52,11 @@ impl FileStore {
 }
 
 #[async_trait]
-impl ThreadWriter for FileStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, ThreadStoreError> {
+impl AgentStateWriter for FileStore {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
         let path = self.thread_path(&thread.id)?;
         if path.exists() {
-            return Err(ThreadStoreError::AlreadyExists);
+            return Err(AgentStateStoreError::AlreadyExists);
         }
         // Serialize with version=0 embedded
         let head = AgentStateHead {
@@ -71,11 +71,11 @@ impl ThreadWriter for FileStore {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
-    ) -> Result<Committed, ThreadStoreError> {
+    ) -> Result<Committed, AgentStateStoreError> {
         let head = self
             .load_head(thread_id)
             .await?
-            .ok_or_else(|| ThreadStoreError::NotFound(thread_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(thread_id.to_string()))?;
 
         let mut agent_state = head.agent_state;
         delta.apply_to(&mut agent_state);
@@ -90,7 +90,7 @@ impl ThreadWriter for FileStore {
         })
     }
 
-    async fn delete(&self, thread_id: &str) -> Result<(), ThreadStoreError> {
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
         let path = self.thread_path(thread_id)?;
         if path.exists() {
             tokio::fs::remove_file(&path).await?;
@@ -100,15 +100,15 @@ impl ThreadWriter for FileStore {
 }
 
 #[async_trait]
-impl ThreadReader for FileStore {
-    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
+impl AgentStateReader for FileStore {
+    async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
         self.load_head(thread_id).await
     }
 
-    async fn list_threads(
+    async fn list_agent_states(
         &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, ThreadStoreError> {
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
         // Read directory for all thread IDs
         let mut all = if !self.base_path.exists() {
             Vec::new()
@@ -172,7 +172,7 @@ impl ThreadReader for FileStore {
         let slice = &all[offset..end];
         let has_more = slice.len() > limit;
         let items: Vec<String> = slice.iter().take(limit).cloned().collect();
-        Ok(ThreadListPage {
+        Ok(AgentStateListPage {
             items,
             total,
             has_more,
@@ -182,7 +182,7 @@ impl ThreadReader for FileStore {
 
 impl FileStore {
     /// Load a thread head (thread + version) from file.
-    async fn load_head(&self, thread_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError> {
+    async fn load_head(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError> {
         let path = self.thread_path(thread_id)?;
         if !path.exists() {
             return Ok(None);
@@ -191,14 +191,14 @@ impl FileStore {
         // Try to parse as AgentStateHead first (new format with version).
         if let Ok(head) = serde_json::from_str::<VersionedThread>(&content) {
             let thread: AgentState = serde_json::from_str(&content)
-                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             Ok(Some(AgentStateHead {
                 agent_state: thread,
                 version: head._version.unwrap_or(0),
             }))
         } else {
             let thread: AgentState = serde_json::from_str(&content)
-                .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             Ok(Some(AgentStateHead {
                 agent_state: thread,
                 version: 0,
@@ -207,7 +207,7 @@ impl FileStore {
     }
 
     /// Save a thread head (thread + version) to file atomically.
-    async fn save_head(&self, head: &AgentStateHead) -> Result<(), ThreadStoreError> {
+    async fn save_head(&self, head: &AgentStateHead) -> Result<(), AgentStateStoreError> {
         if !self.base_path.exists() {
             tokio::fs::create_dir_all(&self.base_path).await?;
         }
@@ -215,12 +215,12 @@ impl FileStore {
 
         // Embed version into the JSON
         let mut v = serde_json::to_value(&head.agent_state)
-            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
             obj.insert("_version".to_string(), serde_json::json!(head.version));
         }
         let content = serde_json::to_string_pretty(&v)
-            .map_err(|e| ThreadStoreError::Serialization(e.to_string()))?;
+            .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
 
         let tmp_path = self.base_path.join(format!(
             ".{}.{}.tmp",
@@ -248,7 +248,7 @@ impl FileStore {
 
         if let Err(e) = write_result {
             let _ = tokio::fs::remove_file(&tmp_path).await;
-            return Err(ThreadStoreError::Io(e));
+            return Err(AgentStateStoreError::Io(e));
         }
         Ok(())
     }
@@ -266,7 +266,7 @@ mod tests {
     use super::*;
     use carve_state::{path, Op, Patch, TrackedPatch};
     use carve_agent_contract::{
-        storage::ThreadReader, Message, CheckpointReason, MessageQuery, ThreadWriter,
+        storage::AgentStateReader, Message, CheckpointReason, MessageQuery, AgentStateWriter,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -288,7 +288,7 @@ mod tests {
         let thread = AgentState::new("test-1").with_message(Message::user("hello"));
         storage.save(&thread).await.unwrap();
 
-        let loaded = storage.load_thread("test-1").await.unwrap().unwrap();
+        let loaded = storage.load_agent_state("test-1").await.unwrap().unwrap();
         assert_eq!(loaded.id, "test-1");
         assert_eq!(loaded.message_count(), 1);
     }

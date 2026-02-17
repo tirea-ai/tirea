@@ -3,20 +3,20 @@ use crate::conversation::AgentState;
 use async_trait::async_trait;
 
 use super::{
-    AgentStateHead, Committed, MessagePage, MessageQuery, ThreadListPage, ThreadListQuery, ThreadStoreError,
+    AgentStateHead, Committed, MessagePage, MessageQuery, AgentStateListPage, AgentStateListQuery, AgentStateStoreError,
     Version, paginate_in_memory,
 };
 
 #[async_trait]
-pub trait ThreadReader: Send + Sync {
+pub trait AgentStateReader: Send + Sync {
     /// Load an AgentState and its current version.
-    async fn load(&self, agent_state_id: &str) -> Result<Option<AgentStateHead>, ThreadStoreError>;
+    async fn load(&self, agent_state_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError>;
 
     /// Load an AgentState without version info. Convenience wrapper.
-    async fn load_thread(
+    async fn load_agent_state(
         &self,
         agent_state_id: &str,
-    ) -> Result<Option<AgentState>, ThreadStoreError> {
+    ) -> Result<Option<AgentState>, AgentStateStoreError> {
         Ok(self.load(agent_state_id).await?.map(|h| h.agent_state))
     }
 
@@ -25,24 +25,24 @@ pub trait ThreadReader: Send + Sync {
         &self,
         agent_state_id: &str,
         query: &MessageQuery,
-    ) -> Result<MessagePage, ThreadStoreError> {
+    ) -> Result<MessagePage, AgentStateStoreError> {
         let head = self
             .load(agent_state_id)
             .await?
-            .ok_or_else(|| ThreadStoreError::NotFound(agent_state_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(agent_state_id.to_string()))?;
         Ok(paginate_in_memory(&head.agent_state.messages, query))
     }
 
     /// List AgentState ids.
-    async fn list_threads(
+    async fn list_agent_states(
         &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, ThreadStoreError>;
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError>;
 
     /// List all AgentState ids with default paging.
-    async fn list(&self) -> Result<Vec<String>, ThreadStoreError> {
+    async fn list(&self) -> Result<Vec<String>, AgentStateStoreError> {
         let page = self
-            .list_threads(&ThreadListQuery {
+            .list_agent_states(&AgentStateListQuery {
                 offset: 0,
                 limit: 200,
                 resource_id: None,
@@ -55,38 +55,38 @@ pub trait ThreadReader: Send + Sync {
     /// List AgentState ids with explicit query.
     async fn list_paginated(
         &self,
-        query: &ThreadListQuery,
-    ) -> Result<ThreadListPage, ThreadStoreError> {
-        self.list_threads(query).await
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        self.list_agent_states(query).await
     }
 
     /// Return total message count.
-    async fn message_count(&self, agent_state_id: &str) -> Result<usize, ThreadStoreError> {
+    async fn message_count(&self, agent_state_id: &str) -> Result<usize, AgentStateStoreError> {
         let head = self
             .load(agent_state_id)
             .await?
-            .ok_or_else(|| ThreadStoreError::NotFound(agent_state_id.to_string()))?;
+            .ok_or_else(|| AgentStateStoreError::NotFound(agent_state_id.to_string()))?;
         Ok(head.agent_state.messages.len())
     }
 }
 
 #[async_trait]
-pub trait ThreadWriter: ThreadReader {
+pub trait AgentStateWriter: AgentStateReader {
     /// Create a new AgentState.
-    async fn create(&self, agent_state: &AgentState) -> Result<Committed, ThreadStoreError>;
+    async fn create(&self, agent_state: &AgentState) -> Result<Committed, AgentStateStoreError>;
 
     /// Append an AgentChangeSet to an existing AgentState.
     async fn append(
         &self,
         agent_state_id: &str,
         delta: &AgentChangeSet,
-    ) -> Result<Committed, ThreadStoreError>;
+    ) -> Result<Committed, AgentStateStoreError>;
 
     /// Delete an AgentState.
-    async fn delete(&self, agent_state_id: &str) -> Result<(), ThreadStoreError>;
+    async fn delete(&self, agent_state_id: &str) -> Result<(), AgentStateStoreError>;
 
     /// Upsert helper.
-    async fn save(&self, agent_state: &AgentState) -> Result<(), ThreadStoreError> {
+    async fn save(&self, agent_state: &AgentState) -> Result<(), AgentStateStoreError> {
         let _ = self.delete(&agent_state.id).await;
         self.create(agent_state).await?;
         Ok(())
@@ -94,16 +94,16 @@ pub trait ThreadWriter: ThreadReader {
 }
 
 #[async_trait]
-pub trait ThreadSync: ThreadWriter {
+pub trait AgentStateSync: AgentStateWriter {
     /// Load delta list appended after a specific version.
     async fn load_deltas(
         &self,
         agent_state_id: &str,
         after_version: Version,
-    ) -> Result<Vec<AgentChangeSet>, ThreadStoreError>;
+    ) -> Result<Vec<AgentChangeSet>, AgentStateStoreError>;
 }
 
 /// Full storage trait.
-pub trait ThreadStore: ThreadWriter {}
+pub trait AgentStateStore: AgentStateWriter {}
 
-impl<T: ThreadWriter + ?Sized> ThreadStore for T {}
+impl<T: AgentStateWriter + ?Sized> AgentStateStore for T {}

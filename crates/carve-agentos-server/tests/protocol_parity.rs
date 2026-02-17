@@ -42,7 +42,7 @@ fn make_os() -> AgentOs {
 
     AgentOsBuilder::new()
         .with_agent("test", def)
-        .with_thread_store(Arc::new(MemoryStore::new()))
+        .with_agent_state_store(Arc::new(MemoryStore::new()))
         .build()
         .unwrap()
 }

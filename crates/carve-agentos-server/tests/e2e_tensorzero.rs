@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agent::runtime::loop_runner::AgentDefinition;
@@ -67,7 +67,7 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -87,7 +87,7 @@ fn make_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::Agen
             ModelDefinition::new("tz", "openai::tensorzero::function_name::agent_chat"),
         )
         .with_agent("deepseek", def)
-        .with_thread_store(write_store)
+        .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero")
 }
@@ -186,7 +186,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
 
     // AgentState persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_thread("tz-sdk-1").await.unwrap();
+    let saved = storage.load_agent_state("tz-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -272,7 +272,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
 
     // AgentState persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let saved = storage.load_thread("tz-agui-1").await.unwrap();
+    let saved = storage.load_agent_state("tz-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
 }
 
@@ -422,7 +422,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),
@@ -447,7 +447,7 @@ fn make_tool_os(write_store: Arc<dyn ThreadStore>) -> carve_agent::orchestrator:
         )
         .with_tools(tools)
         .with_agent("calc", def)
-        .with_thread_store(write_store)
+        .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs with TensorZero + calculator")
 }
@@ -729,7 +729,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
-            .with_thread_store(storage.clone())
+            .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );
@@ -963,7 +963,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
             )
             .with_tools(tools)
             .with_agent("limited", def)
-            .with_thread_store(storage.clone())
+            .with_agent_state_store(storage.clone())
             .build()
             .expect("failed to build limited AgentOs"),
     );

@@ -47,7 +47,7 @@
 //! - **Context**: Provides typed state access with automatic patch collection
 //! - **AgentState**: Immutable conversation state with messages and patches
 //! - **StreamCollector**: Collects streaming LLM responses
-//! - **ThreadWriter/ThreadReader**: Traits for thread persistence
+//! - **AgentStateWriter/AgentStateReader**: Traits for thread persistence
 //!
 //! # Example: Implementing a Tool
 //!
@@ -81,7 +81,7 @@
 //! # Example: Using Sessions
 //!
 //! ```ignore
-//! use carve_agent::contracts::storage::ThreadWriter;
+//! use carve_agent::contracts::storage::AgentStateWriter;
 //! use carve_agent::contracts::conversation::AgentState;
 //! use carve_agent::contracts::conversation::Message;
 //! use carve_thread_store_adapters::FileStore;

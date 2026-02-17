@@ -10,7 +10,7 @@ use crate::contracts::conversation::Message;
 use crate::contracts::conversation::AgentState;
 use crate::contracts::events::{AgentEvent, RunRequest};
 use crate::contracts::storage::{
-    CheckpointReason, AgentStateHead, ThreadStore, ThreadStoreError,
+    CheckpointReason, AgentStateHead, AgentStateStore, AgentStateStoreError,
 };
 use crate::contracts::traits::tool::Tool;
 use crate::engine::tool_filter::set_scope_filters_from_definition_if_absent;
@@ -53,24 +53,24 @@ enum WiringScope {
 }
 
 #[derive(Clone)]
-struct ThreadStoreStateCommitter {
-    thread_store: Arc<dyn ThreadStore>,
+struct AgentStateStoreStateCommitter {
+    agent_state_store: Arc<dyn AgentStateStore>,
 }
 
-impl ThreadStoreStateCommitter {
-    fn new(thread_store: Arc<dyn ThreadStore>) -> Self {
-        Self { thread_store }
+impl AgentStateStoreStateCommitter {
+    fn new(agent_state_store: Arc<dyn AgentStateStore>) -> Self {
+        Self { agent_state_store }
     }
 }
 
 #[async_trait::async_trait]
-impl StateCommitter for ThreadStoreStateCommitter {
+impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
         changeset: crate::contracts::context::AgentChangeSet,
     ) -> Result<u64, StateCommitError> {
-        self.thread_store
+        self.agent_state_store
             .append(thread_id, &changeset.delta)
             .await
             .map(|committed| committed.version)
@@ -236,11 +236,11 @@ pub enum AgentOsRunError {
     #[error(transparent)]
     Loop(#[from] AgentLoopError),
 
-    #[error("thread store error: {0}")]
-    ThreadStore(#[from] ThreadStoreError),
+    #[error("agent state store error: {0}")]
+    AgentStateStore(#[from] AgentStateStoreError),
 
-    #[error("thread store not configured")]
-    ThreadStoreNotConfigured,
+    #[error("agent state store not configured")]
+    AgentStateStoreNotConfigured,
 }
 
 /// Run-scoped extensions injected for a single run.
@@ -327,7 +327,7 @@ pub struct AgentOs {
     skills: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
-    thread_store: Option<Arc<dyn ThreadStore>>,
+    agent_state_store: Option<Arc<dyn AgentStateStore>>,
 }
 
 #[derive(Clone)]
@@ -347,5 +347,5 @@ pub struct AgentOsBuilder {
     skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills: SkillsConfig,
     agent_tools: AgentToolsConfig,
-    thread_store: Option<Arc<dyn ThreadStore>>,
+    agent_state_store: Option<Arc<dyn AgentStateStore>>,
 }

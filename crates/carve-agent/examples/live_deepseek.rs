@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use carve_agent::contracts::conversation::Message;
 use carve_agent::contracts::conversation::AgentState as ConversationAgentState;
 use carve_agent::contracts::events::AgentEvent;
-use carve_agent::contracts::storage::{ThreadReader, ThreadWriter};
+use carve_agent::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent::contracts::traits::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::prelude::AgentState;
 use carve_agent::runtime::loop_runner::{
@@ -684,7 +684,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     // Load the session (simulating app restart)
     let loaded_thread = storage
-        .load_thread("persist-test")
+        .load_agent_state("persist-test")
         .await?
         .ok_or("AgentState not found")?;
 
@@ -1142,7 +1142,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     let save_time = save_start.elapsed();
 
     let load_start = std::time::Instant::now();
-    let loaded = storage.load_thread("test-long-conv").await?.unwrap();
+    let loaded = storage.load_agent_state("test-long-conv").await?.unwrap();
     let load_time = load_start.elapsed();
 
     println!("\n[Storage Performance]");

@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use carve_agent::contracts::agent_plugin::AgentPlugin;
 use carve_agent::contracts::phase::Phase;
 use carve_agent::contracts::phase::StepContext;
-use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agent::runtime::loop_runner::AgentDefinition;
 use carve_agentos_server::nats::NatsGateway;
@@ -44,7 +44,7 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
-fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_os(storage: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -53,7 +53,7 @@ fn make_os(storage: Arc<dyn ThreadStore>) -> carve_agent::orchestrator::AgentOs 
 
     AgentOsBuilder::new()
         .with_agent("test", def)
-        .with_thread_store(storage)
+        .with_agent_state_store(storage)
         .build()
         .unwrap()
 }
@@ -168,7 +168,7 @@ async fn test_nats_agui_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_thread("nats-agui-1").await.unwrap();
+    let saved = storage.load_agent_state("nats-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -248,7 +248,7 @@ async fn test_nats_aisdk_happy_path() {
     // Wait for checkpoint persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let saved = storage.load_thread("nats-sdk-1").await.unwrap();
+    let saved = storage.load_agent_state("nats-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
     let saved = saved.unwrap();
     assert!(
@@ -351,7 +351,7 @@ async fn test_nats_aisdk_agent_not_found() {
 
     // Unknown agent should fail fast without persisting user input.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let saved = storage.load_thread("s1").await.unwrap();
+    let saved = storage.load_agent_state("s1").await.unwrap();
     assert!(
         saved.is_none(),
         "thread should not be persisted when agent is missing"

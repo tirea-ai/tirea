@@ -9,7 +9,7 @@ pub mod research {
 }
 
 use carve_agent::contracts::agent_plugin::AgentPlugin;
-use carve_agent::contracts::storage::{ThreadReader, ThreadStore};
+use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agent::prelude::Tool;
 use carve_agent::runtime::loop_runner::{tool_map_from_arc, AgentDefinition};
@@ -72,10 +72,10 @@ pub async fn serve(
     }
 
     let file_store = Arc::new(FileStore::new(args.storage_dir));
-    builder = builder.with_thread_store(file_store.clone() as Arc<dyn ThreadStore>);
+    builder = builder.with_agent_state_store(file_store.clone() as Arc<dyn AgentStateStore>);
 
     let os = builder.build().expect("failed to build AgentOs");
-    let read_store: Arc<dyn ThreadReader> = file_store;
+    let read_store: Arc<dyn AgentStateReader> = file_store;
 
     let app = http::router(AppState {
         os: Arc::new(os),
