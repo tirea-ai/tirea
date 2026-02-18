@@ -63,14 +63,14 @@ function TaskPanel() {
         prev.map((t) =>
           t.title.toLowerCase() === title.toLowerCase()
             ? { ...t, completed: !t.completed }
-            : t
-        )
+            : t,
+        ),
       );
       setActionLog((prev) => [...prev, `Toggled: ${title}`]);
     },
   });
 
-  // useCopilotAction: let the agent delete tasks
+  // useCopilotAction: let the agent delete tasks (HITL — requires approval)
   useCopilotAction({
     name: "deleteTask",
     description: "Delete a task from the task list by its title",
@@ -82,11 +82,76 @@ function TaskPanel() {
         required: true,
       },
     ],
-    handler: async ({ title }: { title: string }) => {
-      setTasks((prev) =>
-        prev.filter((t) => t.title.toLowerCase() !== title.toLowerCase())
+    renderAndWaitForResponse: ({ args, respond, status }) => {
+      const title = (args as { title?: string }).title ?? "";
+      const isExecuting = status === "executing";
+
+      if (status === "complete") {
+        return (
+          <div data-testid="delete-approval">
+            <p style={{ color: "#16a34a", fontWeight: 500 }}>
+              Action completed
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div
+          data-testid="delete-approval"
+          style={{
+            padding: 12,
+            border: "1px solid #e0e0e0",
+            borderRadius: 8,
+            margin: 8,
+            background: "#f9f9f9",
+          }}
+        >
+          <p style={{ fontWeight: 600, marginBottom: 8 }}>
+            Delete task &quot;{title}&quot;?
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              disabled={!isExecuting}
+              onClick={() => {
+                setTasks((prev) =>
+                  prev.filter(
+                    (t) => t.title.toLowerCase() !== title.toLowerCase(),
+                  ),
+                );
+                setActionLog((prev) => [...prev, `Deleted: ${title}`]);
+                respond?.("approved");
+              }}
+              style={{
+                padding: "6px 16px",
+                background: !isExecuting ? "#93c5fd" : "#2563eb",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                cursor: !isExecuting ? "not-allowed" : "pointer",
+                opacity: !isExecuting ? 0.6 : 1,
+              }}
+            >
+              Approve
+            </button>
+            <button
+              disabled={!isExecuting}
+              onClick={() => respond?.("denied")}
+              style={{
+                padding: "6px 16px",
+                background: !isExecuting ? "#fca5a5" : "#dc2626",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                cursor: !isExecuting ? "not-allowed" : "pointer",
+                opacity: !isExecuting ? 0.6 : 1,
+              }}
+            >
+              Deny
+            </button>
+          </div>
+        </div>
       );
-      setActionLog((prev) => [...prev, `Deleted: ${title}`]);
     },
   });
 
@@ -106,9 +171,7 @@ function TaskPanel() {
             </span>
           </li>
         ))}
-        {tasks.length === 0 && (
-          <li data-testid="no-tasks">No tasks</li>
-        )}
+        {tasks.length === 0 && <li data-testid="no-tasks">No tasks</li>}
       </ul>
 
       <h3>Action Log</h3>
@@ -129,14 +192,13 @@ function ProgrammaticControls() {
   const [sent, setSent] = useState(false);
 
   const handleSendProgrammatic = async () => {
-    const { TextMessage, MessageRole } = await import(
-      "@copilotkit/runtime-client-gql"
-    );
+    const { TextMessage, MessageRole } =
+      await import("@copilotkit/runtime-client-gql");
     await appendMessage(
       new TextMessage({
         role: MessageRole.User,
         content: "Hello from programmatic message!",
-      })
+      }),
     );
     setSent(true);
   };
@@ -152,7 +214,10 @@ function ProgrammaticControls() {
         Send Programmatic Message
       </button>
       {sent && (
-        <span data-testid="programmatic-sent" style={{ marginLeft: "0.5rem", color: "green" }}>
+        <span
+          data-testid="programmatic-sent"
+          style={{ marginLeft: "0.5rem", color: "green" }}
+        >
           Sent!
         </span>
       )}
@@ -170,10 +235,14 @@ export default function Home() {
       }}
     >
       {/* Left panel: tasks + controls */}
-      <div style={{ width: "50%", overflow: "auto", borderRight: "1px solid #ccc" }}>
-        <h1 style={{ padding: "1rem", margin: 0 }}>
-          Uncarve CopilotKit Demo
-        </h1>
+      <div
+        style={{
+          width: "50%",
+          overflow: "auto",
+          borderRight: "1px solid #ccc",
+        }}
+      >
+        <h1 style={{ padding: "1rem", margin: 0 }}>Uncarve CopilotKit Demo</h1>
         <TaskPanel />
         <ProgrammaticControls />
       </div>

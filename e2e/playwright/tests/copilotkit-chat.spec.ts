@@ -18,6 +18,10 @@ test.describe("CopilotKit Chat", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("h1")).toBeVisible({ timeout: 15_000 });
+    // Wait for CopilotKit chat panel to finish async initialization.
+    await expect(page.locator('button[aria-label="Send"]')).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
   test("page renders with task list and chat panel", async ({ page }) => {
@@ -55,7 +59,7 @@ test.describe("CopilotKit Chat", () => {
 
     await expect(page.locator(".copilotKitMessages")).toContainText(
       "Hello from programmatic message!",
-      { timeout: 10_000 }
+      { timeout: 10_000 },
     );
   });
 
@@ -64,7 +68,7 @@ test.describe("CopilotKit Chat", () => {
   }) => {
     await sendChatMessage(
       page,
-      "List the tasks you can see. Reply with just the task titles separated by commas."
+      "List the tasks you can see. Reply with just the task titles separated by commas.",
     );
 
     const msg = assistantMessage(page);
@@ -78,7 +82,7 @@ test.describe("CopilotKit Chat", () => {
   }) => {
     await sendChatMessage(
       page,
-      'Add a new task called "Deploy v2" to the task list.'
+      'Add a new task called "Deploy v2" to the task list.',
     );
 
     // Wait for the action log to reflect the add.
@@ -100,7 +104,7 @@ test.describe("CopilotKit Chat", () => {
 
     // Verify the task span has data-completed="true".
     const taskSpan = page.locator(
-      '[data-testid="task-list"] span:has-text("Review PR")'
+      '[data-testid="task-list"] span:has-text("Review PR")',
     );
     await expect(taskSpan).toHaveAttribute("data-completed", "true", {
       timeout: 5_000,
@@ -110,16 +114,88 @@ test.describe("CopilotKit Chat", () => {
   test("useCopilotAction (deleteTask): agent deletes a task", async ({
     page,
   }) => {
-    await sendChatMessage(
-      page,
-      'Delete the task "Write tests" from the list.'
-    );
+    await sendChatMessage(page, 'Delete the task "Write tests" from the list.');
+
+    // HITL: wait for the approval dialog, then approve.
+    const approval = page.getByTestId("delete-approval");
+    const approveBtn = approval.getByRole("button", { name: "Approve" });
+    await expect(approveBtn).toBeVisible({ timeout: 45_000 });
+    await approveBtn.click();
 
     const actionLog = page.getByTestId("action-log");
-    await expect(actionLog).toContainText("Deleted:", { timeout: 45_000 });
+    await expect(actionLog).toContainText("Deleted:", { timeout: 15_000 });
 
     // Verify task is removed.
     const taskList = page.getByTestId("task-list");
     await expect(taskList).not.toContainText("Write tests", { timeout: 5_000 });
+  });
+
+  // --- HITL (Human-in-the-Loop) tests for deleteTask ---
+
+  test("HITL: approval dialog appears for deleteTask", async ({ page }) => {
+    await sendChatMessage(page, 'Delete the task "Review PR" from the list.');
+
+    const approval = page.getByTestId("delete-approval");
+    await expect(approval).toBeVisible({ timeout: 45_000 });
+
+    // Both buttons present and enabled.
+    const approveBtn = approval.getByRole("button", { name: "Approve" });
+    const denyBtn = approval.getByRole("button", { name: "Deny" });
+    await expect(approveBtn).toBeVisible();
+    await expect(denyBtn).toBeVisible();
+    await expect(approveBtn).toBeEnabled();
+    await expect(denyBtn).toBeEnabled();
+
+    // Dialog mentions the task being deleted.
+    await expect(approval).toContainText("Review PR");
+
+    // Clean up: approve so the agent can finish.
+    await approveBtn.click();
+  });
+
+  test("HITL: denial path — agent continues after deny", async ({ page }) => {
+    await sendChatMessage(page, 'Delete the task "Review PR" from the list.');
+
+    const approval = page.getByTestId("delete-approval");
+    const denyBtn = approval.getByRole("button", { name: "Deny" });
+    await expect(denyBtn).toBeVisible({ timeout: 45_000 });
+
+    await denyBtn.click();
+
+    // After denial the task must still exist.
+    const taskList = page.getByTestId("task-list");
+    await expect(taskList).toContainText("Review PR", { timeout: 10_000 });
+
+    // Action log should NOT contain "Deleted:".
+    const actionLog = page.getByTestId("action-log");
+    // Wait for agent follow-up message to confirm it processed the denial.
+    const msgs = page.locator(".copilotKitAssistantMessage");
+    await expect(msgs.last()).toBeVisible({ timeout: 30_000 });
+    await expect(actionLog).not.toContainText("Deleted:");
+  });
+
+  test("HITL: button state feedback after approval", async ({ page }) => {
+    await sendChatMessage(page, 'Delete the task "Write tests" from the list.');
+
+    const approval = page.getByTestId("delete-approval");
+    const approveBtn = approval.getByRole("button", { name: "Approve" });
+    await expect(approveBtn).toBeVisible({ timeout: 45_000 });
+    await expect(approveBtn).toBeEnabled();
+
+    await approveBtn.click();
+
+    // After approval: "Action completed" text should appear OR buttons should disappear.
+    await expect(
+      approval
+        .getByText(/action completed/i)
+        .or(approveBtn.locator("visible=false")),
+    )
+      .toBeVisible({ timeout: 10_000 })
+      .catch(async () => {
+        // Fallback: buttons may still be visible but disabled.
+        if (await approveBtn.isVisible()) {
+          await expect(approveBtn).toBeDisabled();
+        }
+      });
   });
 });
