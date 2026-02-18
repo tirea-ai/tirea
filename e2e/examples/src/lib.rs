@@ -8,11 +8,11 @@ pub mod research {
     pub mod tools;
 }
 
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
-use carve_agent::prelude::Tool;
-use carve_agent::runtime::loop_runner::tool_map_from_arc;
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use carve_agentos::contracts::tool::Tool;
+use carve_agentos::orchestrator::{AgentDefinition, AgentOsBuilder, ModelDefinition};
+use carve_agentos::runtime::loop_runner::tool_map_from_arc;
 use carve_agentos_server::http::{self, AppState};
 use carve_thread_store_adapters::FileStore;
 use clap::Parser;

@@ -1,5 +1,7 @@
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::prelude::{AgentPlugin, PermissionPlugin, Tool};
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::tool::Tool;
+use carve_agentos::extensions::permission::PermissionPlugin;
+use carve_agentos::orchestrator::AgentDefinition;
 use clap::Parser;
 use std::sync::Arc;
 use uncarve_examples::research::tools::*;

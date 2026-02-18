@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use carve_agent::prelude::{AgentState, Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::AgentState;
 use serde_json::{json, Value};
 
 use super::state::{LogEntry, ResearchState, Resource};
