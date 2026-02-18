@@ -13,8 +13,8 @@ use carve_agentos::extensions::reminder::SystemReminder;
 use carve_agentos::runtime::activity::ActivityHub;
 use carve_agentos::runtime::loop_runner::AgentLoopError;
 use carve_protocol_ag_ui::{interaction_to_ag_ui_events, MessageRole, ToolExecutionLocation};
+use carve_state::State;
 use carve_state::StateManager;
-use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 

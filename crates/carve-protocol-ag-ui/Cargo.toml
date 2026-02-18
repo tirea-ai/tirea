@@ -17,8 +17,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 [dev-dependencies]
 async-trait = "0.1"
 carve-agentos = { path = "../carve-agentos" }
-carve-state = { path = "../carve-state" }
-carve-state-derive = { path = "../carve-state-derive" }
+carve-state = { path = "../carve-state", features = ["derive"] }
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
 futures = "0.3"
 genai = "0.5"

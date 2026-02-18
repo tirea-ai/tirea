@@ -20,7 +20,7 @@ use carve_agent_loop::contracts::AgentState as RuntimeAgentState;
 use carve_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
 };
-use carve_state_derive::State;
+use carve_state::State;
 use futures::StreamExt;
 use genai::Client;
 use serde::{Deserialize, Serialize};

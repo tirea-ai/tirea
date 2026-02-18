@@ -240,7 +240,7 @@ impl ToolDescriptor {
 /// ```ignore
 /// use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 /// use carve_agent::prelude::AgentState;
-/// use carve_state_derive::State;
+/// use carve_state::State;
 ///
 /// #[derive(State)]
 /// struct MyToolState {

@@ -5,7 +5,7 @@
 
 use crate::runtime::interaction::{Interaction, InteractionResponse};
 use crate::state::{AgentState, ToolCall};
-use carve_state_derive::State;
+use carve_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -124,11 +124,7 @@ impl RuntimeControlExt for AgentState {
 
     fn pending_interaction(&self) -> Option<Interaction> {
         if self.patches.is_empty() {
-            return self
-                .runtime_control()
-                .pending_interaction()
-                .ok()
-                .flatten();
+            return self.runtime_control().pending_interaction().ok().flatten();
         }
 
         self.rebuild_state()
@@ -140,12 +136,7 @@ impl RuntimeControlExt for AgentState {
                     .cloned()
             })
             .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
-            .or_else(|| {
-                self.runtime_control()
-                    .pending_interaction()
-                    .ok()
-                    .flatten()
-            })
+            .or_else(|| self.runtime_control().pending_interaction().ok().flatten())
     }
 
     fn set_pending_interaction(&self, interaction: Option<Interaction>) {
@@ -193,8 +184,7 @@ mod tests {
 
     #[test]
     fn test_run_state_serialization_with_session() {
-        let child =
-            AgentState::new("child-1").with_message(crate::state::Message::user("seed"));
+        let child = AgentState::new("child-1").with_message(crate::state::Message::user("seed"));
         let run = RunState {
             run_id: "run-1".to_string(),
             parent_run_id: Some("parent-run-1".to_string()),

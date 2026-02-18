@@ -16,7 +16,7 @@ use carve_agent_loop::contracts::AgentState;
 use carve_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError, RunContext,
 };
-use carve_state_derive::State;
+use carve_state::State;
 use carve_thread_store_adapters::{FileStore, MemoryStore};
 use futures::StreamExt;
 use genai::Client;

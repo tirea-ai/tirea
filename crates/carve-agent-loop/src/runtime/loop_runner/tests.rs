@@ -8,8 +8,7 @@ use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use carve_state::{Op, Patch};
-use carve_state_derive::State;
+use carve_state::{Op, Patch, State};
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1259,8 +1258,9 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent =
-                        ctx.state::<crate::runtime::control::RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+                    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
+                        RUNTIME_CONTROL_STATE_PATH,
+                    );
                     let err = agent
                         .inference_error()
                         .ok()
@@ -3218,7 +3218,10 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
             .expect_err("timeout stop condition should stop non-stream run");
 
     match err {
-        AgentLoopError::Stopped { state: thread, reason } => {
+        AgentLoopError::Stopped {
+            state: thread,
+            reason,
+        } => {
             assert_eq!(reason, StopReason::TimeoutReached);
             assert!(
                 thread

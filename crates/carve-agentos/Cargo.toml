@@ -7,7 +7,6 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 carve-state = { path = "../carve-state" }
-carve-state-derive = { path = "../carve-state-derive" }
 carve-agent-contract = { path = "../carve-agent-contract" }
 carve-agent-loop = { path = "../carve-agent-loop" }
 carve-agent-extension-permission = { path = "../carve-agent-extension-permission" }

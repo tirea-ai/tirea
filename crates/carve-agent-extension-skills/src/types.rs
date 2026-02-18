@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use carve_state_derive::State;
+use carve_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -175,11 +175,7 @@ pub trait Skill: Send + Sync + std::fmt::Debug {
     ) -> Result<SkillResource, SkillError>;
 
     /// Run a script by relative path with arguments.
-    async fn run_script(
-        &self,
-        script: &str,
-        args: &[String],
-    ) -> Result<ScriptResult, SkillError>;
+    async fn run_script(&self, script: &str, args: &[String]) -> Result<ScriptResult, SkillError>;
 }
 
 /// Collect skills into a map, failing on duplicate IDs.

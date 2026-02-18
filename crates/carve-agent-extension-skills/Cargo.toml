@@ -8,8 +8,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 carve-agent-contract = { path = "../carve-agent-contract" }
 carve-agent-extension-permission = { path = "../carve-agent-extension-permission" }
-carve-state = { path = "../carve-state" }
-carve-state-derive = { path = "../carve-state-derive" }
+carve-state = { path = "../carve-state", features = ["derive"] }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -6,8 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "Shared agent contracts: runtime, extension SPI, and composition registries"
 
 [dependencies]
-carve-state = { path = "../carve-state" }
-carve-state-derive = { path = "../carve-state-derive" }
+carve-state = { path = "../carve-state", features = ["derive"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -22,7 +22,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::AgentState as ContextAgentState;
-use carve_state_derive::State;
+use carve_state::State;
 use serde::{Deserialize, Serialize};
 
 mod system_reminder;
