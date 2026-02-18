@@ -1126,3 +1126,29 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }
+
+// ── Legacy schema migration tests ────────────────────────────────────────────
+
+#[test]
+fn parse_persisted_runs_from_doc_reads_new_path() {
+    let doc = json!({
+        "agent_runs": {
+            "runs": {
+                "run-1": {
+                    "run_id": "run-1",
+                    "target_agent_id": "worker",
+                    "status": "stopped"
+                }
+            }
+        }
+    });
+    let runs = parse_persisted_runs_from_doc(&doc);
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs["run-1"].status, RunStatus::Stopped);
+}
+
+#[test]
+fn parse_persisted_runs_from_doc_empty_returns_empty() {
+    let runs = parse_persisted_runs_from_doc(&json!({}));
+    assert!(runs.is_empty());
+}
