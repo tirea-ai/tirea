@@ -14,7 +14,7 @@ use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::orchestrator::{RunExtensions, ToolPluginBundle};
 use carve_protocol_ag_ui::RunAgentRequest;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Build run-scoped AgentOs extensions from an AG-UI run request.
@@ -23,19 +23,25 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
     let frontend_tool_names: HashSet<String> =
         frontend_defs.iter().map(|tool| tool.name.clone()).collect();
 
-    let mut bundle = ToolPluginBundle::new("agui_runtime");
-    let mut has_contributions = false;
+    // Frontend tools → RunExtensions.frontend_tools (StepToolProvider layer)
+    let mut frontend_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
     for tool in frontend_defs {
-        has_contributions = true;
-        bundle = bundle.with_tool(Arc::new(FrontendToolStub::new(
+        frontend_tools.insert(
             tool.name.clone(),
-            tool.description.clone(),
-            tool.parameters.clone(),
-        )));
+            Arc::new(FrontendToolStub::new(
+                tool.name.clone(),
+                tool.description.clone(),
+                tool.parameters.clone(),
+            )),
+        );
     }
 
+    // Bundle only carries plugins (no tools)
+    let mut bundle = ToolPluginBundle::new("agui_runtime");
+    let mut has_plugin_contributions = false;
+
     if !frontend_tool_names.is_empty() {
-        has_contributions = true;
+        has_plugin_contributions = true;
         bundle = bundle.with_plugin(Arc::new(FrontendToolPendingPlugin::new(
             frontend_tool_names,
         )));
@@ -46,15 +52,18 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
         request.denied_interaction_ids(),
     );
     if interaction_plugin.is_active() {
-        has_contributions = true;
+        has_plugin_contributions = true;
         bundle = bundle.with_plugin(Arc::new(interaction_plugin));
     }
 
-    if has_contributions {
-        RunExtensions::new().with_bundle(Arc::new(bundle))
-    } else {
-        RunExtensions::new()
+    let mut ext = RunExtensions::new();
+    if has_plugin_contributions {
+        ext = ext.with_bundle(Arc::new(bundle));
     }
+    if !frontend_tools.is_empty() {
+        ext = ext.with_frontend_tools(frontend_tools);
+    }
+    ext
 }
 
 /// Runtime-only frontend tool descriptor stub.
@@ -172,6 +181,10 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
+        // Frontend tools go to frontend_tools field, not bundles
+        assert!(extensions.frontend_tools.contains_key("copyToClipboard"));
+        assert_eq!(extensions.frontend_tools.len(), 1);
+        // Bundle only carries the FrontendToolPendingPlugin
         assert_eq!(extensions.bundles.len(), 1);
     }
 
@@ -194,6 +207,7 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
+        assert!(extensions.frontend_tools.is_empty());
         assert_eq!(extensions.bundles.len(), 1);
     }
 
@@ -221,6 +235,8 @@ mod tests {
         };
 
         let extensions = build_agui_extensions(&request);
+        assert!(extensions.frontend_tools.contains_key("copyToClipboard"));
+        // Bundle carries both FrontendToolPendingPlugin and InteractionPlugin
         assert_eq!(extensions.bundles.len(), 1);
     }
 
@@ -228,6 +244,8 @@ mod tests {
     fn returns_empty_extensions_without_frontend_or_response_data() {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
         let extensions = build_agui_extensions(&request);
+        assert!(extensions.bundles.is_empty());
+        assert!(extensions.frontend_tools.is_empty());
         assert!(extensions.is_empty());
     }
 

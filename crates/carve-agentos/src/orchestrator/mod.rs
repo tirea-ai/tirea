@@ -267,6 +267,10 @@ pub enum AgentOsRunError {
 pub struct RunExtensions {
     /// Additional wiring bundles active only for this run.
     pub bundles: Vec<Arc<dyn RegistryBundle>>,
+    /// Run-scoped tools injected at the StepToolProvider layer.
+    /// New tools are added to the step snapshot; tools that shadow
+    /// existing backend tools are silently skipped (backend wins).
+    pub frontend_tools: HashMap<String, Arc<dyn Tool>>,
 }
 
 impl RunExtensions {
@@ -279,8 +283,13 @@ impl RunExtensions {
         self
     }
 
+    pub fn with_frontend_tools(mut self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
+        self.frontend_tools.extend(tools);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.bundles.is_empty()
+        self.bundles.is_empty() && self.frontend_tools.is_empty()
     }
 }
 

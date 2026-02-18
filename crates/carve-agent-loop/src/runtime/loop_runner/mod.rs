@@ -87,7 +87,7 @@ pub use crate::runtime::run_context::{
 use carve_state::TrackedPatch;
 pub use crate::contracts::runtime::{LlmExecutor, ToolExecutor};
 pub use config::{AgentConfig, GenaiLlmExecutor, LlmRetryPolicy};
-pub use config::{StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
+pub use config::{OverlayStepToolProvider, StaticStepToolProvider, StepToolInput, StepToolProvider, StepToolSnapshot};
 #[cfg(test)]
 use core::build_messages;
 #[cfg(test)]

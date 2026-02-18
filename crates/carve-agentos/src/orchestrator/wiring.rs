@@ -345,13 +345,6 @@ impl AgentOs {
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, tool) in defs {
             if tools.contains_key(&id) {
-                // Run extension tools (e.g. CopilotKit frontend tool stubs) may
-                // intentionally shadow backend tools for HITL interception.
-                // Skip the stub — the backend tool descriptor is retained and the
-                // FrontendToolPendingPlugin still intercepts execution.
-                if scope == WiringScope::RunExtension {
-                    continue;
-                }
                 return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
             }
             tools.insert(id, tool);
@@ -365,9 +358,6 @@ impl AgentOs {
                     continue;
                 };
                 if tools.contains_key(&id) {
-                    if scope == WiringScope::RunExtension {
-                        continue;
-                    }
                     return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
                 }
                 tools.insert(id, tool);
@@ -543,8 +533,8 @@ impl AgentOs {
         mut config: AgentConfig,
         mut tools: HashMap<String, Arc<dyn Tool>>,
         extensions: RunExtensions,
-    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>), AgentOsWiringError> {
-        let RunExtensions { bundles } = extensions;
+    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>, HashMap<String, Arc<dyn Tool>>), AgentOsWiringError> {
+        let RunExtensions { bundles, frontend_tools } = extensions;
         let extension_plugins =
             self.merge_wiring_bundles(&bundles, &mut tools, WiringScope::RunExtension)?;
         if !extension_plugins.is_empty() {
@@ -555,7 +545,7 @@ impl AgentOs {
                 .into_plugins()?;
         }
 
-        Ok((config, tools))
+        Ok((config, tools, frontend_tools))
     }
 
     pub fn resolve(

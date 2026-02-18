@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::StaticStepToolProvider;
+use crate::runtime::loop_runner::{OverlayStepToolProvider, StaticStepToolProvider, StepToolProvider};
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -123,11 +123,18 @@ impl AgentOs {
 
         // 6. Resolve static wiring, then merge run-scoped extensions.
         let (cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-        let (mut cfg, tools) = self
+        let (mut cfg, tools, frontend_tools) = self
             .apply_run_extensions(cfg, tools, extensions)
             .map_err(AgentOsResolveError::from)
             .map_err(AgentOsRunError::from)?;
-        cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
+        let base_provider: Arc<dyn StepToolProvider> =
+            Arc::new(StaticStepToolProvider::new(tools));
+        let provider: Arc<dyn StepToolProvider> = if frontend_tools.is_empty() {
+            base_provider
+        } else {
+            Arc::new(OverlayStepToolProvider::new(base_provider, frontend_tools))
+        };
+        cfg = cfg.with_step_tool_provider(provider);
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
             AgentStateStoreStateCommitter::new(agent_state_store.clone()),
         ));

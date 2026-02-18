@@ -2025,7 +2025,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
 }
 
 #[tokio::test]
-async fn prepare_run_with_extensions_skips_duplicate_tool_from_bundle() {
+async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
     struct BaseTool;
     #[async_trait::async_trait]
     impl Tool for BaseTool {
@@ -2071,9 +2071,9 @@ async fn prepare_run_with_extensions_skips_duplicate_tool_from_bundle() {
     let bundle =
         ToolPluginBundle::new("runtime_bundle_conflict").with_tool(Arc::new(BundleToolConflict));
 
-    // Run extension tools that duplicate existing tools are silently skipped.
-    // The base tool is retained; the extension stub is dropped.
-    let _prepared = os
+    // Run extension bundles with duplicate tool ids are now rejected.
+    // Frontend tools should use RunExtensions.frontend_tools instead.
+    let result = os
         .prepare_run_with_extensions(
             RunRequest {
                 agent_id: "a1".to_string(),
@@ -2086,8 +2086,139 @@ async fn prepare_run_with_extensions_skips_duplicate_tool_from_bundle() {
             },
             RunExtensions::new().with_bundle(Arc::new(bundle)),
         )
+        .await;
+    let err = result.err().expect("run extension bundle with duplicate tool should error");
+    assert!(matches!(
+        err,
+        AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
+            AgentOsWiringError::RunExtensionToolIdConflict(ref id)
+        )) if id == "dup_tool"
+    ));
+}
+
+#[tokio::test]
+async fn prepare_run_frontend_tools_overlay_adds_new_tool() {
+    use crate::runtime::loop_runner::StepToolInput;
+
+    struct FrontendTool;
+    #[async_trait::async_trait]
+    impl Tool for FrontendTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("frontend_action", "Frontend Action", "frontend stub")
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ContextAgentState,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("frontend_action", json!({})))
+        }
+    }
+
+    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let frontend_tools = HashMap::from([(
+        "frontend_action".to_string(),
+        Arc::new(FrontendTool) as Arc<dyn Tool>,
+    )]);
+
+    let prepared = os
+        .prepare_run_with_extensions(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-frontend-overlay".to_string()),
+                run_id: Some("run-frontend-overlay".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![Message::user("hello")],
+            },
+            RunExtensions::new().with_frontend_tools(frontend_tools),
+        )
         .await
-        .expect("run extension with duplicate tool should succeed");
+        .unwrap();
+
+    let provider = prepared.config.step_tool_provider.as_ref().unwrap();
+    let snapshot = provider
+        .provide(StepToolInput {
+            state: &prepared.thread,
+        })
+        .await
+        .unwrap();
+    assert!(snapshot.tools.contains_key("frontend_action"));
+    // Backend tools (agent_run, agent_stop) should also be present
+    assert!(snapshot.tools.contains_key("agent_run"));
+}
+
+#[tokio::test]
+async fn prepare_run_frontend_tools_overlay_skips_shadowed() {
+    use crate::runtime::loop_runner::StepToolInput;
+
+    struct ShadowTool;
+    #[async_trait::async_trait]
+    impl Tool for ShadowTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("agent_run", "Shadow Agent Run", "frontend stub")
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ContextAgentState,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("agent_run", json!({})))
+        }
+    }
+
+    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let frontend_tools = HashMap::from([(
+        "agent_run".to_string(),
+        Arc::new(ShadowTool) as Arc<dyn Tool>,
+    )]);
+
+    let prepared = os
+        .prepare_run_with_extensions(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-frontend-shadow".to_string()),
+                run_id: Some("run-frontend-shadow".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![Message::user("hello")],
+            },
+            RunExtensions::new().with_frontend_tools(frontend_tools),
+        )
+        .await
+        .unwrap();
+
+    let provider = prepared.config.step_tool_provider.as_ref().unwrap();
+    let snapshot = provider
+        .provide(StepToolInput {
+            state: &prepared.thread,
+        })
+        .await
+        .unwrap();
+    // Backend agent_run wins — frontend shadow is skipped
+    assert!(snapshot.tools.contains_key("agent_run"));
+    let desc = snapshot
+        .descriptors
+        .iter()
+        .find(|d| d.id == "agent_run")
+        .unwrap();
+    assert_ne!(desc.description, "frontend stub");
 }
 
 #[derive(Debug)]
