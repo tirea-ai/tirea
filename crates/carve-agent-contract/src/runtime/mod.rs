@@ -1,5 +1,6 @@
 //! Runtime protocol contracts: request, events, phase control, and outcomes.
 
+pub mod control;
 pub mod executor;
 pub mod event;
 pub mod interaction;
@@ -11,6 +12,11 @@ pub mod result;
 pub mod termination;
 
 pub use crate::state::{ActivityContext, ActivityManager};
+pub use control::{
+    AgentRunsState, InferenceError, RunState, RunStatus, RuntimeControlExt, RuntimeControlState,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_RUNS_STATE_PATH,
+    RUNTIME_CONTROL_STATE_PATH,
+};
 pub use executor::{
     LlmEventStream, LlmExecutor, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
     ToolExecutor, ToolExecutorError,

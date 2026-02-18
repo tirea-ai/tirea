@@ -9,8 +9,8 @@ use crate::contracts::AgentState;
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;
 use crate::runtime::control::{
-    AgentRunState, AgentRunStatus, AGENT_RECOVERY_INTERACTION_ACTION,
-    AGENT_RECOVERY_INTERACTION_PREFIX, AGENT_STATE_PATH,
+    RunState, RunStatus, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    AGENT_RUNS_STATE_PATH, RUNTIME_CONTROL_STATE_PATH,
 };
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{

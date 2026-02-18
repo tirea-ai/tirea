@@ -5,9 +5,12 @@ use crate::contracts::state::AgentState;
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::runtime::control::{
-    AgentControlState, AgentInferenceError, AgentStateControlExt, AGENT_STATE_PATH,
+    InferenceError, RuntimeControlExt, RuntimeControlState, RUNTIME_CONTROL_STATE_PATH,
 };
 use carve_state::{StateContext, TrackedPatch};
+
+/// Skills state path — matches `carve_agent_extension_skills::SKILLS_STATE_PATH`.
+const SKILLS_STATE_PATH: &str = "skills";
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -117,14 +120,14 @@ pub(super) fn set_agent_pending_interaction(
     interaction: Interaction,
 ) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
     agent.set_pending_interaction(Some(interaction));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
     agent.pending_interaction_none();
     ctx.take_tracked_patch("agent_loop")
 }
@@ -133,16 +136,16 @@ pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Int
     thread.pending_interaction()
 }
 
-pub(super) fn set_agent_inference_error(state: &Value, error: AgentInferenceError) -> TrackedPatch {
+pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
     agent.set_inference_error(Some(error));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
     agent.inference_error_none();
     ctx.take_tracked_patch("agent_loop")
 }
@@ -162,7 +165,7 @@ pub(super) fn drain_agent_outbox(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let interaction_resolutions = match state
-        .get(AGENT_STATE_PATH)
+        .get(RUNTIME_CONTROL_STATE_PATH)
         .and_then(|agent| agent.get("interaction_resolutions"))
         .cloned()
     {
@@ -174,7 +177,7 @@ pub(super) fn drain_agent_outbox(
         None => Vec::new(),
     };
     let replay_tool_calls = match state
-        .get(AGENT_STATE_PATH)
+        .get(RUNTIME_CONTROL_STATE_PATH)
         .and_then(|agent| agent.get("replay_tool_calls"))
         .cloned()
     {
@@ -190,7 +193,7 @@ pub(super) fn drain_agent_outbox(
     }
 
     let ctx = StateContext::new(&state);
-    let agent = ctx.state::<AgentControlState>(AGENT_STATE_PATH);
+    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
     if !interaction_resolutions.is_empty() {
         agent.set_interaction_resolutions(Vec::new());
     }
@@ -221,8 +224,8 @@ pub(super) fn drain_agent_append_user_messages(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let queued_by_call = state
-        .get(AGENT_STATE_PATH)
-        .and_then(|agent| agent.get("append_user_messages"))
+        .get(SKILLS_STATE_PATH)
+        .and_then(|s| s.get("append_user_messages"))
         .cloned()
         .and_then(|v| serde_json::from_value::<HashMap<String, Vec<String>>>(v).ok())
         .unwrap_or_default();
@@ -271,10 +274,13 @@ pub(super) fn drain_agent_append_user_messages(
         }
     }
 
-    let clear_ctx = StateContext::new(&state);
-    let agent = clear_ctx.state::<AgentControlState>(AGENT_STATE_PATH);
-    agent.set_append_user_messages(HashMap::new());
-    let clear_patch = clear_ctx.take_tracked_patch("agent_loop");
+    let clear_patch = TrackedPatch::new(carve_state::Patch::with_ops(vec![carve_state::Op::set(
+        carve_state::Path::root()
+            .key(SKILLS_STATE_PATH)
+            .key("append_user_messages"),
+        serde_json::Value::Object(Default::default()),
+    )]))
+    .with_source("agent_loop");
     if !clear_patch.patch().is_empty() {
         mutations = mutations.with_patch(clear_patch);
     }

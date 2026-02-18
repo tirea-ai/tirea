@@ -116,7 +116,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             epoch1,
             AgentRunCompletion {
                 thread: AgentState::new("old"),
-                status: AgentRunStatus::Completed,
+                status: RunStatus::Completed,
                 assistant: Some("old".to_string()),
                 error: None,
             },
@@ -128,7 +128,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
         .get_owned_summary("owner", "run-1")
         .await
         .expect("run should still exist");
-    assert_eq!(summary.status, AgentRunStatus::Running);
+    assert_eq!(summary.status, RunStatus::Running);
 
     let applied = manager
         .update_after_completion(
@@ -136,14 +136,14 @@ async fn manager_ignores_stale_completion_by_epoch() {
             epoch2,
             AgentRunCompletion {
                 thread: AgentState::new("new"),
-                status: AgentRunStatus::Completed,
+                status: RunStatus::Completed,
                 assistant: Some("new".to_string()),
                 error: None,
             },
         )
         .await
         .expect("latest epoch completion should apply");
-    assert_eq!(applied.status, AgentRunStatus::Completed);
+    assert_eq!(applied.status, RunStatus::Completed);
     assert_eq!(applied.assistant.as_deref(), Some("new"));
 }
 
@@ -368,19 +368,19 @@ async fn manager_stop_tree_stops_descendants() {
         .get_owned_summary("owner-thread", "parent-run")
         .await
         .expect("parent run should exist");
-    assert_eq!(parent.status, AgentRunStatus::Stopped);
+    assert_eq!(parent.status, RunStatus::Stopped);
 
     let child = manager
         .get_owned_summary("owner-thread", "child-run")
         .await
         .expect("child run should exist");
-    assert_eq!(child.status, AgentRunStatus::Stopped);
+    assert_eq!(child.status, RunStatus::Stopped);
 
     let grandchild = manager
         .get_owned_summary("owner-thread", "grandchild-run")
         .await
         .expect("grandchild run should exist");
-    assert_eq!(grandchild.status, AgentRunStatus::Stopped);
+    assert_eq!(grandchild.status, RunStatus::Stopped);
 
     let denied = manager
         .stop_owned_tree("owner-thread", "other-owner-run")
@@ -428,7 +428,7 @@ async fn agent_run_tool_persists_run_state_patch() {
     );
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["agent"]["agent_runs"][&run_id]["status"],
+        updated["agent_runs"]["runs"][&run_id]["status"],
         json!("running")
     );
 }
@@ -489,7 +489,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let patch = ctx.take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["agent"]["agent_runs"][&run_id]["parent_run_id"],
+        updated["agent_runs"]["runs"][&run_id]["parent_run_id"],
         json!("parent-run-42")
     );
 }
@@ -509,8 +509,8 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
     let child_thread = crate::contracts::state::AgentState::new("child-run")
         .with_message(crate::contracts::state::Message::user("seed"));
     let doc = json!({
-        "agent": {
-            "agent_runs": {
+        "agent_runs": {
+            "runs": {
                 "run-1": {
                     "run_id": "run-1",
                     "target_agent_id": "worker",
@@ -554,8 +554,8 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let child_thread = crate::contracts::state::AgentState::new("child-run")
         .with_message(crate::contracts::state::Message::user("seed"));
     let doc = json!({
-        "agent": {
-            "agent_runs": {
+        "agent_runs": {
+            "runs": {
                 "run-1": {
                     "run_id": "run-1",
                     "parent_run_id": "old-parent",
@@ -604,7 +604,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let patch = ctx.take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["agent"]["agent_runs"]["run-1"]["parent_run_id"],
+        updated["agent_runs"]["runs"]["run-1"]["parent_run_id"],
         json!("new-parent-run")
     );
 }
@@ -624,8 +624,8 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
     let child_thread = crate::contracts::state::AgentState::new("child-run")
         .with_message(crate::contracts::state::Message::user("seed"));
     let doc = json!({
-        "agent": {
-            "agent_runs": {
+        "agent_runs": {
+            "runs": {
                 "run-1": {
                     "run_id": "run-1",
                     "target_agent_id": "worker",
@@ -697,8 +697,8 @@ async fn agent_stop_tool_stops_descendant_runs() {
         .await;
 
     let doc = json!({
-        "agent": {
-            "agent_runs": {
+        "agent_runs": {
+            "runs": {
                 parent_run_id: {
                     "run_id": parent_run_id,
                     "target_agent_id": "worker",
@@ -739,30 +739,30 @@ async fn agent_stop_tool_stops_descendant_runs() {
         .get_owned_summary(&os_thread.id, parent_run_id)
         .await
         .expect("parent run should exist");
-    assert_eq!(parent.status, AgentRunStatus::Stopped);
+    assert_eq!(parent.status, RunStatus::Stopped);
     let child = manager
         .get_owned_summary(&os_thread.id, child_run_id)
         .await
         .expect("child run should exist");
-    assert_eq!(child.status, AgentRunStatus::Stopped);
+    assert_eq!(child.status, RunStatus::Stopped);
     let grandchild = manager
         .get_owned_summary(&os_thread.id, grandchild_run_id)
         .await
         .expect("grandchild run should exist");
-    assert_eq!(grandchild.status, AgentRunStatus::Stopped);
+    assert_eq!(grandchild.status, RunStatus::Stopped);
 
     let patch = ctx.take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
-        updated["agent"]["agent_runs"][parent_run_id]["status"],
+        updated["agent_runs"]["runs"][parent_run_id]["status"],
         json!("stopped")
     );
     assert_eq!(
-        updated["agent"]["agent_runs"][child_run_id]["status"],
+        updated["agent_runs"]["runs"][child_run_id]["status"],
         json!("stopped")
     );
     assert_eq!(
-        updated["agent"]["agent_runs"][grandchild_run_id]["status"],
+        updated["agent_runs"]["runs"][grandchild_run_id]["status"],
         json!("stopped")
     );
 }
@@ -775,8 +775,8 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -803,15 +803,15 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         .rebuild_state()
         .unwrap();
     assert_eq!(
-        updated["agent"]["agent_runs"]["run-1"]["status"],
+        updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
     assert_eq!(
-        updated["agent"]["pending_interaction"]["action"],
+        updated["runtime"]["pending_interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
-        updated["agent"]["pending_interaction"]["parameters"]["run_id"],
+        updated["runtime"]["pending_interaction"]["parameters"]["run_id"],
         json!("run-1")
     );
 
@@ -834,12 +834,14 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
-            "agent": {
+            "runtime": {
                 "pending_interaction": {
                     "id": "existing_1",
                     "action": "confirm",
                 },
-                "agent_runs": {
+            },
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -866,7 +868,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
         .rebuild_state()
         .unwrap();
     assert_eq!(
-        updated["agent"]["pending_interaction"]["id"],
+        updated["runtime"]["pending_interaction"]["id"],
         json!("existing_1")
     );
 }
@@ -885,8 +887,8 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
                     "recover_agent_run": "allow"
                 }
             },
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -907,7 +909,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["agent"]
+    let replay_calls: Vec<ToolCall> = updated["runtime"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -916,12 +918,12 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
     assert_eq!(replay_calls[0].name, "agent_run");
     assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
     assert_eq!(
-        updated["agent"]["agent_runs"]["run-1"]["status"],
+        updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
     assert!(
-        updated["agent"].get("pending_interaction").is_none()
-            || updated["agent"]["pending_interaction"].is_null()
+        updated["runtime"].get("pending_interaction").is_none()
+            || updated["runtime"]["pending_interaction"].is_null()
     );
 }
 
@@ -939,8 +941,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
                     "recover_agent_run": "deny"
                 }
             },
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -961,19 +963,19 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["agent"]
+    let replay_calls: Vec<ToolCall> = updated["runtime"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
         .unwrap_or_default();
     assert!(replay_calls.is_empty());
     assert_eq!(
-        updated["agent"]["agent_runs"]["run-1"]["status"],
+        updated["agent_runs"]["runs"]["run-1"]["status"],
         json!("stopped")
     );
     assert!(
-        updated["agent"].get("pending_interaction").is_none()
-            || updated["agent"]["pending_interaction"].is_null()
+        updated["runtime"].get("pending_interaction").is_none()
+            || updated["runtime"]["pending_interaction"].is_null()
     );
 }
 
@@ -989,8 +991,8 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
                 "default_behavior": "allow",
                 "tools": {}
             },
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -1011,7 +1013,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["agent"]
+    let replay_calls: Vec<ToolCall> = updated["runtime"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1020,8 +1022,8 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     assert_eq!(replay_calls[0].name, "agent_run");
     assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
     assert!(
-        updated["agent"].get("pending_interaction").is_none()
-            || updated["agent"]["pending_interaction"].is_null()
+        updated["runtime"].get("pending_interaction").is_none()
+            || updated["runtime"]["pending_interaction"].is_null()
     );
 }
 
@@ -1037,8 +1039,8 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
                 "default_behavior": "deny",
                 "tools": {}
             },
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -1059,7 +1061,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["agent"]
+    let replay_calls: Vec<ToolCall> = updated["runtime"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1069,8 +1071,8 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         "deny should not schedule recovery replay"
     );
     assert!(
-        updated["agent"].get("pending_interaction").is_none()
-            || updated["agent"]["pending_interaction"].is_null()
+        updated["runtime"].get("pending_interaction").is_none()
+            || updated["runtime"]["pending_interaction"].is_null()
     );
 }
 
@@ -1088,8 +1090,8 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
                     "recover_agent_run": "ask"
                 }
             },
-            "agent": {
-                "agent_runs": {
+            "agent_runs": {
+                "runs": {
                     "run-1": {
                         "run_id": "run-1",
                         "target_agent_id": "worker",
@@ -1110,7 +1112,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["agent"]
+    let replay_calls: Vec<ToolCall> = updated["runtime"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1120,7 +1122,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should override default allow"
     );
     assert_eq!(
-        updated["agent"]["pending_interaction"]["action"],
+        updated["runtime"]["pending_interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }

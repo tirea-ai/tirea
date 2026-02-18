@@ -109,7 +109,7 @@ async fn test_skill_activation_delivers_instructions_via_append_user_messages() 
 
     // Instructions should be delivered via append_user_messages, not system context.
     let state = thread.rebuild_state().unwrap();
-    let items = state["agent"]["append_user_messages"]["call_1"]
+    let items = state["skills"]["append_user_messages"]["call_1"]
         .as_array()
         .cloned()
         .unwrap_or_default();
@@ -400,7 +400,7 @@ async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
     assert!(result.is_success());
 
     let state = thread.rebuild_state().unwrap();
-    let items = state["agent"]["append_user_messages"]["call_1"]
+    let items = state["skills"]["append_user_messages"]["call_1"]
         .as_array()
         .cloned()
         .unwrap_or_default();

@@ -8,21 +8,11 @@ use crate::{
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use carve_agent_contract::AgentState;
 use carve_agent_extension_permission::PermissionContextExt;
-use carve_state_derive::State;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
 use std::sync::Arc;
 use tracing::{debug, warn};
-
-const AGENT_STATE_PATH: &str = "agent";
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-struct AgentStateDoc {
-    #[carve(default = "HashMap::new()")]
-    pub append_user_messages: HashMap<String, Vec<String>>,
-}
 
 #[derive(Debug, Clone)]
 pub struct SkillActivateTool {
@@ -156,8 +146,8 @@ impl Tool for SkillActivateTool {
         }
 
         if !instruction_for_message.trim().is_empty() {
-            let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
-            agent.append_user_messages_insert(
+            let skill_state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+            skill_state.append_user_messages_insert(
                 ctx.call_id().to_string(),
                 vec![instruction_for_message.clone()],
             );
