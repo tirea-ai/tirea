@@ -1529,3 +1529,277 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "pending_interaction must be cleared after denial"
     );
 }
+
+// ============================================================================
+// Route restructuring regression tests
+// ============================================================================
+
+/// Old route paths must return 404 after restructuring.
+#[tokio::test]
+async fn test_old_routes_return_404() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let old_routes = vec![
+        ("POST", "/v1/agents/test/runs/ag-ui/sse"),
+        ("POST", "/v1/agents/test/runs/ai-sdk/sse"),
+        ("GET", "/v1/threads/some-thread/messages/ag-ui"),
+        ("GET", "/v1/threads/some-thread/messages/ai-sdk"),
+    ];
+
+    for (method, uri) in old_routes {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "old route {method} {uri} should return 404, got {}",
+            resp.status()
+        );
+    }
+}
+
+/// New protocol-prefixed routes must be reachable.
+#[tokio::test]
+async fn test_new_protocol_routes_are_reachable() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    // POST to new AG-UI run endpoint — valid request should succeed (200 SSE stream)
+    let ag_ui_payload = json!({
+        "threadId": "route-test-agui",
+        "runId": "r-agui-1",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": []
+    });
+    let (status, _) =
+        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_ui_payload).await;
+    assert_eq!(status, StatusCode::OK, "new AG-UI run route should be 200");
+
+    // POST to new AI SDK run endpoint
+    let ai_sdk_payload = json!({
+        "sessionId": "route-test-aisdk",
+        "input": "hello",
+    });
+    let (status, _) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", ai_sdk_payload).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "new AI SDK run route should be 200"
+    );
+
+    // GET protocol-encoded history (thread not found → 404, but route is matched)
+    let (status, _) = get_json(
+        app.clone(),
+        "/v1/ag-ui/threads/nonexistent/messages",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "AG-UI history route should match but return thread-not-found"
+    );
+
+    let (status, _) = get_json(
+        app.clone(),
+        "/v1/ai-sdk/threads/nonexistent/messages",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "AI SDK history route should match but return thread-not-found"
+    );
+}
+
+/// Wrong HTTP methods on protocol routes should return 405 Method Not Allowed.
+#[tokio::test]
+async fn test_protocol_routes_reject_wrong_methods() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    // GET on a POST-only endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/ag-ui/agents/test/runs")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "GET on run endpoint should be 405"
+    );
+
+    // POST on a GET-only endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/threads/some-thread/messages")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "POST on history endpoint should be 405"
+    );
+}
+
+/// Protocol isolation: AG-UI and AI SDK endpoints must not cross-route.
+#[tokio::test]
+async fn test_protocol_isolation_no_cross_routing() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    // Run via AG-UI
+    let ag_payload = json!({
+        "threadId": "cross-route-agui",
+        "runId": "cr-1",
+        "messages": [{"role": "user", "content": "agui msg"}],
+        "tools": []
+    });
+    let (status, body) =
+        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    // AG-UI events use "RUN_STARTED" / "RUN_FINISHED" markers
+    assert!(
+        body.contains("RUN_STARTED"),
+        "AG-UI run should emit RUN_STARTED events"
+    );
+
+    // Run via AI SDK
+    let sdk_payload = json!({
+        "sessionId": "cross-route-aisdk",
+        "input": "sdk msg",
+    });
+    let (status, body) =
+        post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", sdk_payload).await;
+    assert_eq!(status, StatusCode::OK);
+    // AI SDK streams end with [DONE]
+    assert!(
+        body.contains("[DONE]"),
+        "AI SDK run should emit [DONE] trailer"
+    );
+}
+
+/// Unmatched protocol prefix should 404.
+#[tokio::test]
+async fn test_unknown_protocol_prefix_returns_404() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/unknown-proto/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// Protocol-specific response headers: AI SDK sets x-vercel-ai-ui-message-stream.
+#[tokio::test]
+async fn test_ai_sdk_route_sets_protocol_headers() {
+    let os = Arc::new(make_os());
+    let read_store: Arc<dyn AgentStateReader> = Arc::new(MemoryStore::new());
+    let app = make_app(os, read_store);
+
+    let payload = json!({
+        "sessionId": "header-check",
+        "input": "test",
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/ai-sdk/agents/test/runs")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .is_some(),
+        "AI SDK endpoint must set x-vercel-ai-ui-message-stream header"
+    );
+    assert!(
+        resp.headers().get("x-carve-ai-sdk-version").is_some(),
+        "AI SDK endpoint must set x-carve-ai-sdk-version header"
+    );
+}
+
+/// Generic thread endpoints remain accessible without protocol prefix.
+#[tokio::test]
+async fn test_generic_thread_endpoints_still_work() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = make_app(os, storage.clone());
+
+    // Seed a thread via AG-UI
+    let payload = json!({
+        "threadId": "generic-ep-test",
+        "runId": "g-1",
+        "messages": [{"role": "user", "content": "seed"}],
+        "tools": []
+    });
+    let (status, _) =
+        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", payload).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Wait for persistence
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // GET /v1/threads should list threads
+    let (status, body) = get_json(app.clone(), "/v1/threads").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.get("items").is_some(),
+        "thread list should have items field"
+    );
+
+    // GET /v1/threads/:id should return thread
+    let (status, _) = get_json(app.clone(), "/v1/threads/generic-ep-test").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // GET /v1/threads/:id/messages should return raw messages
+    let (status, body) =
+        get_json(app.clone(), "/v1/threads/generic-ep-test/messages").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.get("messages").is_some(),
+        "messages endpoint should have messages field"
+    );
+}
