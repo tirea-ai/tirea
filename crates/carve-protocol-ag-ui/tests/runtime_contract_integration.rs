@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use carve_agent_contract::Role;
 use carve_agent_contract::{AgentEvent, Interaction, TerminationReason};
 use carve_protocol_ag_ui::{

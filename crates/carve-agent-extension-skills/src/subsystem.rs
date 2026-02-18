@@ -127,10 +127,7 @@ impl SkillSubsystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        FsSkill, SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
-        SKILL_SCRIPT_TOOL_ID,
-    };
+    use crate::{FsSkill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
     use async_trait::async_trait;
     use carve_agent_contract::runtime::phase::{Phase, StepContext};
     use carve_agent_contract::state::AgentState;

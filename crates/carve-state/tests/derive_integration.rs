@@ -1,4 +1,5 @@
 //! Integration tests for State derive macro.
+#![allow(missing_docs)]
 
 use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State as StateTrait, StateExt};
 use carve_state_derive::State;

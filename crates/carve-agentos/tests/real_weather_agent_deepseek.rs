@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use async_trait::async_trait;
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};
 use carve_agent_contract::state::Message;

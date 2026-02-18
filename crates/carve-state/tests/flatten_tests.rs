@@ -2,6 +2,7 @@
 //!
 //! Flatten allows nested struct fields to be read/written at the parent level
 //! rather than under a separate key in JSON.
+#![allow(missing_docs)]
 
 use carve_state::{apply_patch, PatchSink, Path, State as StateTrait};
 use carve_state_derive::State;

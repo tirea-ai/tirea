@@ -1,4 +1,5 @@
 //! AG-UI protocol support and adapters.
+#![allow(missing_docs)]
 
 mod context;
 mod history_encoder;

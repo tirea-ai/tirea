@@ -20,7 +20,12 @@ pub enum StateError {
 
     /// Replay index is outside the available history range.
     #[error("Invalid replay index: {index}, history length: {len}")]
-    InvalidReplayIndex { index: usize, len: usize },
+    InvalidReplayIndex {
+        /// Requested replay index.
+        index: usize,
+        /// Total number of patches in history.
+        len: usize,
+    },
 
     /// Batch commit contains conflicting patches.
     #[error("conflicting patch in batch between index {left} and {right} at {path} ({kind:?})")]

@@ -1,4 +1,5 @@
 //! Shared agent contracts for conversation state, runtime protocol, extension SPI, and storage.
+#![allow(missing_docs)]
 
 pub mod plugin;
 pub mod runtime;

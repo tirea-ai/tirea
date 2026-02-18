@@ -2999,7 +2999,6 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 #[test]
 fn test_agent_loop_error_all_variants() {
     use carve_agent::contracts::runtime::Interaction;
-    use carve_agent::contracts::state::AgentState;
     use carve_agent::runtime::loop_runner::AgentLoopError;
 
     // LlmError

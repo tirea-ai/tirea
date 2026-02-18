@@ -1,10 +1,11 @@
+#![allow(missing_docs)]
+
 use carve_agent_extension_skills::{
     FsSkill, LoadSkillResourceTool, Skill, SkillActivateTool, SkillScriptTool,
 };
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolResult};
-use carve_agent_loop::contracts::AgentState as ContextAgentState;
 use carve_agent_loop::engine::tool_execution::{
     execute_single_tool, execute_single_tool_with_scope,
 };

@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use carve_agent::contracts::runtime::AgentEvent;
 use carve_agent::contracts::state::AgentState as ConversationAgentState;
 use carve_agent::contracts::state::ToolCall;

@@ -12,7 +12,6 @@ mod discovery_plugin;
 mod embedded_registry;
 mod materialize;
 mod registry;
-mod resource_lookup;
 mod runtime_plugin;
 mod skill_md;
 mod subsystem;

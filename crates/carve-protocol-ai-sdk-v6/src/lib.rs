@@ -1,4 +1,5 @@
 //! AI SDK v6 compatible UI Message Stream protocol support.
+#![allow(missing_docs)]
 
 mod encoder;
 mod events;

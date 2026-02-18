@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use carve_protocol_ag_ui::{
     AGUIMessage, AGUIToolDef, MessageRole, RunAgentRequest, ToolExecutionLocation,
 };

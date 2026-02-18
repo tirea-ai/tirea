@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent_loop::contracts::plugin::AgentPlugin;
 use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
