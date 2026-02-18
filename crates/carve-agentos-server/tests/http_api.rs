@@ -1397,7 +1397,7 @@ fn pending_echo_thread(id: &str, payload: &str) -> AgentState {
     AgentState::with_initial_state(
         id,
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_echo",
                     "action": "tool:AskUserQuestion",
@@ -1477,11 +1477,11 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("runtime")
+            .get("loop_control")
             .and_then(|rt| rt.get("pending_interaction"))
             .is_none()
             || rebuilt
-                .get("runtime")
+                .get("loop_control")
                 .and_then(|rt| rt.get("pending_interaction"))
                 == Some(&Value::Null),
         "pending_interaction must be cleared after approval replay"
@@ -1533,11 +1533,11 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
     let rebuilt = saved.rebuild_state().unwrap();
     assert!(
         rebuilt
-            .get("runtime")
+            .get("loop_control")
             .and_then(|rt| rt.get("pending_interaction"))
             .is_none()
             || rebuilt
-                .get("runtime")
+                .get("loop_control")
                 .and_then(|rt| rt.get("pending_interaction"))
                 == Some(&Value::Null),
         "pending_interaction must be cleared after denial"

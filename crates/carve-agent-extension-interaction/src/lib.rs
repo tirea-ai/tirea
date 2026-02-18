@@ -5,6 +5,7 @@
 mod context_provider;
 mod interaction_plugin;
 mod interaction_response;
+mod outbox;
 
 pub const INTERACTION_PLUGIN_ID: &str = "interaction";
 pub const INTERACTION_RESPONSE_PLUGIN_ID: &str = "interaction_response";
@@ -12,3 +13,4 @@ pub(crate) const RECOVERY_RESUME_TOOL_ID: &str = "agent_run";
 
 pub use context_provider::{ContextCategory, ContextProvider};
 pub use interaction_plugin::InteractionPlugin;
+pub use outbox::{InteractionOutbox, INTERACTION_OUTBOX_PATH};

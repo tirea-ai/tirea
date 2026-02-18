@@ -118,11 +118,11 @@ pub mod tool_registry;
 pub use plugin::AgentPlugin;
 pub use runtime::{
     AgentEvent, InferenceError, Interaction, InteractionResponse, LlmExecutor,
-    RunRequest, RuntimeControlExt, RuntimeControlState, StopConditionSpec,
+    LoopControlExt, LoopControlState, RunRequest, StopConditionSpec,
     StopPolicy, StopPolicyInput, StopPolicyStats, StopReason, StreamResult, TerminationReason,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    RUNTIME_CONTROL_STATE_PATH,
+    LOOP_CONTROL_STATE_PATH,
 };
 pub use state::{
     gen_message_id, AgentChangeSet, AgentState, AgentStateMetadata, CheckpointReason, Message,

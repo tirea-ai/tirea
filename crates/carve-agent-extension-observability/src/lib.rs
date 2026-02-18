@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::runtime::control::{
-    InferenceError, RuntimeControlState, RUNTIME_CONTROL_STATE_PATH,
+    InferenceError, LoopControlState, LOOP_CONTROL_STATE_PATH,
 };
 use carve_agent_contract::AgentState as ContextAgentState;
 use genai::chat::{ChatOptions, Usage};
@@ -643,8 +643,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
 }
 
 fn inference_error_from_state(ctx: &ContextAgentState) -> Option<InferenceError> {
-    let rt = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    rt.inference_error().ok().flatten()
+    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.inference_error().ok().flatten()
 }
 
 // =============================================================================
@@ -1018,7 +1018,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "inference_error": {
                     "type": "rate_limited",
                     "message": "429"
@@ -1564,7 +1564,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
             let doc = json!({
-                "runtime": {
+                "loop_control": {
                     "inference_error": {
                         "type": "rate_limited",
                         "message": "429"

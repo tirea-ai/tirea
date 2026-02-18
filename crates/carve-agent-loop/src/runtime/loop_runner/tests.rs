@@ -8,6 +8,7 @@ use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
+use carve_agent_extension_interaction::{InteractionOutbox, INTERACTION_OUTBOX_PATH};
 use carve_state::{Op, Patch, State};
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
@@ -1258,8 +1259,8 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                        RUNTIME_CONTROL_STATE_PATH,
+                    let agent = ctx.state::<crate::runtime::control::LoopControlState>(
+                        LOOP_CONTROL_STATE_PATH,
                     );
                     let err = agent
                         .inference_error()
@@ -1527,7 +1528,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
         assert!(msg.content.contains("awaiting approval"));
 
         let state = thread.rebuild_state().unwrap();
-        assert_eq!(state["runtime"]["pending_interaction"]["id"], "confirm_1");
+        assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
 
@@ -1911,7 +1912,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
         let thread = AgentState::with_initial_state(
             "test",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "permission_echo",
                         "action": "tool:AskUserQuestion"
@@ -1952,7 +1953,7 @@ fn test_execute_tools_with_config_denied_permission_is_visible_as_tool_error() {
 
         let final_state = thread.rebuild_state().expect("state should rebuild");
         let pending = final_state
-            .get("runtime")
+            .get("loop_control")
             .and_then(|a| a.get("pending_interaction"));
         assert!(pending.is_none() || pending == Some(&Value::Null));
     });
@@ -1999,7 +2000,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
 
         // Pending interaction should be persisted via AgentState.
         let state = thread.rebuild_state().unwrap();
-        assert_eq!(state["runtime"]["pending_interaction"]["id"], "confirm_1");
+        assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
 
@@ -2061,7 +2062,7 @@ fn test_execute_tools_with_config_clears_persisted_pending_interaction_on_succes
 
         let state = thread.rebuild_state().unwrap();
         let pending = state
-            .get("runtime")
+            .get("loop_control")
             .and_then(|a| a.get("pending_interaction"));
         assert!(
             pending.is_none() || pending.is_some_and(|v| v.is_null()),
@@ -2357,7 +2358,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let thread = AgentState::with_initial_state(
         "test",
         serde_json::json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
                     "action": "confirm",
@@ -2423,7 +2424,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
     let thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_echo",
                     "action": "tool:AskUserQuestion",
@@ -2503,7 +2504,7 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let pending = final_state
-        .get("runtime")
+        .get("loop_control")
         .and_then(|a| a.get("pending_interaction"));
     assert!(pending.is_none() || pending == Some(&Value::Null));
 }
@@ -2540,7 +2541,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
     let thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_echo",
                     "action": "tool:AskUserQuestion",
@@ -2613,7 +2614,7 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
 
     let final_state = final_thread.rebuild_state().expect("state should rebuild");
     let pending = final_state
-        .get("runtime")
+        .get("loop_control")
         .and_then(|a| a.get("pending_interaction"));
     assert!(pending.is_none() || pending == Some(&Value::Null));
 }
@@ -2703,7 +2704,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
 
     let state = thread.rebuild_state().expect("state should rebuild");
     assert_eq!(
-        state["runtime"]["pending_interaction"]["action"],
+        state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 
@@ -3154,8 +3155,8 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
                 return;
             }
 
-            let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                crate::runtime::control::RUNTIME_CONTROL_STATE_PATH,
+            let agent = ctx.state::<crate::runtime::control::LoopControlState>(
+                crate::runtime::control::LOOP_CONTROL_STATE_PATH,
             );
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
@@ -3640,8 +3641,8 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         .rebuild_state()
         .expect("stream state should rebuild");
     assert_eq!(
-        nonstream_state["runtime"]["pending_interaction"],
-        stream_state["runtime"]["pending_interaction"]
+        nonstream_state["loop_control"]["pending_interaction"],
+        stream_state["loop_control"]["pending_interaction"]
     );
 }
 
@@ -3686,7 +3687,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
     let thread = AgentState::with_initial_state(
         "idempotent-replay",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_counting_echo",
                     "action": "tool:AskUserQuestion",
@@ -3757,7 +3758,7 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
 
     let final_state = second_thread.rebuild_state().expect("state should rebuild");
     let pending = final_state
-        .get("runtime")
+        .get("loop_control")
         .and_then(|a| a.get("pending_interaction"));
     assert!(pending.is_none() || pending == Some(&Value::Null));
 }
@@ -4379,7 +4380,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
                     carve_state::TrackedPatch::new(Patch::new().with_op(Op::set(
-                        carve_state::path!("runtime", "replay_tool_calls"),
+                        carve_state::path!("interaction_outbox", "replay_tool_calls"),
                         json!({"bad": "payload"}),
                     )))
                     .with_source("test:invalid_replay_payload"),
@@ -4405,7 +4406,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
         events.iter().any(|e| matches!(
             e,
             AgentEvent::Error { message }
-            if message.contains("agent.replay_tool_calls")
+            if message.contains("interaction_outbox.replay_tool_calls")
         )),
         "expected replay payload parse error, got events: {events:?}"
     );
@@ -4445,10 +4446,8 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                    crate::runtime::control::RUNTIME_CONTROL_STATE_PATH,
-                );
-                agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
+                let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
                     json!({"message": "resume"}),
@@ -4513,10 +4512,8 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
         ) {
             match phase {
                 Phase::RunStart => {
-                    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                        crate::runtime::control::RUNTIME_CONTROL_STATE_PATH,
-                    );
-                    agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
+                    let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                    outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                         "replay_call_1",
                         "echo",
                         json!({"message": "resume"}),
@@ -4585,10 +4582,8 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                    crate::runtime::control::RUNTIME_CONTROL_STATE_PATH,
-                );
-                agent.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
+                let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
                     json!({"message": "resume"}),
@@ -5891,7 +5886,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
 
     let state = thread.rebuild_state().expect("state should rebuild");
     assert_eq!(
-        state["runtime"]["pending_interaction"]["action"],
+        state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
     );
 }
@@ -5955,8 +5950,8 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(
-                        crate::runtime::control::RUNTIME_CONTROL_STATE_PATH,
+                    let agent = ctx.state::<crate::runtime::control::LoopControlState>(
+                        crate::runtime::control::LOOP_CONTROL_STATE_PATH,
                     );
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));

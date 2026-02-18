@@ -5,12 +5,16 @@ use crate::contracts::state::AgentState;
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::runtime::control::{
-    InferenceError, RuntimeControlExt, RuntimeControlState, RUNTIME_CONTROL_STATE_PATH,
+    InferenceError, LoopControlExt, LoopControlState, LOOP_CONTROL_STATE_PATH,
 };
 use carve_state::{StateContext, TrackedPatch};
 
 /// Skills state path — matches `carve_agent_extension_skills::SKILLS_STATE_PATH`.
 const SKILLS_STATE_PATH: &str = "skills";
+
+/// Interaction outbox path — matches `carve_agent_extension_interaction::INTERACTION_OUTBOX_PATH`.
+const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -119,15 +123,15 @@ pub(super) fn set_agent_pending_interaction(
     interaction: Interaction,
 ) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.set_pending_interaction(Some(interaction));
+    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.set_pending_interaction(Some(interaction));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.pending_interaction_none();
+    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.pending_interaction_none();
     ctx.take_tracked_patch("agent_loop")
 }
 
@@ -137,15 +141,15 @@ pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Int
 
 pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.set_inference_error(Some(error));
+    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.set_inference_error(Some(error));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
     let ctx = StateContext::new(state);
-    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.inference_error_none();
+    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.inference_error_none();
     ctx.take_tracked_patch("agent_loop")
 }
 
@@ -164,25 +168,27 @@ pub(super) fn drain_agent_outbox(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let interaction_resolutions = match state
-        .get(RUNTIME_CONTROL_STATE_PATH)
-        .and_then(|agent| agent.get("interaction_resolutions"))
+        .get(INTERACTION_OUTBOX_PATH)
+        .and_then(|outbox| outbox.get("interaction_resolutions"))
         .cloned()
     {
         Some(raw) => serde_json::from_value::<Vec<InteractionResponse>>(raw).map_err(|e| {
             AgentLoopError::StateError(format!(
-                "failed to parse agent.interaction_resolutions: {e}"
+                "failed to parse interaction_outbox.interaction_resolutions: {e}"
             ))
         })?,
         None => Vec::new(),
     };
     let replay_tool_calls = match state
-        .get(RUNTIME_CONTROL_STATE_PATH)
-        .and_then(|agent| agent.get("replay_tool_calls"))
+        .get(INTERACTION_OUTBOX_PATH)
+        .and_then(|outbox| outbox.get("replay_tool_calls"))
         .cloned()
     {
         Some(raw) => serde_json::from_value::<Vec<crate::contracts::state::ToolCall>>(raw)
             .map_err(|e| {
-                AgentLoopError::StateError(format!("failed to parse agent.replay_tool_calls: {e}"))
+                AgentLoopError::StateError(format!(
+                    "failed to parse interaction_outbox.replay_tool_calls: {e}"
+                ))
             })?,
         None => Vec::new(),
     };
@@ -191,16 +197,23 @@ pub(super) fn drain_agent_outbox(
         return Ok((thread, AgentOutboxDrain::default()));
     }
 
-    let ctx = StateContext::new(&state);
-    let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+    // Clear consumed fields via raw patch (no type dependency on InteractionOutbox)
+    let outbox_path = carve_state::Path::root().key(INTERACTION_OUTBOX_PATH);
+    let mut clear_patch = carve_state::Patch::new();
     if !interaction_resolutions.is_empty() {
-        agent.set_interaction_resolutions(Vec::new());
+        clear_patch = clear_patch.with_op(carve_state::Op::set(
+            outbox_path.clone().key("interaction_resolutions"),
+            serde_json::json!([]),
+        ));
     }
     if !replay_tool_calls.is_empty() {
-        agent.set_replay_tool_calls(Vec::new());
+        clear_patch = clear_patch.with_op(carve_state::Op::set(
+            outbox_path.key("replay_tool_calls"),
+            serde_json::json!([]),
+        ));
     }
-    let patch = ctx.take_tracked_patch("agent_loop");
-    if !patch.patch().is_empty() {
+    if !clear_patch.is_empty() {
+        let patch = TrackedPatch::new(clear_patch).with_source("agent_loop");
         thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
     }
 

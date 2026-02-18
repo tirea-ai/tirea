@@ -10,7 +10,7 @@ use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;
 use crate::runtime::control::{
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    RUNTIME_CONTROL_STATE_PATH,
+    LOOP_CONTROL_STATE_PATH,
 };
 use types::{DelegationRecord, DelegationState, DelegationStatus, DELEGATION_STATE_PATH};
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;

@@ -3,9 +3,10 @@
 //! Handles client responses to pending interactions (approvals/denials).
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
+use crate::outbox::{InteractionOutbox, INTERACTION_OUTBOX_PATH};
 use carve_agent_contract::runtime::control::{
-    RuntimeControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    RUNTIME_CONTROL_STATE_PATH,
+    LoopControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    LOOP_CONTROL_STATE_PATH,
 };
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
@@ -101,7 +102,7 @@ impl InteractionResponsePlugin {
     fn pending_interaction_from_step_thread(step: &StepContext<'_>) -> Option<Interaction> {
         let state = step.thread.rebuild_state().ok()?;
         state
-            .get(RUNTIME_CONTROL_STATE_PATH)
+            .get(LOOP_CONTROL_STATE_PATH)
             .and_then(|agent| agent.get("pending_interaction"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
@@ -112,24 +113,24 @@ impl InteractionResponsePlugin {
         ctx: &ContextAgentState,
     ) -> Option<Interaction> {
         Self::pending_interaction_from_step_thread(step).or_else(|| {
-            let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+            let agent = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
             agent.pending_interaction().ok().flatten()
         })
     }
 
     fn push_resolution(ctx: &ContextAgentState, interaction_id: String, result: serde_json::Value) {
-        let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-        agent.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
+        let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+        outbox.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
     fn queue_replay_call(ctx: &ContextAgentState, call: carve_agent_contract::state::ToolCall) {
-        let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-        agent.replay_tool_calls_push(call);
+        let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+        outbox.replay_tool_calls_push(call);
     }
 
     /// During RunStart, detect pending_interaction and schedule tool replay if approved.
     fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
-        let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+        let loop_ctrl = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
         let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
             return;
         };
@@ -137,7 +138,7 @@ impl InteractionResponsePlugin {
         let pending_id = pending_id_owned.as_str();
 
         if self.is_denied(pending_id) {
-            agent.pending_interaction_none();
+            loop_ctrl.pending_interaction_none();
             Self::push_resolution(
                 ctx,
                 pending_id_owned.clone(),
@@ -173,7 +174,7 @@ impl InteractionResponsePlugin {
                         .map(str::to_string)
                 });
             let Some(run_id) = run_id else {
-                agent.pending_interaction_none();
+                loop_ctrl.pending_interaction_none();
                 return;
             };
 
@@ -300,7 +301,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let agent = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+        let loop_ctrl = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
         let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
 
         let id_matches = persisted_id
@@ -317,14 +318,14 @@ impl AgentPlugin for InteractionResponsePlugin {
             // Interaction was denied - block the tool
             step.confirm();
             step.block("User denied the action".to_string());
-            agent.pending_interaction_none();
+            loop_ctrl.pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
             Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(false));
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
             // This allows the tool to execute normally.
             step.confirm();
-            agent.pending_interaction_none();
+            loop_ctrl.pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
             Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(true));
         }
@@ -354,7 +355,7 @@ mod tests {
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
         state
-            .get("runtime")
+            .get("interaction_outbox")
             .and_then(|agent| agent.get("replay_tool_calls"))
             .cloned()
             .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
@@ -364,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_replays_tool_matching_pending_interaction() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
                     "action": "confirm"
@@ -378,7 +379,7 @@ mod tests {
         let thread = AgentState::with_initial_state(
             "s1",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "permission_write_file",
                         "action": "confirm"
@@ -407,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_replay_does_not_require_prior_intent_channel() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
                     "action": "confirm"
@@ -421,7 +422,7 @@ mod tests {
         let thread = AgentState::with_initial_state(
             "s1",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "permission_write_file",
                         "action": "confirm"
@@ -451,7 +452,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_works_without_prior_channel() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "call_copy_1",
                     "action": "tool:copyToClipboard"
@@ -464,7 +465,7 @@ mod tests {
         let thread = AgentState::with_initial_state(
             "s1",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "call_copy_1",
                         "action": "tool:copyToClipboard"
@@ -493,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_without_history_uses_pending_payload() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "call_copy_1",
                     "action": "tool:copyToClipboard",
@@ -519,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
                     "action": "confirm",
@@ -554,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
                     "action": "tool:AskUserQuestion",
@@ -589,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_recovery_approval_schedules_agent_run_replay() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "agent_recovery_run-1",
                     "action": "recover_agent_run",
@@ -606,7 +607,7 @@ mod tests {
         let thread = AgentState::with_initial_state(
             "s1",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "agent_recovery_run-1",
                         "action": "recover_agent_run",
@@ -632,7 +633,7 @@ mod tests {
     #[tokio::test]
     async fn run_start_recovery_denial_clears_pending_interaction() {
         let doc = json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "agent_recovery_run-1",
                     "action": "recover_agent_run",
@@ -649,7 +650,7 @@ mod tests {
         let thread = AgentState::with_initial_state(
             "s1",
             json!({
-                "runtime": {
+                "loop_control": {
                     "pending_interaction": {
                         "id": "agent_recovery_run-1",
                         "action": "recover_agent_run",
@@ -677,7 +678,7 @@ mod tests {
         )
         .expect("pending patch should apply");
         let pending = updated
-            .get("runtime")
+            .get("loop_control")
             .and_then(|a| a.get("pending_interaction"));
         assert!(pending.is_none() || pending == Some(&serde_json::Value::Null));
     }

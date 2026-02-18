@@ -103,9 +103,12 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
+/// Interaction outbox path — matches `carve_agent_extension_interaction::INTERACTION_OUTBOX_PATH`.
+const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
+
 pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
     state
-        .get(RUNTIME_CONTROL_STATE_PATH)
+        .get(LOOP_CONTROL_STATE_PATH)
         .and_then(|a| a.get("pending_interaction"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
@@ -113,7 +116,7 @@ pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Inte
 
 pub(super) fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall> {
     state
-        .get(RUNTIME_CONTROL_STATE_PATH)
+        .get(INTERACTION_OUTBOX_PATH)
         .and_then(|a| a.get("replay_tool_calls"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
@@ -126,8 +129,8 @@ pub(super) fn set_pending_interaction_patch(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
-    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.set_pending_interaction(Some(interaction));
+    let lc = ctx.state::<crate::runtime::control::LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    lc.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
         None
@@ -137,18 +140,21 @@ pub(super) fn set_pending_interaction_patch(
 }
 
 pub(super) fn set_replay_tool_calls_patch(
-    state: &Value,
+    _state: &Value,
     replay_calls: Vec<ToolCall>,
-    call_id: &str,
+    _call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
-    let agent = ctx.state::<crate::runtime::control::RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
-    agent.set_replay_tool_calls(replay_calls);
-    let patch = ctx.take_patch();
-    if patch.patch().is_empty() {
+    // Write to interaction_outbox via raw patch (no type dependency on InteractionOutbox)
+    let outbox_path = carve_state::Path::root().key(INTERACTION_OUTBOX_PATH);
+    let value = serde_json::to_value(&replay_calls).unwrap_or_default();
+    let patch = carve_state::Patch::new().with_op(carve_state::Op::set(
+        outbox_path.key("replay_tool_calls"),
+        value,
+    ));
+    if patch.is_empty() {
         None
     } else {
-        Some(patch)
+        Some(carve_state::TrackedPatch::new(patch).with_source(AGENT_RECOVERY_PLUGIN_ID))
     }
 }
 

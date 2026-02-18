@@ -1,15 +1,15 @@
-//! Runtime control-state schema stored under `AgentState.state["runtime"]`.
+//! Loop control-state schema stored under `AgentState.state["loop_control"]`.
 //!
-//! These types define durable run-control state shared across runtime, tools,
-//! and plugins (pending interactions, outbox buffers, etc.).
+//! These types define durable loop-control state for cross-step and cross-run
+//! flow control (pending interactions, inference error envelope).
 
-use crate::runtime::interaction::{Interaction, InteractionResponse};
-use crate::state::{AgentState, ToolCall};
+use crate::runtime::interaction::Interaction;
+use crate::state::AgentState;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 
-/// JSON path under `AgentState.state` where runtime control data is stored.
-pub const RUNTIME_CONTROL_STATE_PATH: &str = "runtime";
+/// JSON path under `AgentState.state` where loop control data is stored.
+pub const LOOP_CONTROL_STATE_PATH: &str = "loop_control";
 
 /// Interaction action used for agent run recovery confirmation.
 pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
@@ -27,32 +27,24 @@ pub struct InferenceError {
     pub message: String,
 }
 
-/// Durable runtime control state persisted at `state["runtime"]`.
+/// Durable loop control state persisted at `state["loop_control"]`.
 ///
 /// Used for cross-step and cross-run flow control that must survive restarts
 /// (not ephemeral in-memory variables).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-pub struct RuntimeControlState {
+pub struct LoopControlState {
     /// Pending interaction that must be resolved by the client before the run can continue.
     #[carve(default = "None")]
     pub pending_interaction: Option<Interaction>,
-    /// Replay queue for tool calls that should run at session start.
-    #[carve(default = "Vec::new()")]
-    pub replay_tool_calls: Vec<ToolCall>,
-    /// Interaction responses that should be emitted as runtime events.
-    ///
-    /// These are produced by interaction-handling plugins and drained by the runtime.
-    #[carve(default = "Vec::new()")]
-    pub interaction_resolutions: Vec<InteractionResponse>,
     /// Inference error envelope for AfterInference cleanup flow.
     #[carve(default = "None")]
     pub inference_error: Option<InferenceError>,
 }
 
-/// Runtime-only helpers for accessing runtime control state from `AgentState`.
-pub trait RuntimeControlExt {
-    /// Typed accessor for durable runtime control substate at `state["runtime"]`.
-    fn runtime_control(&self) -> <RuntimeControlState as carve_state::State>::Ref<'_>;
+/// Helpers for accessing loop control state from `AgentState`.
+pub trait LoopControlExt {
+    /// Typed accessor for durable loop control substate at `state["loop_control"]`.
+    fn loop_control(&self) -> <LoopControlState as carve_state::State>::Ref<'_>;
 
     /// Read pending interaction from durable control state.
     fn pending_interaction(&self) -> Option<Interaction>;
@@ -61,30 +53,30 @@ pub trait RuntimeControlExt {
     fn set_pending_interaction(&self, interaction: Option<Interaction>);
 }
 
-impl RuntimeControlExt for AgentState {
-    fn runtime_control(&self) -> <RuntimeControlState as carve_state::State>::Ref<'_> {
-        self.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH)
+impl LoopControlExt for AgentState {
+    fn loop_control(&self) -> <LoopControlState as carve_state::State>::Ref<'_> {
+        self.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH)
     }
 
     fn pending_interaction(&self) -> Option<Interaction> {
         if self.patches.is_empty() {
-            return self.runtime_control().pending_interaction().ok().flatten();
+            return self.loop_control().pending_interaction().ok().flatten();
         }
 
         self.rebuild_state()
             .ok()
             .and_then(|state| {
                 state
-                    .get(RUNTIME_CONTROL_STATE_PATH)
+                    .get(LOOP_CONTROL_STATE_PATH)
                     .and_then(|rt| rt.get("pending_interaction"))
                     .cloned()
             })
             .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
-            .or_else(|| self.runtime_control().pending_interaction().ok().flatten())
+            .or_else(|| self.loop_control().pending_interaction().ok().flatten())
     }
 
     fn set_pending_interaction(&self, interaction: Option<Interaction>) {
-        self.runtime_control().set_pending_interaction(interaction);
+        self.loop_control().set_pending_interaction(interaction);
     }
 }
 
@@ -104,11 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_control_state_defaults() {
-        let state = RuntimeControlState::default();
+    fn test_loop_control_state_defaults() {
+        let state = LoopControlState::default();
         assert!(state.pending_interaction.is_none());
-        assert!(state.replay_tool_calls.is_empty());
-        assert!(state.interaction_resolutions.is_empty());
         assert!(state.inference_error.is_none());
     }
 }

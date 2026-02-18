@@ -5813,7 +5813,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     // AgentState must have a persisted pending interaction matching the denied ID.
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "permission_write_file", "action": "confirm" } } }),
     );
 
     // Create plugin with denied interaction
@@ -5856,7 +5856,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     // AgentState must have a persisted pending interaction matching the approved ID.
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "permission_read_file", "action": "confirm" } } }),
     );
 
     // Create plugin with approved interaction
@@ -5926,7 +5926,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
     // The session must have the pending interaction persisted (as the real loop does).
     let session2 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
     let mut step2 = StepContext::new(&session2, vec![]);
@@ -6386,7 +6386,7 @@ async fn test_permission_flow_denial_e2e() {
     // The session must have the pending interaction persisted (as the real loop does).
     let session2 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
 
@@ -6456,7 +6456,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     // Verify first tool (approved) — session has its pending interaction persisted.
     let session_r1 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
     );
     let mut resume1 = StepContext::new(&session_r1, vec![]);
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
@@ -6469,7 +6469,7 @@ async fn test_permission_flow_multiple_tools_mixed() {
     // Verify second tool (denied) — session has its pending interaction persisted.
     let session_r2 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
     );
     let mut resume2 = StepContext::new(&session_r2, vec![]);
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
@@ -6544,7 +6544,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     // pending_interaction persisted in session state
     let state = suspended_thread.rebuild_state().unwrap();
-    let pending = &state["runtime"]["pending_interaction"];
+    let pending = &state["loop_control"]["pending_interaction"];
     assert_eq!(pending["id"], "permission_increment");
     assert_eq!(pending["action"], "confirm");
 
@@ -6737,7 +6737,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
     // pending_interaction should be cleared
     let state_after = resumed_thread.rebuild_state().unwrap();
     let pending_after = state_after
-        .get("runtime")
+        .get("loop_control")
         .and_then(|a| a.get("pending_interaction"));
     assert!(
         pending_after.is_none() || pending_after == Some(&Value::Null),
@@ -7090,7 +7090,7 @@ async fn test_resume_flow_with_denial() {
     // AgentState must have the pending interaction persisted.
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
     );
     let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
@@ -7124,7 +7124,7 @@ async fn test_resume_flow_multiple_responses() {
     for (id, should_block) in [("perm_1", false), ("perm_2", true), ("perm_3", false)] {
         let thread = AgentState::with_initial_state(
             "test",
-            json!({ "runtime": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+            json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
@@ -7161,7 +7161,7 @@ async fn test_resume_flow_partial_responses() {
     // Responded tool should not be blocked — session has matching pending interaction.
     let session1 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
     );
     let mut step1 = StepContext::new(&session1, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
@@ -7226,7 +7226,7 @@ async fn test_plugin_interaction_frontend_and_response() {
     // AgentState must have a persisted pending interaction matching the approved ID.
     let session2 = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
     );
     let mut step2 = StepContext::new(&session2, vec![]);
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
@@ -7261,7 +7261,7 @@ async fn test_plugin_interaction_execution_order() {
     // AgentState must have a persisted pending interaction matching the denied ID.
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
     );
     let mut step = StepContext::new(&thread, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
@@ -7783,7 +7783,7 @@ async fn test_multiple_interaction_responses() {
     for (id, should_block) in test_cases {
         let thread = AgentState::with_initial_state(
             "test",
-            json!({ "runtime": { "pending_interaction": { "id": id, "action": "confirm" } } }),
+            json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
         let mut step = StepContext::new(&thread, vec![]);
         let call = ToolCall::new(id, "some_tool", json!({}));
@@ -12600,7 +12600,7 @@ fn replay_calls_after_ctx_changes(
     };
 
     state
-        .get("runtime")
+        .get("interaction_outbox")
         .and_then(|agent| agent.get("replay_tool_calls"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Vec<ToolCall>>(v).ok())
@@ -12621,7 +12621,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
     //   3. A placeholder tool result
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
     .with_message(
         carve_agentos::contracts::state::Message::assistant_with_tool_calls(
@@ -12666,7 +12666,7 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
 
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
     .with_message(
         carve_agentos::contracts::state::Message::assistant_with_tool_calls(
@@ -12697,7 +12697,7 @@ async fn test_interaction_response_run_start_no_pending() {
     let doc = json!({});
     let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
 
-    let thread = AgentState::with_initial_state("test", json!({ "runtime": {} }));
+    let thread = AgentState::with_initial_state("test", json!({ "loop_control": {} }));
 
     let plugin = InteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
@@ -12719,7 +12719,7 @@ async fn test_interaction_response_run_start_mismatched_id() {
 
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
     )
     .with_message(carve_agentos::contracts::state::Message::assistant_with_tool_calls(
         "",
@@ -12750,7 +12750,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
     // AgentState has pending interaction but no assistant message with tool calls
     let thread = AgentState::with_initial_state(
         "test",
-        json!({ "runtime": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
+        json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
     .with_message(carve_agentos::contracts::state::Message::assistant(
         "I need to call a tool",
@@ -12807,7 +12807,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
     let persisted_thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": interaction.id,
                     "action": "confirm"
@@ -12864,7 +12864,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
     let persisted_thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
                     "action": "confirm"
@@ -12908,7 +12908,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
     let persisted_thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
                     "action": "confirm"
@@ -12951,7 +12951,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let thread = AgentState::with_initial_state(
         "test",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": pending_id,
                     "action": "confirm"

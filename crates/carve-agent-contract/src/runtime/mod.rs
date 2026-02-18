@@ -13,8 +13,8 @@ pub mod termination;
 
 pub use crate::state::{ActivityContext, ActivityManager};
 pub use control::{
-    InferenceError, RuntimeControlExt, RuntimeControlState, AGENT_RECOVERY_INTERACTION_ACTION,
-    AGENT_RECOVERY_INTERACTION_PREFIX, RUNTIME_CONTROL_STATE_PATH,
+    InferenceError, LoopControlExt, LoopControlState, AGENT_RECOVERY_INTERACTION_ACTION,
+    AGENT_RECOVERY_INTERACTION_PREFIX, LOOP_CONTROL_STATE_PATH,
 };
 pub use event::AgentEvent;
 pub use executor::{

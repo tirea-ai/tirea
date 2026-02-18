@@ -807,11 +807,11 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         json!("stopped")
     );
     assert_eq!(
-        updated["runtime"]["pending_interaction"]["action"],
+        updated["loop_control"]["pending_interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
     assert_eq!(
-        updated["runtime"]["pending_interaction"]["parameters"]["run_id"],
+        updated["loop_control"]["pending_interaction"]["parameters"]["run_id"],
         json!("run-1")
     );
 
@@ -834,7 +834,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let thread = AgentState::with_initial_state(
         "owner-1",
         json!({
-            "runtime": {
+            "loop_control": {
                 "pending_interaction": {
                     "id": "existing_1",
                     "action": "confirm",
@@ -868,7 +868,7 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
         .rebuild_state()
         .unwrap();
     assert_eq!(
-        updated["runtime"]["pending_interaction"]["id"],
+        updated["loop_control"]["pending_interaction"]["id"],
         json!("existing_1")
     );
 }
@@ -909,7 +909,7 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["runtime"]
+    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -922,8 +922,8 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         json!("stopped")
     );
     assert!(
-        updated["runtime"].get("pending_interaction").is_none()
-            || updated["runtime"]["pending_interaction"].is_null()
+        updated["loop_control"].get("pending_interaction").is_none()
+            || updated["loop_control"]["pending_interaction"].is_null()
     );
 }
 
@@ -963,7 +963,7 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["runtime"]
+    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -974,8 +974,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         json!("stopped")
     );
     assert!(
-        updated["runtime"].get("pending_interaction").is_none()
-            || updated["runtime"]["pending_interaction"].is_null()
+        updated["loop_control"].get("pending_interaction").is_none()
+            || updated["loop_control"]["pending_interaction"].is_null()
     );
 }
 
@@ -1013,7 +1013,7 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["runtime"]
+    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1022,8 +1022,8 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     assert_eq!(replay_calls[0].name, "agent_run");
     assert_eq!(replay_calls[0].arguments["run_id"], "run-1");
     assert!(
-        updated["runtime"].get("pending_interaction").is_none()
-            || updated["runtime"]["pending_interaction"].is_null()
+        updated["loop_control"].get("pending_interaction").is_none()
+            || updated["loop_control"]["pending_interaction"].is_null()
     );
 }
 
@@ -1061,7 +1061,7 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["runtime"]
+    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1071,8 +1071,8 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         "deny should not schedule recovery replay"
     );
     assert!(
-        updated["runtime"].get("pending_interaction").is_none()
-            || updated["runtime"]["pending_interaction"].is_null()
+        updated["loop_control"].get("pending_interaction").is_none()
+            || updated["loop_control"]["pending_interaction"].is_null()
     );
 }
 
@@ -1112,7 +1112,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         .with_patches(step.pending_patches)
         .rebuild_state()
         .unwrap();
-    let replay_calls: Vec<ToolCall> = updated["runtime"]
+    let replay_calls: Vec<ToolCall> = updated["interaction_outbox"]
         .get("replay_tool_calls")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
@@ -1122,7 +1122,7 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         "tool-level ask should override default allow"
     );
     assert_eq!(
-        updated["runtime"]["pending_interaction"]["action"],
+        updated["loop_control"]["pending_interaction"]["action"],
         json!(AGENT_RECOVERY_INTERACTION_ACTION)
     );
 }
