@@ -237,11 +237,11 @@ impl AgentRunTool {
                     .await;
             });
 
-            let running = AgentRunState {
+            let running = RunState {
                 run_id: run_id.clone(),
                 parent_run_id,
                 target_agent_id,
-                status: AgentRunStatus::Running,
+                status: RunStatus::Running,
                 assistant: None,
                 error: None,
                 agent_state: Some(thread),
@@ -263,7 +263,7 @@ impl AgentRunTool {
             .await;
         let completion =
             execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
-        let completion_state = AgentRunState {
+        let completion_state = RunState {
             run_id: run_id.clone(),
             parent_run_id,
             target_agent_id,
@@ -331,9 +331,9 @@ impl Tool for AgentRunTool {
                 .await
             {
                 match existing.status {
-                    AgentRunStatus::Running
-                    | AgentRunStatus::Completed
-                    | AgentRunStatus::Failed => {
+                    RunStatus::Running
+                    | RunStatus::Completed
+                    | RunStatus::Failed => {
                         let result = self
                             .persist_existing_live_summary(
                                 ctx,
@@ -345,7 +345,7 @@ impl Tool for AgentRunTool {
                             .await;
                         return Ok(result);
                     }
-                    AgentRunStatus::Stopped => {
+                    RunStatus::Stopped => {
                         let record = match self
                             .manager
                             .record_for_resume(&owner_thread_id, &run_id)
@@ -394,7 +394,7 @@ impl Tool for AgentRunTool {
                 ));
             };
 
-            let orphaned_running = persisted.status == AgentRunStatus::Running;
+            let orphaned_running = persisted.status == RunStatus::Running;
             if orphaned_running {
                 persisted = make_orphaned_running_state(&persisted);
                 set_persisted_run(ctx, &run_id, persisted.clone());
@@ -405,13 +405,13 @@ impl Tool for AgentRunTool {
             }
 
             match persisted.status {
-                AgentRunStatus::Running | AgentRunStatus::Completed | AgentRunStatus::Failed => {
+                RunStatus::Running | RunStatus::Completed | RunStatus::Failed => {
                     return Ok(to_tool_result(
                         tool_name,
                         as_agent_run_summary(&run_id, &persisted),
                     ));
                 }
-                AgentRunStatus::Stopped => {
+                RunStatus::Stopped => {
                     if let Err(error) = self.ensure_target_visible(
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
@@ -590,7 +590,7 @@ impl Tool for AgentStopTool {
             let Some(run) = persisted_runs.get_mut(id) else {
                 continue;
             };
-            if run.status != AgentRunStatus::Running {
+            if run.status != RunStatus::Running {
                 continue;
             }
 

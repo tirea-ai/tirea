@@ -6,8 +6,10 @@
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::runtime::control::{
+    InferenceError, RuntimeControlState, RUNTIME_CONTROL_STATE_PATH,
+};
 use carve_agent_contract::AgentState as ContextAgentState;
-use carve_state_derive::State;
 use genai::chat::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,21 +21,6 @@ fn lock_unpoison<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-const AGENT_STATE_PATH: &str = "agent";
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentInferenceError {
-    #[serde(rename = "type")]
-    pub error_type: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
-struct AgentStateDoc {
-    #[carve(default = "None")]
-    pub inference_error: Option<AgentInferenceError>,
 }
 
 // =============================================================================
@@ -602,9 +589,9 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
     }
 }
 
-fn inference_error_from_state(ctx: &ContextAgentState) -> Option<AgentInferenceError> {
-    let agent = ctx.state::<AgentStateDoc>(AGENT_STATE_PATH);
-    agent.inference_error().ok().flatten()
+fn inference_error_from_state(ctx: &ContextAgentState) -> Option<InferenceError> {
+    let rt = ctx.state::<RuntimeControlState>(RUNTIME_CONTROL_STATE_PATH);
+    rt.inference_error().ok().flatten()
 }
 
 // =============================================================================
@@ -973,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
         let doc = json!({
-            "agent": {
+            "runtime": {
                 "inference_error": {
                     "type": "rate_limited",
                     "message": "429"
@@ -1519,7 +1506,7 @@ mod tests {
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
             let doc = json!({
-                "agent": {
+                "runtime": {
                     "inference_error": {
                         "type": "rate_limited",
                         "message": "429"

@@ -20,7 +20,7 @@ impl AgentRecoveryPlugin {
         }
 
         let has_pending_interaction = state
-            .get(AGENT_STATE_PATH)
+            .get(RUNTIME_CONTROL_STATE_PATH)
             .and_then(|a| a.get("pending_interaction"))
             .is_some_and(|v| !v.is_null());
 

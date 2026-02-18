@@ -62,7 +62,7 @@ use crate::engine::stop_conditions::check_stop_policies;
 use crate::contracts::runtime::StopReason;
 use crate::runtime::activity::ActivityHub;
 #[cfg(test)]
-use crate::runtime::control::AGENT_STATE_PATH;
+use crate::runtime::control::RUNTIME_CONTROL_STATE_PATH;
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
 use async_trait::async_trait;

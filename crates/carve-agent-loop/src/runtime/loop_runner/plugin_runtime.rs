@@ -8,7 +8,7 @@ use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::AgentState as ContextAgentState;
-use crate::runtime::control::AgentInferenceError;
+use crate::runtime::control::InferenceError;
 use carve_state::TrackedPatch;
 use std::sync::Arc;
 
@@ -171,7 +171,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let set_error_patch = set_agent_inference_error(
         &state,
-        AgentInferenceError {
+        InferenceError {
             error_type: error_type.to_string(),
             message,
         },
