@@ -99,6 +99,69 @@ async fn setup_gateway(nats_url: &str) -> (Arc<MemoryStore>, async_nats::Client)
     (storage, client)
 }
 
+async fn spawn_gateway_with_storage(
+    nats_url: &str,
+    storage: Arc<MemoryStore>,
+) -> tokio::task::JoinHandle<()> {
+    let os = Arc::new(make_os(storage));
+    let gateway = NatsGateway::connect(os, nats_url)
+        .await
+        .expect("failed to connect gateway to NATS");
+    tokio::spawn(async move {
+        let _ = gateway.serve().await;
+    })
+}
+
+async fn publish_agui_and_collect(
+    client: &async_nats::Client,
+    reply_subject: &str,
+    thread_id: &str,
+    run_id: &str,
+    content: &str,
+) -> Vec<String> {
+    let mut sub = client.subscribe(reply_subject.to_string()).await.unwrap();
+    let payload = json!({
+        "agentId": "test",
+        "replySubject": reply_subject,
+        "request": {
+            "threadId": thread_id,
+            "runId": run_id,
+            "messages": [{"role": "user", "content": content}],
+            "tools": []
+        }
+    });
+    client
+        .publish(
+            "agentos.run.agui",
+            serde_json::to_vec(&payload).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let mut events = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        tokio::select! {
+            msg = sub.next() => {
+                match msg {
+                    Some(m) => {
+                        let text = String::from_utf8_lossy(&m.payload).to_string();
+                        events.push(text);
+                        if events.last().is_some_and(|e| e.contains("RUN_FINISHED")) {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for NATS agui reply events; got {} so far: {:?}", events.len(), events);
+            }
+        }
+    }
+    events
+}
+
 // ============================================================================
 // AG-UI over NATS — happy path
 // ============================================================================
@@ -467,4 +530,279 @@ async fn test_nats_aisdk_missing_reply_subject() {
         .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
+#[tokio::test]
+async fn test_nats_agui_reply_subject_from_nats_reply_header() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+    let (_storage, client) = setup_gateway(&nats_url).await;
+
+    let reply_subject = "test.reply.agui.header.1";
+    let mut sub = client.subscribe(reply_subject).await.unwrap();
+
+    let payload = json!({
+        "agentId": "test",
+        "request": {
+            "threadId": "nats-agui-header-reply",
+            "runId": "nats-agui-header-run",
+            "messages": [{"role": "user", "content": "hello header reply"}],
+            "tools": []
+        }
+    });
+
+    client
+        .publish_with_reply(
+            "agentos.run.agui",
+            reply_subject.to_string(),
+            serde_json::to_vec(&payload).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut all = String::new();
+    loop {
+        tokio::select! {
+            msg = sub.next() => {
+                match msg {
+                    Some(m) => {
+                        let text = String::from_utf8_lossy(&m.payload).to_string();
+                        all.push_str(&text);
+                        all.push('\n');
+                        if text.contains("RUN_FINISHED") {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for agui header-reply response; seen={all}");
+            }
+        }
+    }
+
+    assert!(all.contains("RUN_STARTED"), "missing RUN_STARTED: {all}");
+    assert!(all.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all}");
+}
+
+#[tokio::test]
+async fn test_nats_aisdk_reply_subject_from_nats_reply_header() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+    let (_storage, client) = setup_gateway(&nats_url).await;
+
+    let reply_subject = "test.reply.aisdk.header.1";
+    let mut sub = client.subscribe(reply_subject).await.unwrap();
+
+    let payload = json!({
+        "agentId": "test",
+        "sessionId": "nats-aisdk-header-reply",
+        "input": "hello from header reply",
+        "runId": "nats-aisdk-header-run"
+    });
+
+    client
+        .publish_with_reply(
+            "agentos.run.aisdk",
+            reply_subject.to_string(),
+            serde_json::to_vec(&payload).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut all = String::new();
+    loop {
+        tokio::select! {
+            msg = sub.next() => {
+                match msg {
+                    Some(m) => {
+                        let text = String::from_utf8_lossy(&m.payload).to_string();
+                        all.push_str(&text);
+                        all.push('\n');
+                        if text.contains("\"type\":\"finish\"") {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for aisdk header-reply response; seen={all}");
+            }
+        }
+    }
+
+    assert!(all.contains("\"type\":\"start\""), "missing start event: {all}");
+    assert!(all.contains("\"type\":\"finish\""), "missing finish event: {all}");
+}
+
+#[tokio::test]
+async fn test_nats_gateway_restart_still_handles_requests() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+
+    let storage = Arc::new(MemoryStore::new());
+    let handle1 = spawn_gateway_with_storage(&nats_url, storage.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let client = async_nats::connect(&nats_url).await.unwrap();
+
+    let events1 = publish_agui_and_collect(
+        &client,
+        "test.reply.restart.1",
+        "nats-restart-1",
+        "restart-run-1",
+        "hello-before-restart",
+    )
+    .await;
+    let all1 = events1.join("\n");
+    assert!(all1.contains("RUN_STARTED"), "missing RUN_STARTED: {all1}");
+    assert!(all1.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all1}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    let first_saved = storage.load_agent_state("nats-restart-1").await.unwrap();
+    assert!(first_saved.is_some(), "first request should be persisted");
+
+    handle1.abort();
+    let _ = handle1.await;
+
+    let handle2 = spawn_gateway_with_storage(&nats_url, storage.clone()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let events2 = publish_agui_and_collect(
+        &client,
+        "test.reply.restart.2",
+        "nats-restart-2",
+        "restart-run-2",
+        "hello-after-restart",
+    )
+    .await;
+    let all2 = events2.join("\n");
+    assert!(all2.contains("RUN_STARTED"), "missing RUN_STARTED: {all2}");
+    assert!(all2.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all2}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    let second_saved = storage.load_agent_state("nats-restart-2").await.unwrap();
+    assert!(second_saved.is_some(), "second request should be persisted");
+
+    handle2.abort();
+    let _ = handle2.await;
+}
+
+#[tokio::test]
+async fn test_nats_agui_concurrent_24_requests_all_persisted() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+    let (storage, client) = setup_gateway(&nats_url).await;
+
+    let total = 24usize;
+    let mut handles = Vec::with_capacity(total);
+    for i in 0..total {
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            let thread_id = format!("nats-burst-{i}");
+            let run_id = format!("burst-run-{i}");
+            let reply_subject = format!("test.reply.agui.burst.{i}");
+            let content = format!("hello-burst-{i}");
+            let events =
+                publish_agui_and_collect(&client, &reply_subject, &thread_id, &run_id, &content)
+                    .await;
+            (thread_id, content, events)
+        }));
+    }
+
+    let mut results = Vec::with_capacity(total);
+    for handle in handles {
+        let (thread_id, content, events) = handle.await.expect("task should complete");
+        let all = events.join("\n");
+        assert!(all.contains("RUN_STARTED"), "missing RUN_STARTED: {all}");
+        assert!(all.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all}");
+        results.push((thread_id, content));
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    for (thread_id, content) in results {
+        let saved = storage
+            .load_agent_state(&thread_id)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("thread should be persisted: {thread_id}"));
+        assert!(
+            saved.messages.iter().any(|m| m.content == content),
+            "persisted thread {thread_id} missing content {content}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_nats_agui_slow_consumer_still_finishes_and_persists() {
+    let Some((_container, nats_url)) = start_nats().await else {
+        return;
+    };
+    let (storage, client) = setup_gateway(&nats_url).await;
+
+    let reply_subject = "test.reply.agui.slow.1";
+    let mut sub = client.subscribe(reply_subject).await.unwrap();
+    let payload = json!({
+        "agentId": "test",
+        "replySubject": reply_subject,
+        "request": {
+            "threadId": "nats-slow-consumer",
+            "runId": "nats-slow-run",
+            "messages": [{"role": "user", "content": "hello slow"}],
+            "tools": []
+        }
+    });
+
+    client
+        .publish(
+            "agentos.run.agui",
+            serde_json::to_vec(&payload).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut all = String::new();
+    loop {
+        tokio::select! {
+            msg = sub.next() => {
+                match msg {
+                    Some(m) => {
+                        let text = String::from_utf8_lossy(&m.payload).to_string();
+                        all.push_str(&text);
+                        all.push('\n');
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        if text.contains("RUN_FINISHED") {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                panic!("timed out waiting for slow-consumer completion; seen={all}");
+            }
+        }
+    }
+
+    assert!(all.contains("RUN_STARTED"), "missing RUN_STARTED: {all}");
+    assert!(all.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all}");
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let saved = storage
+        .load_agent_state("nats-slow-consumer")
+        .await
+        .unwrap()
+        .expect("thread should be persisted");
+    assert!(
+        saved.messages.iter().any(|m| m.content == "hello slow"),
+        "persisted thread missing user message"
+    );
 }

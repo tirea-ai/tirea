@@ -259,6 +259,55 @@ async fn test_ai_sdk_sse_and_persists_session() {
 }
 
 #[tokio::test]
+async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os_with_storage(storage.clone()));
+    let app = router(AppState {
+        os,
+        read_store: storage,
+    });
+
+    let payload = json!({
+        "sessionId": "t-headers",
+        "input": "hello",
+        "runId": "run-headers"
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("x-vercel-ai-ui-message-stream")
+            .and_then(|v| v.to_str().ok()),
+        Some("v1")
+    );
+    assert_eq!(
+        resp.headers()
+            .get("x-carve-ai-sdk-version")
+            .and_then(|v| v.to_str().ok()),
+        Some(carve_protocol_ai_sdk_v6::AI_SDK_VERSION)
+    );
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        text.contains("data: [DONE]"),
+        "ai-sdk stream should end with [DONE] trailer: {text}"
+    );
+}
+
+#[tokio::test]
 async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
     let storage = Arc::new(MemoryStore::new());
     let os = Arc::new(make_os_with_storage(storage.clone()));
@@ -1094,4 +1143,89 @@ async fn test_messages_pagination_not_found() {
         body["error"].as_str().unwrap_or("").contains("not found"),
         "expected not found error: {body}"
     );
+}
+
+#[tokio::test]
+async fn test_list_threads_filters_by_parent_thread_id() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    storage
+        .save(&AgentState::new("t-parent-1").with_parent_thread_id("p-root"))
+        .await
+        .unwrap();
+    storage
+        .save(&AgentState::new("t-parent-2").with_parent_thread_id("p-root"))
+        .await
+        .unwrap();
+    storage.save(&AgentState::new("t-other")).await.unwrap();
+
+    let app = make_app(os, read_store);
+    let (status, body) = get_json(app, "/v1/threads?parent_thread_id=p-root").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let page: carve_agent::contracts::storage::AgentStateListPage =
+        serde_json::from_value(body).unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items, vec!["t-parent-1", "t-parent-2"]);
+}
+
+#[tokio::test]
+async fn test_messages_filter_by_visibility_and_run_id() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    let thread = AgentState::new("s-filter")
+        .with_message(
+            carve_agent::contracts::state::Message::user("visible-run-1").with_metadata(
+                carve_agent::contracts::state::MessageMetadata {
+                    run_id: Some("run-1".to_string()),
+                    step_index: Some(0),
+                },
+            ),
+        )
+        .with_message(
+            carve_agent::contracts::state::Message::internal_system("internal-run-1")
+                .with_metadata(carve_agent::contracts::state::MessageMetadata {
+                    run_id: Some("run-1".to_string()),
+                    step_index: Some(1),
+                }),
+        )
+        .with_message(
+            carve_agent::contracts::state::Message::assistant("visible-run-2").with_metadata(
+                carve_agent::contracts::state::MessageMetadata {
+                    run_id: Some("run-2".to_string()),
+                    step_index: Some(2),
+                },
+            ),
+        );
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+
+    let (status, body) = get_json(app.clone(), "/v1/threads/s-filter/messages").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert_eq!(page.messages[0].message.content, "visible-run-1");
+    assert_eq!(page.messages[1].message.content, "visible-run-2");
+
+    let (status, body) = get_json(app.clone(), "/v1/threads/s-filter/messages?visibility=internal").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].message.content, "internal-run-1");
+
+    let (status, body) = get_json(
+        app.clone(),
+        "/v1/threads/s-filter/messages?visibility=none&run_id=run-1",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert_eq!(page.messages[0].message.content, "visible-run-1");
+    assert_eq!(page.messages[1].message.content, "internal-run-1");
 }
