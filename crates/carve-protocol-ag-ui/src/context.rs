@@ -1,4 +1,4 @@
-use crate::protocol::{interaction_to_ag_ui_events, AGUIEvent};
+use crate::protocol::AGUIEvent;
 use carve_agent_contract::{AgentEvent, TerminationReason};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -138,13 +138,16 @@ impl AGUIContext {
             AgentEvent::InteractionRequested { .. } | AgentEvent::InteractionResolved { .. } => {
                 return vec![];
             }
-            // Pending: close current text stream and emit interaction tool-call events.
-            AgentEvent::Pending { interaction } => {
+            // Pending: close current text stream.
+            // The pending interaction is communicated via STATE_SNAPSHOT (emitted separately).
+            // We do NOT emit duplicate TOOL_CALL events here — the original LLM tool call
+            // sequence (TOOL_CALL_START/ARGS/END) is sufficient for CopilotKit to execute
+            // frontend actions.
+            AgentEvent::Pending { .. } => {
                 let mut events = Vec::new();
                 if self.end_text() {
                     events.push(AGUIEvent::text_message_end(&self.message_id));
                 }
-                events.extend(interaction_to_ag_ui_events(interaction));
                 return events;
             }
             _ => {}

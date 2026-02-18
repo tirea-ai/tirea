@@ -621,8 +621,16 @@ pub fn interaction_to_ag_ui_events(interaction: &Interaction) -> Vec<AGUIEvent> 
         "response_schema": interaction.response_schema,
     });
 
+    // Strip "tool:" prefix from action to produce the AG-UI toolCallName.
+    // Internally, interactions use "tool:addTask" convention for routing,
+    // but the AG-UI protocol expects the bare tool name "addTask".
+    let tool_name = interaction
+        .action
+        .strip_prefix("tool:")
+        .unwrap_or(&interaction.action);
+
     vec![
-        AGUIEvent::tool_call_start(&interaction.id, &interaction.action, None),
+        AGUIEvent::tool_call_start(&interaction.id, tool_name, None),
         AGUIEvent::tool_call_args(
             &interaction.id,
             match serde_json::to_string(&args) {

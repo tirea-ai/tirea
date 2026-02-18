@@ -12,7 +12,7 @@ use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult
 use carve_agentos::contracts::AgentState as RuntimeAgentState;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::orchestrator::{InMemoryToolRegistry, RunScope, ToolRegistry};
-use carve_protocol_ag_ui::RunAgentRequest;
+use carve_protocol_ag_ui::{build_context_addendum, RunAgentRequest};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -43,6 +43,11 @@ pub fn build_agui_run_scope(request: &RunAgentRequest) -> RunScope {
     // Run-scoped plugins
     if !frontend_tool_names.is_empty() {
         scope = scope.with_plugin(Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)));
+    }
+
+    // Context injection: forward useCopilotReadable context to the agent's system prompt.
+    if let Some(addendum) = build_context_addendum(request) {
+        scope = scope.with_plugin(Arc::new(ContextInjectionPlugin::new(addendum)));
     }
 
     let interaction_plugin = InteractionPlugin::with_responses(
@@ -89,6 +94,31 @@ impl Tool for FrontendToolStub {
             &self.descriptor.id,
             "frontend tool stub should be intercepted before backend execution",
         ))
+    }
+}
+
+/// Run-scoped plugin that injects AG-UI context (from `useCopilotReadable`)
+/// into the agent's system prompt at each step.
+struct ContextInjectionPlugin {
+    addendum: String,
+}
+
+impl ContextInjectionPlugin {
+    fn new(addendum: String) -> Self {
+        Self { addendum }
+    }
+}
+
+#[async_trait]
+impl AgentPlugin for ContextInjectionPlugin {
+    fn id(&self) -> &str {
+        "agui_context_injection"
+    }
+
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &RuntimeAgentState) {
+        if phase == Phase::StepStart {
+            step.system(&self.addendum);
+        }
     }
 }
 
@@ -268,5 +298,72 @@ mod tests {
             .expect("pending interaction should exist");
         assert_eq!(pending.id, "call_1");
         assert_eq!(pending.action, "tool:copyToClipboard");
+    }
+
+    #[test]
+    fn builds_context_injection_plugin_when_context_present() {
+        use carve_protocol_ag_ui::AGUIContextEntry;
+
+        let request = RunAgentRequest {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            messages: vec![AGUIMessage::user("hello")],
+            tools: vec![],
+            context: vec![AGUIContextEntry {
+                description: "Current tasks".to_string(),
+                value: json!(["Review PR", "Write tests"]),
+            }],
+            state: None,
+            parent_run_id: None,
+            model: None,
+            system_prompt: None,
+            config: None,
+        };
+
+        let scope = build_agui_run_scope(&request);
+        assert!(scope.plugins.iter().any(|p| p.id() == "agui_context_injection"));
+    }
+
+    #[tokio::test]
+    async fn context_injection_plugin_adds_system_context() {
+        use carve_protocol_ag_ui::AGUIContextEntry;
+
+        let request = RunAgentRequest {
+            thread_id: "t1".to_string(),
+            run_id: "r1".to_string(),
+            messages: vec![AGUIMessage::user("hello")],
+            tools: vec![],
+            context: vec![AGUIContextEntry {
+                description: "Task list".to_string(),
+                value: json!(["Review PR", "Write tests"]),
+            }],
+            state: None,
+            parent_run_id: None,
+            model: None,
+            system_prompt: None,
+            config: None,
+        };
+
+        let scope = build_agui_run_scope(&request);
+        let plugin = scope.plugins.iter().find(|p| p.id() == "agui_context_injection").unwrap();
+
+        let state = json!({});
+        let ctx = RuntimeAgentState::new_transient(&state, "test-ctx", "agui_context_test");
+        let thread = ConversationAgentState::new("t1");
+        let mut step = StepContext::new(&thread, vec![]);
+
+        plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
+
+        assert!(!step.system_context.is_empty());
+        let merged = step.system_context.join("\n");
+        assert!(merged.contains("Task list"), "should contain context description");
+        assert!(merged.contains("Review PR"), "should contain context values");
+    }
+
+    #[test]
+    fn no_context_injection_plugin_when_context_empty() {
+        let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
+        let scope = build_agui_run_scope(&request);
+        assert!(!scope.plugins.iter().any(|p| p.id() == "agui_context_injection"));
     }
 }

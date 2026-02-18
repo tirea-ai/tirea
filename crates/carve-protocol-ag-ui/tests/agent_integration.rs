@@ -4744,48 +4744,8 @@ fn test_scenario_permission_confirmation_to_ag_ui() {
     let mut ctx = AGUIContext::new("thread_123".into(), "run_456".into());
     let ag_ui_events = ctx.on_agent_event(&event);
 
-    // 4. Verify AG-UI event sequence
-    assert_eq!(ag_ui_events.len(), 3, "Should produce 3 AG-UI events");
-
-    // Event 1: ToolCallStart
-    match &ag_ui_events[0] {
-        AGUIEvent::ToolCallStart {
-            tool_call_id,
-            tool_call_name,
-            ..
-        } => {
-            assert_eq!(tool_call_id, "perm_write_file_123");
-            assert_eq!(tool_call_name, "confirm"); // action becomes tool name
-        }
-        _ => panic!("Expected ToolCallStart, got {:?}", ag_ui_events[0]),
-    }
-
-    // Event 2: ToolCallArgs
-    match &ag_ui_events[1] {
-        AGUIEvent::ToolCallArgs {
-            tool_call_id,
-            delta,
-            ..
-        } => {
-            assert_eq!(tool_call_id, "perm_write_file_123");
-            let args: Value = serde_json::from_str(&delta).unwrap();
-            assert_eq!(args["id"], "perm_write_file_123");
-            assert_eq!(
-                args["message"],
-                "Allow tool 'write_file' to write to /etc/config?"
-            );
-            assert_eq!(args["parameters"]["tool_id"], "write_file");
-        }
-        _ => panic!("Expected ToolCallArgs, got {:?}", ag_ui_events[1]),
-    }
-
-    // Event 3: ToolCallEnd
-    match &ag_ui_events[2] {
-        AGUIEvent::ToolCallEnd { tool_call_id, .. } => {
-            assert_eq!(tool_call_id, "perm_write_file_123");
-        }
-        _ => panic!("Expected ToolCallEnd, got {:?}", ag_ui_events[2]),
-    }
+    // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT)
+    assert_eq!(ag_ui_events.len(), 0, "Pending should not emit AG-UI events when no text stream is active");
 }
 
 /// Test scenario: Custom frontend action (file picker)
@@ -4863,18 +4823,14 @@ fn test_scenario_text_interrupted_by_interaction() {
     let pending_event = AgentEvent::Pending { interaction };
     let events3 = ctx.on_agent_event(&pending_event);
 
-    // Should end text stream before tool call
+    // Should end text stream (pending no longer emits tool call events)
     assert!(
-        events3.len() >= 4,
-        "Should have TextMessageEnd + 3 tool call events"
+        events3.len() >= 1,
+        "Should have TextMessageEnd"
     );
     assert!(
         matches!(events3[0], AGUIEvent::TextMessageEnd { .. }),
         "First event should be TextMessageEnd"
-    );
-    assert!(
-        matches!(events3[1], AGUIEvent::ToolCallStart { .. }),
-        "Second event should be ToolCallStart"
     );
 }
 
@@ -5049,7 +5005,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
             ..
         } => {
             assert_eq!(tool_call_id, "call_001");
-            assert_eq!(tool_call_name, "tool:copyToClipboard");
+            assert_eq!(tool_call_name, "copyToClipboard");
         }
         _ => panic!("Expected ToolCallStart"),
     }
@@ -5399,31 +5355,9 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let mut agui_ctx = AGUIContext::new("thread_123".into(), "run_456".into());
     let ag_ui_events = agui_ctx.on_agent_event(&agent_event);
 
-    // 4. Verify complete event sequence
-    assert_eq!(ag_ui_events.len(), 3);
-
-    // ToolCallStart
-    assert!(matches!(ag_ui_events[0], AGUIEvent::ToolCallStart { .. }));
-    if let AGUIEvent::ToolCallStart {
-        tool_call_id,
-        tool_call_name,
-        ..
-    } = &ag_ui_events[0]
-    {
-        assert_eq!(tool_call_id, "modal_call_1");
-        assert_eq!(tool_call_name, "tool:showModal");
-    }
-
-    // ToolCallArgs
-    assert!(matches!(ag_ui_events[1], AGUIEvent::ToolCallArgs { .. }));
-    if let AGUIEvent::ToolCallArgs { delta, .. } = &ag_ui_events[1] {
-        let args: Value = serde_json::from_str(delta).unwrap();
-        assert_eq!(args["parameters"]["content"], "Are you sure?");
-        assert_eq!(args["parameters"]["buttons"][0], "Yes");
-    }
-
-    // ToolCallEnd
-    assert!(matches!(ag_ui_events[2], AGUIEvent::ToolCallEnd { .. }));
+    // 4. Pending no longer emits tool call events (communicated via STATE_SNAPSHOT).
+    //    The original LLM tool call sequence is sufficient for the client.
+    assert_eq!(ag_ui_events.len(), 0);
 }
 
 /// Test scenario: Backend tool should not be affected by InteractionPlugin
@@ -6108,15 +6042,11 @@ fn test_scenario_agui_context_state_after_pending() {
     let pending_event = AgentEvent::Pending { interaction };
     let pending_events = ctx.on_agent_event(&pending_event);
 
-    // Should have: TextMessageEnd + 3 tool call events
-    assert!(pending_events.len() >= 4);
+    // Should have TextMessageEnd only (pending no longer emits tool call events)
+    assert!(pending_events.len() >= 1);
     assert!(
         matches!(pending_events[0], AGUIEvent::TextMessageEnd { .. }),
         "First event should be TextMessageEnd to close the text stream"
-    );
-    assert!(
-        matches!(pending_events[1], AGUIEvent::ToolCallStart { .. }),
-        "Second event should be ToolCallStart for the interaction"
     );
 
     // After pending, text stream should be ended - verify by checking that
@@ -6285,8 +6215,8 @@ fn test_agui_stream_pending_no_run_finished() {
     let pending = AgentEvent::Pending { interaction };
     let pending_events = ctx.on_agent_event(&pending);
 
-    // Should have tool call events (for the interaction)
-    assert!(pending_events
+    // Pending interactions no longer emit tool call events (communicated via STATE_SNAPSHOT)
+    assert!(!pending_events
         .iter()
         .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })));
 
@@ -12203,7 +12133,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Protocol: Pending interaction creates tool call events for client
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
-fn test_agent_event_pending_ends_text_emits_tool_calls() {
+fn test_agent_event_pending_ends_text() {
     use carve_agentos::contracts::runtime::Interaction;
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
@@ -12219,7 +12149,7 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
     let pending = AgentEvent::Pending { interaction };
     let events = ctx.on_agent_event(&pending);
 
-    // Should end text stream first
+    // Should end text stream
     assert!(
         events
             .iter()
@@ -12227,12 +12157,12 @@ fn test_agent_event_pending_ends_text_emits_tool_calls() {
         "Should end text stream before pending"
     );
 
-    // Should emit tool call events for the interaction
+    // Pending interactions are communicated via STATE_SNAPSHOT, not duplicate tool call events
     assert!(
-        events
+        !events
             .iter()
             .any(|e| matches!(e, AGUIEvent::ToolCallStart { .. })),
-        "Should emit ToolCallStart for interaction"
+        "Should NOT emit duplicate ToolCallStart for pending interaction"
     );
 }
 

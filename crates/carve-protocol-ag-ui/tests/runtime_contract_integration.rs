@@ -26,14 +26,12 @@ fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {
             .with_parameters(serde_json::json!({ "approved": true })),
     });
 
-    assert_eq!(pending_events.len(), 4);
+    // Pending closes text stream but no longer emits tool call events
+    assert_eq!(pending_events.len(), 1);
     assert!(matches!(
         pending_events[0],
         AGUIEvent::TextMessageEnd { .. }
     ));
-    assert!(matches!(pending_events[1], AGUIEvent::ToolCallStart { .. }));
-    assert!(matches!(pending_events[2], AGUIEvent::ToolCallArgs { .. }));
-    assert!(matches!(pending_events[3], AGUIEvent::ToolCallEnd { .. }));
 }
 
 #[test]
