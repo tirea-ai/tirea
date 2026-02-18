@@ -168,7 +168,9 @@ async fn wire_skills_inserts_tools_and_plugin() {
     let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -217,7 +219,9 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::RuntimeOnly,
             ..SkillsConfig::default()
@@ -259,7 +263,9 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
 fn wire_skills_disabled_is_noop() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::Disabled,
             ..SkillsConfig::default()
@@ -361,7 +367,9 @@ impl AgentPlugin for FakeSkillsPlugin {
 fn wire_skills_errors_if_plugin_already_installed() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -471,7 +479,9 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
 
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -498,6 +508,94 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
     assert_eq!(cfg.plugins[0].id(), "skills");
     assert_eq!(cfg.plugins[1].id(), "agent_tools");
     assert_eq!(cfg.plugins[2].id(), "agent_recovery");
+}
+
+#[test]
+fn resolve_freezes_tool_snapshot_per_run_boundary() {
+    #[derive(Debug)]
+    struct NamedTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for NamedTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new(self.0, self.0, "dynamic tool")
+        }
+
+        async fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &ContextAgentState,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success(self.0, json!({"ok": true})))
+        }
+    }
+
+    #[derive(Default)]
+    struct MutableRegistry {
+        tools: std::sync::RwLock<HashMap<String, Arc<dyn Tool>>>,
+    }
+
+    impl MutableRegistry {
+        fn replace(&self, ids: &[&'static str]) {
+            let mut next = HashMap::new();
+            for id in ids {
+                next.insert((*id).to_string(), Arc::new(NamedTool(id)) as Arc<dyn Tool>);
+            }
+            match self.tools.write() {
+                Ok(mut guard) => *guard = next,
+                Err(poisoned) => *poisoned.into_inner() = next,
+            }
+        }
+    }
+
+    impl ToolRegistry for MutableRegistry {
+        fn len(&self) -> usize {
+            self.snapshot().len()
+        }
+
+        fn get(&self, id: &str) -> Option<Arc<dyn Tool>> {
+            self.snapshot().get(id).cloned()
+        }
+
+        fn ids(&self) -> Vec<String> {
+            let mut ids: Vec<String> = self.snapshot().keys().cloned().collect();
+            ids.sort();
+            ids
+        }
+
+        fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
+            match self.tools.read() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
+        }
+    }
+
+    let dynamic_registry = Arc::new(MutableRegistry::default());
+    dynamic_registry.replace(&["mcp__s1__echo"]);
+
+    let os = AgentOs::builder()
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_tool_registry(dynamic_registry.clone() as Arc<dyn ToolRegistry>)
+        .build()
+        .expect("build agent os");
+
+    let thread1 = AgentState::with_initial_state("freeze-1", json!({}));
+    let (_cfg1, tools_first_run, _thread1) = os.resolve("a1", thread1).expect("resolve #1");
+    assert!(tools_first_run.contains_key("mcp__s1__echo"));
+    assert!(!tools_first_run.contains_key("mcp__s1__sum"));
+
+    dynamic_registry.replace(&["mcp__s1__sum"]);
+
+    // The first run snapshot is frozen.
+    assert!(tools_first_run.contains_key("mcp__s1__echo"));
+    assert!(!tools_first_run.contains_key("mcp__s1__sum"));
+
+    // The next resolve picks up refreshed registry state.
+    let thread2 = AgentState::with_initial_state("freeze-2", json!({}));
+    let (_cfg2, tools_second_run, _thread2) = os.resolve("a1", thread2).expect("resolve #2");
+    assert!(!tools_second_run.contains_key("mcp__s1__echo"));
+    assert!(tools_second_run.contains_key("mcp__s1__sum"));
 }
 
 #[tokio::test]
@@ -612,7 +710,9 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
 
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
@@ -797,7 +897,9 @@ async fn resolve_wires_policies_before_plugins() {
 async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
-        .with_skills(FsSkill::into_arc_skills(FsSkill::discover(root).unwrap().skills))
+        .with_skills(FsSkill::into_arc_skills(
+            FsSkill::discover(root).unwrap().skills,
+        ))
         .with_skills_config(SkillsConfig {
             mode: SkillsMode::DiscoveryAndRuntime,
             ..SkillsConfig::default()
