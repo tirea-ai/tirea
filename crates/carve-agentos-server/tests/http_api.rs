@@ -4,6 +4,7 @@ use axum::http::{Request, StatusCode};
 use carve_agent::contracts::plugin::AgentPlugin;
 use carve_agent::contracts::runtime::phase::Phase;
 use carve_agent::contracts::runtime::phase::StepContext;
+use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent::contracts::state::AgentState;
 use carve_agent::contracts::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
@@ -46,6 +47,13 @@ fn make_os() -> AgentOs {
 }
 
 fn make_os_with_storage(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
+    make_os_with_storage_and_tools(write_store, HashMap::new())
+}
+
+fn make_os_with_storage_and_tools(
+    write_store: Arc<dyn AgentStateStore>,
+    tools: HashMap<String, Arc<dyn Tool>>,
+) -> AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -53,10 +61,43 @@ fn make_os_with_storage(write_store: Arc<dyn AgentStateStore>) -> AgentOs {
     };
 
     AgentOsBuilder::new()
+        .with_tools(tools)
         .with_agent("test", def)
         .with_agent_state_store(write_store)
         .build()
         .unwrap()
+}
+
+struct EchoTool;
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new("echo", "Echo", "Echo input message")
+            .with_parameters(json!({
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string" }
+                },
+                "required": ["message"]
+            }))
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        _ctx: &carve_agent::prelude::AgentState,
+    ) -> Result<ToolResult, ToolError> {
+        let message = args
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(ToolResult::success(
+            "echo",
+            json!({ "echoed": message }),
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -569,6 +610,24 @@ async fn post_json(app: axum::Router, uri: &str, payload: Value) -> (StatusCode,
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, json)
+}
+
+async fn post_sse_text(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    (status, text)
 }
 
 async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -1228,4 +1287,245 @@ async fn test_messages_filter_by_visibility_and_run_id() {
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].message.content, "visible-run-1");
     assert_eq!(page.messages[1].message.content, "internal-run-1");
+}
+
+#[tokio::test]
+async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    let thread = AgentState::new("s-internal-history")
+        .with_message(carve_agent::contracts::state::Message::user("visible-user"))
+        .with_message(carve_agent::contracts::state::Message::internal_system(
+            "internal-secret",
+        ))
+        .with_message(carve_agent::contracts::state::Message::assistant("visible-assistant"));
+    storage.save(&thread).await.unwrap();
+
+    let app = make_app(os, read_store);
+
+    let (status, body) = get_json(app.clone(), "/v1/threads/s-internal-history/messages/ag-ui").await;
+    assert_eq!(status, StatusCode::OK);
+    let body_text = body.to_string();
+    assert!(
+        !body_text.contains("internal-secret"),
+        "ag-ui history must not expose internal messages: {body_text}"
+    );
+    assert!(body_text.contains("visible-user"));
+    assert!(body_text.contains("visible-assistant"));
+
+    let (status, body) = get_json(app, "/v1/threads/s-internal-history/messages/ai-sdk").await;
+    assert_eq!(status, StatusCode::OK);
+    let body_text = body.to_string();
+    assert!(
+        !body_text.contains("internal-secret"),
+        "ai-sdk history must not expose internal messages: {body_text}"
+    );
+    assert!(body_text.contains("visible-user"));
+    assert!(body_text.contains("visible-assistant"));
+}
+
+#[tokio::test]
+async fn test_messages_run_id_cursor_order_combination_boundaries() {
+    let os = Arc::new(make_os());
+    let storage = Arc::new(MemoryStore::new());
+    let read_store: Arc<dyn AgentStateReader> = storage.clone();
+
+    let mut thread = AgentState::new("s-run-cursor-boundary");
+    for i in 0..6usize {
+        let run_id = if i % 2 == 0 { "run-a" } else { "run-b" };
+        thread = thread.with_message(
+            carve_agent::contracts::state::Message::user(format!("msg-{i}")).with_metadata(
+                carve_agent::contracts::state::MessageMetadata {
+                    run_id: Some(run_id.to_string()),
+                    step_index: Some(i as u32),
+                },
+            ),
+        );
+    }
+    storage.save(&thread).await.unwrap();
+    let app = make_app(os, read_store);
+
+    let (status, body) = get_json(
+        app.clone(),
+        "/v1/threads/s-run-cursor-boundary/messages?run_id=run-a&order=desc&before=5&limit=2",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    assert_eq!(page.messages.len(), 2);
+    assert_eq!(page.messages[0].cursor, 4);
+    assert_eq!(page.messages[0].message.content, "msg-4");
+    assert_eq!(page.messages[1].cursor, 2);
+    assert_eq!(page.messages[1].message.content, "msg-2");
+
+    let (status, body) = get_json(
+        app,
+        "/v1/threads/s-run-cursor-boundary/messages?run_id=run-a&after=4&limit=10",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    assert!(
+        page.messages.is_empty(),
+        "after=4 with run-a should be empty, got: {:?}",
+        page.messages
+            .iter()
+            .map(|m| (m.cursor, m.message.content.clone()))
+            .collect::<Vec<_>>()
+    );
+}
+
+fn pending_echo_thread(id: &str, payload: &str) -> AgentState {
+    AgentState::with_initial_state(
+        id,
+        json!({
+            "runtime": {
+                "pending_interaction": {
+                    "id": "permission_echo",
+                    "action": "tool:AskUserQuestion",
+                    "parameters": {
+                        "origin_tool_call": {
+                            "id": "call_1",
+                            "name": "echo",
+                            "arguments": { "message": payload }
+                        }
+                    }
+                }
+            }
+        }),
+    )
+    .with_message(carve_agent::contracts::state::Message::assistant_with_tool_calls(
+        "need permission",
+        vec![carve_agent::contracts::state::ToolCall::new(
+            "call_1",
+            "echo",
+            json!({"message": payload}),
+        )],
+    ))
+    .with_message(carve_agent::contracts::state::Message::tool(
+        "call_1",
+        "Tool 'echo' is awaiting approval. Execution paused.",
+    ))
+}
+
+#[tokio::test]
+async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_echo_thread("th-approve", "approved-run"))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "th-approve",
+        "runId": "resume-approve-1",
+        "messages": [
+            {"role": "tool", "content": "true", "toolCallId": "permission_echo"}
+        ],
+        "tools": []
+    });
+    let (status, body) = post_sse_text(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "resume run should finish: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-approve")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == carve_agent::contracts::state::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("approved-run")
+    });
+    assert!(
+        replayed_tool.is_some(),
+        "approved flow should append replayed tool result"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("runtime")
+            .and_then(|rt| rt.get("pending_interaction"))
+            .is_none()
+            || rebuilt
+                .get("runtime")
+                .and_then(|rt| rt.get("pending_interaction"))
+                == Some(&Value::Null),
+        "pending_interaction must be cleared after approval replay"
+    );
+}
+
+#[tokio::test]
+async fn test_agui_pending_denial_clears_pending_without_replay() {
+    let storage = Arc::new(MemoryStore::new());
+    storage
+        .save(&pending_echo_thread("th-deny", "denied-run"))
+        .await
+        .unwrap();
+
+    let tools: HashMap<String, Arc<dyn Tool>> =
+        HashMap::from([("echo".to_string(), Arc::new(EchoTool) as Arc<dyn Tool>)]);
+    let os = Arc::new(make_os_with_storage_and_tools(storage.clone(), tools));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "threadId": "th-deny",
+        "runId": "resume-deny-1",
+        "messages": [
+            {"role": "tool", "content": "false", "toolCallId": "permission_echo"}
+        ],
+        "tools": []
+    });
+    let (status, body) = post_sse_text(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("RUN_FINISHED"),
+        "denied resume run should still finish: {body}"
+    );
+
+    let saved = storage
+        .load_agent_state("th-deny")
+        .await
+        .unwrap()
+        .unwrap();
+    let replayed_tool = saved.messages.iter().find(|m| {
+        m.role == carve_agent::contracts::state::Role::Tool
+            && m.tool_call_id.as_deref() == Some("call_1")
+            && m.content.contains("echoed")
+    });
+    assert!(
+        replayed_tool.is_none(),
+        "denied flow must not replay original tool call"
+    );
+
+    let rebuilt = saved.rebuild_state().unwrap();
+    assert!(
+        rebuilt
+            .get("runtime")
+            .and_then(|rt| rt.get("pending_interaction"))
+            .is_none()
+            || rebuilt
+                .get("runtime")
+                .and_then(|rt| rt.get("pending_interaction"))
+                == Some(&Value::Null),
+        "pending_interaction must be cleared after denial"
+    );
 }

@@ -65,6 +65,26 @@ async fn post_json(app: axum::Router, uri: &str, payload: serde_json::Value) -> 
     (status, text)
 }
 
+async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .expect("request build should succeed"),
+        )
+        .await
+        .expect("app should handle request");
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .expect("response body should be readable");
+    let json = serde_json::from_slice::<serde_json::Value>(&body)
+        .expect("response body must be valid json");
+    (status, json)
+}
+
 #[tokio::test]
 async fn e2e_http_matrix_96() {
     let store = Arc::new(MemoryStore::new());
@@ -173,4 +193,240 @@ async fn e2e_http_matrix_96() {
     }
 
     assert_eq!(executed, 96, "e2e scenario count drifted");
+}
+
+#[tokio::test]
+async fn e2e_http_concurrent_48_all_persisted() {
+    let store = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os(store.clone()));
+    let app = router(AppState {
+        os,
+        read_store: store.clone(),
+    });
+
+    let mut handles = Vec::new();
+
+    for i in 0..24usize {
+        let app_clone = app.clone();
+        handles.push(tokio::spawn(async move {
+            let thread_id = format!("concurrent-ai-{i}");
+            let payload = json!({
+                "sessionId": thread_id,
+                "input": format!("hi-ai-{i}"),
+                "runId": format!("run-ai-{i}"),
+            });
+            post_json(app_clone, "/v1/agents/test/runs/ai-sdk/sse", payload).await
+        }));
+    }
+
+    for i in 0..24usize {
+        let app_clone = app.clone();
+        handles.push(tokio::spawn(async move {
+            let thread_id = format!("concurrent-ag-{i}");
+            let payload = json!({
+                "threadId": thread_id,
+                "runId": format!("run-ag-{i}"),
+                "messages": [{"role": "user", "content": format!("hi-ag-{i}")}],
+                "tools": []
+            });
+            post_json(app_clone, "/v1/agents/test/runs/ag-ui/sse", payload).await
+        }));
+    }
+
+    for handle in handles {
+        let (status, body) = handle.await.expect("task should join");
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.contains("finish") || body.contains("RUN_FINISHED"),
+            "missing finish event in response: {body}"
+        );
+    }
+
+    for i in 0..24usize {
+        let ai = store
+            .load_agent_state(&format!("concurrent-ai-{i}"))
+            .await
+            .expect("load should not fail")
+            .expect("ai thread should exist");
+        assert!(
+            ai.messages.iter().any(|m| m.content == format!("hi-ai-{i}")),
+            "ai persisted content missing for index {i}"
+        );
+
+        let ag = store
+            .load_agent_state(&format!("concurrent-ag-{i}"))
+            .await
+            .expect("load should not fail")
+            .expect("ag thread should exist");
+        assert!(
+            ag.messages.iter().any(|m| m.content == format!("hi-ag-{i}")),
+            "ag persisted content missing for index {i}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn e2e_http_multiturn_history_endpoints_are_consistent() {
+    let store = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os(store.clone()));
+    let app = router(AppState {
+        os,
+        read_store: store.clone(),
+    });
+
+    let first_payload = json!({
+        "sessionId": "history-e2e-thread",
+        "input": "first-turn",
+        "runId": "history-r1",
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/agents/test/runs/ai-sdk/sse",
+        first_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""type":"finish""#));
+
+    let second_payload = json!({
+        "sessionId": "history-e2e-thread",
+        "input": "second-turn",
+        "runId": "history-r2",
+    });
+    let (status, body) = post_json(
+        app.clone(),
+        "/v1/agents/test/runs/ai-sdk/sse",
+        second_payload,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#""type":"finish""#));
+
+    let (status, raw_page) = get_json(app.clone(), "/v1/threads/history-e2e-thread/messages").await;
+    assert_eq!(status, StatusCode::OK);
+    let raw_page_text = raw_page.to_string();
+    assert!(raw_page_text.contains("first-turn"), "missing first turn in raw page: {raw_page_text}");
+    assert!(
+        raw_page_text.contains("second-turn"),
+        "missing second turn in raw page: {raw_page_text}"
+    );
+
+    let (status, encoded_page) = get_json(app, "/v1/threads/history-e2e-thread/messages/ai-sdk").await;
+    assert_eq!(status, StatusCode::OK);
+    let encoded_page_text = encoded_page.to_string();
+    assert!(
+        encoded_page_text.contains("first-turn"),
+        "missing first turn in ai-sdk page: {encoded_page_text}"
+    );
+    assert!(
+        encoded_page_text.contains("second-turn"),
+        "missing second turn in ai-sdk page: {encoded_page_text}"
+    );
+}
+
+#[tokio::test]
+async fn e2e_http_ai_sdk_large_payload_roundtrip() {
+    let store = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os(store.clone()));
+    let app = router(AppState {
+        os,
+        read_store: store.clone(),
+    });
+
+    let large_input = "x".repeat(256 * 1024);
+    let payload = json!({
+        "sessionId": "large-payload-thread",
+        "input": large_input,
+        "runId": "large-payload-run",
+    });
+    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(r#""type":"finish""#),
+        "missing finish for large payload run: {body}"
+    );
+
+    let saved = store
+        .load_agent_state("large-payload-thread")
+        .await
+        .expect("load should not fail")
+        .expect("thread should be persisted");
+    let persisted = saved
+        .messages
+        .iter()
+        .find(|m| m.content.len() == 256 * 1024)
+        .expect("expected persisted large user message");
+    assert_eq!(persisted.content.len(), 256 * 1024);
+}
+
+#[tokio::test]
+async fn e2e_http_mixed_large_payload_concurrency_64() {
+    let store = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os(store.clone()));
+    let app = router(AppState {
+        os,
+        read_store: store.clone(),
+    });
+
+    let total = 64usize;
+    let mut handles = Vec::with_capacity(total);
+    for i in 0..total {
+        let app = app.clone();
+        handles.push(tokio::spawn(async move {
+            if i % 2 == 0 {
+                let input = if i % 4 == 0 {
+                    format!("large-ai-{i}-{}", "x".repeat(64 * 1024))
+                } else {
+                    format!("small-ai-{i}")
+                };
+                let payload = json!({
+                    "sessionId": format!("mixed-ai-{i}"),
+                    "input": input.clone(),
+                    "runId": format!("mixed-ai-run-{i}")
+                });
+                let (status, body) =
+                    post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+                (format!("mixed-ai-{i}"), input, status, body)
+            } else {
+                let input = if i % 5 == 1 {
+                    format!("large-ag-{i}-{}", "y".repeat(48 * 1024))
+                } else {
+                    format!("small-ag-{i}")
+                };
+                let payload = json!({
+                    "threadId": format!("mixed-ag-{i}"),
+                    "runId": format!("mixed-ag-run-{i}"),
+                    "messages": [{"role": "user", "content": input.clone()}],
+                    "tools": []
+                });
+                let (status, body) =
+                    post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+                (format!("mixed-ag-{i}"), input, status, body)
+            }
+        }));
+    }
+
+    let mut results = Vec::with_capacity(total);
+    for h in handles {
+        let (thread_id, input, status, body) = h.await.expect("task should finish");
+        assert_eq!(status, StatusCode::OK, "unexpected status for {thread_id}");
+        assert!(
+            body.contains("finish") || body.contains("RUN_FINISHED"),
+            "missing finish marker for {thread_id}: {body}"
+        );
+        results.push((thread_id, input));
+    }
+
+    for (thread_id, input) in results {
+        let saved = store
+            .load_agent_state(&thread_id)
+            .await
+            .expect("load should not fail")
+            .unwrap_or_else(|| panic!("thread should exist: {thread_id}"));
+        assert!(
+            saved.messages.iter().any(|m| m.content == input),
+            "persisted thread {thread_id} missing input payload (len={})",
+            input.len()
+        );
+    }
 }

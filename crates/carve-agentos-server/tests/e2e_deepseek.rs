@@ -15,6 +15,7 @@ use carve_agent::orchestrator::AgentDefinition;
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
+use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -191,7 +192,6 @@ fn extract_agui_text(sse: &str) -> String {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ai_sdk_sse_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -249,7 +249,6 @@ async fn e2e_ai_sdk_sse_with_deepseek() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_sse_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -304,12 +303,94 @@ async fn e2e_ag_ui_sse_with_deepseek() {
     );
 }
 
+#[tokio::test]
+async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
+    if !has_deepseek_key() {
+        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+        return;
+    }
+
+    let storage = Arc::new(MemoryStore::new());
+    let os = Arc::new(make_os(storage.clone()));
+    let app = router(AppState {
+        os,
+        read_store: storage.clone(),
+    });
+
+    let payload = json!({
+        "sessionId": "e2e-sdk-cancel",
+        "input": "Write a very long response: output numbers from 1 to 500 with short commentary.",
+        "runId": "r-cancel-1"
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/agents/deepseek/runs/ai-sdk/sse")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut body = resp.into_body();
+    let mut first_data = None;
+    for _ in 0..8usize {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(8), body.frame())
+            .await
+            .expect("timed out waiting for stream frame");
+        let Some(frame) = frame else {
+            break;
+        };
+        let frame = frame.expect("body frame should be readable");
+        if let Ok(data) = frame.into_data() {
+            first_data = Some(String::from_utf8_lossy(&data).to_string());
+            break;
+        }
+    }
+    let first_data = first_data.expect("expected at least one SSE data chunk before disconnect");
+    assert!(
+        first_data.contains("data:"),
+        "first stream chunk should be SSE data: {first_data}"
+    );
+
+    // Simulate client disconnect by dropping the body stream mid-run.
+    drop(body);
+
+    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+
+    let saved = storage
+        .load_agent_state("e2e-sdk-cancel")
+        .await
+        .unwrap()
+        .expect("thread should exist after disconnect");
+    assert!(
+        saved
+            .messages
+            .iter()
+            .any(|m| m.role == carve_agent::contracts::state::Role::User
+                && m.content.contains("1 to 500")),
+        "user ingress message should persist even when stream is cancelled"
+    );
+    let assistant_count = saved
+        .messages
+        .iter()
+        .filter(|m| m.role == carve_agent::contracts::state::Role::Assistant)
+        .count();
+    assert_eq!(
+        assistant_count, 0,
+        "disconnect should cooperatively cancel before assistant turn commit"
+    );
+}
+
 // ============================================================================
 // Tool-using agent: AI SDK v6 endpoint
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ai_sdk_tool_call_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -364,7 +445,6 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_tool_call_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -433,7 +513,6 @@ async fn e2e_ag_ui_tool_call_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ai_sdk_multiturn_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -515,7 +594,6 @@ async fn e2e_ai_sdk_multiturn_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -596,7 +674,6 @@ async fn e2e_ai_sdk_finish_max_rounds_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -684,7 +761,6 @@ async fn e2e_ai_sdk_multistep_tool_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_multiturn_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -761,7 +837,6 @@ async fn e2e_ag_ui_multiturn_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_frontend_tools_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -837,7 +912,6 @@ async fn e2e_ag_ui_frontend_tools_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_context_readable_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -892,7 +966,6 @@ async fn e2e_ag_ui_context_readable_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
@@ -970,7 +1043,6 @@ async fn e2e_ag_ui_run_finished_max_rounds_with_deepseek() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_ag_ui_multistep_tool_with_deepseek() {
     if !has_deepseek_key() {
         eprintln!("DEEPSEEK_API_KEY not set, skipping");
