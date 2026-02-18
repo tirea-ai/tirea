@@ -10,10 +10,13 @@
 use carve_agent_contract::state::AgentChangeSet;
 use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
-    AgentState, AgentStateReader, AgentStateWriter, CheckpointReason, Message, MessageQuery,
+    AgentState, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
+    AgentStateWriter, CheckpointReason, Committed, Message, MessageQuery,
 };
 use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
 use testcontainers_modules::nats::Nats;
@@ -43,6 +46,152 @@ async fn make_storage(nats_url: &str) -> (Arc<MemoryStore>, NatsBufferedThreadWr
         .await
         .unwrap();
     (inner, storage)
+}
+
+#[derive(Clone)]
+struct CountingDelayStore {
+    inner: Arc<MemoryStore>,
+    append_calls: Arc<AtomicUsize>,
+    save_calls: Arc<AtomicUsize>,
+    append_delay: Duration,
+    save_delay: Duration,
+}
+
+impl CountingDelayStore {
+    fn new(append_delay: Duration, save_delay: Duration) -> Self {
+        Self {
+            inner: Arc::new(MemoryStore::new()),
+            append_calls: Arc::new(AtomicUsize::new(0)),
+            save_calls: Arc::new(AtomicUsize::new(0)),
+            append_delay,
+            save_delay,
+        }
+    }
+
+    fn append_calls(&self) -> usize {
+        self.append_calls.load(Ordering::Relaxed)
+    }
+
+    fn save_calls(&self) -> usize {
+        self.save_calls.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentStateReader for CountingDelayStore {
+    async fn load(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<carve_agent_contract::storage::AgentStateHead>, AgentStateStoreError> {
+        self.inner.load(thread_id).await
+    }
+
+    async fn list_agent_states(
+        &self,
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        self.inner.list_agent_states(query).await
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentStateWriter for CountingDelayStore {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+        self.inner.create(thread).await
+    }
+
+    async fn append(
+        &self,
+        thread_id: &str,
+        delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
+    ) -> Result<Committed, AgentStateStoreError> {
+        self.append_calls.fetch_add(1, Ordering::Relaxed);
+        if !self.append_delay.is_zero() {
+            tokio::time::sleep(self.append_delay).await;
+        }
+        self.inner.append(thread_id, delta, precondition).await
+    }
+
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+        self.inner.delete(thread_id).await
+    }
+
+    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+        self.save_calls.fetch_add(1, Ordering::Relaxed);
+        if !self.save_delay.is_zero() {
+            tokio::time::sleep(self.save_delay).await;
+        }
+        self.inner.save(thread).await
+    }
+}
+
+#[derive(Clone)]
+struct FailFirstSaveStore {
+    inner: Arc<MemoryStore>,
+    fail_next_save: Arc<AtomicBool>,
+    save_calls: Arc<AtomicUsize>,
+}
+
+impl FailFirstSaveStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(MemoryStore::new()),
+            fail_next_save: Arc::new(AtomicBool::new(true)),
+            save_calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn save_calls(&self) -> usize {
+        self.save_calls.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentStateReader for FailFirstSaveStore {
+    async fn load(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<carve_agent_contract::storage::AgentStateHead>, AgentStateStoreError> {
+        self.inner.load(thread_id).await
+    }
+
+    async fn list_agent_states(
+        &self,
+        query: &AgentStateListQuery,
+    ) -> Result<AgentStateListPage, AgentStateStoreError> {
+        self.inner.list_agent_states(query).await
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentStateWriter for FailFirstSaveStore {
+    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+        self.inner.create(thread).await
+    }
+
+    async fn append(
+        &self,
+        thread_id: &str,
+        delta: &AgentChangeSet,
+        precondition: VersionPrecondition,
+    ) -> Result<Committed, AgentStateStoreError> {
+        self.inner.append(thread_id, delta, precondition).await
+    }
+
+    async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
+        self.inner.delete(thread_id).await
+    }
+
+    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+        self.save_calls.fetch_add(1, Ordering::Relaxed);
+        if self.fail_next_save.swap(false, Ordering::AcqRel) {
+            return Err(AgentStateStoreError::Io(std::io::Error::other(
+                "injected save failure",
+            )));
+        }
+        self.inner.save(thread).await
+    }
 }
 
 #[tokio::test]
@@ -182,7 +331,7 @@ async fn test_recover_replays_unacked_deltas() {
     let delta2 = AgentChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
-        reason: CheckpointReason::RunFinished,
+        reason: CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(Message::assistant("response 2"))],
         patches: vec![],
         snapshot: None,
@@ -406,4 +555,294 @@ async fn test_multi_run_query_sees_previous_run_data() {
     // Now query sees all 3 messages.
     let head = storage.load("t1").await.unwrap().unwrap();
     assert_eq!(head.agent_state.messages.len(), 3);
+}
+
+#[tokio::test]
+async fn test_run_finished_append_auto_flushes_to_inner() {
+    let Some((_container, url)) = start_nats_js().await else {
+        return;
+    };
+    let (inner, storage) = make_storage(&url).await;
+
+    let thread = AgentState::new("t-auto").with_message(Message::user("hello"));
+    inner.create(&thread).await.unwrap();
+
+    let delta1 = AgentChangeSet {
+        run_id: "r-auto".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("first"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage
+        .append("t-auto", &delta1, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let pre = inner.load("t-auto").await.unwrap().unwrap();
+    assert_eq!(pre.agent_state.messages.len(), 1);
+
+    let delta2 = AgentChangeSet {
+        run_id: "r-auto".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::RunFinished,
+        messages: vec![Arc::new(Message::assistant("second"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage
+        .append("t-auto", &delta2, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let post = inner.load("t-auto").await.unwrap().unwrap();
+    assert_eq!(post.agent_state.messages.len(), 3);
+    assert_eq!(post.agent_state.messages[0].content, "hello");
+    assert_eq!(post.agent_state.messages[1].content, "first");
+    assert_eq!(post.agent_state.messages[2].content, "second");
+}
+
+#[tokio::test]
+async fn test_buffered_vs_direct_write_latency_and_amplification() {
+    let Some((_container, url)) = start_nats_js().await else {
+        return;
+    };
+
+    let rounds = 12usize;
+    let write_delay = Duration::from_millis(25);
+
+    let direct = Arc::new(CountingDelayStore::new(write_delay, write_delay));
+    direct
+        .create(&AgentState::new("direct").with_message(Message::user("u0")))
+        .await
+        .unwrap();
+    let t0 = Instant::now();
+    for i in 0..rounds {
+        let reason = if i + 1 == rounds {
+            CheckpointReason::RunFinished
+        } else {
+            CheckpointReason::AssistantTurnCommitted
+        };
+        let delta = AgentChangeSet {
+            run_id: "r-compare".to_string(),
+            parent_run_id: None,
+            reason,
+            messages: vec![Arc::new(Message::assistant(format!("d{i}")))],
+            patches: vec![],
+            snapshot: None,
+        };
+        direct
+            .append("direct", &delta, VersionPrecondition::Any)
+            .await
+            .unwrap();
+    }
+    let direct_elapsed = t0.elapsed();
+
+    let nats_client = async_nats::connect(&url).await.unwrap();
+    let jetstream = async_nats::jetstream::new(nats_client);
+    let buffered_inner = Arc::new(CountingDelayStore::new(write_delay, write_delay));
+    let buffered = NatsBufferedThreadWriter::new(buffered_inner.clone(), jetstream)
+        .await
+        .unwrap();
+    buffered
+        .create(&AgentState::new("buffered").with_message(Message::user("u0")))
+        .await
+        .unwrap();
+
+    let t1 = Instant::now();
+    for i in 0..rounds {
+        let reason = if i + 1 == rounds {
+            CheckpointReason::RunFinished
+        } else {
+            CheckpointReason::AssistantTurnCommitted
+        };
+        let delta = AgentChangeSet {
+            run_id: "r-compare".to_string(),
+            parent_run_id: None,
+            reason,
+            messages: vec![Arc::new(Message::assistant(format!("b{i}")))],
+            patches: vec![],
+            snapshot: None,
+        };
+        buffered
+            .append("buffered", &delta, VersionPrecondition::Any)
+            .await
+            .unwrap();
+    }
+    let buffered_elapsed = t1.elapsed();
+    println!(
+        "direct_elapsed={direct_elapsed:?}, buffered_elapsed={buffered_elapsed:?}, rounds={rounds}"
+    );
+
+    let direct_loaded = direct.load("direct").await.unwrap().unwrap();
+    let buffered_loaded = buffered_inner.load("buffered").await.unwrap().unwrap();
+    assert_eq!(
+        direct_loaded.agent_state.messages.len(),
+        buffered_loaded.agent_state.messages.len()
+    );
+
+    assert_eq!(direct.append_calls(), rounds);
+    assert_eq!(direct.save_calls(), 0);
+    assert_eq!(buffered_inner.append_calls(), 0);
+    assert_eq!(buffered_inner.save_calls(), 1);
+
+    assert!(
+        buffered_elapsed < direct_elapsed,
+        "expected buffered write path to be faster with delayed inner storage; direct={direct_elapsed:?}, buffered={buffered_elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_run_finished_flush_failure_can_be_recovered() {
+    let Some((_container, url)) = start_nats_js().await else {
+        return;
+    };
+
+    let inner = Arc::new(FailFirstSaveStore::new());
+    let nats_client = async_nats::connect(&url).await.unwrap();
+    let jetstream = async_nats::jetstream::new(nats_client);
+    let storage = NatsBufferedThreadWriter::new(inner.clone(), jetstream)
+        .await
+        .unwrap();
+
+    let thread = AgentState::new("t-fail").with_message(Message::user("hello"));
+    inner.create(&thread).await.unwrap();
+
+    let delta1 = AgentChangeSet {
+        run_id: "r-fail".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(Message::assistant("step"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage
+        .append("t-fail", &delta1, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let delta2 = AgentChangeSet {
+        run_id: "r-fail".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::RunFinished,
+        messages: vec![Arc::new(Message::assistant("finish"))],
+        patches: vec![],
+        snapshot: None,
+    };
+    let err = storage
+        .append("t-fail", &delta2, VersionPrecondition::Any)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AgentStateStoreError::Io(_)),
+        "expected injected save failure, got: {err:?}"
+    );
+
+    let before_recover = inner.load("t-fail").await.unwrap().unwrap();
+    assert_eq!(before_recover.agent_state.messages.len(), 1);
+    assert_eq!(inner.save_calls(), 1);
+
+    let recovered = storage.recover().await.unwrap();
+    assert_eq!(recovered, 2);
+
+    let after_recover = inner.load("t-fail").await.unwrap().unwrap();
+    assert_eq!(after_recover.agent_state.messages.len(), 3);
+    assert_eq!(after_recover.agent_state.messages[0].content, "hello");
+    assert_eq!(after_recover.agent_state.messages[1].content, "step");
+    assert_eq!(after_recover.agent_state.messages[2].content, "finish");
+
+    let recovered_again = storage.recover().await.unwrap();
+    assert_eq!(recovered_again, 0);
+}
+
+#[tokio::test]
+async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
+    let Some((_container, url)) = start_nats_js().await else {
+        return;
+    };
+    let (inner, storage) = make_storage(&url).await;
+
+    let thread = AgentState::new("t-idempotent").with_message(Message::user("hello"));
+    inner.create(&thread).await.unwrap();
+
+    let run_finished = AgentChangeSet {
+        run_id: "r-idempotent".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::RunFinished,
+        messages: vec![Arc::new(
+            Message::assistant("done").with_id("msg-run-finished".to_string()),
+        )],
+        patches: vec![],
+        snapshot: None,
+    };
+
+    storage
+        .append("t-idempotent", &run_finished, VersionPrecondition::Any)
+        .await
+        .unwrap();
+    storage
+        .append("t-idempotent", &run_finished, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let loaded = inner.load("t-idempotent").await.unwrap().unwrap();
+    assert_eq!(loaded.agent_state.messages.len(), 2);
+    assert_eq!(loaded.agent_state.messages[0].content, "hello");
+    assert_eq!(loaded.agent_state.messages[1].content, "done");
+}
+
+#[tokio::test]
+async fn test_concurrent_appends_flush_to_consistent_snapshot() {
+    let Some((_container, url)) = start_nats_js().await else {
+        return;
+    };
+    let (inner, storage) = make_storage(&url).await;
+    let storage = Arc::new(storage);
+
+    inner
+        .create(&AgentState::new("t-concurrent").with_message(Message::user("u0")))
+        .await
+        .unwrap();
+
+    let rounds = 24usize;
+    let mut handles = Vec::with_capacity(rounds);
+    for i in 0..rounds {
+        let storage = Arc::clone(&storage);
+        handles.push(tokio::spawn(async move {
+            let delta = AgentChangeSet {
+                run_id: "r-concurrent".to_string(),
+                parent_run_id: None,
+                reason: CheckpointReason::AssistantTurnCommitted,
+                messages: vec![Arc::new(
+                    Message::assistant(format!("m{i}")).with_id(format!("m-{i}")),
+                )],
+                patches: vec![],
+                snapshot: None,
+            };
+            storage
+                .append("t-concurrent", &delta, VersionPrecondition::Any)
+                .await
+                .unwrap();
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let finish = AgentChangeSet {
+        run_id: "r-concurrent".to_string(),
+        parent_run_id: None,
+        reason: CheckpointReason::RunFinished,
+        messages: vec![],
+        patches: vec![],
+        snapshot: None,
+    };
+    storage
+        .append("t-concurrent", &finish, VersionPrecondition::Any)
+        .await
+        .unwrap();
+
+    let loaded = inner.load("t-concurrent").await.unwrap().unwrap();
+    assert_eq!(loaded.agent_state.messages.len(), rounds + 1);
 }

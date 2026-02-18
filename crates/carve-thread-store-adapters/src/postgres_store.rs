@@ -6,6 +6,8 @@ use carve_agent_contract::storage::{
 };
 use carve_agent_contract::{AgentChangeSet, AgentState, Message, Visibility};
 use std::collections::HashSet;
+#[cfg(feature = "postgres")]
+use sqlx::{Postgres, QueryBuilder};
 
 pub struct PostgresStore {
     pool: sqlx::PgPool,
@@ -305,29 +307,32 @@ impl AgentStateWriter for PostgresStore {
             .map(|m| m.as_ref())
             .collect();
 
-        let insert_sql = format!(
-            "INSERT INTO {} (session_id, message_id, run_id, step_index, data) VALUES ($1, $2, $3, $4, $5)",
-            self.messages_table,
-        );
-        for msg in &new_messages {
-            let data = serde_json::to_value(msg)
-                .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
-            let message_id = msg.id.as_deref();
-            let (run_id, step_index) = msg
-                .metadata
-                .as_ref()
-                .map(|m| (m.run_id.as_deref(), m.step_index.map(|s| s as i32)))
-                .unwrap_or((None, None));
+        if !new_messages.is_empty() {
+            let mut rows = Vec::with_capacity(new_messages.len());
+            for msg in &new_messages {
+                let data = serde_json::to_value(*msg)
+                    .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
+                let message_id = msg.id.clone();
+                let (run_id, step_index) = msg
+                    .metadata
+                    .as_ref()
+                    .map(|m| (m.run_id.clone(), m.step_index.map(|s| s as i32)))
+                    .unwrap_or((None, None));
+                rows.push((message_id, run_id, step_index, data));
+            }
 
-            sqlx::query(&insert_sql)
-                .bind(&thread.id)
-                .bind(message_id)
-                .bind(run_id)
-                .bind(step_index)
-                .bind(&data)
-                .execute(&mut *tx)
-                .await
-                .map_err(Self::sql_err)?;
+            let mut qb = QueryBuilder::<Postgres>::new(format!(
+                "INSERT INTO {} (session_id, message_id, run_id, step_index, data) ",
+                self.messages_table
+            ));
+            qb.push_values(rows.iter(), |mut b, (message_id, run_id, step_index, data)| {
+                b.push_bind(&thread.id)
+                    .push_bind(message_id.as_deref())
+                    .push_bind(run_id.as_deref())
+                    .push_bind(*step_index)
+                    .push_bind(data);
+            });
+            qb.build().execute(&mut *tx).await.map_err(Self::sql_err)?;
         }
 
         tx.commit().await.map_err(Self::sql_err)?;

@@ -10,9 +10,13 @@
 //! JetStream subject `thread.{thread_id}.deltas` so they are durably buffered
 //! in NATS.  No database writes happen during the run.
 //!
-//! At run end `run_stream` calls `save()` with the final materialised thread,
-//! which is forwarded to the inner storage as a single atomic write.  After the
-//! write succeeds the corresponding NATS messages are acknowledged (purged).
+//! When the run emits `CheckpointReason::RunFinished`, `append()` triggers a
+//! flush for that thread: buffered deltas are materialized and persisted to the
+//! inner storage via a single `save()`. The buffered NATS messages are then
+//! acknowledged.
+//!
+//! `save()` remains available for explicit run-end flush when callers already
+//! have a final materialized state.
 //!
 //! # Crash recovery
 //!
@@ -25,7 +29,9 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, AgentState};
+use carve_agent_contract::{AgentChangeSet, AgentState, CheckpointReason};
+use futures::StreamExt;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// NATS JetStream stream name for thread deltas.
@@ -33,6 +39,7 @@ const STREAM_NAME: &str = "THREAD_DELTAS";
 
 /// Subject prefix.  Full subject: `thread.{thread_id}.deltas`.
 const SUBJECT_PREFIX: &str = "thread";
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 
 fn delta_subject(thread_id: &str) -> String {
     format!("{SUBJECT_PREFIX}.{thread_id}.deltas")
@@ -87,15 +94,11 @@ impl NatsBufferedThreadWriter {
     /// the corresponding threads loaded from the inner storage, and saves the
     /// result.  Acked messages are then purged.
     pub async fn recover(&self) -> Result<usize, NatsBufferedThreadWriterError> {
-        let stream = self
-            .jetstream
-            .get_stream(STREAM_NAME)
-            .await
-            .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
-
+        let stream = self.stream().await?;
+        let consumer_name = format!("recovery_{}", uuid::Uuid::now_v7().simple());
         let consumer = stream
             .create_consumer(jetstream::consumer::pull::Config {
-                name: Some("recovery".to_string()),
+                name: Some(consumer_name.clone()),
                 ack_policy: jetstream::consumer::AckPolicy::Explicit,
                 deliver_policy: jetstream::consumer::DeliverPolicy::All,
                 filter_subject: format!("{SUBJECT_PREFIX}.*.deltas"),
@@ -104,42 +107,27 @@ impl NatsBufferedThreadWriter {
             .await
             .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
 
-        let mut recovered = 0usize;
-        // Collect pending deltas grouped by thread_id.
-        let mut pending: std::collections::HashMap<
-            String,
-            Vec<(AgentChangeSet, jetstream::Message)>,
-        > = std::collections::HashMap::new();
-
-        // Fetch messages in batches.
-        use futures::StreamExt;
+        let mut pending: HashMap<String, Vec<(AgentChangeSet, jetstream::Message)>> =
+            HashMap::new();
         let mut messages = consumer
             .messages()
             .await
             .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
 
-        // Use a short timeout to drain available messages.
         loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(500), messages.next()).await
-            {
+            match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
                 Ok(Some(Ok(msg))) => {
                     let subject = msg.subject.to_string();
-                    // Parse thread_id from subject: "thread.{thread_id}.deltas"
                     let parts: Vec<&str> = subject.split('.').collect();
                     if parts.len() != 3 {
-                        // Unexpected subject format; ack and skip.
-                        let _ = msg.ack().await;
+                        let _ = msg.double_ack().await;
                         continue;
                     }
                     let thread_id = parts[1].to_string();
-
                     match serde_json::from_slice::<AgentChangeSet>(&msg.payload) {
-                        Ok(delta) => {
-                            pending.entry(thread_id).or_default().push((delta, msg));
-                        }
+                        Ok(delta) => pending.entry(thread_id).or_default().push((delta, msg)),
                         Err(_) => {
-                            // Malformed message; ack to avoid redelivery loop.
-                            let _ = msg.ack().await;
+                            let _ = msg.double_ack().await;
                         }
                     }
                 }
@@ -147,45 +135,102 @@ impl NatsBufferedThreadWriter {
             }
         }
 
-        // Replay each thread's deltas.
+        let mut recovered = 0usize;
         for (thread_id, deltas_with_msgs) in pending {
-            let mut thread = match self.inner.load(&thread_id).await {
-                Ok(Some(head)) => head.agent_state,
-                Ok(None) => AgentState::new(thread_id.clone()),
+            match self
+                .materialize_and_save_thread(&thread_id, deltas_with_msgs)
+                .await
+            {
+                Ok(acked) => recovered += acked,
                 Err(e) => {
                     tracing::error!(
                         thread_id = %thread_id,
                         error = %e,
-                        "recovery: failed to load thread, skipping"
+                        "recovery: failed to materialize thread"
                     );
-                    continue;
                 }
-            };
-
-            for (delta, _) in &deltas_with_msgs {
-                apply_delta(&mut thread, delta);
-            }
-
-            if let Err(e) = self.inner.save(&thread).await {
-                tracing::error!(
-                    thread_id = %thread_id,
-                    error = %e,
-                    "recovery: failed to save recovered thread"
-                );
-                continue;
-            }
-
-            // Ack all messages for this thread.
-            for (_, msg) in deltas_with_msgs {
-                let _ = msg.ack().await;
-                recovered += 1;
             }
         }
 
-        // Delete the ephemeral recovery consumer.
-        let _ = stream.delete_consumer("recovery").await;
-
+        let _ = stream.delete_consumer(&consumer_name).await;
         Ok(recovered)
+    }
+
+    async fn stream(&self) -> Result<jetstream::stream::Stream, NatsBufferedThreadWriterError> {
+        self.jetstream
+            .get_stream(STREAM_NAME)
+            .await
+            .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))
+    }
+
+    async fn materialize_and_save_thread(
+        &self,
+        thread_id: &str,
+        deltas_with_msgs: Vec<(AgentChangeSet, jetstream::Message)>,
+    ) -> Result<usize, NatsBufferedThreadWriterError> {
+        if deltas_with_msgs.is_empty() {
+            return Ok(0);
+        }
+
+        let mut thread = match self.inner.load(thread_id).await? {
+            Some(head) => head.agent_state,
+            None => AgentState::new(thread_id.to_string()),
+        };
+
+        for (delta, _) in &deltas_with_msgs {
+            apply_delta(&mut thread, delta);
+        }
+
+        self.inner.save(&thread).await?;
+
+        let mut acked = 0usize;
+        for (_, msg) in deltas_with_msgs {
+            let _ = msg.double_ack().await;
+            acked += 1;
+        }
+        Ok(acked)
+    }
+
+    async fn flush_thread_buffer(
+        &self,
+        thread_id: &str,
+    ) -> Result<usize, NatsBufferedThreadWriterError> {
+        let stream = self.stream().await?;
+        let consumer_name = format!("flush_{}", uuid::Uuid::now_v7().simple());
+        let consumer = stream
+            .create_consumer(jetstream::consumer::pull::Config {
+                name: Some(consumer_name.clone()),
+                ack_policy: jetstream::consumer::AckPolicy::Explicit,
+                deliver_policy: jetstream::consumer::DeliverPolicy::All,
+                filter_subject: delta_subject(thread_id),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
+
+        let mut deltas_with_msgs = Vec::new();
+        let mut messages = consumer
+            .messages()
+            .await
+            .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
+
+        loop {
+            match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
+                Ok(Some(Ok(msg))) => match serde_json::from_slice::<AgentChangeSet>(&msg.payload) {
+                    Ok(delta) => deltas_with_msgs.push((delta, msg)),
+                    Err(_) => {
+                        let _ = msg.double_ack().await;
+                    }
+                },
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            }
+        }
+
+        let result = self
+            .materialize_and_save_thread(thread_id, deltas_with_msgs)
+            .await;
+        let _ = stream.delete_consumer(&consumer_name).await;
+        result
     }
 }
 
@@ -204,7 +249,7 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
         &self,
         thread_id: &str,
         delta: &AgentChangeSet,
-        _precondition: VersionPrecondition,
+        precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let payload = serde_json::to_vec(delta)
             .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
@@ -220,8 +265,22 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
                 AgentStateStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
             })?;
 
-        // Version is cosmetic here — the real version lives in the inner storage.
-        Ok(Committed { version: 0 })
+        if delta.reason == CheckpointReason::RunFinished {
+            self.flush_thread_buffer(thread_id)
+                .await
+                .map_err(|e| match e {
+                    NatsBufferedThreadWriterError::JetStream(msg) => {
+                        AgentStateStoreError::Io(std::io::Error::other(msg))
+                    }
+                    NatsBufferedThreadWriterError::Storage(err) => err,
+                })?;
+        }
+
+        let version = match precondition {
+            VersionPrecondition::Any => 0,
+            VersionPrecondition::Exact(v) => v.saturating_add(1),
+        };
+        Ok(Committed { version })
     }
 
     async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError> {
@@ -260,7 +319,19 @@ impl AgentStateReader for NatsBufferedThreadWriter {
 /// Apply a delta to a thread in-place (same logic as agent_state_store::apply_delta but
 /// accessible here without depending on the private function).
 fn apply_delta(thread: &mut AgentState, delta: &AgentChangeSet) {
-    thread.messages.extend(delta.messages.iter().cloned());
+    let mut existing_message_ids: HashSet<String> = thread
+        .messages
+        .iter()
+        .filter_map(|m| m.id.clone())
+        .collect();
+    for message in &delta.messages {
+        if let Some(id) = message.id.as_ref() {
+            if !existing_message_ids.insert(id.clone()) {
+                continue;
+            }
+        }
+        thread.messages.push(message.clone());
+    }
     thread.patches.extend(delta.patches.iter().cloned());
     if let Some(ref snapshot) = delta.snapshot {
         thread.state = snapshot.clone();
