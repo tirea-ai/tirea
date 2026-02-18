@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::{Phase, StepContext};
-use carve_agent::contracts::storage::{
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::storage::{
     AgentStateReader, AgentStateStore, AgentStateWriter, VersionPrecondition,
 };
-use carve_agent::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::{NatsBufferedThreadWriter, PostgresStore};
 use serde_json::json;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ImageExt;
@@ -31,7 +31,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -152,37 +152,41 @@ impl FlakySaveStore {
 impl AgentStateWriter for FlakySaveStore {
     async fn create(
         &self,
-        thread: &carve_agent::contracts::state::AgentState,
-    ) -> Result<carve_agent::contracts::storage::Committed, carve_agent::contracts::storage::AgentStateStoreError>
-    {
+        thread: &carve_agentos::contracts::state::AgentState,
+    ) -> Result<
+        carve_agentos::contracts::storage::Committed,
+        carve_agentos::contracts::storage::AgentStateStoreError,
+    > {
         self.inner.create(thread).await
     }
 
     async fn append(
         &self,
         id: &str,
-        delta: &carve_agent::contracts::AgentChangeSet,
+        delta: &carve_agentos::contracts::AgentChangeSet,
         precondition: VersionPrecondition,
-    ) -> Result<carve_agent::contracts::storage::Committed, carve_agent::contracts::storage::AgentStateStoreError>
-    {
+    ) -> Result<
+        carve_agentos::contracts::storage::Committed,
+        carve_agentos::contracts::storage::AgentStateStoreError,
+    > {
         self.inner.append(id, delta, precondition).await
     }
 
     async fn delete(
         &self,
         id: &str,
-    ) -> Result<(), carve_agent::contracts::storage::AgentStateStoreError> {
+    ) -> Result<(), carve_agentos::contracts::storage::AgentStateStoreError> {
         self.inner.delete(id).await
     }
 
     async fn save(
         &self,
-        thread: &carve_agent::contracts::state::AgentState,
-    ) -> Result<(), carve_agent::contracts::storage::AgentStateStoreError> {
+        thread: &carve_agentos::contracts::state::AgentState,
+    ) -> Result<(), carve_agentos::contracts::storage::AgentStateStoreError> {
         let remaining = self.fail_saves_remaining.load(Ordering::SeqCst);
         if remaining > 0 {
             self.fail_saves_remaining.fetch_sub(1, Ordering::SeqCst);
-            return Err(carve_agent::contracts::storage::AgentStateStoreError::Io(
+            return Err(carve_agentos::contracts::storage::AgentStateStoreError::Io(
                 std::io::Error::other("injected save failure"),
             ));
         }
@@ -196,18 +200,18 @@ impl AgentStateReader for FlakySaveStore {
         &self,
         id: &str,
     ) -> Result<
-        Option<carve_agent::contracts::storage::AgentStateHead>,
-        carve_agent::contracts::storage::AgentStateStoreError,
+        Option<carve_agentos::contracts::storage::AgentStateHead>,
+        carve_agentos::contracts::storage::AgentStateStoreError,
     > {
         self.inner.load(id).await
     }
 
     async fn list_agent_states(
         &self,
-        query: &carve_agent::contracts::storage::AgentStateListQuery,
+        query: &carve_agentos::contracts::storage::AgentStateListQuery,
     ) -> Result<
-        carve_agent::contracts::storage::AgentStateListPage,
-        carve_agent::contracts::storage::AgentStateStoreError,
+        carve_agentos::contracts::storage::AgentStateListPage,
+        carve_agentos::contracts::storage::AgentStateStoreError,
     > {
         self.inner.list_agent_states(query).await
     }
@@ -223,7 +227,10 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
     };
 
     let pool = connect_pool_with_retry(&dsn).await;
-    let postgres_store = Arc::new(PostgresStore::with_table(pool, unique_table("agent_sessions")));
+    let postgres_store = Arc::new(PostgresStore::with_table(
+        pool,
+        unique_table("agent_sessions"),
+    ));
     postgres_store
         .ensure_table()
         .await
@@ -249,7 +256,10 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
     });
     let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(r#""type":"start""#), "missing start event: {body}");
+    assert!(
+        body.contains(r#""type":"start""#),
+        "missing start event: {body}"
+    );
     assert!(
         body.contains(r#""type":"finish""#),
         "missing finish event: {body}"
@@ -283,7 +293,10 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     };
 
     let pool = connect_pool_with_retry(&dsn).await;
-    let postgres_store = Arc::new(PostgresStore::with_table(pool, unique_table("agent_sessions")));
+    let postgres_store = Arc::new(PostgresStore::with_table(
+        pool,
+        unique_table("agent_sessions"),
+    ));
     postgres_store
         .ensure_table()
         .await
@@ -296,15 +309,20 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agent::contracts::state::AgentState::new("np-recover")
-        .with_message(carve_agent::contracts::state::Message::user("hello"));
-    storage.create(&thread).await.expect("create should succeed");
+    let thread = carve_agentos::contracts::state::AgentState::new("np-recover")
+        .with_message(carve_agentos::contracts::state::Message::user("hello"));
+    storage
+        .create(&thread)
+        .await
+        .expect("create should succeed");
 
-    let delta1 = carve_agent::contracts::AgentChangeSet {
+    let delta1 = carve_agentos::contracts::AgentChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
-        reason: carve_agent::contracts::state::CheckpointReason::AssistantTurnCommitted,
-        messages: vec![Arc::new(carve_agent::contracts::state::Message::assistant("mid"))],
+        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(
+            carve_agentos::contracts::state::Message::assistant("mid"),
+        )],
         patches: vec![],
         snapshot: None,
     };
@@ -313,13 +331,13 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("append should succeed");
 
-    let delta2 = carve_agent::contracts::AgentChangeSet {
+    let delta2 = carve_agentos::contracts::AgentChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
-        reason: carve_agent::contracts::state::CheckpointReason::ToolResultsCommitted,
-        messages: vec![Arc::new(carve_agent::contracts::state::Message::assistant(
-            "tail",
-        ))],
+        reason: carve_agentos::contracts::state::CheckpointReason::ToolResultsCommitted,
+        messages: vec![Arc::new(
+            carve_agentos::contracts::state::Message::assistant("tail"),
+        )],
         patches: vec![],
         snapshot: None,
     };
@@ -348,7 +366,10 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     assert_eq!(after.messages[1].content, "mid");
     assert_eq!(after.messages[2].content, "tail");
 
-    let recovered_again = storage.recover().await.expect("second recover should succeed");
+    let recovered_again = storage
+        .recover()
+        .await
+        .expect("second recover should succeed");
     assert_eq!(recovered_again, 0, "recover should be idempotent");
 }
 
@@ -362,7 +383,10 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
     };
 
     let pool = connect_pool_with_retry(&dsn).await;
-    let postgres_store = Arc::new(PostgresStore::with_table(pool, unique_table("agent_sessions")));
+    let postgres_store = Arc::new(PostgresStore::with_table(
+        pool,
+        unique_table("agent_sessions"),
+    ));
     postgres_store
         .ensure_table()
         .await
@@ -421,7 +445,9 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
                     "unexpected error for concurrent same-thread run: {body}"
                 );
             }
-            other => panic!("unexpected status for concurrent same-thread run: {other} body={body}"),
+            other => {
+                panic!("unexpected status for concurrent same-thread run: {other} body={body}")
+            }
         }
     }
     assert!(
@@ -467,7 +493,10 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
     };
 
     let pool = connect_pool_with_retry(&dsn).await;
-    let postgres_store = Arc::new(PostgresStore::with_table(pool, unique_table("agent_sessions")));
+    let postgres_store = Arc::new(PostgresStore::with_table(
+        pool,
+        unique_table("agent_sessions"),
+    ));
     postgres_store
         .ensure_table()
         .await
@@ -480,18 +509,21 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agent::contracts::state::AgentState::new("np-dedup")
-        .with_message(carve_agent::contracts::state::Message::user("seed"));
-    storage.create(&thread).await.expect("create should succeed");
+    let thread = carve_agentos::contracts::state::AgentState::new("np-dedup")
+        .with_message(carve_agentos::contracts::state::Message::user("seed"));
+    storage
+        .create(&thread)
+        .await
+        .expect("create should succeed");
 
     let duplicate_msg = Arc::new(
-        carve_agent::contracts::state::Message::assistant("dup-mid")
+        carve_agentos::contracts::state::Message::assistant("dup-mid")
             .with_id("fixed-dup-message-id".to_string()),
     );
-    let duplicate_delta = carve_agent::contracts::AgentChangeSet {
+    let duplicate_delta = carve_agentos::contracts::AgentChangeSet {
         run_id: "np-dedup-run".to_string(),
         parent_run_id: None,
-        reason: carve_agent::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
         messages: vec![duplicate_msg.clone()],
         patches: vec![],
         snapshot: None,
@@ -534,7 +566,10 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     };
 
     let pool = connect_pool_with_retry(&dsn).await;
-    let postgres_store = Arc::new(PostgresStore::with_table(pool, unique_table("agent_sessions")));
+    let postgres_store = Arc::new(PostgresStore::with_table(
+        pool,
+        unique_table("agent_sessions"),
+    ));
     postgres_store
         .ensure_table()
         .await
@@ -548,15 +583,20 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agent::contracts::state::AgentState::new("np-flaky")
-        .with_message(carve_agent::contracts::state::Message::user("seed"));
-    storage.create(&thread).await.expect("create should succeed");
+    let thread = carve_agentos::contracts::state::AgentState::new("np-flaky")
+        .with_message(carve_agentos::contracts::state::Message::user("seed"));
+    storage
+        .create(&thread)
+        .await
+        .expect("create should succeed");
 
-    let mid = carve_agent::contracts::AgentChangeSet {
+    let mid = carve_agentos::contracts::AgentChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
-        reason: carve_agent::contracts::state::CheckpointReason::AssistantTurnCommitted,
-        messages: vec![Arc::new(carve_agent::contracts::state::Message::assistant("mid"))],
+        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        messages: vec![Arc::new(
+            carve_agentos::contracts::state::Message::assistant("mid"),
+        )],
         patches: vec![],
         snapshot: None,
     };
@@ -565,11 +605,13 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("buffer append should succeed");
 
-    let run_finished = carve_agent::contracts::AgentChangeSet {
+    let run_finished = carve_agentos::contracts::AgentChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
-        reason: carve_agent::contracts::state::CheckpointReason::RunFinished,
-        messages: vec![Arc::new(carve_agent::contracts::state::Message::assistant("tail"))],
+        reason: carve_agentos::contracts::state::CheckpointReason::RunFinished,
+        messages: vec![Arc::new(
+            carve_agentos::contracts::state::Message::assistant("tail"),
+        )],
         patches: vec![],
         snapshot: None,
     };
@@ -606,6 +648,12 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     assert_eq!(after_recover.messages[1].content, "mid");
     assert_eq!(after_recover.messages[2].content, "tail");
 
-    let recovered_again = storage.recover().await.expect("second recover should succeed");
-    assert_eq!(recovered_again, 0, "recover should be idempotent after success");
+    let recovered_again = storage
+        .recover()
+        .await
+        .expect("second recover should succeed");
+    assert_eq!(
+        recovered_again, 0,
+        "recover should be idempotent after success"
+    );
 }

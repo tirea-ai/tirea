@@ -1,5 +1,5 @@
-use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
-use carve_agent::orchestrator::{AgentOs, RunExtensions};
+use carve_agentos::contracts::runtime::{AgentEvent, RunRequest};
+use carve_agentos::orchestrator::{AgentOs, RunExtensions};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
 use carve_protocol_ag_ui_runtime::build_agui_extensions;
 use carve_protocol_ai_sdk_v6::{
@@ -178,7 +178,7 @@ impl NatsGateway {
         E: ProtocolOutputEncoder<InputEvent = AgentEvent> + Send + 'static,
         E::Event: Serialize + Send + 'static,
         ErrEvent: Serialize,
-        BuildEncoder: FnOnce(&carve_agent::orchestrator::RunStream) -> E,
+        BuildEncoder: FnOnce(&carve_agentos::orchestrator::RunStream) -> E,
         BuildErrorEvent: FnOnce(String) -> ErrEvent,
     {
         let run = match self

@@ -1,17 +1,17 @@
 //! Runtime wiring for AG-UI requests.
 //!
-//! This crate builds run-scoped [`carve_agent::orchestrator::RunExtensions`] for AG-UI:
+//! This crate builds run-scoped [`carve_agentos::orchestrator::RunExtensions`] for AG-UI:
 //! frontend tool descriptor stubs, frontend pending interaction strategy,
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::{Phase, StepContext};
-use carve_agent::contracts::runtime::Interaction;
-use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent::extensions::interaction::InteractionPlugin;
-use carve_agent::orchestrator::{RunExtensions, ToolPluginBundle};
-use carve_agent::prelude::AgentState as RuntimeAgentState;
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::runtime::Interaction;
+use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::AgentState as RuntimeAgentState;
+use carve_agentos::extensions::interaction::InteractionPlugin;
+use carve_agentos::orchestrator::{RunExtensions, ToolPluginBundle};
 use carve_protocol_ag_ui::RunAgentRequest;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -136,9 +136,9 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent::contracts::runtime::phase::{Phase, ToolContext};
-    use carve_agent::contracts::state::AgentState as ConversationAgentState;
-    use carve_agent::contracts::state::ToolCall;
+    use carve_agentos::contracts::runtime::phase::{Phase, ToolContext};
+    use carve_agentos::contracts::state::AgentState as ConversationAgentState;
+    use carve_agentos::contracts::state::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 

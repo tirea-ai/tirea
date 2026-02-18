@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::Phase;
-use carve_agent::contracts::runtime::phase::StepContext;
-use carve_agent::contracts::runtime::{AgentEvent, RunRequest};
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::Phase;
+use carve_agentos::contracts::runtime::phase::StepContext;
+use carve_agentos::contracts::runtime::{AgentEvent, RunRequest};
+use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_protocol_ag_ui::{AGUIMessage, AgUiInputAdapter, RunAgentRequest};
 use carve_protocol_ag_ui_runtime::build_agui_extensions;
 use carve_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
@@ -25,7 +25,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;

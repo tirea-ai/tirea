@@ -18,10 +18,10 @@
 
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::contracts::tool::Tool;
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::orchestrator::{AgentOsBuilder, ModelDefinition};
+use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use carve_agentos::contracts::tool::Tool;
+use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::{AgentOsBuilder, ModelDefinition};
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
@@ -72,7 +72,7 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     Ok(())
 }
 
-fn make_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     // Model name: "openai::tensorzero::function_name::agent_chat"
     //   - genai sees "openai::" prefix → selects OpenAI adapter (→ /v1/chat/completions)
     //   - genai strips the "openai::" namespace → sends "tensorzero::function_name::agent_chat"
@@ -367,7 +367,7 @@ fn make_tz_client() -> genai::Client {
         .build()
 }
 
-fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek".to_string(),

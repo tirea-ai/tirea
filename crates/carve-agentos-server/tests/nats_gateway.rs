@@ -10,12 +10,12 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::Phase;
-use carve_agent::contracts::runtime::phase::StepContext;
-use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::orchestrator::AgentOsBuilder;
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::Phase;
+use carve_agentos::contracts::runtime::phase::StepContext;
+use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::AgentOsBuilder;
 use carve_agentos_server::nats::NatsGateway;
 use carve_thread_store_adapters::MemoryStore;
 use futures::StreamExt;
@@ -36,7 +36,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -44,7 +44,7 @@ impl AgentPlugin for SkipInferencePlugin {
     }
 }
 
-fn make_os(storage: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_os(storage: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "test".to_string(),
         plugins: vec![Arc::new(SkipInferencePlugin)],
@@ -637,8 +637,14 @@ async fn test_nats_aisdk_reply_subject_from_nats_reply_header() {
         }
     }
 
-    assert!(all.contains("\"type\":\"start\""), "missing start event: {all}");
-    assert!(all.contains("\"type\":\"finish\""), "missing finish event: {all}");
+    assert!(
+        all.contains("\"type\":\"start\""),
+        "missing start event: {all}"
+    );
+    assert!(
+        all.contains("\"type\":\"finish\""),
+        "missing finish event: {all}"
+    );
 }
 
 #[tokio::test]
@@ -662,7 +668,10 @@ async fn test_nats_gateway_restart_still_handles_requests() {
     .await;
     let all1 = events1.join("\n");
     assert!(all1.contains("RUN_STARTED"), "missing RUN_STARTED: {all1}");
-    assert!(all1.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all1}");
+    assert!(
+        all1.contains("RUN_FINISHED"),
+        "missing RUN_FINISHED: {all1}"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     let first_saved = storage.load_agent_state("nats-restart-1").await.unwrap();
@@ -684,7 +693,10 @@ async fn test_nats_gateway_restart_still_handles_requests() {
     .await;
     let all2 = events2.join("\n");
     assert!(all2.contains("RUN_STARTED"), "missing RUN_STARTED: {all2}");
-    assert!(all2.contains("RUN_FINISHED"), "missing RUN_FINISHED: {all2}");
+    assert!(
+        all2.contains("RUN_FINISHED"),
+        "missing RUN_FINISHED: {all2}"
+    );
 
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     let second_saved = storage.load_agent_state("nats-restart-2").await.unwrap();

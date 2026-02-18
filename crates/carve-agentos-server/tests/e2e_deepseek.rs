@@ -7,10 +7,10 @@
 //! ```
 
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::contracts::tool::Tool;
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::orchestrator::AgentOsBuilder;
+use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
+use carve_agentos::contracts::tool::Tool;
+use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::AgentOsBuilder;
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use http_body_util::BodyExt;
@@ -27,7 +27,7 @@ fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
 }
 
-fn make_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_os(write_store: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "deepseek".to_string(),
         model: "deepseek-chat".to_string(),
@@ -46,7 +46,7 @@ If runtime context entries are provided, treat them as authoritative facts and a
 }
 
 /// Build AgentOs with a calculator tool and multi-round support.
-fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "calc".to_string(),
         model: "deepseek-chat".to_string(),
@@ -72,7 +72,9 @@ fn make_tool_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestra
 }
 
 /// Build AgentOs for multi-turn conversation tests.
-fn make_multiturn_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orchestrator::AgentOs {
+fn make_multiturn_os(
+    write_store: Arc<dyn AgentStateStore>,
+) -> carve_agentos::orchestrator::AgentOs {
     let def = AgentDefinition {
         id: "chat".to_string(),
         model: "deepseek-chat".to_string(),
@@ -272,14 +274,14 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
         saved
             .messages
             .iter()
-            .any(|m| m.role == carve_agent::contracts::state::Role::User
+            .any(|m| m.role == carve_agentos::contracts::state::Role::User
                 && m.content.contains("1 to 500")),
         "user ingress message should persist even when stream is cancelled"
     );
     let assistant_count = saved
         .messages
         .iter()
-        .filter(|m| m.role == carve_agent::contracts::state::Role::Assistant)
+        .filter(|m| m.role == carve_agentos::contracts::state::Role::Assistant)
         .count();
     assert_eq!(
         assistant_count, 0,

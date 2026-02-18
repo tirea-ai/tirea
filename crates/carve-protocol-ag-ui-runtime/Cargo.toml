@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 description = "AG-UI runtime wiring for carve-agent AgentOs"
 
 [dependencies]
-carve-agent = { path = "../carve-agent" }
+carve-agentos = { path = "../carve-agentos" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
 async-trait = "0.1"
 serde_json = { workspace = true }

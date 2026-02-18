@@ -1,12 +1,12 @@
 #![allow(missing_docs)]
 
-use carve_agent::contracts::runtime::AgentEvent;
-use carve_agent::contracts::state::AgentState as ConversationAgentState;
-use carve_agent::contracts::state::ToolCall;
-use carve_agent::contracts::tool::ToolDescriptor;
-use carve_agent::engine::tool_execution::execute_single_tool;
-use carve_agent::extensions::skills::{FsSkill, SkillSubsystem};
-use carve_agent::prelude::AgentState as RuntimeAgentState;
+use carve_agentos::contracts::runtime::AgentEvent;
+use carve_agentos::contracts::state::AgentState as ConversationAgentState;
+use carve_agentos::contracts::state::ToolCall;
+use carve_agentos::contracts::tool::ToolDescriptor;
+use carve_agentos::contracts::AgentState as RuntimeAgentState;
+use carve_agentos::engine::tool_execution::execute_single_tool;
+use carve_agentos::extensions::skills::{FsSkill, SkillSubsystem};
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 use serde_json::json;
 use std::fs;
@@ -133,7 +133,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
 
     // Even without activation, discovery should inject available_skills.
     let thread = ConversationAgentState::with_initial_state("s", json!({}));
-    let mut step = carve_agent::contracts::runtime::phase::StepContext::new(
+    let mut step = carve_agentos::contracts::runtime::phase::StepContext::new(
         &thread,
         vec![ToolDescriptor::new("t", "t", "t")],
     );
@@ -141,7 +141,7 @@ async fn test_skills_plugin_injection_is_in_system_context_before_inference() {
     let ctx = RuntimeAgentState::new_transient(&doc, "test", "test");
     plugin
         .on_phase(
-            carve_agent::contracts::runtime::phase::Phase::BeforeInference,
+            carve_agentos::contracts::runtime::phase::Phase::BeforeInference,
             &mut step,
             &ctx,
         )

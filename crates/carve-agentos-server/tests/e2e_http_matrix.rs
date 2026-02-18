@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::{Phase, StepContext};
-use carve_agent::contracts::storage::AgentStateReader;
-use carve_agent::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::storage::AgentStateReader;
+use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::json;
@@ -23,7 +23,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -45,7 +45,11 @@ fn make_os(store: Arc<MemoryStore>) -> AgentOs {
         .expect("failed to build AgentOs")
 }
 
-async fn post_json(app: axum::Router, uri: &str, payload: serde_json::Value) -> (StatusCode, String) {
+async fn post_json(
+    app: axum::Router,
+    uri: &str,
+    payload: serde_json::Value,
+) -> (StatusCode, String) {
     let resp = app
         .oneshot(
             Request::builder()
@@ -249,7 +253,9 @@ async fn e2e_http_concurrent_48_all_persisted() {
             .expect("load should not fail")
             .expect("ai thread should exist");
         assert!(
-            ai.messages.iter().any(|m| m.content == format!("hi-ai-{i}")),
+            ai.messages
+                .iter()
+                .any(|m| m.content == format!("hi-ai-{i}")),
             "ai persisted content missing for index {i}"
         );
 
@@ -259,7 +265,9 @@ async fn e2e_http_concurrent_48_all_persisted() {
             .expect("load should not fail")
             .expect("ag thread should exist");
         assert!(
-            ag.messages.iter().any(|m| m.content == format!("hi-ag-{i}")),
+            ag.messages
+                .iter()
+                .any(|m| m.content == format!("hi-ag-{i}")),
             "ag persisted content missing for index {i}"
         );
     }
@@ -279,12 +287,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
         "input": "first-turn",
         "runId": "history-r1",
     });
-    let (status, body) = post_json(
-        app.clone(),
-        "/v1/ai-sdk/agents/test/runs",
-        first_payload,
-    )
-    .await;
+    let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", first_payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#""type":"finish""#));
 
@@ -293,25 +296,25 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
         "input": "second-turn",
         "runId": "history-r2",
     });
-    let (status, body) = post_json(
-        app.clone(),
-        "/v1/ai-sdk/agents/test/runs",
-        second_payload,
-    )
-    .await;
+    let (status, body) =
+        post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", second_payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#""type":"finish""#));
 
     let (status, raw_page) = get_json(app.clone(), "/v1/threads/history-e2e-thread/messages").await;
     assert_eq!(status, StatusCode::OK);
     let raw_page_text = raw_page.to_string();
-    assert!(raw_page_text.contains("first-turn"), "missing first turn in raw page: {raw_page_text}");
+    assert!(
+        raw_page_text.contains("first-turn"),
+        "missing first turn in raw page: {raw_page_text}"
+    );
     assert!(
         raw_page_text.contains("second-turn"),
         "missing second turn in raw page: {raw_page_text}"
     );
 
-    let (status, encoded_page) = get_json(app, "/v1/ai-sdk/threads/history-e2e-thread/messages").await;
+    let (status, encoded_page) =
+        get_json(app, "/v1/ai-sdk/threads/history-e2e-thread/messages").await;
     assert_eq!(status, StatusCode::OK);
     let encoded_page_text = encoded_page.to_string();
     assert!(
@@ -384,8 +387,7 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
                     "input": input.clone(),
                     "runId": format!("mixed-ai-run-{i}")
                 });
-                let (status, body) =
-                    post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
+                let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
                 (format!("mixed-ai-{i}"), input, status, body)
             } else {
                 let input = if i % 5 == 1 {
@@ -399,8 +401,7 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
                     "messages": [{"role": "user", "content": input.clone()}],
                     "tools": []
                 });
-                let (status, body) =
-                    post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
+                let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
                 (format!("mixed-ag-{i}"), input, status, body)
             }
         }));

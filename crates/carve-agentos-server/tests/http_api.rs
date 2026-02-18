@@ -1,18 +1,18 @@
 use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::Phase;
-use carve_agent::contracts::runtime::phase::StepContext;
-use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent::contracts::state::AgentState;
-use carve_agent::contracts::storage::{
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::Phase;
+use carve_agentos::contracts::runtime::phase::StepContext;
+use carve_agentos::contracts::state::AgentState;
+use carve_agentos::contracts::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed,
 };
-use carve_agent::contracts::AgentChangeSet;
-use carve_agent::orchestrator::AgentDefinition;
-use carve_agent::orchestrator::{AgentOs, AgentOsBuilder};
+use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::AgentChangeSet;
+use carve_agentos::orchestrator::AgentDefinition;
+use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_agentos_server::http::{router, AppState};
 use carve_thread_store_adapters::MemoryStore;
 use serde_json::{json, Value};
@@ -34,7 +34,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -73,30 +73,26 @@ struct EchoTool;
 #[async_trait]
 impl Tool for EchoTool {
     fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new("echo", "Echo", "Echo input message")
-            .with_parameters(json!({
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string" }
-                },
-                "required": ["message"]
-            }))
+        ToolDescriptor::new("echo", "Echo", "Echo input message").with_parameters(json!({
+            "type": "object",
+            "properties": {
+                "message": { "type": "string" }
+            },
+            "required": ["message"]
+        }))
     }
 
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) -> Result<ToolResult, ToolError> {
         let message = args
             .get("message")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        Ok(ToolResult::success(
-            "echo",
-            json!({ "echoed": message }),
-        ))
+        Ok(ToolResult::success("echo", json!({ "echoed": message })))
     }
 }
 
@@ -136,7 +132,7 @@ impl AgentStateWriter for RecordingStorage {
         &self,
         id: &str,
         delta: &AgentChangeSet,
-        _precondition: carve_agent::contracts::storage::VersionPrecondition,
+        _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut threads = self.threads.write().await;
         if let Some(thread) = threads.get_mut(id) {
@@ -203,7 +199,7 @@ async fn test_sessions_query_endpoints() {
     let storage = Arc::new(MemoryStore::new());
 
     let thread =
-        AgentState::new("s1").with_message(carve_agent::contracts::state::Message::user("hello"));
+        AgentState::new("s1").with_message(carve_agentos::contracts::state::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
     let app = router(AppState {
@@ -223,7 +219,7 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: carve_agent::contracts::storage::AgentStateListPage =
+    let page: carve_agentos::contracts::storage::AgentStateListPage =
         serde_json::from_slice(&body).unwrap();
     assert_eq!(page.items, vec!["s1".to_string()]);
     assert_eq!(page.total, 1);
@@ -241,7 +237,8 @@ async fn test_sessions_query_endpoints() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_slice(&body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_slice(&body).unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].message.content, "hello");
     assert!(!page.has_more);
@@ -581,7 +578,7 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
         .messages
         .iter()
         .filter(|m| {
-            m.role == carve_agent::contracts::state::Role::User && m.content == "hello without id"
+            m.role == carve_agentos::contracts::state::Role::User && m.content == "hello without id"
         })
         .count();
     assert_eq!(
@@ -891,8 +888,8 @@ impl AgentStateWriter for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::AgentChangeSet,
-        _precondition: carve_agent::contracts::storage::VersionPrecondition,
+        _delta: &carve_agentos::contracts::AgentChangeSet,
+        _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -1012,8 +1009,8 @@ impl AgentStateWriter for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agent::contracts::AgentChangeSet,
-        _precondition: carve_agent::contracts::storage::VersionPrecondition,
+        _delta: &carve_agentos::contracts::AgentChangeSet,
+        _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
@@ -1093,7 +1090,7 @@ async fn test_agui_sse_storage_save_error() {
 fn make_session_with_n_messages(id: &str, n: usize) -> AgentState {
     let mut thread = AgentState::new(id);
     for i in 0..n {
-        thread = thread.with_message(carve_agent::contracts::state::Message::user(format!(
+        thread = thread.with_message(carve_agentos::contracts::state::Message::user(format!(
             "msg-{}",
             i
         )));
@@ -1112,7 +1109,8 @@ async fn test_messages_pagination_default_params() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 5);
     assert!(!page.has_more);
     assert_eq!(page.messages[0].message.content, "msg-0");
@@ -1130,7 +1128,8 @@ async fn test_messages_pagination_with_limit() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     assert!(page.has_more);
     assert_eq!(page.messages[0].cursor, 0);
@@ -1148,7 +1147,8 @@ async fn test_messages_pagination_cursor_forward() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?after=4&limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     assert_eq!(page.messages[0].cursor, 5);
     assert_eq!(page.messages[0].message.content, "msg-5");
@@ -1165,7 +1165,8 @@ async fn test_messages_pagination_desc_order() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?order=desc&before=8&limit=3").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 3);
     // Desc order: highest cursors first
     assert_eq!(page.messages[0].cursor, 7);
@@ -1184,7 +1185,8 @@ async fn test_messages_pagination_limit_clamped() {
 
     let (status, body) = get_json(app, "/v1/threads/s1/messages?limit=999").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     // limit should be clamped to 200
     assert_eq!(page.messages.len(), 200);
     assert!(page.has_more);
@@ -1224,7 +1226,7 @@ async fn test_list_threads_filters_by_parent_thread_id() {
     let (status, body) = get_json(app, "/v1/threads?parent_thread_id=p-root").await;
     assert_eq!(status, StatusCode::OK);
 
-    let page: carve_agent::contracts::storage::AgentStateListPage =
+    let page: carve_agentos::contracts::storage::AgentStateListPage =
         serde_json::from_value(body).unwrap();
     assert_eq!(page.total, 2);
     assert_eq!(page.items, vec!["t-parent-1", "t-parent-2"]);
@@ -1238,23 +1240,23 @@ async fn test_messages_filter_by_visibility_and_run_id() {
 
     let thread = AgentState::new("s-filter")
         .with_message(
-            carve_agent::contracts::state::Message::user("visible-run-1").with_metadata(
-                carve_agent::contracts::state::MessageMetadata {
+            carve_agentos::contracts::state::Message::user("visible-run-1").with_metadata(
+                carve_agentos::contracts::state::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(0),
                 },
             ),
         )
         .with_message(
-            carve_agent::contracts::state::Message::internal_system("internal-run-1")
-                .with_metadata(carve_agent::contracts::state::MessageMetadata {
+            carve_agentos::contracts::state::Message::internal_system("internal-run-1")
+                .with_metadata(carve_agentos::contracts::state::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(1),
                 }),
         )
         .with_message(
-            carve_agent::contracts::state::Message::assistant("visible-run-2").with_metadata(
-                carve_agent::contracts::state::MessageMetadata {
+            carve_agentos::contracts::state::Message::assistant("visible-run-2").with_metadata(
+                carve_agentos::contracts::state::MessageMetadata {
                     run_id: Some("run-2".to_string()),
                     step_index: Some(2),
                 },
@@ -1266,14 +1268,20 @@ async fn test_messages_filter_by_visibility_and_run_id() {
 
     let (status, body) = get_json(app.clone(), "/v1/threads/s-filter/messages").await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].message.content, "visible-run-1");
     assert_eq!(page.messages[1].message.content, "visible-run-2");
 
-    let (status, body) = get_json(app.clone(), "/v1/threads/s-filter/messages?visibility=internal").await;
+    let (status, body) = get_json(
+        app.clone(),
+        "/v1/threads/s-filter/messages?visibility=internal",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 1);
     assert_eq!(page.messages[0].message.content, "internal-run-1");
 
@@ -1283,7 +1291,8 @@ async fn test_messages_filter_by_visibility_and_run_id() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].message.content, "visible-run-1");
     assert_eq!(page.messages[1].message.content, "internal-run-1");
@@ -1296,16 +1305,21 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
     let thread = AgentState::new("s-internal-history")
-        .with_message(carve_agent::contracts::state::Message::user("visible-user"))
-        .with_message(carve_agent::contracts::state::Message::internal_system(
+        .with_message(carve_agentos::contracts::state::Message::user(
+            "visible-user",
+        ))
+        .with_message(carve_agentos::contracts::state::Message::internal_system(
             "internal-secret",
         ))
-        .with_message(carve_agent::contracts::state::Message::assistant("visible-assistant"));
+        .with_message(carve_agentos::contracts::state::Message::assistant(
+            "visible-assistant",
+        ));
     storage.save(&thread).await.unwrap();
 
     let app = make_app(os, read_store);
 
-    let (status, body) = get_json(app.clone(), "/v1/ag-ui/threads/s-internal-history/messages").await;
+    let (status, body) =
+        get_json(app.clone(), "/v1/ag-ui/threads/s-internal-history/messages").await;
     assert_eq!(status, StatusCode::OK);
     let body_text = body.to_string();
     assert!(
@@ -1336,8 +1350,8 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     for i in 0..6usize {
         let run_id = if i % 2 == 0 { "run-a" } else { "run-b" };
         thread = thread.with_message(
-            carve_agent::contracts::state::Message::user(format!("msg-{i}")).with_metadata(
-                carve_agent::contracts::state::MessageMetadata {
+            carve_agentos::contracts::state::Message::user(format!("msg-{i}")).with_metadata(
+                carve_agentos::contracts::state::MessageMetadata {
                     run_id: Some(run_id.to_string()),
                     step_index: Some(i as u32),
                 },
@@ -1353,7 +1367,8 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert_eq!(page.messages.len(), 2);
     assert_eq!(page.messages[0].cursor, 4);
     assert_eq!(page.messages[0].message.content, "msg-4");
@@ -1366,7 +1381,8 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let page: carve_agent::contracts::storage::MessagePage = serde_json::from_value(body).unwrap();
+    let page: carve_agentos::contracts::storage::MessagePage =
+        serde_json::from_value(body).unwrap();
     assert!(
         page.messages.is_empty(),
         "after=4 with run-a should be empty, got: {:?}",
@@ -1396,15 +1412,17 @@ fn pending_echo_thread(id: &str, payload: &str) -> AgentState {
             }
         }),
     )
-    .with_message(carve_agent::contracts::state::Message::assistant_with_tool_calls(
-        "need permission",
-        vec![carve_agent::contracts::state::ToolCall::new(
-            "call_1",
-            "echo",
-            json!({"message": payload}),
-        )],
-    ))
-    .with_message(carve_agent::contracts::state::Message::tool(
+    .with_message(
+        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+            "need permission",
+            vec![carve_agentos::contracts::state::ToolCall::new(
+                "call_1",
+                "echo",
+                json!({"message": payload}),
+            )],
+        ),
+    )
+    .with_message(carve_agentos::contracts::state::Message::tool(
         "call_1",
         "Tool 'echo' is awaiting approval. Execution paused.",
     ))
@@ -1447,7 +1465,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         .unwrap()
         .unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
-        m.role == carve_agent::contracts::state::Role::Tool
+        m.role == carve_agentos::contracts::state::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
             && m.content.contains("approved-run")
     });
@@ -1501,13 +1519,9 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         "denied resume run should still finish: {body}"
     );
 
-    let saved = storage
-        .load_agent_state("th-deny")
-        .await
-        .unwrap()
-        .unwrap();
+    let saved = storage.load_agent_state("th-deny").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
-        m.role == carve_agent::contracts::state::Role::Tool
+        m.role == carve_agentos::contracts::state::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
             && m.content.contains("echoed")
     });
@@ -1579,8 +1593,7 @@ async fn test_new_protocol_routes_are_reachable() {
         "messages": [{"role": "user", "content": "hi"}],
         "tools": []
     });
-    let (status, _) =
-        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_ui_payload).await;
+    let (status, _) = post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_ui_payload).await;
     assert_eq!(status, StatusCode::OK, "new AG-UI run route should be 200");
 
     // POST to new AI SDK run endpoint
@@ -1590,29 +1603,17 @@ async fn test_new_protocol_routes_are_reachable() {
     });
     let (status, _) =
         post_sse_text(app.clone(), "/v1/ai-sdk/agents/test/runs", ai_sdk_payload).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "new AI SDK run route should be 200"
-    );
+    assert_eq!(status, StatusCode::OK, "new AI SDK run route should be 200");
 
     // GET protocol-encoded history (thread not found → 404, but route is matched)
-    let (status, _) = get_json(
-        app.clone(),
-        "/v1/ag-ui/threads/nonexistent/messages",
-    )
-    .await;
+    let (status, _) = get_json(app.clone(), "/v1/ag-ui/threads/nonexistent/messages").await;
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
         "AG-UI history route should match but return thread-not-found"
     );
 
-    let (status, _) = get_json(
-        app.clone(),
-        "/v1/ai-sdk/threads/nonexistent/messages",
-    )
-    .await;
+    let (status, _) = get_json(app.clone(), "/v1/ai-sdk/threads/nonexistent/messages").await;
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
@@ -1679,8 +1680,7 @@ async fn test_protocol_isolation_no_cross_routing() {
         "messages": [{"role": "user", "content": "agui msg"}],
         "tools": []
     });
-    let (status, body) =
-        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_payload).await;
+    let (status, body) = post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", ag_payload).await;
     assert_eq!(status, StatusCode::OK);
     // AG-UI events use "RUN_STARTED" / "RUN_FINISHED" markers
     assert!(
@@ -1775,8 +1775,7 @@ async fn test_generic_thread_endpoints_still_work() {
         "messages": [{"role": "user", "content": "seed"}],
         "tools": []
     });
-    let (status, _) =
-        post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", payload).await;
+    let (status, _) = post_sse_text(app.clone(), "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
 
     // Wait for persistence
@@ -1795,8 +1794,7 @@ async fn test_generic_thread_endpoints_still_work() {
     assert_eq!(status, StatusCode::OK);
 
     // GET /v1/threads/:id/messages should return raw messages
-    let (status, body) =
-        get_json(app.clone(), "/v1/threads/generic-ep-test/messages").await;
+    let (status, body) = get_json(app.clone(), "/v1/threads/generic-ep-test/messages").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.get("messages").is_some(),

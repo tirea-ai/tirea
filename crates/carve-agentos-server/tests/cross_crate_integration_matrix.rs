@@ -1,15 +1,13 @@
 use async_trait::async_trait;
-use carve_agent::contracts::plugin::AgentPlugin;
-use carve_agent::contracts::runtime::phase::{Phase, StepContext};
-use carve_agent::contracts::runtime::RunRequest;
-use carve_agent::contracts::storage::AgentStateReader;
-use carve_agent::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
-use carve_protocol_ai_sdk_v6::{
-    AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
-};
+use carve_agentos::contracts::plugin::AgentPlugin;
+use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::runtime::RunRequest;
+use carve_agentos::contracts::storage::AgentStateReader;
+use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
+use carve_agentos_server::transport::pump_encoded_stream;
+use carve_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
 use carve_protocol_contract::ProtocolInputAdapter;
 use carve_thread_store_adapters::MemoryStore;
-use carve_agentos_server::transport::pump_encoded_stream;
 use futures::future::ready;
 use std::sync::Arc;
 
@@ -25,7 +23,7 @@ impl AgentPlugin for SkipInferencePlugin {
         &self,
         phase: Phase,
         step: &mut StepContext<'_>,
-        _ctx: &carve_agent::prelude::AgentState,
+        _ctx: &carve_agentos::contracts::AgentState,
     ) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -78,12 +76,13 @@ async fn cross_crate_integration_matrix_72() {
                 let resolved_run_id = run.run_id.clone();
 
                 let mut encoded = Vec::new();
-                let encoder =
-                    AiSdkV6ProtocolEncoder::new(resolved_run_id.clone(), Some(resolved_thread_id.clone()));
+                let encoder = AiSdkV6ProtocolEncoder::new(
+                    resolved_run_id.clone(),
+                    Some(resolved_thread_id.clone()),
+                );
                 pump_encoded_stream(run.events, encoder, |event| {
                     encoded.push(
-                        serde_json::to_value(event)
-                            .expect("protocol event must be serializable"),
+                        serde_json::to_value(event).expect("protocol event must be serializable"),
                     );
                     ready(Ok(()))
                 })

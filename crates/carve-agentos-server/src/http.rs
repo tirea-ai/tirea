@@ -5,13 +5,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agent::contracts::runtime::AgentEvent;
-use carve_agent::contracts::state::{AgentState, Visibility};
-use carve_agent::contracts::storage::{
+use carve_agentos::contracts::runtime::AgentEvent;
+use carve_agentos::contracts::state::{AgentState, Visibility};
+use carve_agentos::contracts::storage::{
     AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
 };
-use carve_agent::orchestrator::{AgentOs, AgentOsRunError, RunStream};
-use carve_agent::runtime::loop_runner::RunCancellationToken;
+use carve_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
+use carve_agentos::runtime::loop_runner::RunCancellationToken;
 use carve_protocol_ag_ui::{
     AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
 };
@@ -69,7 +69,7 @@ impl From<AgentOsRunError> for ApiError {
     fn from(e: AgentOsRunError) -> Self {
         match e {
             AgentOsRunError::Resolve(
-                carve_agent::orchestrator::AgentOsResolveError::AgentNotFound(id),
+                carve_agentos::orchestrator::AgentOsResolveError::AgentNotFound(id),
             ) => ApiError::AgentNotFound(id),
             AgentOsRunError::Resolve(other) => ApiError::BadRequest(other.to_string()),
             other => ApiError::Internal(other.to_string()),
@@ -185,7 +185,7 @@ async fn get_thread_messages(
         .await
         .map(Json)
         .map_err(|e| match e {
-            carve_agent::contracts::storage::AgentStateStoreError::NotFound(_) => {
+            carve_agentos::contracts::storage::AgentStateStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(id)
             }
             other => ApiError::Internal(other.to_string()),
@@ -234,7 +234,7 @@ async fn load_message_page(
         .load_messages(thread_id, &query)
         .await
         .map_err(|e| match e {
-            carve_agent::contracts::storage::AgentStateStoreError::NotFound(_) => {
+            carve_agentos::contracts::storage::AgentStateStoreError::NotFound(_) => {
                 ApiError::ThreadNotFound(thread_id.to_string())
             }
             other => ApiError::Internal(other.to_string()),
