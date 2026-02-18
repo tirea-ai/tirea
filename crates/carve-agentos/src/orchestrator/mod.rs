@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::Stream;
 use genai::Client;
@@ -15,8 +16,9 @@ use crate::contracts::storage::{
 };
 use crate::contracts::tool::Tool;
 use crate::extensions::skills::{
-    InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError, SkillPlugin, SkillRegistry,
-    SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
+    CompositeSkillRegistry, InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError,
+    SkillPlugin, SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillRuntimePlugin,
+    SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
     run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunContext,
@@ -193,6 +195,12 @@ pub enum AgentOsBuildError {
     #[error(transparent)]
     Skills(#[from] SkillError),
 
+    #[error(transparent)]
+    SkillRegistry(#[from] SkillRegistryError),
+
+    #[error(transparent)]
+    SkillRegistryManager(#[from] SkillRegistryManagerError),
+
     #[error("agent {agent_id} references an empty plugin id")]
     AgentEmptyPluginRef { agent_id: String },
 
@@ -350,7 +358,9 @@ pub struct AgentOsBuilder {
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
     model_registries: Vec<Arc<dyn ModelRegistry>>,
-    skills_registry: Option<Arc<dyn SkillRegistry>>,
+    skills: Vec<Arc<dyn Skill>>,
+    skill_registries: Vec<Arc<dyn SkillRegistry>>,
+    skills_refresh_interval: Option<Duration>,
     skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn AgentStateStore>>,

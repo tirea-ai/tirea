@@ -5,7 +5,10 @@ use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
-use crate::extensions::skills::FsSkill;
+use crate::extensions::skills::{
+    FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
+    SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
+};
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
@@ -15,6 +18,7 @@ use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn make_skills_root() -> (TempDir, PathBuf) {
@@ -723,6 +727,191 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
 }
 
 #[tokio::test]
+async fn resolve_freezes_skill_snapshot_per_run_boundary() {
+    #[derive(Debug)]
+    struct MockSkill {
+        meta: SkillMeta,
+        raw: String,
+    }
+
+    impl MockSkill {
+        fn new(id: &str) -> Self {
+            Self {
+                meta: SkillMeta {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    description: format!("{id} skill"),
+                    allowed_tools: Vec::new(),
+                },
+                raw: format!("---\nname: {id}\ndescription: ok\n---\nBody\n"),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Skill for MockSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.meta
+        }
+
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(self.raw.clone())
+        }
+
+        async fn load_resource(
+            &self,
+            _kind: SkillResourceKind,
+            _path: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("not used".to_string()))
+        }
+
+        async fn run_script(
+            &self,
+            _script: &str,
+            _args: &[String],
+        ) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("not used".to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct MutableSkillRegistry {
+        skills: std::sync::RwLock<HashMap<String, Arc<dyn Skill>>>,
+    }
+
+    impl MutableSkillRegistry {
+        fn replace_ids(&self, ids: &[&str]) {
+            let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
+            for id in ids {
+                map.insert((*id).to_string(), Arc::new(MockSkill::new(id)));
+            }
+            match self.skills.write() {
+                Ok(mut guard) => *guard = map,
+                Err(poisoned) => *poisoned.into_inner() = map,
+            }
+        }
+    }
+
+    impl SkillRegistry for MutableSkillRegistry {
+        fn len(&self) -> usize {
+            self.snapshot().len()
+        }
+
+        fn get(&self, id: &str) -> Option<Arc<dyn Skill>> {
+            self.snapshot().get(id).cloned()
+        }
+
+        fn ids(&self) -> Vec<String> {
+            let mut ids: Vec<String> = self.snapshot().keys().cloned().collect();
+            ids.sort();
+            ids
+        }
+
+        fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+            match self.skills.read() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
+        }
+    }
+
+    let dynamic_skills = Arc::new(MutableSkillRegistry::default());
+    dynamic_skills.replace_ids(&["s1"]);
+
+    let os = AgentOs::builder()
+        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_skill_registry(dynamic_skills.clone() as Arc<dyn SkillRegistry>)
+        .with_skills_config(SkillsConfig {
+            mode: SkillsMode::DiscoveryOnly,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    let doc = json!({});
+    let thread1 = AgentState::with_initial_state("freeze-skill-1", json!({}));
+    let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
+    let activate_first = tools_first_run
+        .get("skill")
+        .cloned()
+        .expect("skill activate tool should exist");
+
+    dynamic_skills.replace_ids(&["s2"]);
+
+    let ctx_first = ContextAgentState::new_transient(&doc, "call-skill-1", "tool:skill");
+    let first_result = activate_first
+        .execute(json!({"skill": "s1"}), &ctx_first)
+        .await
+        .expect("execute first skill tool");
+    assert!(
+        first_result.is_success(),
+        "first run should use frozen skills"
+    );
+
+    let thread2 = AgentState::with_initial_state("freeze-skill-2", json!({}));
+    let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
+    let activate_second = tools_second_run
+        .get("skill")
+        .cloned()
+        .expect("skill activate tool should exist");
+    let ctx_second = ContextAgentState::new_transient(&doc, "call-skill-2", "tool:skill");
+    let second_result = activate_second
+        .execute(json!({"skill": "s1"}), &ctx_second)
+        .await
+        .expect("execute second skill tool");
+    assert!(
+        second_result.is_error(),
+        "second run should observe updated skills snapshot"
+    );
+    assert!(second_result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown skill"));
+}
+
+#[test]
+fn build_skill_registry_refresh_interval_starts_periodic_refresh() {
+    let td = TempDir::new().unwrap();
+    let root = td.path().join("skills");
+    fs::create_dir_all(root.join("s1")).unwrap();
+    fs::write(
+        root.join("s1").join("SKILL.md"),
+        "---\nname: s1\ndescription: ok\n---\nBody\n",
+    )
+    .unwrap();
+
+    let manager = FsSkillRegistryManager::discover_roots(vec![root.clone()]).unwrap();
+    assert!(!manager.periodic_refresh_running());
+
+    let _os = AgentOs::builder()
+        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_skill_registry(Arc::new(manager.clone()) as Arc<dyn SkillRegistry>)
+        .with_skill_registry_refresh_interval(Duration::from_millis(20))
+        .with_skills_config(SkillsConfig {
+            mode: SkillsMode::DiscoveryOnly,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .expect("build agent os");
+
+    assert!(manager.periodic_refresh_running());
+
+    fs::create_dir_all(root.join("s2")).unwrap();
+    fs::write(
+        root.join("s2").join("SKILL.md"),
+        "---\nname: s2\ndescription: ok\n---\nBody\n",
+    )
+    .unwrap();
+
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(manager.get("s2").is_some());
+    assert!(manager.stop_periodic_refresh());
+}
+
+#[tokio::test]
 async fn run_and_run_stream_work_without_llm_when_skip_inference() {
     #[derive(Debug)]
     struct SkipInferencePlugin;
@@ -921,6 +1110,31 @@ fn build_errors_if_skills_enabled_without_root() {
         .build()
         .unwrap_err();
     assert!(matches!(err, AgentOsBuildError::SkillsNotConfigured));
+}
+
+#[test]
+fn build_errors_on_duplicate_skill_id_across_skill_registries() {
+    let (_td, root) = make_skills_root();
+    let skills = FsSkill::into_arc_skills(FsSkill::discover(&root).unwrap().skills);
+    let duplicate_registry = InMemorySkillRegistry::from_skills(skills.clone());
+
+    let err = AgentOs::builder()
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .with_skills(skills)
+        .with_skill_registry(Arc::new(duplicate_registry) as Arc<dyn SkillRegistry>)
+        .with_skills_config(SkillsConfig {
+            mode: SkillsMode::DiscoveryOnly,
+            discovery_max_entries: 32,
+            discovery_max_chars: 8 * 1024,
+        })
+        .build()
+        .unwrap_err();
+
+    assert!(matches!(
+        err,
+        AgentOsBuildError::SkillRegistry(SkillRegistryError::DuplicateSkillId(ref id))
+            if id == "s1"
+    ));
 }
 
 #[tokio::test]

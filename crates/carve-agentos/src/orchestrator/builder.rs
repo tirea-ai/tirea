@@ -54,10 +54,9 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("plugins", &self.plugins.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
-            .field(
-                "skills",
-                &self.skills_registry.as_ref().map(|registry| registry.len()),
-            )
+            .field("skills", &self.skills.len())
+            .field("skill_registries", &self.skill_registries.len())
+            .field("skills_refresh_interval", &self.skills_refresh_interval)
             .field("skills_config", &self.skills_config)
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
@@ -80,7 +79,9 @@ impl AgentOsBuilder {
             provider_registries: Vec::new(),
             models: HashMap::new(),
             model_registries: Vec::new(),
-            skills_registry: None,
+            skills: Vec::new(),
+            skill_registries: Vec::new(),
+            skills_refresh_interval: None,
             skills_config: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
             agent_state_store: None,
@@ -161,12 +162,17 @@ impl AgentOsBuilder {
     }
 
     pub fn with_skills(mut self, skills: Vec<Arc<dyn Skill>>) -> Self {
-        self.skills_registry = Some(Arc::new(InMemorySkillRegistry::from_skills(skills)));
+        self.skills = skills;
         self
     }
 
     pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
-        self.skills_registry = Some(registry);
+        self.skill_registries.push(registry);
+        self
+    }
+
+    pub fn with_skill_registry_refresh_interval(mut self, interval: Duration) -> Self {
+        self.skills_refresh_interval = Some(interval);
         self
     }
 
@@ -199,7 +205,9 @@ impl AgentOsBuilder {
             mut provider_registries,
             models: mut model_defs,
             mut model_registries,
-            skills_registry,
+            skills,
+            mut skill_registries,
+            skills_refresh_interval,
             skills_config,
             agent_tools,
             agent_state_store,
@@ -221,8 +229,33 @@ impl AgentOsBuilder {
             },
         )?;
 
-        if skills_config.mode != SkillsMode::Disabled && skills_registry.is_none() {
+        if skills_config.mode != SkillsMode::Disabled
+            && skills.is_empty()
+            && skill_registries.is_empty()
+        {
             return Err(AgentOsBuildError::SkillsNotConfigured);
+        }
+
+        let mut in_memory_skills = InMemorySkillRegistry::new();
+        in_memory_skills.extend_upsert(skills);
+
+        let skills_registry = if in_memory_skills.is_empty() && skill_registries.is_empty() {
+            None
+        } else {
+            Some(merge_registry(
+                in_memory_skills,
+                std::mem::take(&mut skill_registries),
+                |reg: &InMemorySkillRegistry| reg.is_empty(),
+                |reg| Arc::new(reg),
+                |regs| Ok(Arc::new(CompositeSkillRegistry::try_new(regs)?)),
+            )?)
+        };
+
+        if let (Some(registry), Some(interval)) = (&skills_registry, skills_refresh_interval) {
+            match registry.start_periodic_refresh(interval) {
+                Ok(()) | Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning) => {}
+                Err(err) => return Err(err.into()),
+            }
         }
 
         let mut base_tools = InMemoryToolRegistry::new();

@@ -9,12 +9,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::thread::JoinHandle;
 use std::time::Duration;
-use tokio::runtime::Handle;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tokio::time::MissedTickBehavior;
 use unicode_normalization::UnicodeNormalization;
 
 /// A filesystem-backed skill.
@@ -46,6 +44,18 @@ pub trait SkillRegistry: Send + Sync {
     fn ids(&self) -> Vec<String>;
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>>;
+
+    fn start_periodic_refresh(&self, _interval: Duration) -> Result<(), SkillRegistryManagerError> {
+        Ok(())
+    }
+
+    fn stop_periodic_refresh(&self) -> bool {
+        false
+    }
+
+    fn periodic_refresh_running(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +83,10 @@ impl std::fmt::Debug for InMemorySkillRegistry {
 impl InMemorySkillRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
     }
 
     pub fn from_skills(skills: Vec<Arc<dyn Skill>>) -> Self {
@@ -131,6 +145,114 @@ impl SkillRegistry for InMemorySkillRegistry {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct CompositeSkillRegistry {
+    registries: Vec<Arc<dyn SkillRegistry>>,
+    cached_snapshot: Arc<RwLock<HashMap<String, Arc<dyn Skill>>>>,
+}
+
+impl std::fmt::Debug for CompositeSkillRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = read_lock(&self.cached_snapshot);
+        f.debug_struct("CompositeSkillRegistry")
+            .field("registries", &self.registries.len())
+            .field("len", &snapshot.len())
+            .finish()
+    }
+}
+
+impl CompositeSkillRegistry {
+    pub fn try_new(
+        regs: impl IntoIterator<Item = Arc<dyn SkillRegistry>>,
+    ) -> Result<Self, SkillRegistryError> {
+        let registries: Vec<Arc<dyn SkillRegistry>> = regs.into_iter().collect();
+        let merged = Self::merge_snapshots(&registries)?;
+        Ok(Self {
+            registries,
+            cached_snapshot: Arc::new(RwLock::new(merged)),
+        })
+    }
+
+    fn merge_snapshots(
+        registries: &[Arc<dyn SkillRegistry>],
+    ) -> Result<HashMap<String, Arc<dyn Skill>>, SkillRegistryError> {
+        let mut merged = InMemorySkillRegistry::new();
+        for reg in registries {
+            merged.extend_registry(reg.as_ref())?;
+        }
+        Ok(merged.snapshot())
+    }
+
+    fn refresh_snapshot(&self) -> Result<HashMap<String, Arc<dyn Skill>>, SkillRegistryError> {
+        Self::merge_snapshots(&self.registries)
+    }
+
+    fn read_cached_snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+        read_lock(&self.cached_snapshot).clone()
+    }
+
+    fn write_cached_snapshot(&self, snapshot: HashMap<String, Arc<dyn Skill>>) {
+        *write_lock(&self.cached_snapshot) = snapshot;
+    }
+}
+
+impl SkillRegistry for CompositeSkillRegistry {
+    fn len(&self) -> usize {
+        self.snapshot().len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Skill>> {
+        self.snapshot().get(id).cloned()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.snapshot().keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+        match self.refresh_snapshot() {
+            Ok(snapshot) => {
+                self.write_cached_snapshot(snapshot.clone());
+                snapshot
+            }
+            Err(_) => self.read_cached_snapshot(),
+        }
+    }
+
+    fn start_periodic_refresh(&self, interval: Duration) -> Result<(), SkillRegistryManagerError> {
+        let mut started: Vec<Arc<dyn SkillRegistry>> = Vec::new();
+        for registry in &self.registries {
+            match registry.start_periodic_refresh(interval) {
+                Ok(()) => started.push(registry.clone()),
+                Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning) => {}
+                Err(err) => {
+                    for reg in started {
+                        let _ = reg.stop_periodic_refresh();
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn stop_periodic_refresh(&self) -> bool {
+        let mut stopped = false;
+        for registry in &self.registries {
+            stopped |= registry.stop_periodic_refresh();
+        }
+        stopped
+    }
+
+    fn periodic_refresh_running(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|registry| registry.periodic_refresh_running())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SkillRegistryManagerError {
     #[error(transparent)]
@@ -148,9 +270,6 @@ pub enum SkillRegistryManagerError {
     #[error("periodic refresh loop is already running")]
     PeriodicRefreshAlreadyRunning,
 
-    #[error("tokio runtime is required to start periodic refresh")]
-    RuntimeUnavailable,
-
     #[error("periodic refresh join failed: {0}")]
     Join(String),
 }
@@ -163,7 +282,7 @@ struct SkillRegistrySnapshot {
 }
 
 struct PeriodicRefreshRuntime {
-    stop_tx: Option<oneshot::Sender<()>>,
+    stop_tx: Option<mpsc::Sender<()>>,
     join: JoinHandle<()>,
 }
 
@@ -200,7 +319,9 @@ fn is_periodic_refresh_running(state: &SkillRegistryState) -> bool {
         .as_ref()
         .is_some_and(|running| running.join.is_finished())
     {
-        *runtime = None;
+        if let Some(finished) = runtime.take() {
+            let _ = finished.join.join();
+        }
         return false;
     }
     runtime.is_some()
@@ -230,6 +351,14 @@ async fn refresh_state(state: &SkillRegistryState) -> Result<u64, SkillRegistryM
     let (skills, warnings) = handle
         .await
         .map_err(|e| SkillRegistryManagerError::Join(e.to_string()))??;
+    Ok(apply_snapshot(state, skills, warnings))
+}
+
+fn apply_snapshot(
+    state: &SkillRegistryState,
+    skills: HashMap<String, Arc<dyn Skill>>,
+    warnings: Vec<SkillWarning>,
+) -> u64 {
     let mut snapshot = write_lock(&state.snapshot);
     let version = snapshot.version.saturating_add(1);
     *snapshot = SkillRegistrySnapshot {
@@ -237,26 +366,27 @@ async fn refresh_state(state: &SkillRegistryState) -> Result<u64, SkillRegistryM
         skills,
         warnings,
     };
-    Ok(version)
+    version
 }
 
-async fn periodic_refresh_loop(
+fn refresh_state_blocking(state: &SkillRegistryState) -> Result<u64, SkillRegistryManagerError> {
+    let (skills, warnings) = discover_snapshot_from_roots(&state.roots)?;
+    Ok(apply_snapshot(state, skills, warnings))
+}
+
+fn periodic_refresh_loop(
     state: Weak<SkillRegistryState>,
     interval: Duration,
-    mut stop_rx: oneshot::Receiver<()>,
+    stop_rx: mpsc::Receiver<()>,
 ) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    ticker.tick().await;
-
     loop {
-        tokio::select! {
-            _ = &mut stop_rx => break,
-            _ = ticker.tick() => {
+        match stop_rx.recv_timeout(interval) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
                 let Some(state) = state.upgrade() else {
                     break;
                 };
-                let _ = refresh_state(state.as_ref()).await;
+                let _ = refresh_state_blocking(state.as_ref());
             }
         }
     }
@@ -312,8 +442,6 @@ impl FsSkillRegistryManager {
         if interval.is_zero() {
             return Err(SkillRegistryManagerError::InvalidRefreshInterval);
         }
-        let handle =
-            Handle::try_current().map_err(|_| SkillRegistryManagerError::RuntimeUnavailable)?;
         let mut runtime = mutex_lock(&self.state.periodic_refresh);
         if runtime
             .as_ref()
@@ -321,9 +449,15 @@ impl FsSkillRegistryManager {
         {
             return Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning);
         }
-        let (stop_tx, stop_rx) = oneshot::channel();
+        if let Some(finished) = runtime.take() {
+            let _ = finished.join.join();
+        }
+        let (stop_tx, stop_rx) = mpsc::channel();
         let weak_state = Arc::downgrade(&self.state);
-        let join = handle.spawn(periodic_refresh_loop(weak_state, interval, stop_rx));
+        let join = std::thread::Builder::new()
+            .name("carve-skills-registry-refresh".to_string())
+            .spawn(move || periodic_refresh_loop(weak_state, interval, stop_rx))
+            .map_err(|e| SkillRegistryManagerError::Join(e.to_string()))?;
         *runtime = Some(PeriodicRefreshRuntime {
             stop_tx: Some(stop_tx),
             join,
@@ -331,7 +465,7 @@ impl FsSkillRegistryManager {
         Ok(())
     }
 
-    pub async fn stop_periodic_refresh(&self) -> bool {
+    pub fn stop_periodic_refresh(&self) -> bool {
         let runtime = {
             let mut guard = mutex_lock(&self.state.periodic_refresh);
             guard.take()
@@ -342,7 +476,7 @@ impl FsSkillRegistryManager {
         if let Some(stop_tx) = runtime.stop_tx.take() {
             let _ = stop_tx.send(());
         }
-        let _ = runtime.join.await;
+        let _ = runtime.join.join();
         true
     }
 
@@ -377,6 +511,18 @@ impl SkillRegistry for FsSkillRegistryManager {
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
         read_lock(&self.state.snapshot).skills.clone()
+    }
+
+    fn start_periodic_refresh(&self, interval: Duration) -> Result<(), SkillRegistryManagerError> {
+        FsSkillRegistryManager::start_periodic_refresh(self, interval)
+    }
+
+    fn stop_periodic_refresh(&self) -> bool {
+        FsSkillRegistryManager::stop_periodic_refresh(self)
+    }
+
+    fn periodic_refresh_running(&self) -> bool {
+        FsSkillRegistryManager::periodic_refresh_running(self)
     }
 }
 
@@ -635,6 +781,9 @@ fn validate_dir_name(dir_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::{Arc, RwLock};
     use tempfile::TempDir;
 
     #[test]
@@ -895,5 +1044,144 @@ Body
         assert!(matches!(err, SkillRegistryManagerError::Skill(_)));
         assert_eq!(manager.version(), 1);
         assert_eq!(manager.ids(), initial_ids);
+    }
+
+    #[derive(Debug)]
+    struct MockSkill {
+        meta: SkillMeta,
+    }
+
+    impl MockSkill {
+        fn new(id: &str) -> Self {
+            Self {
+                meta: SkillMeta {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    description: format!("{id} desc"),
+                    allowed_tools: Vec::new(),
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Skill for MockSkill {
+        fn meta(&self) -> &SkillMeta {
+            &self.meta
+        }
+
+        async fn read_instructions(&self) -> Result<String, SkillError> {
+            Ok(format!(
+                "---\nname: {}\ndescription: ok\n---\nBody\n",
+                self.meta.id
+            ))
+        }
+
+        async fn load_resource(
+            &self,
+            _kind: SkillResourceKind,
+            _path: &str,
+        ) -> Result<SkillResource, SkillError> {
+            Err(SkillError::Unsupported("not used".to_string()))
+        }
+
+        async fn run_script(
+            &self,
+            _script: &str,
+            _args: &[String],
+        ) -> Result<ScriptResult, SkillError> {
+            Err(SkillError::Unsupported("not used".to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct MutableSkillRegistry {
+        skills: RwLock<HashMap<String, Arc<dyn Skill>>>,
+    }
+
+    impl MutableSkillRegistry {
+        fn replace_ids(&self, ids: &[&str]) {
+            let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
+            for id in ids {
+                map.insert(
+                    (*id).to_string(),
+                    Arc::new(MockSkill::new(id)) as Arc<dyn Skill>,
+                );
+            }
+            match self.skills.write() {
+                Ok(mut guard) => *guard = map,
+                Err(poisoned) => *poisoned.into_inner() = map,
+            }
+        }
+    }
+
+    impl SkillRegistry for MutableSkillRegistry {
+        fn len(&self) -> usize {
+            self.snapshot().len()
+        }
+
+        fn get(&self, id: &str) -> Option<Arc<dyn Skill>> {
+            self.snapshot().get(id).cloned()
+        }
+
+        fn ids(&self) -> Vec<String> {
+            let mut ids: Vec<String> = self.snapshot().keys().cloned().collect();
+            ids.sort();
+            ids
+        }
+
+        fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+            match self.skills.read() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn composite_skill_registry_reads_live_updates_from_source_registries() {
+        let dynamic = Arc::new(MutableSkillRegistry::default());
+        dynamic.replace_ids(&["s1"]);
+
+        let mut static_registry = InMemorySkillRegistry::new();
+        static_registry
+            .register(Arc::new(MockSkill::new("s_static")) as Arc<dyn Skill>)
+            .expect("register static skill");
+
+        let composite = CompositeSkillRegistry::try_new(vec![
+            dynamic.clone() as Arc<dyn SkillRegistry>,
+            Arc::new(static_registry) as Arc<dyn SkillRegistry>,
+        ])
+        .expect("compose registries");
+
+        assert!(composite.ids().contains(&"s1".to_string()));
+        assert!(composite.ids().contains(&"s_static".to_string()));
+
+        dynamic.replace_ids(&["s1", "s2"]);
+        let ids = composite.ids();
+        assert!(ids.contains(&"s1".to_string()));
+        assert!(ids.contains(&"s2".to_string()));
+        assert!(ids.contains(&"s_static".to_string()));
+    }
+
+    #[test]
+    fn composite_skill_registry_keeps_last_good_snapshot_on_runtime_conflict() {
+        let reg_a = Arc::new(MutableSkillRegistry::default());
+        reg_a.replace_ids(&["s1"]);
+        let reg_b = Arc::new(MutableSkillRegistry::default());
+        reg_b.replace_ids(&["s2"]);
+
+        let composite = CompositeSkillRegistry::try_new(vec![
+            reg_a.clone() as Arc<dyn SkillRegistry>,
+            reg_b.clone() as Arc<dyn SkillRegistry>,
+        ])
+        .expect("compose registries");
+
+        let initial_ids = composite.ids();
+        assert_eq!(initial_ids, vec!["s1".to_string(), "s2".to_string()]);
+
+        reg_b.replace_ids(&["s1"]);
+        assert_eq!(composite.ids(), initial_ids);
+        assert!(composite.get("s2").is_some());
     }
 }

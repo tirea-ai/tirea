@@ -32,8 +32,8 @@ pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillData};
 pub use registry::{
-    DiscoveryResult, FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, SkillRegistry,
-    SkillRegistryError, SkillRegistryManagerError,
+    CompositeSkillRegistry, DiscoveryResult, FsSkill, FsSkillRegistryManager,
+    InMemorySkillRegistry, SkillRegistry, SkillRegistryError, SkillRegistryManagerError,
 };
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
