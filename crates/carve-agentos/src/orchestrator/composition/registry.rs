@@ -390,16 +390,11 @@ impl CompositeToolRegistry {
     fn merge_snapshots(
         registries: &[Arc<dyn ToolRegistry>],
     ) -> Result<HashMap<String, Arc<dyn Tool>>, ToolRegistryError> {
-        let mut merged = HashMap::new();
+        let mut merged = InMemoryToolRegistry::new();
         for reg in registries {
-            for (id, tool) in reg.snapshot() {
-                if merged.contains_key(&id) {
-                    return Err(ToolRegistryError::ToolIdConflict(id));
-                }
-                merged.insert(id, tool);
-            }
+            merged.extend_registry(reg.as_ref())?;
         }
-        Ok(merged)
+        Ok(merged.into_map())
     }
 
     fn refresh_snapshot(&self) -> Result<HashMap<String, Arc<dyn Tool>>, ToolRegistryError> {

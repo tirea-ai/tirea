@@ -7,7 +7,16 @@ use mcp::transport_factory::TransportFactory;
 use mcp::McpToolDefinition;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Duration;
+use tokio::runtime::Handle;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
+
+const MCP_META_SERVER: &str = "mcp.server";
+const MCP_META_TOOL: &str = "mcp.tool";
+const MCP_META_TRANSPORT: &str = "mcp.transport";
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpToolRegistryError {
@@ -25,12 +34,53 @@ pub enum McpToolRegistryError {
 
     #[error("mcp transport error: {0}")]
     Transport(String),
+
+    #[error("periodic refresh interval must be > 0")]
+    InvalidRefreshInterval,
+
+    #[error("periodic refresh loop is already running")]
+    PeriodicRefreshAlreadyRunning,
+
+    #[error("tokio runtime is required to start periodic refresh")]
+    RuntimeUnavailable,
 }
 
 impl From<McpTransportError> for McpToolRegistryError {
     fn from(e: McpTransportError) -> Self {
         Self::Transport(e.to_string())
     }
+}
+
+fn validate_server_name(name: &str) -> Result<(), McpToolRegistryError> {
+    if name.trim().is_empty() {
+        return Err(McpToolRegistryError::EmptyServerName);
+    }
+    Ok(())
+}
+
+fn with_mcp_descriptor_metadata(
+    descriptor: ToolDescriptor,
+    server_name: &str,
+    tool_name: &str,
+    transport_type: TransportTypeId,
+) -> ToolDescriptor {
+    descriptor
+        .with_metadata(MCP_META_SERVER, Value::String(server_name.to_string()))
+        .with_metadata(MCP_META_TOOL, Value::String(tool_name.to_string()))
+        .with_metadata(
+            MCP_META_TRANSPORT,
+            Value::String(transport_type.to_string()),
+        )
+}
+
+fn with_mcp_result_metadata(
+    tool_result: ToolResult,
+    server_name: &str,
+    tool_name: &str,
+) -> ToolResult {
+    tool_result
+        .with_metadata(MCP_META_SERVER, Value::String(server_name.to_string()))
+        .with_metadata(MCP_META_TOOL, Value::String(tool_name.to_string()))
 }
 
 struct McpTool {
@@ -54,11 +104,12 @@ impl McpTool {
             .clone()
             .unwrap_or_else(|| format!("MCP tool {}", def.name));
 
-        let mut d = ToolDescriptor::new(tool_id, name, desc)
-            .with_parameters(def.input_schema.clone())
-            .with_metadata("mcp.server", Value::String(server_name.clone()))
-            .with_metadata("mcp.tool", Value::String(def.name.clone()))
-            .with_metadata("mcp.transport", Value::String(transport_type.to_string()));
+        let mut d = with_mcp_descriptor_metadata(
+            ToolDescriptor::new(tool_id, name, desc).with_parameters(def.input_schema.clone()),
+            &server_name,
+            &def.name,
+            transport_type,
+        );
 
         if let Some(group) = def.group.clone() {
             d = d.with_category(group);
@@ -90,9 +141,11 @@ impl Tool for McpTool {
             .await
             .map_err(map_mcp_error)?;
 
-        Ok(ToolResult::success(self.descriptor.id.clone(), res)
-            .with_metadata("mcp.server", Value::String(self.server_name.clone()))
-            .with_metadata("mcp.tool", Value::String(self.tool_name.clone())))
+        Ok(with_mcp_result_metadata(
+            ToolResult::success(self.descriptor.id.clone(), res),
+            &self.server_name,
+            &self.tool_name,
+        ))
     }
 }
 
@@ -148,9 +201,15 @@ struct McpRegistrySnapshot {
     tools: HashMap<String, Arc<dyn Tool>>,
 }
 
+struct PeriodicRefreshRuntime {
+    stop_tx: Option<oneshot::Sender<()>>,
+    join: JoinHandle<()>,
+}
+
 struct McpRegistryState {
     servers: Vec<McpServerRuntime>,
     snapshot: RwLock<McpRegistrySnapshot>,
+    periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
 }
 
 fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -165,6 +224,25 @@ fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
+}
+
+fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn is_periodic_refresh_running(state: &McpRegistryState) -> bool {
+    let mut runtime = mutex_lock(&state.periodic_refresh);
+    if runtime
+        .as_ref()
+        .is_some_and(|running| running.join.is_finished())
+    {
+        *runtime = None;
+        return false;
+    }
+    runtime.is_some()
 }
 
 async fn discover_tools(
@@ -197,6 +275,36 @@ async fn discover_tools(
     Ok(tools)
 }
 
+async fn refresh_state(state: &McpRegistryState) -> Result<u64, McpToolRegistryError> {
+    let tools = discover_tools(&state.servers).await?;
+    let mut snapshot = write_lock(&state.snapshot);
+    let version = snapshot.version.saturating_add(1);
+    *snapshot = McpRegistrySnapshot { version, tools };
+    Ok(version)
+}
+
+async fn periodic_refresh_loop(
+    state: Weak<McpRegistryState>,
+    interval: Duration,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            _ = ticker.tick() => {
+                let Some(state) = state.upgrade() else {
+                    break;
+                };
+                let _ = refresh_state(state.as_ref()).await;
+            }
+        }
+    }
+}
+
 /// Dynamic MCP registry manager.
 ///
 /// Keeps server transports alive and refreshes discovered tool definitions
@@ -209,10 +317,12 @@ pub struct McpToolRegistryManager {
 impl std::fmt::Debug for McpToolRegistryManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
+        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
         f.debug_struct("McpToolRegistryManager")
             .field("servers", &self.state.servers.len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
+            .field("periodic_refresh_running", &periodic_running)
             .finish()
     }
 }
@@ -223,9 +333,7 @@ impl McpToolRegistryManager {
     ) -> Result<Self, McpToolRegistryError> {
         let mut entries: Vec<(McpServerConnectionConfig, Arc<dyn McpTransport>)> = Vec::new();
         for cfg in configs {
-            if cfg.name.trim().is_empty() {
-                return Err(McpToolRegistryError::EmptyServerName);
-            }
+            validate_server_name(&cfg.name)?;
             let transport = TransportFactory::create(&cfg).await?;
             entries.push((cfg, transport));
         }
@@ -243,6 +351,7 @@ impl McpToolRegistryManager {
             state: Arc::new(McpRegistryState {
                 servers,
                 snapshot: RwLock::new(snapshot),
+                periodic_refresh: Mutex::new(None),
             }),
         })
     }
@@ -254,9 +363,7 @@ impl McpToolRegistryManager {
         let mut names: HashSet<String> = HashSet::new();
 
         for (cfg, transport) in entries {
-            if cfg.name.trim().is_empty() {
-                return Err(McpToolRegistryError::EmptyServerName);
-            }
+            validate_server_name(&cfg.name)?;
             if !names.insert(cfg.name.clone()) {
                 return Err(McpToolRegistryError::DuplicateServerName(cfg.name));
             }
@@ -276,12 +383,60 @@ impl McpToolRegistryManager {
     ///
     /// On failure, the previously published snapshot is preserved.
     pub async fn refresh(&self) -> Result<u64, McpToolRegistryError> {
-        let tools = discover_tools(&self.state.servers).await?;
+        refresh_state(self.state.as_ref()).await
+    }
 
-        let mut snapshot = write_lock(&self.state.snapshot);
-        let version = snapshot.version.saturating_add(1);
-        *snapshot = McpRegistrySnapshot { version, tools };
-        Ok(version)
+    /// Start background periodic refresh.
+    ///
+    /// The first refresh tick runs after `interval`.
+    pub fn start_periodic_refresh(&self, interval: Duration) -> Result<(), McpToolRegistryError> {
+        if interval.is_zero() {
+            return Err(McpToolRegistryError::InvalidRefreshInterval);
+        }
+
+        let handle = Handle::try_current().map_err(|_| McpToolRegistryError::RuntimeUnavailable)?;
+        let mut runtime = mutex_lock(&self.state.periodic_refresh);
+        if runtime
+            .as_ref()
+            .is_some_and(|running| !running.join.is_finished())
+        {
+            return Err(McpToolRegistryError::PeriodicRefreshAlreadyRunning);
+        }
+
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let weak_state = Arc::downgrade(&self.state);
+        let join = handle.spawn(periodic_refresh_loop(weak_state, interval, stop_rx));
+
+        *runtime = Some(PeriodicRefreshRuntime {
+            stop_tx: Some(stop_tx),
+            join,
+        });
+        Ok(())
+    }
+
+    /// Stop the background periodic refresh loop.
+    ///
+    /// Returns `true` if a running loop existed.
+    pub async fn stop_periodic_refresh(&self) -> bool {
+        let runtime = {
+            let mut guard = mutex_lock(&self.state.periodic_refresh);
+            guard.take()
+        };
+
+        let Some(mut runtime) = runtime else {
+            return false;
+        };
+
+        if let Some(stop_tx) = runtime.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        let _ = runtime.join.await;
+        true
+    }
+
+    /// Whether periodic refresh loop is running.
+    pub fn periodic_refresh_running(&self) -> bool {
+        is_periodic_refresh_running(self.state.as_ref())
     }
 
     /// Get the tool-registry view backed by this manager.
@@ -314,41 +469,17 @@ pub struct McpToolRegistry {
 impl std::fmt::Debug for McpToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let snapshot = read_lock(&self.state.snapshot);
+        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
         f.debug_struct("McpToolRegistry")
             .field("servers", &self.state.servers.len())
             .field("tools", &snapshot.tools.len())
             .field("version", &snapshot.version)
+            .field("periodic_refresh_running", &periodic_running)
             .finish()
     }
 }
 
 impl McpToolRegistry {
-    pub async fn connect(
-        configs: impl IntoIterator<Item = McpServerConnectionConfig>,
-    ) -> Result<Self, McpToolRegistryError> {
-        Ok(McpToolRegistryManager::connect(configs).await?.registry())
-    }
-
-    pub async fn from_transports(
-        entries: impl IntoIterator<Item = (McpServerConnectionConfig, Arc<dyn McpTransport>)>,
-    ) -> Result<Self, McpToolRegistryError> {
-        Ok(McpToolRegistryManager::from_transports(entries)
-            .await?
-            .registry())
-    }
-
-    /// Refresh MCP tools in place.
-    pub async fn refresh(&self) -> Result<u64, McpToolRegistryError> {
-        self.manager().refresh().await
-    }
-
-    /// Build a manager handle from this registry.
-    pub fn manager(&self) -> McpToolRegistryManager {
-        McpToolRegistryManager {
-            state: self.state.clone(),
-        }
-    }
-
     /// Current published snapshot version.
     pub fn version(&self) -> u64 {
         read_lock(&self.state.snapshot).version
@@ -388,13 +519,16 @@ impl ToolRegistry for McpToolRegistry {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::time::Instant;
 
     #[derive(Debug, Clone)]
     struct FakeTransport {
         tools: Arc<Mutex<Vec<McpToolDefinition>>>,
         calls: Arc<Mutex<Vec<(String, Value)>>>,
         fail_next_list: Arc<Mutex<Option<String>>>,
+        list_calls: Arc<AtomicUsize>,
     }
 
     impl FakeTransport {
@@ -403,6 +537,7 @@ mod tests {
                 tools: Arc::new(Mutex::new(tools)),
                 calls: Arc::new(Mutex::new(Vec::new())),
                 fail_next_list: Arc::new(Mutex::new(None)),
+                list_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -413,11 +548,16 @@ mod tests {
         fn fail_next_list(&self, message: impl Into<String>) {
             *self.fail_next_list.lock().unwrap() = Some(message.into());
         }
+
+        fn list_calls(&self) -> usize {
+            self.list_calls.load(Ordering::SeqCst)
+        }
     }
 
     #[async_trait]
     impl McpTransport for FakeTransport {
         async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
             if let Some(message) = self.fail_next_list.lock().unwrap().take() {
                 return Err(McpTransportError::TransportError(message));
             }
@@ -453,9 +593,10 @@ mod tests {
         ]));
         let transport = fake.clone() as Arc<dyn McpTransport>;
 
-        let reg = McpToolRegistry::from_transports([(cfg("s1"), transport.clone())])
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
             .unwrap();
+        let reg = manager.registry();
 
         let id = reg.ids().into_iter().find(|x| x.contains("echo")).unwrap();
         let tool = reg.get(&id).unwrap();
@@ -489,17 +630,18 @@ mod tests {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
         let transport = fake.clone() as Arc<dyn McpTransport>;
 
-        let reg = McpToolRegistry::from_transports([(cfg("s1"), transport.clone())])
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
             .unwrap();
-        assert_eq!(reg.version(), 1);
+        let reg = manager.registry();
+        assert_eq!(manager.version(), 1);
 
         fake.set_tools(vec![
             McpToolDefinition::new("echo"),
             McpToolDefinition::new("sum"),
         ]);
 
-        let version = reg.refresh().await.unwrap();
+        let version = manager.refresh().await.unwrap();
         assert_eq!(version, 2);
         assert!(reg.ids().into_iter().any(|id| id.contains("sum")));
     }
@@ -509,17 +651,123 @@ mod tests {
         let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
         let transport = fake.clone() as Arc<dyn McpTransport>;
 
-        let reg = McpToolRegistry::from_transports([(cfg("s1"), transport.clone())])
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport.clone())])
             .await
             .unwrap();
+        let reg = manager.registry();
         let initial_ids = reg.ids();
 
         fake.fail_next_list("temporary outage");
 
-        let err = reg.refresh().await.err().unwrap();
+        let err = manager.refresh().await.err().unwrap();
         assert!(matches!(err, McpToolRegistryError::Transport(_)));
-        assert_eq!(reg.version(), 1);
+        assert_eq!(manager.version(), 1);
         assert_eq!(reg.ids(), initial_ids);
+    }
+
+    async fn wait_until(
+        timeout: Duration,
+        step: Duration,
+        mut predicate: impl FnMut() -> bool,
+    ) -> bool {
+        let start = Instant::now();
+        while start.elapsed() <= timeout {
+            if predicate() {
+                return true;
+            }
+            tokio::time::sleep(step).await;
+        }
+        predicate()
+    }
+
+    #[tokio::test]
+    async fn periodic_refresh_updates_snapshot_and_can_stop() {
+        let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
+        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
+        let reg = manager.registry();
+
+        manager
+            .start_periodic_refresh(Duration::from_millis(20))
+            .expect("start periodic refresh");
+        assert!(manager.periodic_refresh_running());
+
+        fake.set_tools(vec![
+            McpToolDefinition::new("echo"),
+            McpToolDefinition::new("sum"),
+        ]);
+
+        let observed = wait_until(
+            Duration::from_millis(400),
+            Duration::from_millis(20),
+            || manager.version() >= 2 && reg.ids().iter().any(|id| id.contains("sum")),
+        )
+        .await;
+        assert!(observed, "periodic refresh should publish updated tools");
+        assert!(
+            fake.list_calls() >= 2,
+            "list_tools should be called periodically"
+        );
+
+        assert!(manager.stop_periodic_refresh().await);
+        assert!(!manager.periodic_refresh_running());
+
+        let version_after_stop = manager.version();
+        fake.set_tools(vec![
+            McpToolDefinition::new("echo"),
+            McpToolDefinition::new("sum"),
+            McpToolDefinition::new("mul"),
+        ]);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        assert_eq!(
+            manager.version(),
+            version_after_stop,
+            "version should not change after periodic refresh stops"
+        );
+        assert!(
+            !reg.ids().iter().any(|id| id.contains("mul")),
+            "stopped periodic refresh should not publish new tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn periodic_refresh_rejects_duplicate_start() {
+        let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
+        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
+
+        manager
+            .start_periodic_refresh(Duration::from_millis(100))
+            .expect("start periodic refresh");
+        let err = manager
+            .start_periodic_refresh(Duration::from_millis(100))
+            .err()
+            .unwrap();
+        assert!(matches!(
+            err,
+            McpToolRegistryError::PeriodicRefreshAlreadyRunning
+        ));
+        assert!(manager.stop_periodic_refresh().await);
+    }
+
+    #[tokio::test]
+    async fn periodic_refresh_rejects_zero_interval() {
+        let fake = Arc::new(FakeTransport::new(vec![McpToolDefinition::new("echo")]));
+        let transport = fake.clone() as Arc<dyn McpTransport>;
+        let manager = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
+            .await
+            .unwrap();
+
+        let err = manager
+            .start_periodic_refresh(Duration::from_millis(0))
+            .err()
+            .unwrap();
+        assert!(matches!(err, McpToolRegistryError::InvalidRefreshInterval));
     }
 
     #[tokio::test]
@@ -538,7 +786,7 @@ mod tests {
             McpToolDefinition::new("a_b"),
         ])) as Arc<dyn McpTransport>;
 
-        let err = McpToolRegistry::from_transports([(cfg("s1"), transport)])
+        let err = McpToolRegistryManager::from_transports([(cfg("s1"), transport)])
             .await
             .err()
             .unwrap();
