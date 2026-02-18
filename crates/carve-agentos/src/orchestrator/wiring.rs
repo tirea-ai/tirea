@@ -345,6 +345,13 @@ impl AgentOs {
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, tool) in defs {
             if tools.contains_key(&id) {
+                // Run extension tools (e.g. CopilotKit frontend tool stubs) may
+                // intentionally shadow backend tools for HITL interception.
+                // Skip the stub — the backend tool descriptor is retained and the
+                // FrontendToolPendingPlugin still intercepts execution.
+                if scope == WiringScope::RunExtension {
+                    continue;
+                }
                 return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
             }
             tools.insert(id, tool);
@@ -358,6 +365,9 @@ impl AgentOs {
                     continue;
                 };
                 if tools.contains_key(&id) {
+                    if scope == WiringScope::RunExtension {
+                        continue;
+                    }
                     return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
                 }
                 tools.insert(id, tool);

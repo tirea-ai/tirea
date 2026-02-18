@@ -2025,7 +2025,7 @@ async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins(
 }
 
 #[tokio::test]
-async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
+async fn prepare_run_with_extensions_skips_duplicate_tool_from_bundle() {
     struct BaseTool;
     #[async_trait::async_trait]
     impl Tool for BaseTool {
@@ -2071,7 +2071,9 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
     let bundle =
         ToolPluginBundle::new("runtime_bundle_conflict").with_tool(Arc::new(BundleToolConflict));
 
-    let err = match os
+    // Run extension tools that duplicate existing tools are silently skipped.
+    // The base tool is retained; the extension stub is dropped.
+    let _prepared = os
         .prepare_run_with_extensions(
             RunRequest {
                 agent_id: "a1".to_string(),
@@ -2085,17 +2087,7 @@ async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
             RunExtensions::new().with_bundle(Arc::new(bundle)),
         )
         .await
-    {
-        Ok(_) => panic!("expected run extension tool id conflict"),
-        Err(err) => err,
-    };
-
-    assert!(matches!(
-        err,
-        AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
-            AgentOsWiringError::RunExtensionToolIdConflict(ref id)
-        )) if id == "dup_tool"
-    ));
+        .expect("run extension with duplicate tool should succeed");
 }
 
 #[derive(Debug)]
