@@ -13,7 +13,6 @@ use crate::runtime::loop_runner::GenaiLlmExecutor;
 struct ResolvedPlugins {
     global: Vec<Arc<dyn AgentPlugin>>,
     agent_default: Vec<Arc<dyn AgentPlugin>>,
-    run_override: Vec<Arc<dyn AgentPlugin>>,
 }
 
 impl ResolvedPlugins {
@@ -27,16 +26,10 @@ impl ResolvedPlugins {
         self
     }
 
-    fn with_run_override(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
-        self.run_override.extend(plugins);
-        self
-    }
-
     fn into_plugins(self) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         plugins.extend(self.global);
         plugins.extend(self.agent_default);
-        plugins.extend(self.run_override);
         AgentOs::ensure_unique_plugin_ids(&plugins)?;
         Ok(plugins)
     }
@@ -109,7 +102,7 @@ impl AgentOs {
         Ok(out)
     }
 
-    fn ensure_unique_plugin_ids(
+    pub(super) fn ensure_unique_plugin_ids(
         plugins: &[Arc<dyn AgentPlugin>],
     ) -> Result<(), AgentOsWiringError> {
         // Fail-fast: plugins are keyed by `AgentPlugin::id()`. Duplicates are almost always a bug.
@@ -286,12 +279,11 @@ impl AgentOs {
         &self,
         bundles: &[Arc<dyn RegistryBundle>],
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-        scope: WiringScope,
     ) -> Result<Vec<Arc<dyn AgentPlugin>>, AgentOsWiringError> {
         let mut plugins = Vec::new();
         for bundle in bundles {
             Self::validate_wiring_bundle(bundle.as_ref())?;
-            Self::merge_wiring_bundle_tools(bundle.as_ref(), tools, scope)?;
+            Self::merge_wiring_bundle_tools(bundle.as_ref(), tools)?;
             let mut bundle_plugins = Self::collect_wiring_bundle_plugins(bundle.as_ref())?;
             plugins.append(&mut bundle_plugins);
         }
@@ -338,14 +330,13 @@ impl AgentOs {
     fn merge_wiring_bundle_tools(
         bundle: &dyn RegistryBundle,
         tools: &mut HashMap<String, Arc<dyn Tool>>,
-        scope: WiringScope,
     ) -> Result<(), AgentOsWiringError> {
         let mut defs: Vec<(String, Arc<dyn Tool>)> =
             bundle.tool_definitions().into_iter().collect();
         defs.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, tool) in defs {
             if tools.contains_key(&id) {
-                return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
+                return Err(Self::wiring_tool_conflict(bundle.id(), id));
             }
             tools.insert(id, tool);
         }
@@ -358,7 +349,7 @@ impl AgentOs {
                     continue;
                 };
                 if tools.contains_key(&id) {
-                    return Err(Self::wiring_tool_conflict(scope, bundle.id(), id));
+                    return Err(Self::wiring_tool_conflict(bundle.id(), id));
                 }
                 tools.insert(id, tool);
             }
@@ -407,21 +398,16 @@ impl AgentOs {
         Ok(out)
     }
 
-    fn wiring_tool_conflict(scope: WiringScope, bundle_id: &str, id: String) -> AgentOsWiringError {
-        match scope {
-            WiringScope::RunExtension => AgentOsWiringError::RunExtensionToolIdConflict(id),
-            WiringScope::System => {
-                if bundle_id == SKILLS_BUNDLE_ID {
-                    return AgentOsWiringError::SkillsToolIdConflict(id);
-                }
-                if bundle_id == AGENT_TOOLS_PLUGIN_ID || bundle_id == AGENT_RECOVERY_PLUGIN_ID {
-                    return AgentOsWiringError::AgentToolIdConflict(id);
-                }
-                AgentOsWiringError::BundleToolIdConflict {
-                    bundle_id: bundle_id.to_string(),
-                    id,
-                }
-            }
+    fn wiring_tool_conflict(bundle_id: &str, id: String) -> AgentOsWiringError {
+        if bundle_id == SKILLS_BUNDLE_ID {
+            return AgentOsWiringError::SkillsToolIdConflict(id);
+        }
+        if bundle_id == AGENT_TOOLS_PLUGIN_ID || bundle_id == AGENT_RECOVERY_PLUGIN_ID {
+            return AgentOsWiringError::AgentToolIdConflict(id);
+        }
+        AgentOsWiringError::BundleToolIdConflict {
+            bundle_id: bundle_id.to_string(),
+            id,
         }
     }
 
@@ -466,7 +452,7 @@ impl AgentOs {
             frozen_skills,
         )?);
         let system_plugins =
-            self.merge_wiring_bundles(&system_bundles, tools, WiringScope::System)?;
+            self.merge_wiring_bundles(&system_bundles, tools)?;
         let agent_default_plugins =
             Self::merge_agent_default_plugins(policy_plugins, other_plugins, explicit_plugins);
         definition.plugins = ResolvedPlugins::default()
@@ -511,7 +497,7 @@ impl AgentOs {
         let skills_bundles =
             self.build_skills_wiring_bundles(&explicit_plugins, self.freeze_skill_registry())?;
         let skills_plugins =
-            self.merge_wiring_bundles(&skills_bundles, tools, WiringScope::System)?;
+            self.merge_wiring_bundles(&skills_bundles, tools)?;
         definition.plugins = ResolvedPlugins::default()
             .with_global(skills_plugins)
             .with_agent_default(explicit_plugins)
@@ -526,26 +512,6 @@ impl AgentOs {
         } else {
             Err(AgentOsResolveError::AgentNotFound(agent_id.to_string()))
         }
-    }
-
-    pub(super) fn apply_run_extensions(
-        &self,
-        mut config: AgentConfig,
-        mut tools: HashMap<String, Arc<dyn Tool>>,
-        extensions: RunExtensions,
-    ) -> Result<(AgentConfig, HashMap<String, Arc<dyn Tool>>, HashMap<String, Arc<dyn Tool>>), AgentOsWiringError> {
-        let RunExtensions { bundles, frontend_tools } = extensions;
-        let extension_plugins =
-            self.merge_wiring_bundles(&bundles, &mut tools, WiringScope::RunExtension)?;
-        if !extension_plugins.is_empty() {
-            let base_plugins = std::mem::take(&mut config.plugins);
-            config.plugins = ResolvedPlugins::default()
-                .with_agent_default(base_plugins)
-                .with_run_override(extension_plugins)
-                .into_plugins()?;
-        }
-
-        Ok((config, tools, frontend_tools))
     }
 
     pub fn resolve(

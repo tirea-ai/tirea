@@ -1,7 +1,7 @@
 use carve_agentos::contracts::runtime::{AgentEvent, RunRequest};
-use carve_agentos::orchestrator::{AgentOs, RunExtensions};
+use carve_agentos::orchestrator::{AgentOs, RunScope};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
-use carve_protocol_ag_ui_runtime::build_agui_extensions;
+use carve_protocol_ag_ui_runtime::build_agui_run_scope;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
@@ -103,11 +103,11 @@ impl NatsGateway {
             ));
         };
 
-        let extensions = build_agui_extensions(&req.request);
+        let scope = build_agui_run_scope(&req.request);
         let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
         self.run_and_publish(
             run_request,
-            extensions,
+            scope,
             reply,
             |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
             |msg| AGUIEvent::run_error(msg, None),
@@ -158,7 +158,7 @@ impl NatsGateway {
 
         self.run_and_publish(
             run_request,
-            RunExtensions::default(),
+            RunScope::default(),
             reply,
             |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
             UIStreamEvent::error,
@@ -169,7 +169,7 @@ impl NatsGateway {
     async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
         &self,
         run_request: RunRequest,
-        extensions: RunExtensions,
+        scope: RunScope,
         reply: async_nats::Subject,
         build_encoder: BuildEncoder,
         build_error_event: BuildErrorEvent,
@@ -183,7 +183,7 @@ impl NatsGateway {
     {
         let run = match self
             .os
-            .run_stream_with_extensions(run_request, extensions)
+            .run_stream_with_scope(run_request, scope)
             .await
         {
             Ok(run) => run,

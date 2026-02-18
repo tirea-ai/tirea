@@ -1,6 +1,6 @@
 //! Runtime wiring for AG-UI requests.
 //!
-//! This crate builds run-scoped [`carve_agentos::orchestrator::RunExtensions`] for AG-UI:
+//! This crate builds a run-scoped [`carve_agentos::orchestrator::RunScope`] for AG-UI:
 //! frontend tool descriptor stubs, frontend pending interaction strategy,
 //! and interaction-response replay plugin wiring.
 
@@ -11,40 +11,38 @@ use carve_agentos::contracts::runtime::Interaction;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::AgentState as RuntimeAgentState;
 use carve_agentos::extensions::interaction::InteractionPlugin;
-use carve_agentos::orchestrator::{RunExtensions, ToolPluginBundle};
+use carve_agentos::orchestrator::{InMemoryToolRegistry, RunScope, ToolRegistry};
 use carve_protocol_ag_ui::RunAgentRequest;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Build run-scoped AgentOs extensions from an AG-UI run request.
-pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
+/// Build a run-scoped [`RunScope`] from an AG-UI run request.
+pub fn build_agui_run_scope(request: &RunAgentRequest) -> RunScope {
     let frontend_defs = request.frontend_tools();
     let frontend_tool_names: HashSet<String> =
         frontend_defs.iter().map(|tool| tool.name.clone()).collect();
 
-    // Frontend tools → RunExtensions.frontend_tools (StepToolProvider layer)
-    let mut frontend_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    for tool in frontend_defs {
-        frontend_tools.insert(
-            tool.name.clone(),
-            Arc::new(FrontendToolStub::new(
+    let mut scope = RunScope::new();
+
+    // Frontend tools → InMemoryToolRegistry → RunScope.tool_registries
+    if !frontend_defs.is_empty() {
+        let mut registry = InMemoryToolRegistry::new();
+        for tool in frontend_defs {
+            let stub = Arc::new(FrontendToolStub::new(
                 tool.name.clone(),
                 tool.description.clone(),
                 tool.parameters.clone(),
-            )),
-        );
+            ));
+            // register() uses descriptor.id as key, which equals tool.name
+            registry.register(stub).expect("frontend tool stubs should not conflict");
+        }
+        scope = scope.with_tool_registry(Arc::new(registry) as Arc<dyn ToolRegistry>);
     }
 
-    // Bundle only carries plugins (no tools)
-    let mut bundle = ToolPluginBundle::new("agui_runtime");
-    let mut has_plugin_contributions = false;
-
+    // Run-scoped plugins
     if !frontend_tool_names.is_empty() {
-        has_plugin_contributions = true;
-        bundle = bundle.with_plugin(Arc::new(FrontendToolPendingPlugin::new(
-            frontend_tool_names,
-        )));
+        scope = scope.with_plugin(Arc::new(FrontendToolPendingPlugin::new(frontend_tool_names)));
     }
 
     let interaction_plugin = InteractionPlugin::with_responses(
@@ -52,18 +50,10 @@ pub fn build_agui_extensions(request: &RunAgentRequest) -> RunExtensions {
         request.denied_interaction_ids(),
     );
     if interaction_plugin.is_active() {
-        has_plugin_contributions = true;
-        bundle = bundle.with_plugin(Arc::new(interaction_plugin));
+        scope = scope.with_plugin(Arc::new(interaction_plugin));
     }
 
-    let mut ext = RunExtensions::new();
-    if has_plugin_contributions {
-        ext = ext.with_bundle(Arc::new(bundle));
-    }
-    if !frontend_tools.is_empty() {
-        ext = ext.with_frontend_tools(frontend_tools);
-    }
-    ext
+    scope
 }
 
 /// Runtime-only frontend tool descriptor stub.
@@ -152,7 +142,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn builds_frontend_tool_stubs_from_request() {
+    fn builds_frontend_tool_registry_from_request() {
         let request = RunAgentRequest {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -180,12 +170,15 @@ mod tests {
             config: None,
         };
 
-        let extensions = build_agui_extensions(&request);
-        // Frontend tools go to frontend_tools field, not bundles
-        assert!(extensions.frontend_tools.contains_key("copyToClipboard"));
-        assert_eq!(extensions.frontend_tools.len(), 1);
-        // Bundle only carries the FrontendToolPendingPlugin
-        assert_eq!(extensions.bundles.len(), 1);
+        let scope = build_agui_run_scope(&request);
+        // Frontend tools go to tool_registries
+        assert_eq!(scope.tool_registries.len(), 1);
+        let tools = scope.tool_registries[0].snapshot();
+        assert!(tools.contains_key("copyToClipboard"));
+        assert_eq!(tools.len(), 1);
+        // FrontendToolPendingPlugin
+        assert_eq!(scope.plugins.len(), 1);
+        assert_eq!(scope.plugins[0].id(), "agui_frontend_tools");
     }
 
     #[test]
@@ -206,9 +199,10 @@ mod tests {
             config: None,
         };
 
-        let extensions = build_agui_extensions(&request);
-        assert!(extensions.frontend_tools.is_empty());
-        assert_eq!(extensions.bundles.len(), 1);
+        let scope = build_agui_run_scope(&request);
+        assert!(scope.tool_registries.is_empty());
+        // InteractionPlugin only
+        assert_eq!(scope.plugins.len(), 1);
     }
 
     #[test]
@@ -234,19 +228,21 @@ mod tests {
             config: None,
         };
 
-        let extensions = build_agui_extensions(&request);
-        assert!(extensions.frontend_tools.contains_key("copyToClipboard"));
-        // Bundle carries both FrontendToolPendingPlugin and InteractionPlugin
-        assert_eq!(extensions.bundles.len(), 1);
+        let scope = build_agui_run_scope(&request);
+        assert_eq!(scope.tool_registries.len(), 1);
+        let tools = scope.tool_registries[0].snapshot();
+        assert!(tools.contains_key("copyToClipboard"));
+        // FrontendToolPendingPlugin + InteractionPlugin
+        assert_eq!(scope.plugins.len(), 2);
     }
 
     #[test]
-    fn returns_empty_extensions_without_frontend_or_response_data() {
+    fn returns_empty_scope_without_frontend_or_response_data() {
         let request = RunAgentRequest::new("t1", "r1").with_message(AGUIMessage::user("hello"));
-        let extensions = build_agui_extensions(&request);
-        assert!(extensions.bundles.is_empty());
-        assert!(extensions.frontend_tools.is_empty());
-        assert!(extensions.is_empty());
+        let scope = build_agui_run_scope(&request);
+        assert!(scope.tool_registries.is_empty());
+        assert!(scope.plugins.is_empty());
+        assert!(scope.is_empty());
     }
 
     #[tokio::test]

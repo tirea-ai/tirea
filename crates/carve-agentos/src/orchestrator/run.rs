@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::{OverlayStepToolProvider, StaticStepToolProvider, StepToolProvider};
+use crate::runtime::loop_runner::StaticStepToolProvider;
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -34,16 +34,11 @@ impl AgentOs {
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
     /// 4. Agent resolution and run-context creation
-    pub async fn prepare_run(&self, request: RunRequest) -> Result<PreparedRun, AgentOsRunError> {
-        self.prepare_run_with_extensions(request, RunExtensions::default())
-            .await
-    }
-
-    /// Prepare a request for execution with run-scoped extensions.
-    pub async fn prepare_run_with_extensions(
+    /// 5. Append run-scoped plugins and tool registries from [`RunScope`]
+    pub async fn prepare_run(
         &self,
         mut request: RunRequest,
-        extensions: RunExtensions,
+        scope: RunScope,
     ) -> Result<PreparedRun, AgentOsRunError> {
         let agent_state_store = self.require_agent_state_store()?;
 
@@ -121,20 +116,25 @@ impl AgentOs {
             version_timestamp,
         );
 
-        // 6. Resolve static wiring, then merge run-scoped extensions.
-        let (cfg, tools, thread) = self.resolve(&request.agent_id, thread)?;
-        let (mut cfg, tools, frontend_tools) = self
-            .apply_run_extensions(cfg, tools, extensions)
-            .map_err(AgentOsResolveError::from)
-            .map_err(AgentOsRunError::from)?;
-        let base_provider: Arc<dyn StepToolProvider> =
-            Arc::new(StaticStepToolProvider::new(tools));
-        let provider: Arc<dyn StepToolProvider> = if frontend_tools.is_empty() {
-            base_provider
-        } else {
-            Arc::new(OverlayStepToolProvider::new(base_provider, frontend_tools))
-        };
-        cfg = cfg.with_step_tool_provider(provider);
+        // 6. Resolve static wiring.
+        let (mut cfg, mut tools, thread) = self.resolve(&request.agent_id, thread)?;
+
+        // 7. Append run-scoped plugins (dedup check).
+        if !scope.plugins.is_empty() {
+            cfg.plugins.extend(scope.plugins);
+            Self::ensure_unique_plugin_ids(&cfg.plugins)
+                .map_err(AgentOsResolveError::from)
+                .map_err(AgentOsRunError::from)?;
+        }
+
+        // 8. Overlay run-scoped tool registries (outside allowed_tools filtering).
+        for reg in &scope.tool_registries {
+            for (id, tool) in reg.snapshot() {
+                tools.entry(id).or_insert(tool);
+            }
+        }
+
+        cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
         let run_ctx = RunContext::default().with_state_committer(Arc::new(
             AgentStateStoreStateCommitter::new(agent_state_store.clone()),
         ));
@@ -163,19 +163,17 @@ impl AgentOs {
 
     /// Run an agent from a [`RunRequest`].
     pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
-        self.run_stream_with_extensions(request, RunExtensions::default())
-            .await
+        let prepared = self.prepare_run(request, RunScope::default()).await?;
+        Ok(Self::execute_prepared(prepared))
     }
 
     /// Run an agent from a [`RunRequest`] with run-scoped extensions.
-    pub async fn run_stream_with_extensions(
+    pub async fn run_stream_with_scope(
         &self,
         request: RunRequest,
-        extensions: RunExtensions,
+        scope: RunScope,
     ) -> Result<RunStream, AgentOsRunError> {
-        let prepared = self
-            .prepare_run_with_extensions(request, extensions)
-            .await?;
+        let prepared = self.prepare_run(request, scope).await?;
         Ok(Self::execute_prepared(prepared))
     }
 

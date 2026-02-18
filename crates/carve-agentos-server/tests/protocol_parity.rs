@@ -6,7 +6,7 @@ use carve_agentos::contracts::runtime::{AgentEvent, RunRequest};
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_protocol_ag_ui::{AGUIMessage, AgUiInputAdapter, RunAgentRequest};
-use carve_protocol_ag_ui_runtime::build_agui_extensions;
+use carve_protocol_ag_ui_runtime::build_agui_run_scope;
 use carve_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
 use carve_protocol_contract::ProtocolInputAdapter;
 use carve_thread_store_adapters::MemoryStore;
@@ -112,10 +112,10 @@ async fn agui_and_ai_sdk_have_equivalent_runtime_event_shape() {
 
     let agui_req = RunAgentRequest::new("thread_parity_stream", "run_parity_stream")
         .with_message(AGUIMessage::user("hello parity"));
-    let agui_extensions = build_agui_extensions(&agui_req);
+    let agui_scope = build_agui_run_scope(&agui_req);
     let agui_run_req = AgUiInputAdapter::to_run_request("test".to_string(), agui_req);
     let agui_run = os
-        .run_stream_with_extensions(agui_run_req, agui_extensions)
+        .run_stream_with_scope(agui_run_req, agui_scope)
         .await
         .unwrap();
     let agui_events: Vec<AgentEvent> = agui_run.events.collect().await;

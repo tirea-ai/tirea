@@ -52,11 +52,7 @@ pub use composition::{
 
 type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, AgentState);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WiringScope {
-    System,
-    RunExtension,
-}
+
 
 #[derive(Clone)]
 struct AgentStateStoreStateCommitter {
@@ -148,9 +144,6 @@ pub enum AgentOsWiringError {
 
     #[error("agent tool id already registered: {0}")]
     AgentToolIdConflict(String),
-
-    #[error("run extension tool id conflicts with existing tool: {0}")]
-    RunExtensionToolIdConflict(String),
 
     #[error("agent tools plugin already installed: {0}")]
     AgentToolsPluginAlreadyInstalled(String),
@@ -259,37 +252,41 @@ pub enum AgentOsRunError {
     AgentStateStoreNotConfigured,
 }
 
-/// Run-scoped extensions injected for a single run.
+/// Per-run extensions that participate in the resolve/wiring process.
 ///
-/// These extensions are merged after static `AgentDefinition` wiring and
-/// affect only the current run.
+/// These are composited into the agent's registries at resolve time,
+/// not patched on after assembly.
 #[derive(Clone, Default)]
-pub struct RunExtensions {
-    /// Additional wiring bundles active only for this run.
-    pub bundles: Vec<Arc<dyn RegistryBundle>>,
-    /// Run-scoped tools injected at the StepToolProvider layer.
-    /// New tools are added to the step snapshot; tools that shadow
-    /// existing backend tools are silently skipped (backend wins).
-    pub frontend_tools: HashMap<String, Arc<dyn Tool>>,
+pub struct RunScope {
+    /// Additional plugins appended after agent-default plugins.
+    pub plugins: Vec<Arc<dyn AgentPlugin>>,
+    /// Additional tool registries composited after base tools + system bundles,
+    /// but outside `allowed_tools`/`excluded_tools` filtering (overlay semantics).
+    pub tool_registries: Vec<Arc<dyn ToolRegistry>>,
 }
 
-impl RunExtensions {
+impl RunScope {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn with_bundle(mut self, bundle: Arc<dyn RegistryBundle>) -> Self {
-        self.bundles.push(bundle);
+    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
+        self.plugins.push(plugin);
         self
     }
 
-    pub fn with_frontend_tools(mut self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
-        self.frontend_tools.extend(tools);
+    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
+        self.plugins.extend(plugins);
+        self
+    }
+
+    pub fn with_tool_registry(mut self, registry: Arc<dyn ToolRegistry>) -> Self {
+        self.tool_registries.push(registry);
         self
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bundles.is_empty() && self.frontend_tools.is_empty()
+        self.plugins.is_empty() && self.tool_registries.is_empty()
     }
 }
 

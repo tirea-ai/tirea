@@ -1664,15 +1664,18 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
         .unwrap();
 
     let prepared = os
-        .prepare_run(RunRequest {
-            agent_id: "a1".to_string(),
-            thread_id: Some("t-prepare".to_string()),
-            run_id: Some("run-prepare".to_string()),
-            parent_run_id: Some("run-parent".to_string()),
-            resource_id: None,
-            state: Some(json!({"count": 1})),
-            messages: vec![crate::contracts::state::Message::user("hello")],
-        })
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-prepare".to_string()),
+                run_id: Some("run-prepare".to_string()),
+                parent_run_id: Some("run-parent".to_string()),
+                resource_id: None,
+                state: Some(json!({"count": 1})),
+                messages: vec![crate::contracts::state::Message::user("hello")],
+            },
+            RunScope::default(),
+        )
         .await
         .unwrap();
 
@@ -1734,15 +1737,18 @@ async fn execute_prepared_runs_stream() {
         .unwrap();
 
     let prepared = os
-        .prepare_run(RunRequest {
-            agent_id: "a1".to_string(),
-            thread_id: Some("t-exec-prepared".to_string()),
-            run_id: Some("run-exec-prepared".to_string()),
-            parent_run_id: None,
-            resource_id: None,
-            state: None,
-            messages: vec![crate::contracts::state::Message::user("hello")],
-        })
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-exec-prepared".to_string()),
+                run_id: Some("run-exec-prepared".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![crate::contracts::state::Message::user("hello")],
+            },
+            RunScope::default(),
+        )
         .await
         .unwrap();
 
@@ -1940,164 +1946,10 @@ async fn load_agent_state_without_store_returns_not_configured() {
     assert!(matches!(err, AgentOsRunError::AgentStateStoreNotConfigured));
 }
 
-#[tokio::test]
-async fn prepare_run_with_extensions_merges_run_scoped_bundle_tools_and_plugins() {
-    struct RuntimeOnlyPlugin;
-    #[async_trait::async_trait]
-    impl AgentPlugin for RuntimeOnlyPlugin {
-        fn id(&self) -> &str {
-            "runtime_only"
-        }
 
-        async fn on_phase(
-            &self,
-            phase: Phase,
-            step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
-        ) {
-            if phase == Phase::BeforeInference {
-                step.skip_inference = true;
-            }
-        }
-    }
-
-    struct RuntimeOnlyTool;
-    #[async_trait::async_trait]
-    impl Tool for RuntimeOnlyTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("runtime_tool", "Runtime Tool", "run-scoped tool")
-                .with_parameters(json!({"type":"object"}))
-        }
-
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ContextAgentState,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("runtime_tool", json!({"ok": true})))
-        }
-    }
-
-    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
-    let os = AgentOs::builder()
-        .with_agent_state_store(storage)
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
-        .build()
-        .unwrap();
-    let bundle = ToolPluginBundle::new("runtime_only_bundle")
-        .with_tool(Arc::new(RuntimeOnlyTool))
-        .with_plugin(Arc::new(RuntimeOnlyPlugin));
-
-    let prepared = os
-        .prepare_run_with_extensions(
-            RunRequest {
-                agent_id: "a1".to_string(),
-                thread_id: Some("t-run-ext".to_string()),
-                run_id: Some("run-ext".to_string()),
-                parent_run_id: None,
-                resource_id: None,
-                state: None,
-                messages: vec![Message::user("hello")],
-            },
-            RunExtensions::new().with_bundle(Arc::new(bundle)),
-        )
-        .await
-        .unwrap();
-
-    let provider = prepared
-        .config
-        .step_tool_provider
-        .as_ref()
-        .expect("runtime extensions should inject step tool provider")
-        .clone();
-    let snapshot = provider
-        .provide(crate::runtime::loop_runner::StepToolInput {
-            state: &prepared.thread,
-        })
-        .await
-        .expect("step tool provider should resolve");
-    assert!(snapshot.tools.contains_key("runtime_tool"));
-    assert!(prepared
-        .config
-        .plugins
-        .iter()
-        .any(|plugin| plugin.id() == "runtime_only"));
-}
 
 #[tokio::test]
-async fn prepare_run_with_extensions_errors_on_bundle_tool_id_conflict() {
-    struct BaseTool;
-    #[async_trait::async_trait]
-    impl Tool for BaseTool {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("dup_tool", "Dup Tool", "base")
-        }
-
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ContextAgentState,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("dup_tool", json!({})))
-        }
-    }
-
-    struct BundleToolConflict;
-    #[async_trait::async_trait]
-    impl Tool for BundleToolConflict {
-        fn descriptor(&self) -> ToolDescriptor {
-            ToolDescriptor::new("dup_tool", "Dup Tool Runtime Bundle", "runtime")
-        }
-
-        async fn execute(
-            &self,
-            _args: serde_json::Value,
-            _ctx: &ContextAgentState,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("dup_tool", json!({})))
-        }
-    }
-
-    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
-    let os = AgentOs::builder()
-        .with_agent_state_store(storage)
-        .with_tools(HashMap::from([(
-            "dup_tool".to_string(),
-            Arc::new(BaseTool) as Arc<dyn Tool>,
-        )]))
-        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
-        .build()
-        .unwrap();
-    let bundle =
-        ToolPluginBundle::new("runtime_bundle_conflict").with_tool(Arc::new(BundleToolConflict));
-
-    // Run extension bundles with duplicate tool ids are now rejected.
-    // Frontend tools should use RunExtensions.frontend_tools instead.
-    let result = os
-        .prepare_run_with_extensions(
-            RunRequest {
-                agent_id: "a1".to_string(),
-                thread_id: Some("t-run-ext-bundle-conflict".to_string()),
-                run_id: Some("run-ext-bundle-conflict".to_string()),
-                parent_run_id: None,
-                resource_id: None,
-                state: None,
-                messages: vec![Message::user("hello")],
-            },
-            RunExtensions::new().with_bundle(Arc::new(bundle)),
-        )
-        .await;
-    let err = result.err().expect("run extension bundle with duplicate tool should error");
-    assert!(matches!(
-        err,
-        AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
-            AgentOsWiringError::RunExtensionToolIdConflict(ref id)
-        )) if id == "dup_tool"
-    ));
-}
-
-#[tokio::test]
-async fn prepare_run_frontend_tools_overlay_adds_new_tool() {
+async fn prepare_run_scope_tool_registry_adds_new_tool() {
     use crate::runtime::loop_runner::StepToolInput;
 
     struct FrontendTool;
@@ -2123,23 +1975,22 @@ async fn prepare_run_frontend_tools_overlay_adds_new_tool() {
         .build()
         .unwrap();
 
-    let frontend_tools = HashMap::from([(
-        "frontend_action".to_string(),
-        Arc::new(FrontendTool) as Arc<dyn Tool>,
-    )]);
+    let mut registry = InMemoryToolRegistry::new();
+    registry.register(Arc::new(FrontendTool)).unwrap();
+    let scope = RunScope::new().with_tool_registry(Arc::new(registry) as Arc<dyn ToolRegistry>);
 
     let prepared = os
-        .prepare_run_with_extensions(
+        .prepare_run(
             RunRequest {
                 agent_id: "a1".to_string(),
-                thread_id: Some("t-frontend-overlay".to_string()),
-                run_id: Some("run-frontend-overlay".to_string()),
+                thread_id: Some("t-scope-registry".to_string()),
+                run_id: Some("run-scope-registry".to_string()),
                 parent_run_id: None,
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            RunExtensions::new().with_frontend_tools(frontend_tools),
+            scope,
         )
         .await
         .unwrap();
@@ -2157,7 +2008,7 @@ async fn prepare_run_frontend_tools_overlay_adds_new_tool() {
 }
 
 #[tokio::test]
-async fn prepare_run_frontend_tools_overlay_skips_shadowed() {
+async fn prepare_run_scope_tool_registry_skips_shadowed() {
     use crate::runtime::loop_runner::StepToolInput;
 
     struct ShadowTool;
@@ -2183,23 +2034,22 @@ async fn prepare_run_frontend_tools_overlay_skips_shadowed() {
         .build()
         .unwrap();
 
-    let frontend_tools = HashMap::from([(
-        "agent_run".to_string(),
-        Arc::new(ShadowTool) as Arc<dyn Tool>,
-    )]);
+    let mut registry = InMemoryToolRegistry::new();
+    registry.register(Arc::new(ShadowTool)).unwrap();
+    let scope = RunScope::new().with_tool_registry(Arc::new(registry) as Arc<dyn ToolRegistry>);
 
     let prepared = os
-        .prepare_run_with_extensions(
+        .prepare_run(
             RunRequest {
                 agent_id: "a1".to_string(),
-                thread_id: Some("t-frontend-shadow".to_string()),
-                run_id: Some("run-frontend-shadow".to_string()),
+                thread_id: Some("t-scope-shadow".to_string()),
+                run_id: Some("run-scope-shadow".to_string()),
                 parent_run_id: None,
                 resource_id: None,
                 state: None,
                 messages: vec![Message::user("hello")],
             },
-            RunExtensions::new().with_frontend_tools(frontend_tools),
+            scope,
         )
         .await
         .unwrap();
@@ -2219,6 +2069,108 @@ async fn prepare_run_frontend_tools_overlay_skips_shadowed() {
         .find(|d| d.id == "agent_run")
         .unwrap();
     assert_ne!(desc.description, "frontend stub");
+}
+
+#[tokio::test]
+async fn prepare_run_scope_appends_plugins() {
+    #[derive(Debug)]
+    struct RunScopedPlugin;
+
+    #[async_trait::async_trait]
+    impl AgentPlugin for RunScopedPlugin {
+        fn id(&self) -> &str {
+            "run_scoped"
+        }
+
+        async fn on_phase(
+            &self,
+            _phase: Phase,
+            _step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+        }
+    }
+
+    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let scope = RunScope::new().with_plugin(Arc::new(RunScopedPlugin));
+
+    let prepared = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-scope-plugin".to_string()),
+                run_id: Some("run-scope-plugin".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![Message::user("hello")],
+            },
+            scope,
+        )
+        .await
+        .unwrap();
+
+    assert!(prepared.config.plugins.iter().any(|p| p.id() == "run_scoped"));
+    // System plugins should still be present
+    assert!(prepared.config.plugins.iter().any(|p| p.id() == "agent_tools"));
+}
+
+#[tokio::test]
+async fn prepare_run_scope_rejects_duplicate_plugin_id() {
+    #[derive(Debug)]
+    struct DupPlugin;
+
+    #[async_trait::async_trait]
+    impl AgentPlugin for DupPlugin {
+        fn id(&self) -> &str {
+            "agent_tools"
+        }
+
+        async fn on_phase(
+            &self,
+            _phase: Phase,
+            _step: &mut StepContext<'_>,
+            _ctx: &ContextAgentState,
+        ) {
+        }
+    }
+
+    let storage = Arc::new(carve_thread_store_adapters::MemoryStore::new());
+    let os = AgentOs::builder()
+        .with_agent_state_store(storage)
+        .with_agent("a1", AgentDefinition::new("gpt-4o-mini"))
+        .build()
+        .unwrap();
+
+    let scope = RunScope::new().with_plugin(Arc::new(DupPlugin));
+
+    let result = os
+        .prepare_run(
+            RunRequest {
+                agent_id: "a1".to_string(),
+                thread_id: Some("t-scope-dup-plugin".to_string()),
+                run_id: Some("run-scope-dup-plugin".to_string()),
+                parent_run_id: None,
+                resource_id: None,
+                state: None,
+                messages: vec![Message::user("hello")],
+            },
+            scope,
+        )
+        .await;
+    let err = result.err().expect("duplicate plugin id should error");
+    assert!(matches!(
+        err,
+        AgentOsRunError::Resolve(AgentOsResolveError::Wiring(
+            AgentOsWiringError::PluginAlreadyInstalled(ref id)
+        )) if id == "agent_tools"
+    ));
 }
 
 #[derive(Debug)]

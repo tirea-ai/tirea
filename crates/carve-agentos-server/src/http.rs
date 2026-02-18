@@ -15,7 +15,7 @@ use carve_agentos::runtime::loop_runner::RunCancellationToken;
 use carve_protocol_ag_ui::{
     AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
 };
-use carve_protocol_ag_ui_runtime::build_agui_extensions;
+use carve_protocol_ag_ui_runtime::build_agui_run_scope;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,
@@ -357,7 +357,10 @@ async fn run_ai_sdk_sse(
 
     let run_request = AiSdkV6InputAdapter::to_run_request(agent_id, req);
     let cancellation_token = RunCancellationToken::new();
-    let prepared = st.os.prepare_run(run_request).await?;
+    let prepared = st
+        .os
+        .prepare_run(run_request, carve_agentos::orchestrator::RunScope::default())
+        .await?;
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
@@ -374,13 +377,10 @@ async fn run_ag_ui_sse(
     req.validate()
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
-    let extensions = build_agui_extensions(&req);
+    let scope = build_agui_run_scope(&req);
     let run_request = AgUiInputAdapter::to_run_request(agent_id, req);
     let cancellation_token = RunCancellationToken::new();
-    let prepared = st
-        .os
-        .prepare_run_with_extensions(run_request, extensions)
-        .await?;
+    let prepared = st.os.prepare_run(run_request, scope).await?;
     let run =
         AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
