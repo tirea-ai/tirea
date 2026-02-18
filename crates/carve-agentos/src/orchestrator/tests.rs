@@ -7,6 +7,9 @@ use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::extensions::skills::FsSkill;
 use crate::orchestrator::agent_tools::SCOPE_CALLER_AGENT_ID_KEY;
+use crate::runtime::loop_runner::{
+    TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
+};
 use async_trait::async_trait;
 use serde_json::json;
 use std::fs;
@@ -596,6 +599,127 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
     let (_cfg2, tools_second_run, _thread2) = os.resolve("a1", thread2).expect("resolve #2");
     assert!(!tools_second_run.contains_key("mcp__s1__echo"));
     assert!(tools_second_run.contains_key("mcp__s1__sum"));
+}
+
+#[tokio::test]
+async fn resolve_freezes_agent_snapshot_per_run_boundary() {
+    #[derive(Default)]
+    struct MutableAgentRegistry {
+        agents: std::sync::RwLock<HashMap<String, AgentDefinition>>,
+    }
+
+    impl MutableAgentRegistry {
+        fn replace_ids(&self, ids: &[&str]) {
+            let mut map = HashMap::new();
+            for id in ids {
+                map.insert((*id).to_string(), AgentDefinition::new("gpt-4o-mini"));
+            }
+            match self.agents.write() {
+                Ok(mut guard) => *guard = map,
+                Err(poisoned) => *poisoned.into_inner() = map,
+            }
+        }
+    }
+
+    impl AgentRegistry for MutableAgentRegistry {
+        fn len(&self) -> usize {
+            self.snapshot().len()
+        }
+
+        fn get(&self, id: &str) -> Option<AgentDefinition> {
+            self.snapshot().get(id).cloned()
+        }
+
+        fn ids(&self) -> Vec<String> {
+            let mut ids: Vec<String> = self.snapshot().keys().cloned().collect();
+            ids.sort();
+            ids
+        }
+
+        fn snapshot(&self) -> HashMap<String, AgentDefinition> {
+            match self.agents.read() {
+                Ok(guard) => guard.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
+        }
+    }
+
+    let dynamic_agents = Arc::new(MutableAgentRegistry::default());
+    dynamic_agents.replace_ids(&["worker_a"]);
+
+    let os = AgentOs::builder()
+        .with_agent("root", AgentDefinition::new("gpt-4o-mini"))
+        .with_agent_registry(dynamic_agents.clone() as Arc<dyn AgentRegistry>)
+        .build()
+        .expect("build agent os");
+
+    let thread1 = AgentState::with_initial_state("freeze-agent-1", json!({}));
+    let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
+    let run_tool_first = tools_first_run
+        .get("agent_run")
+        .cloned()
+        .expect("agent_run tool should exist");
+
+    // Update source registry after resolve #1. First run should still see worker_a.
+    dynamic_agents.replace_ids(&["worker_b"]);
+
+    let scope = {
+        let mut scope = carve_state::ScopeState::new();
+        scope
+            .set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
+            .expect("set caller thread id");
+        scope
+            .set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "root")
+            .expect("set caller agent id");
+        scope
+    };
+    let doc = json!({});
+    let ctx_first = ContextAgentState::new_transient(&doc, "call-1", "tool:agent_run")
+        .with_transient_scope(Some(&scope));
+    let first_result = run_tool_first
+        .execute(
+            json!({
+                "agent_id": "worker_a",
+                "prompt": "hi",
+                "background": true
+            }),
+            &ctx_first,
+        )
+        .await
+        .expect("execute first run tool");
+    assert!(
+        first_result.is_success(),
+        "first run should use frozen agents"
+    );
+
+    // Next resolve should use refreshed source and reject worker_a.
+    let thread2 = AgentState::with_initial_state("freeze-agent-2", json!({}));
+    let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
+    let run_tool_second = tools_second_run
+        .get("agent_run")
+        .cloned()
+        .expect("agent_run tool should exist");
+    let ctx_second = ContextAgentState::new_transient(&doc, "call-2", "tool:agent_run")
+        .with_transient_scope(Some(&scope));
+    let second_result = run_tool_second
+        .execute(
+            json!({
+                "agent_id": "worker_a",
+                "prompt": "hi",
+                "background": false
+            }),
+            &ctx_second,
+        )
+        .await
+        .expect("execute second run tool");
+    assert!(
+        second_result.is_error(),
+        "second run should observe updated agents snapshot"
+    );
+    assert!(second_result
+        .message
+        .unwrap_or_default()
+        .contains("Unknown or unavailable agent_id"));
 }
 
 #[tokio::test]

@@ -31,7 +31,10 @@ pub const SKILL_SCRIPT_TOOL_ID: &str = "skill_script";
 pub use combined_plugin::SkillPlugin;
 pub use discovery_plugin::SkillDiscoveryPlugin;
 pub use embedded_registry::{EmbeddedSkill, EmbeddedSkillData};
-pub use registry::{DiscoveryResult, FsSkill};
+pub use registry::{
+    DiscoveryResult, FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, SkillRegistry,
+    SkillRegistryError, SkillRegistryManagerError,
+};
 pub use runtime_plugin::SkillRuntimePlugin;
 pub use subsystem::{SkillSubsystem, SkillSubsystemError};
 pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};

@@ -3,11 +3,11 @@ use super::agent_tools::{
 };
 use super::policy::{filter_tools_in_place, set_scope_filters_from_definition_if_absent};
 use super::*;
-use crate::runtime::loop_runner::GenaiLlmExecutor;
 use crate::extensions::skills::{
-    Skill, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_PLUGIN_ID,
-    SKILLS_RUNTIME_PLUGIN_ID,
+    InMemorySkillRegistry, Skill, SkillRegistry, SKILLS_BUNDLE_ID, SKILLS_DISCOVERY_PLUGIN_ID,
+    SKILLS_PLUGIN_ID, SKILLS_RUNTIME_PLUGIN_ID,
 };
+use crate::runtime::loop_runner::GenaiLlmExecutor;
 
 #[derive(Default)]
 struct ResolvedPlugins {
@@ -51,8 +51,12 @@ impl AgentOs {
         self.default_client.clone()
     }
 
-    pub fn skill_list(&self) -> Option<&[Arc<dyn Skill>]> {
-        self.skills.as_deref()
+    pub fn skill_list(&self) -> Option<Vec<Arc<dyn Skill>>> {
+        self.skills_registry.as_ref().map(|registry| {
+            let mut skills: Vec<Arc<dyn Skill>> = registry.snapshot().into_values().collect();
+            skills.sort_by(|a, b| a.meta().id.cmp(&b.meta().id));
+            skills
+        })
     }
 
     pub(crate) fn agents_registry(&self) -> Arc<dyn AgentRegistry> {
@@ -165,10 +169,7 @@ impl AgentOs {
         Ok(())
     }
 
-    fn build_skills_plugins(
-        &self,
-        skills: Vec<Arc<dyn Skill>>,
-    ) -> Vec<Arc<dyn AgentPlugin>> {
+    fn build_skills_plugins(&self, skills: Vec<Arc<dyn Skill>>) -> Vec<Arc<dyn AgentPlugin>> {
         match self.skills_config.mode {
             SkillsMode::Disabled => Vec::new(),
             SkillsMode::DiscoveryAndRuntime => {
@@ -189,19 +190,47 @@ impl AgentOs {
         }
     }
 
+    fn freeze_agent_registry(&self) -> Arc<dyn AgentRegistry> {
+        let mut frozen = InMemoryAgentRegistry::new();
+        frozen.extend_upsert(self.agents.snapshot());
+        Arc::new(frozen)
+    }
+
+    fn freeze_skill_registry(&self) -> Option<Arc<dyn SkillRegistry>> {
+        self.skills_registry.as_ref().map(|registry| {
+            let mut frozen = InMemorySkillRegistry::new();
+            frozen.extend_upsert(registry.snapshot().into_values().collect());
+            Arc::new(frozen) as Arc<dyn SkillRegistry>
+        })
+    }
+
+    fn with_registry_overrides(
+        &self,
+        agents: Arc<dyn AgentRegistry>,
+        skills_registry: Option<Arc<dyn SkillRegistry>>,
+    ) -> Self {
+        let mut cloned = self.clone();
+        cloned.agents = agents;
+        cloned.skills_registry = skills_registry;
+        cloned
+    }
+
     fn build_skills_wiring_bundles(
         &self,
         explicit_plugins: &[Arc<dyn AgentPlugin>],
+        skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         if self.skills_config.mode == SkillsMode::Disabled {
             return Ok(Vec::new());
         }
 
         Self::ensure_skills_plugin_not_installed(explicit_plugins)?;
-        let skills = self
-            .skills
-            .clone()
-            .ok_or(AgentOsWiringError::SkillsNotConfigured)?;
+        let registry = skills_registry.ok_or(AgentOsWiringError::SkillsNotConfigured)?;
+        let skills = {
+            let mut skills: Vec<Arc<dyn Skill>> = registry.snapshot().into_values().collect();
+            skills.sort_by(|a, b| a.meta().id.cmp(&b.meta().id));
+            skills
+        };
 
         let subsystem = SkillSubsystem::new(skills.clone());
         let mut tool_defs = HashMap::new();
@@ -223,14 +252,17 @@ impl AgentOs {
     fn build_agent_tool_wiring_bundles(
         &self,
         explicit_plugins: &[Arc<dyn AgentPlugin>],
+        agents_registry: Arc<dyn AgentRegistry>,
+        skills_registry: Option<Arc<dyn SkillRegistry>>,
     ) -> Result<Vec<Arc<dyn RegistryBundle>>, AgentOsWiringError> {
         Self::ensure_agent_tools_plugin_not_installed(explicit_plugins)?;
+        let pinned_os = self.with_registry_overrides(agents_registry.clone(), skills_registry);
 
         let run_tool: Arc<dyn Tool> =
-            Arc::new(AgentRunTool::new(self.clone(), self.agent_runs.clone()));
+            Arc::new(AgentRunTool::new(pinned_os, self.agent_runs.clone()));
         let stop_tool: Arc<dyn Tool> = Arc::new(AgentStopTool::new(self.agent_runs.clone()));
 
-        let tools_plugin = AgentToolsPlugin::new(self.agents.clone(), self.agent_runs.clone())
+        let tools_plugin = AgentToolsPlugin::new(agents_registry, self.agent_runs.clone())
             .with_limits(
                 self.agent_tools.discovery_max_entries,
                 self.agent_tools.discovery_max_chars,
@@ -423,9 +455,16 @@ impl AgentOs {
         let explicit_plugins = std::mem::take(&mut definition.plugins);
         let policy_plugins = self.resolve_plugin_id_list(&definition.policy_ids)?;
         let other_plugins = self.resolve_plugin_id_list(&definition.plugin_ids)?;
+        let frozen_agents = self.freeze_agent_registry();
+        let frozen_skills = self.freeze_skill_registry();
 
-        let mut system_bundles = self.build_skills_wiring_bundles(&explicit_plugins)?;
-        system_bundles.extend(self.build_agent_tool_wiring_bundles(&explicit_plugins)?);
+        let mut system_bundles =
+            self.build_skills_wiring_bundles(&explicit_plugins, frozen_skills.clone())?;
+        system_bundles.extend(self.build_agent_tool_wiring_bundles(
+            &explicit_plugins,
+            frozen_agents,
+            frozen_skills,
+        )?);
         let system_plugins =
             self.merge_wiring_bundles(&system_bundles, tools, WiringScope::System)?;
         let agent_default_plugins =
@@ -439,9 +478,7 @@ impl AgentOs {
 
     fn resolve_model(&self, cfg: &mut AgentConfig) -> Result<(), AgentOsResolveError> {
         if self.models.is_empty() {
-            cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(
-                self.default_client.clone(),
-            )));
+            cfg.llm_executor = Some(Arc::new(GenaiLlmExecutor::new(self.default_client.clone())));
             return Ok(());
         }
 
@@ -471,7 +508,8 @@ impl AgentOs {
         tools: &mut HashMap<String, Arc<dyn Tool>>,
     ) -> Result<AgentDefinition, AgentOsWiringError> {
         let explicit_plugins = std::mem::take(&mut definition.plugins);
-        let skills_bundles = self.build_skills_wiring_bundles(&explicit_plugins)?;
+        let skills_bundles =
+            self.build_skills_wiring_bundles(&explicit_plugins, self.freeze_skill_registry())?;
         let skills_plugins =
             self.merge_wiring_bundles(&skills_bundles, tools, WiringScope::System)?;
         definition.plugins = ResolvedPlugins::default()

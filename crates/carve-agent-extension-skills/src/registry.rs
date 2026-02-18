@@ -5,10 +5,16 @@ use crate::{
     SkillResourceKind, SkillWarning,
 };
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Duration;
+use tokio::runtime::Handle;
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use unicode_normalization::UnicodeNormalization;
 
 /// A filesystem-backed skill.
@@ -30,6 +36,348 @@ pub struct FsSkill {
 pub struct DiscoveryResult {
     pub skills: Vec<FsSkill>,
     pub warnings: Vec<SkillWarning>,
+}
+
+pub trait SkillRegistry: Send + Sync {
+    fn len(&self) -> usize;
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Skill>>;
+
+    fn ids(&self) -> Vec<String>;
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>>;
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkillRegistryError {
+    #[error("skill id must be non-empty")]
+    EmptySkillId,
+
+    #[error("duplicate skill id: {0}")]
+    DuplicateSkillId(String),
+}
+
+#[derive(Clone, Default)]
+pub struct InMemorySkillRegistry {
+    skills: HashMap<String, Arc<dyn Skill>>,
+}
+
+impl std::fmt::Debug for InMemorySkillRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemorySkillRegistry")
+            .field("len", &self.skills.len())
+            .finish()
+    }
+}
+
+impl InMemorySkillRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_skills(skills: Vec<Arc<dyn Skill>>) -> Self {
+        let mut registry = Self::new();
+        registry.extend_upsert(skills);
+        registry
+    }
+
+    pub fn register(&mut self, skill: Arc<dyn Skill>) -> Result<(), SkillRegistryError> {
+        let id = skill.meta().id.trim().to_string();
+        if id.is_empty() {
+            return Err(SkillRegistryError::EmptySkillId);
+        }
+        if self.skills.contains_key(&id) {
+            return Err(SkillRegistryError::DuplicateSkillId(id));
+        }
+        self.skills.insert(id, skill);
+        Ok(())
+    }
+
+    pub fn extend_upsert(&mut self, skills: Vec<Arc<dyn Skill>>) {
+        for skill in skills {
+            let id = skill.meta().id.trim().to_string();
+            if id.is_empty() {
+                continue;
+            }
+            self.skills.insert(id, skill);
+        }
+    }
+
+    pub fn extend_registry(&mut self, other: &dyn SkillRegistry) -> Result<(), SkillRegistryError> {
+        for (_, skill) in other.snapshot() {
+            self.register(skill)?;
+        }
+        Ok(())
+    }
+}
+
+impl SkillRegistry for InMemorySkillRegistry {
+    fn len(&self) -> usize {
+        self.skills.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Skill>> {
+        self.skills.get(id).cloned()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.skills.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+        self.skills.clone()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkillRegistryManagerError {
+    #[error(transparent)]
+    Skill(#[from] SkillError),
+
+    #[error(transparent)]
+    Registry(#[from] SkillRegistryError),
+
+    #[error("skill roots list must be non-empty")]
+    EmptyRoots,
+
+    #[error("periodic refresh interval must be > 0")]
+    InvalidRefreshInterval,
+
+    #[error("periodic refresh loop is already running")]
+    PeriodicRefreshAlreadyRunning,
+
+    #[error("tokio runtime is required to start periodic refresh")]
+    RuntimeUnavailable,
+
+    #[error("periodic refresh join failed: {0}")]
+    Join(String),
+}
+
+#[derive(Clone, Default)]
+struct SkillRegistrySnapshot {
+    version: u64,
+    skills: HashMap<String, Arc<dyn Skill>>,
+    warnings: Vec<SkillWarning>,
+}
+
+struct PeriodicRefreshRuntime {
+    stop_tx: Option<oneshot::Sender<()>>,
+    join: JoinHandle<()>,
+}
+
+struct SkillRegistryState {
+    roots: Vec<PathBuf>,
+    snapshot: RwLock<SkillRegistrySnapshot>,
+    periodic_refresh: Mutex<Option<PeriodicRefreshRuntime>>,
+}
+
+fn read_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn write_lock<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn mutex_lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn is_periodic_refresh_running(state: &SkillRegistryState) -> bool {
+    let mut runtime = mutex_lock(&state.periodic_refresh);
+    if runtime
+        .as_ref()
+        .is_some_and(|running| running.join.is_finished())
+    {
+        *runtime = None;
+        return false;
+    }
+    runtime.is_some()
+}
+
+fn discover_snapshot_from_roots(
+    roots: &[PathBuf],
+) -> Result<(HashMap<String, Arc<dyn Skill>>, Vec<SkillWarning>), SkillRegistryManagerError> {
+    let discovered = FsSkill::discover_roots(roots.to_vec())?;
+    let mut map: HashMap<String, Arc<dyn Skill>> = HashMap::new();
+    for skill in discovered.skills {
+        let arc = Arc::new(skill) as Arc<dyn Skill>;
+        let id = arc.meta().id.trim().to_string();
+        if id.is_empty() {
+            return Err(SkillRegistryError::EmptySkillId.into());
+        }
+        if map.insert(id.clone(), arc).is_some() {
+            return Err(SkillRegistryError::DuplicateSkillId(id).into());
+        }
+    }
+    Ok((map, discovered.warnings))
+}
+
+async fn refresh_state(state: &SkillRegistryState) -> Result<u64, SkillRegistryManagerError> {
+    let roots = state.roots.clone();
+    let handle = tokio::task::spawn_blocking(move || discover_snapshot_from_roots(&roots));
+    let (skills, warnings) = handle
+        .await
+        .map_err(|e| SkillRegistryManagerError::Join(e.to_string()))??;
+    let mut snapshot = write_lock(&state.snapshot);
+    let version = snapshot.version.saturating_add(1);
+    *snapshot = SkillRegistrySnapshot {
+        version,
+        skills,
+        warnings,
+    };
+    Ok(version)
+}
+
+async fn periodic_refresh_loop(
+    state: Weak<SkillRegistryState>,
+    interval: Duration,
+    mut stop_rx: oneshot::Receiver<()>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            _ = ticker.tick() => {
+                let Some(state) = state.upgrade() else {
+                    break;
+                };
+                let _ = refresh_state(state.as_ref()).await;
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct FsSkillRegistryManager {
+    state: Arc<SkillRegistryState>,
+}
+
+impl std::fmt::Debug for FsSkillRegistryManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let snapshot = read_lock(&self.state.snapshot);
+        let periodic_running = is_periodic_refresh_running(self.state.as_ref());
+        f.debug_struct("FsSkillRegistryManager")
+            .field("roots", &self.state.roots.len())
+            .field("skills", &snapshot.skills.len())
+            .field("warnings", &snapshot.warnings.len())
+            .field("version", &snapshot.version)
+            .field("periodic_refresh_running", &periodic_running)
+            .finish()
+    }
+}
+
+impl FsSkillRegistryManager {
+    pub fn discover_roots(roots: Vec<PathBuf>) -> Result<Self, SkillRegistryManagerError> {
+        if roots.is_empty() {
+            return Err(SkillRegistryManagerError::EmptyRoots);
+        }
+        let (skills, warnings) = discover_snapshot_from_roots(&roots)?;
+        let snapshot = SkillRegistrySnapshot {
+            version: 1,
+            skills,
+            warnings,
+        };
+        Ok(Self {
+            state: Arc::new(SkillRegistryState {
+                roots,
+                snapshot: RwLock::new(snapshot),
+                periodic_refresh: Mutex::new(None),
+            }),
+        })
+    }
+
+    pub async fn refresh(&self) -> Result<u64, SkillRegistryManagerError> {
+        refresh_state(self.state.as_ref()).await
+    }
+
+    pub fn start_periodic_refresh(
+        &self,
+        interval: Duration,
+    ) -> Result<(), SkillRegistryManagerError> {
+        if interval.is_zero() {
+            return Err(SkillRegistryManagerError::InvalidRefreshInterval);
+        }
+        let handle =
+            Handle::try_current().map_err(|_| SkillRegistryManagerError::RuntimeUnavailable)?;
+        let mut runtime = mutex_lock(&self.state.periodic_refresh);
+        if runtime
+            .as_ref()
+            .is_some_and(|running| !running.join.is_finished())
+        {
+            return Err(SkillRegistryManagerError::PeriodicRefreshAlreadyRunning);
+        }
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let weak_state = Arc::downgrade(&self.state);
+        let join = handle.spawn(periodic_refresh_loop(weak_state, interval, stop_rx));
+        *runtime = Some(PeriodicRefreshRuntime {
+            stop_tx: Some(stop_tx),
+            join,
+        });
+        Ok(())
+    }
+
+    pub async fn stop_periodic_refresh(&self) -> bool {
+        let runtime = {
+            let mut guard = mutex_lock(&self.state.periodic_refresh);
+            guard.take()
+        };
+        let Some(mut runtime) = runtime else {
+            return false;
+        };
+        if let Some(stop_tx) = runtime.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        let _ = runtime.join.await;
+        true
+    }
+
+    pub fn periodic_refresh_running(&self) -> bool {
+        is_periodic_refresh_running(self.state.as_ref())
+    }
+
+    pub fn version(&self) -> u64 {
+        read_lock(&self.state.snapshot).version
+    }
+
+    pub fn warnings(&self) -> Vec<SkillWarning> {
+        read_lock(&self.state.snapshot).warnings.clone()
+    }
+}
+
+impl SkillRegistry for FsSkillRegistryManager {
+    fn len(&self) -> usize {
+        read_lock(&self.state.snapshot).skills.len()
+    }
+
+    fn get(&self, id: &str) -> Option<Arc<dyn Skill>> {
+        read_lock(&self.state.snapshot).skills.get(id).cloned()
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let snapshot = read_lock(&self.state.snapshot);
+        let mut ids: Vec<String> = snapshot.skills.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn snapshot(&self) -> HashMap<String, Arc<dyn Skill>> {
+        read_lock(&self.state.snapshot).skills.clone()
+    }
 }
 
 impl FsSkill {
@@ -66,7 +414,10 @@ impl FsSkill {
 
     /// Collect discovered skills into a vec of trait objects.
     pub fn into_arc_skills(skills: Vec<FsSkill>) -> Vec<Arc<dyn Skill>> {
-        skills.into_iter().map(|s| Arc::new(s) as Arc<dyn Skill>).collect()
+        skills
+            .into_iter()
+            .map(|s| Arc::new(s) as Arc<dyn Skill>)
+            .collect()
     }
 }
 
@@ -109,11 +460,7 @@ impl Skill for FsSkill {
         materialized.map_err(SkillError::from)
     }
 
-    async fn run_script(
-        &self,
-        script: &str,
-        args: &[String],
-    ) -> Result<ScriptResult, SkillError> {
+    async fn run_script(&self, script: &str, args: &[String]) -> Result<ScriptResult, SkillError> {
         let result: Result<ScriptResult, SkillMaterializeError> =
             run_script_material(&self.meta.id, &self.root_dir, script, args).await;
         result.map_err(SkillError::from)
@@ -500,5 +847,53 @@ Body
     fn validate_dir_name_rejects_parent_dir_like_segments() {
         assert!(validate_dir_name("a/b").is_err());
         assert!(validate_dir_name("..").is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_manager_refresh_discovers_new_skill_without_rebuild() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root.clone()]).unwrap();
+        assert_eq!(manager.version(), 1);
+        assert_eq!(manager.ids(), vec!["s1".to_string()]);
+
+        fs::create_dir_all(root.join("s2")).unwrap();
+        fs::write(
+            root.join("s2").join("SKILL.md"),
+            "---\nname: s2\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let version = manager.refresh().await.unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(manager.ids(), vec!["s1".to_string(), "s2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn registry_manager_failed_refresh_keeps_last_good_snapshot() {
+        let td = TempDir::new().unwrap();
+        let root = td.path().join("skills");
+        fs::create_dir_all(root.join("s1")).unwrap();
+        fs::write(
+            root.join("s1").join("SKILL.md"),
+            "---\nname: s1\ndescription: ok\n---\nBody\n",
+        )
+        .unwrap();
+
+        let manager = FsSkillRegistryManager::discover_roots(vec![root.clone()]).unwrap();
+        let initial_ids = manager.ids();
+        fs::remove_dir_all(&root).unwrap();
+
+        let err = manager.refresh().await.err().unwrap();
+        assert!(matches!(err, SkillRegistryManagerError::Skill(_)));
+        assert_eq!(manager.version(), 1);
+        assert_eq!(manager.ids(), initial_ids);
     }
 }

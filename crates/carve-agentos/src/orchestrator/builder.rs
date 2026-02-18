@@ -33,7 +33,10 @@ impl std::fmt::Debug for AgentOs {
             .field("plugins", &self.plugins.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
-            .field("skills", &self.skills.as_ref().map(|s| s.len()))
+            .field(
+                "skills",
+                &self.skills_registry.as_ref().map(|registry| registry.len()),
+            )
             .field("skills_config", &self.skills_config)
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
@@ -51,7 +54,10 @@ impl std::fmt::Debug for AgentOsBuilder {
             .field("plugins", &self.plugins.len())
             .field("providers", &self.providers.len())
             .field("models", &self.models.len())
-            .field("skills", &self.skills.as_ref().map(|s| s.len()))
+            .field(
+                "skills",
+                &self.skills_registry.as_ref().map(|registry| registry.len()),
+            )
             .field("skills_config", &self.skills_config)
             .field("agent_tools", &self.agent_tools)
             .field("agent_state_store", &self.agent_state_store.is_some())
@@ -74,7 +80,7 @@ impl AgentOsBuilder {
             provider_registries: Vec::new(),
             models: HashMap::new(),
             model_registries: Vec::new(),
-            skills: None,
+            skills_registry: None,
             skills_config: SkillsConfig::default(),
             agent_tools: AgentToolsConfig::default(),
             agent_state_store: None,
@@ -155,7 +161,12 @@ impl AgentOsBuilder {
     }
 
     pub fn with_skills(mut self, skills: Vec<Arc<dyn Skill>>) -> Self {
-        self.skills = Some(skills);
+        self.skills_registry = Some(Arc::new(InMemorySkillRegistry::from_skills(skills)));
+        self
+    }
+
+    pub fn with_skill_registry(mut self, registry: Arc<dyn SkillRegistry>) -> Self {
+        self.skills_registry = Some(registry);
         self
     }
 
@@ -188,7 +199,7 @@ impl AgentOsBuilder {
             mut provider_registries,
             models: mut model_defs,
             mut model_registries,
-            skills,
+            skills_registry,
             skills_config,
             agent_tools,
             agent_state_store,
@@ -210,7 +221,7 @@ impl AgentOsBuilder {
             },
         )?;
 
-        if skills_config.mode != SkillsMode::Disabled && skills.is_none() {
+        if skills_config.mode != SkillsMode::Disabled && skills_registry.is_none() {
             return Err(AgentOsBuildError::SkillsNotConfigured);
         }
 
@@ -325,7 +336,7 @@ impl AgentOsBuilder {
             plugins: registries.plugins,
             providers: registries.providers,
             models: registries.models,
-            skills,
+            skills_registry,
             skills_config,
             agent_runs: Arc::new(AgentRunManager::new()),
             agent_tools,

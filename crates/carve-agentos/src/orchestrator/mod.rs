@@ -15,8 +15,8 @@ use crate::contracts::storage::{
 };
 use crate::contracts::tool::Tool;
 use crate::extensions::skills::{
-    Skill, SkillDiscoveryPlugin, SkillError, SkillPlugin, SkillRuntimePlugin, SkillSubsystem,
-    SkillSubsystemError,
+    InMemorySkillRegistry, Skill, SkillDiscoveryPlugin, SkillError, SkillPlugin, SkillRegistry,
+    SkillRuntimePlugin, SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
     run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunContext,
@@ -48,11 +48,7 @@ pub use composition::{
     ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (
-    AgentConfig,
-    HashMap<String, Arc<dyn Tool>>,
-    AgentState,
-);
+type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, AgentState);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WiringScope {
@@ -333,7 +329,7 @@ pub struct AgentOs {
     plugins: Arc<dyn PluginRegistry>,
     providers: Arc<dyn ProviderRegistry>,
     models: Arc<dyn ModelRegistry>,
-    skills: Option<Vec<Arc<dyn Skill>>>,
+    skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills_config: SkillsConfig,
     agent_runs: Arc<AgentRunManager>,
     agent_tools: AgentToolsConfig,
@@ -354,7 +350,7 @@ pub struct AgentOsBuilder {
     provider_registries: Vec<Arc<dyn ProviderRegistry>>,
     models: HashMap<String, ModelDefinition>,
     model_registries: Vec<Arc<dyn ModelRegistry>>,
-    skills: Option<Vec<Arc<dyn Skill>>>,
+    skills_registry: Option<Arc<dyn SkillRegistry>>,
     skills_config: SkillsConfig,
     agent_tools: AgentToolsConfig,
     agent_state_store: Option<Arc<dyn AgentStateStore>>,
