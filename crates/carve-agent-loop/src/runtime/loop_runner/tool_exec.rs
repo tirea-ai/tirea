@@ -24,7 +24,6 @@ use carve_state::{PatchExt, TrackedPatch};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::Instrument;
 
 pub(super) struct AppliedToolResults {
     pub(super) thread: AgentState,
@@ -739,8 +738,7 @@ pub(super) async fn execute_single_tool_with_phases(
             None,
         )
     } else {
-        // Execute the tool with its own Context (instrumented with tracing span)
-        let tool_span = step.tracing_span.take().unwrap_or_else(tracing::Span::none);
+        // Execute the tool with its own Context
         let tool_ctx = crate::contracts::AgentState::from_thread_with_activity_manager(
             &temp_thread,
             state,
@@ -750,18 +748,14 @@ pub(super) async fn execute_single_tool_with_phases(
             state_version,
             activity_manager,
         );
-        let result = async {
-            match tool
-                .unwrap()
-                .execute(call.arguments.clone(), &tool_ctx)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => ToolResult::error(&call.name, e.to_string()),
-            }
-        }
-        .instrument(tool_span)
-        .await;
+        let result = match tool
+            .unwrap()
+            .execute(call.arguments.clone(), &tool_ctx)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => ToolResult::error(&call.name, e.to_string()),
+        };
 
         let patch = tool_ctx.take_patch();
         let patch = if patch.patch().is_empty() {

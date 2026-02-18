@@ -13,7 +13,6 @@ thiserror = { workspace = true }
 async-trait = "0.1"
 genai = "0.5"
 futures = "0.3"
-tracing = "0.1"
 tokio-util = "0.7"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }

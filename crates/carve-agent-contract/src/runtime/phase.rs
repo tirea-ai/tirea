@@ -190,10 +190,6 @@ pub struct StepContext<'a> {
     /// Skip LLM inference.
     pub skip_inference: bool,
 
-    // === Tracing ===
-    /// OTel tracing span for the current operation (set by LLMMetryPlugin).
-    pub tracing_span: Option<tracing::Span>,
-
     // === Pending State Changes ===
     /// Patches to apply to session state after this phase completes.
     pub pending_patches: Vec<TrackedPatch>,
@@ -211,7 +207,6 @@ impl<'a> StepContext<'a> {
             tool: None,
             response: None,
             skip_inference: false,
-            tracing_span: None,
             pending_patches: Vec::new(),
         }
     }
@@ -224,7 +219,6 @@ impl<'a> StepContext<'a> {
         self.tool = None;
         self.response = None;
         self.skip_inference = false;
-        self.tracing_span = None;
         self.pending_patches.clear();
     }
 

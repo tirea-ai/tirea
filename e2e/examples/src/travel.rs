@@ -3,6 +3,7 @@ use carve_agentos::contracts::tool::Tool;
 use carve_agentos::extensions::observability::{
     AgentMetrics, GenAISpan, LLMMetryPlugin, MetricsSink, ToolSpan,
 };
+use genai::chat::ChatOptions;
 use carve_agentos::extensions::permission::PermissionPlugin;
 use carve_agentos::orchestrator::AgentDefinition;
 use clap::Parser;
@@ -95,9 +96,14 @@ async fn main() {
         Arc::new(SearchPlacesTool),
     ];
 
+    let chat_options = ChatOptions::default()
+        .with_temperature(0.7)
+        .with_max_tokens(2048);
+
     let llmmetry = LLMMetryPlugin::new(LoggingSink)
         .with_model("deepseek-chat")
-        .with_provider("deepseek");
+        .with_provider("deepseek")
+        .with_chat_options(&chat_options);
 
     let plugins: Vec<(String, Arc<dyn AgentPlugin>)> = vec![
         ("permission".into(), Arc::new(PermissionPlugin)),

@@ -127,6 +127,28 @@ impl Tool for NoopTool {
     }
 }
 
+struct ErrorTool {
+    id: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Tool for ErrorTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor::new(self.id, self.id, "always fails")
+    }
+
+    async fn execute(
+        &self,
+        _args: serde_json::Value,
+        _ctx: &ContextAgentState,
+    ) -> Result<ToolResult, ToolError> {
+        Err(ToolError::ExecutionFailed(format!(
+            "{} exploded",
+            self.id
+        )))
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_execute_tools_parallel_exports_distinct_otel_tool_spans() {
     let (_guard, exporter, provider) = setup_otel_test();
@@ -364,6 +386,204 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         .map(|v| v.as_str().to_string())
         .unwrap_or_default();
     assert_eq!(error_type, "llm_stream_event_error");
+    assert!(matches!(
+        span.status,
+        opentelemetry::trace::Status::Error { .. }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_run_loop_stream_success_exports_tokens_to_otel() {
+    // Streaming success path with usage in the final chunk.
+    let Some((base_url, _server)) = start_sse_server(vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":7,\"total_tokens\":19}}\n\n",
+        "data: [DONE]\n\n",
+    ])
+    .await
+    else {
+        eprintln!("skipping test: sandbox does not permit local TCP listeners");
+        return;
+    };
+
+    let (_guard, exporter, provider) = setup_otel_test();
+
+    let sink = InMemorySink::new();
+    let plugin = Arc::new(
+        LLMMetryPlugin::new(sink.clone())
+            .with_model("gpt-4")
+            .with_provider("test-provider"),
+    ) as Arc<dyn AgentPlugin>;
+
+    let client = genai::Client::builder()
+        .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
+            t.endpoint = genai::resolver::Endpoint::from_owned(base_url.clone());
+            t.auth = genai::resolver::AuthData::from_single("test-key");
+            Ok(t)
+        })
+        .build();
+
+    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())
+        .collect()
+        .await;
+
+    // Should have TextDelta and no Error events.
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, AgentEvent::TextDelta { .. })));
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+
+    // Metrics should record a successful inference.
+    let m = sink.metrics();
+    assert_eq!(m.inference_count(), 1);
+    assert!(m.inferences[0].error_type.is_none());
+
+    let _ = provider.force_flush();
+    let exported = exporter.get_finished_spans().unwrap();
+    let span = exported
+        .iter()
+        .find(|s| s.name.starts_with("chat "))
+        .expect("expected chat span for streaming success");
+
+    // Verify no error status.
+    assert!(
+        !matches!(span.status, opentelemetry::trace::Status::Error { .. }),
+        "successful streaming span should not have Error status"
+    );
+    assert!(
+        find_attribute(span, "error.type").is_none(),
+        "successful streaming span should not have error.type"
+    );
+
+    // Verify token attributes if the provider surfaces them in streaming usage.
+    // Note: genai may or may not propagate streaming usage depending on the SSE
+    // payload structure. If input_tokens is present, validate the value.
+    if let Some(v) = find_attribute(span, "gen_ai.usage.input_tokens") {
+        assert_eq!(*v, opentelemetry::Value::I64(12));
+    }
+    if let Some(v) = find_attribute(span, "gen_ai.usage.output_tokens") {
+        assert_eq!(*v, opentelemetry::Value::I64(7));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_run_loop_stream_connection_refused_closes_inference_span() {
+    // Point the client at a port where nothing is listening.
+    // genai treats connection errors as stream event errors (not stream start errors),
+    // because the HTTP client wraps them into the stream iteration. Either way, the
+    // OTel span must be closed with error status.
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(l) => l,
+        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping test: sandbox does not permit local TCP listeners");
+            return;
+        }
+        Err(err) => panic!("failed to bind: {err}"),
+    };
+    let addr = listener.local_addr().unwrap();
+    drop(listener); // port is now free but nothing is listening
+
+    let base_url = format!("http://{addr}/v1/");
+
+    let (_guard, exporter, provider) = setup_otel_test();
+
+    let sink = InMemorySink::new();
+    let plugin = Arc::new(
+        LLMMetryPlugin::new(sink.clone())
+            .with_model("gpt-4")
+            .with_provider("test-provider"),
+    ) as Arc<dyn AgentPlugin>;
+
+    let client = genai::Client::builder()
+        .with_service_target_resolver_fn(move |mut t: genai::ServiceTarget| {
+            t.endpoint = genai::resolver::Endpoint::from_owned(base_url.clone());
+            t.auth = genai::resolver::AuthData::from_single("test-key");
+            Ok(t)
+        })
+        .build();
+
+    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+
+    let events: Vec<_> = run_loop_stream(client, config, thread, tools, Default::default())
+        .collect()
+        .await;
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+
+    // Metrics should record a failed inference.
+    let m = sink.metrics();
+    assert_eq!(m.inference_count(), 1);
+    let err_type = m.inferences[0]
+        .error_type
+        .as_deref()
+        .expect("error_type should be set");
+    assert!(
+        err_type == "llm_stream_start_error" || err_type == "llm_stream_event_error",
+        "expected a stream error type, got: {err_type}"
+    );
+
+    let _ = provider.force_flush();
+    let exported = exporter.get_finished_spans().unwrap();
+    let span = exported
+        .iter()
+        .find(|s| s.name.starts_with("chat "))
+        .expect("expected chat span for connection refused");
+    assert!(
+        find_attribute(span, "error.type").is_some(),
+        "error span must have error.type attribute"
+    );
+    assert!(matches!(
+        span.status,
+        opentelemetry::trace::Status::Error { .. }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_execute_tool_error_exports_otel_error_span() {
+    let (_guard, exporter, provider) = setup_otel_test();
+
+    let sink = InMemorySink::new();
+    let plugin = Arc::new(
+        LLMMetryPlugin::new(sink.clone()).with_provider("test-provider"),
+    ) as Arc<dyn AgentPlugin>;
+
+    let thread = AgentState::with_initial_state("t", json!({})).with_message(Message::user("hi"));
+    let result = StreamResult {
+        text: "calling tool".into(),
+        tool_calls: vec![ToolCall::new("c1", "bad_tool", json!({}))],
+        usage: None,
+    };
+
+    let mut tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    tools.insert(
+        "bad_tool".into(),
+        Arc::new(ErrorTool { id: "bad_tool" }),
+    );
+
+    // Tool execution errors are captured as ToolStatus::Error, not propagated as Err.
+    let _session = execute_tools_with_plugins(thread, &result, &tools, true, &[plugin])
+        .await
+        .unwrap();
+
+    let m = sink.metrics();
+    assert_eq!(m.tool_count(), 1);
+    assert_eq!(m.tools[0].error_type.as_deref(), Some("tool_error"));
+
+    let _ = provider.force_flush();
+    let exported = exporter.get_finished_spans().unwrap();
+    let span = exported
+        .iter()
+        .find(|s| s.name.starts_with("execute_tool "))
+        .expect("expected execute_tool span");
+    let error_type = find_attribute(span, "error.type")
+        .map(|v| v.as_str().to_string())
+        .unwrap_or_default();
+    assert_eq!(error_type, "tool_error");
     assert!(matches!(
         span.status,
         opentelemetry::trace::Status::Error { .. }

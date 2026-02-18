@@ -73,7 +73,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tracing::Instrument;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -485,16 +484,10 @@ async fn run_step_prepare_phases(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
-    (
-        Vec<Message>,
-        Vec<String>,
-        bool,
-        Option<tracing::Span>,
-        Vec<TrackedPatch>,
-    ),
+    (Vec<Message>, Vec<String>, bool, Vec<TrackedPatch>),
     AgentLoopError,
 > {
-    let ((messages, filtered_tools, skip_inference, tracing_span), pending) = run_phase_block(
+    let ((messages, filtered_tools, skip_inference), pending) = run_phase_block(
         thread,
         tool_descriptors,
         &config.plugins,
@@ -503,13 +496,7 @@ async fn run_step_prepare_phases(
         |step| inference_inputs_from_step(step, &config.system_prompt),
     )
     .await?;
-    Ok((
-        messages,
-        filtered_tools,
-        skip_inference,
-        tracing_span,
-        pending,
-    ))
+    Ok((messages, filtered_tools, skip_inference, pending))
 }
 
 pub(super) struct PreparedStep {
@@ -517,7 +504,6 @@ pub(super) struct PreparedStep {
     pub(super) filtered_tools: Vec<String>,
     pub(super) skip_inference: bool,
     pub(super) pending_patches: Vec<TrackedPatch>,
-    pub(super) tracing_span: Option<tracing::Span>,
 }
 
 pub(super) async fn prepare_step_execution(
@@ -525,14 +511,13 @@ pub(super) async fn prepare_step_execution(
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
-    let (messages, filtered_tools, skip_inference, tracing_span, pending) =
+    let (messages, filtered_tools, skip_inference, pending) =
         run_step_prepare_phases(thread, tool_descriptors, config).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
         skip_inference,
         pending_patches: pending,
-        tracing_span,
     })
 }
 
@@ -720,7 +705,6 @@ async fn run_step_with_provider(
     }
 
     // Call LLM with unified retry + fallback model strategy.
-    let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
     let attempt_outcome =
         run_llm_with_retry_and_fallback(config, None, true, "unknown llm error", |model| {
             let request =
@@ -730,7 +714,6 @@ async fn run_step_with_provider(
                     .exec_chat_response(&model, request, config.chat_options.as_ref())
                     .await
             }
-            .instrument(inference_span.clone())
         })
         .await;
     let response = match attempt_outcome {
@@ -978,7 +961,6 @@ async fn run_loop_outcome_with_context_provider(
         }
 
         // Call LLM with unified retry + fallback model strategy.
-        let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
         let messages = prepared.messages;
         let filtered_tools = prepared.filtered_tools;
         let attempt_outcome = run_llm_with_retry_and_fallback(
@@ -994,7 +976,6 @@ async fn run_loop_outcome_with_context_provider(
                         .exec_chat_response(&model, request, config.chat_options.as_ref())
                         .await
                 }
-                .instrument(inference_span.clone())
             },
         )
         .await;

@@ -85,7 +85,7 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
     messages
 }
 
-pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, bool, Option<tracing::Span>);
+pub(super) type InferenceInputs = (Vec<Message>, Vec<String>, bool);
 
 pub(super) fn inference_inputs_from_step(
     step: &mut StepContext<'_>,
@@ -98,8 +98,7 @@ pub(super) fn inference_inputs_from_step(
         .map(|td| td.id.clone())
         .collect::<Vec<_>>();
     let skip_inference = step.skip_inference;
-    let tracing_span = step.tracing_span.take();
-    (messages, filtered_tools, skip_inference, tracing_span)
+    (messages, filtered_tools, skip_inference)
 }
 
 pub(super) fn build_request_for_filtered_tools(

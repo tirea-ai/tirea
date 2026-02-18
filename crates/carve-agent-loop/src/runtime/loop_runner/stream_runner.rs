@@ -461,7 +461,6 @@ pub(super) fn run_loop_stream_impl_with_provider(
             yield emitter.step_start(assistant_msg_id.clone());
 
             // Stream LLM response with unified retry + fallback model strategy.
-            let inference_span = prepared.tracing_span.unwrap_or_else(tracing::Span::none);
             let chat_options = config.chat_options.clone();
             let attempt_outcome = run_llm_with_retry_and_fallback(
                 &config,
@@ -478,7 +477,6 @@ pub(super) fn run_loop_stream_impl_with_provider(
                             .exec_chat_stream_events(&model, request, chat_options.as_ref())
                             .await
                     }
-                    .instrument(inference_span.clone())
                 },
             )
             .await;
