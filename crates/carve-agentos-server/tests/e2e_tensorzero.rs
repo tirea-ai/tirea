@@ -113,7 +113,6 @@ async fn skip_unless_ready() -> bool {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_sse() {
     if skip_unless_ready().await {
         return;
@@ -195,7 +194,6 @@ async fn e2e_tensorzero_ai_sdk_sse() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_sse() {
     if skip_unless_ready().await {
         return;
@@ -281,7 +279,6 @@ async fn e2e_tensorzero_ag_ui_sse() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_feedback() {
     if skip_unless_ready().await {
         return;
@@ -514,7 +511,6 @@ fn extract_agui_text(sse: &str) -> String {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_tool_call() {
     if skip_unless_ready().await {
         return;
@@ -563,7 +559,6 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_tool_call() {
     if skip_unless_ready().await {
         return;
@@ -631,7 +626,6 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_multiturn() {
     if skip_unless_ready().await {
         return;
@@ -699,7 +693,6 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
     if skip_unless_ready().await {
         return;
@@ -779,7 +772,6 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_multistep_tool() {
     if skip_unless_ready().await {
         return;
@@ -862,7 +854,6 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_multiturn() {
     if skip_unless_ready().await {
         return;
@@ -932,7 +923,6 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
     if skip_unless_ready().await {
         return;
@@ -1014,7 +1004,6 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_multistep_tool() {
     if skip_unless_ready().await {
         return;
@@ -1114,7 +1103,6 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_load_history() {
     if skip_unless_ready().await {
         return;
@@ -1207,7 +1195,6 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ag_ui_load_history() {
     if skip_unless_ready().await {
         return;
@@ -1290,7 +1277,6 @@ async fn e2e_tensorzero_ag_ui_load_history() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     if skip_unless_ready().await {
         return;
@@ -1403,7 +1389,6 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_raw_message_history() {
     if skip_unless_ready().await {
         return;
@@ -1478,7 +1463,6 @@ async fn e2e_tensorzero_raw_message_history() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_history_not_found() {
     if skip_unless_ready().await {
         return;
@@ -1505,7 +1489,6 @@ async fn e2e_tensorzero_history_not_found() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn e2e_tensorzero_tool_call_history() {
     if skip_unless_ready().await {
         return;

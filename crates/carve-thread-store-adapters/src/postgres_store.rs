@@ -44,36 +44,35 @@ impl PostgresStore {
 
     /// Ensure the storage tables exist (idempotent).
     pub async fn ensure_table(&self) -> Result<(), AgentStateStoreError> {
-        let sql = format!(
-            r#"
-            CREATE TABLE IF NOT EXISTS {threads} (
-                id         TEXT PRIMARY KEY,
-                data       JSONB NOT NULL,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE TABLE IF NOT EXISTS {messages} (
-                seq        BIGSERIAL PRIMARY KEY,
-                session_id TEXT NOT NULL REFERENCES {threads}(id) ON DELETE CASCADE,
-                message_id TEXT,
-                run_id     TEXT,
-                step_index INTEGER,
-                data       JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            CREATE INDEX IF NOT EXISTS idx_{messages}_session_seq
-                ON {messages} (session_id, seq);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_{messages}_message_id
-                ON {messages} (message_id) WHERE message_id IS NOT NULL;
-            CREATE INDEX IF NOT EXISTS idx_{messages}_session_run
-                ON {messages} (session_id, run_id) WHERE run_id IS NOT NULL;
-            "#,
-            threads = self.table,
-            messages = self.messages_table,
-        );
-        sqlx::query(&sql)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e.to_string())))?;
+        let statements = vec![
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                self.table
+            ),
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (seq BIGSERIAL PRIMARY KEY, session_id TEXT NOT NULL REFERENCES {}(id) ON DELETE CASCADE, message_id TEXT, run_id TEXT, step_index INTEGER, data JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                self.messages_table, self.table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_session_seq ON {} (session_id, seq)",
+                self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_message_id ON {} (message_id) WHERE message_id IS NOT NULL",
+                self.messages_table, self.messages_table
+            ),
+            format!(
+                "CREATE INDEX IF NOT EXISTS idx_{}_session_run ON {} (session_id, run_id) WHERE run_id IS NOT NULL",
+                self.messages_table, self.messages_table
+            ),
+        ];
+
+        for sql in statements {
+            sqlx::query(&sql)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| AgentStateStoreError::Io(std::io::Error::other(e.to_string())))?;
+        }
         Ok(())
     }
 
