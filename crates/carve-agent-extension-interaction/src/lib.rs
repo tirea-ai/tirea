@@ -2,7 +2,6 @@
 //!
 //! This module is protocol-agnostic and operates on runtime interaction data.
 
-mod agent_control;
 mod context_provider;
 mod interaction_plugin;
 mod interaction_response;
