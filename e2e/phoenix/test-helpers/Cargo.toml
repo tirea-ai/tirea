@@ -1,0 +1,16 @@
+[package]
+name = "phoenix-test-helpers"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.29"
+tracing-subscriber = { version = "0.3", features = ["registry"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt", "macros"] }
