@@ -3014,7 +3014,7 @@ fn test_agent_loop_error_all_variants() {
 
     // Stopped
     let stopped_err = AgentLoopError::Stopped {
-        thread: Box::new(ConversationAgentState::new("s")),
+        state: Box::new(ConversationAgentState::new("s")),
         reason: carve_agent::engine::stop_conditions::StopReason::MaxRoundsReached,
     };
     let display = stopped_err.to_string();
@@ -3026,7 +3026,7 @@ fn test_agent_loop_error_all_variants() {
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
-        thread: Box::new(ConversationAgentState::new("s")),
+        state: Box::new(ConversationAgentState::new("s")),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     let display = pending_err.to_string();
@@ -6552,10 +6552,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         .unwrap_err();
 
     let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction {
-            thread,
-            interaction,
-        } => (*thread, *interaction),
+        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6622,10 +6619,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction {
-            thread,
-            interaction,
-        } => (*thread, *interaction),
+        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6717,10 +6711,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .unwrap_err();
 
     let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction {
-            thread,
-            interaction,
-        } => (*thread, *interaction),
+        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 

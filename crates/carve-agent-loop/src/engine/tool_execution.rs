@@ -4,8 +4,11 @@ pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::state::ToolCall;
 use crate::contracts::tool::{Tool, ToolResult};
 use crate::contracts::AgentState;
-use carve_state::{ScopeState, TrackedPatch};
+use carve_state::{apply_patch, ScopeState, TrackedPatch};
+use futures::future::join_all;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Execute a single tool call.
 ///
@@ -65,6 +68,42 @@ pub async fn execute_single_tool_with_scope(
         result,
         patch,
     }
+}
+
+/// Execute tool calls in parallel using the same state snapshot for every call.
+pub async fn execute_tools_parallel(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[ToolCall],
+    state: &Value,
+) -> Vec<ToolExecution> {
+    let tasks = calls.iter().cloned().map(|call| {
+        let tool = tools.get(&call.name).cloned();
+        let state = state.clone();
+        async move { execute_single_tool(tool.as_deref(), &call, &state).await }
+    });
+    join_all(tasks).await
+}
+
+/// Execute tool calls sequentially, applying each resulting patch before the next call.
+pub async fn execute_tools_sequential(
+    tools: &HashMap<String, Arc<dyn Tool>>,
+    calls: &[ToolCall],
+    state: &Value,
+) -> (Value, Vec<ToolExecution>) {
+    let mut state = state.clone();
+    let mut executions = Vec::with_capacity(calls.len());
+
+    for call in calls {
+        let exec = execute_single_tool(tools.get(&call.name).map(Arc::as_ref), call, &state).await;
+        if let Some(patch) = exec.patch.as_ref() {
+            if let Ok(next) = apply_patch(&state, patch.patch()) {
+                state = next;
+            }
+        }
+        executions.push(exec);
+    }
+
+    (state, executions)
 }
 
 /// Collect patches from executions.
