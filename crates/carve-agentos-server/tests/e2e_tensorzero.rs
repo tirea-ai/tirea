@@ -135,7 +135,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/deepseek/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/deepseek/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -219,7 +219,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/deepseek/runs/ag-ui/sse")
+                .uri("/v1/ag-ui/agents/deepseek/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -525,7 +525,7 @@ async fn e2e_tensorzero_ai_sdk_tool_call() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/calc/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/calc/runs",
         json!({
             "sessionId": "tz-sdk-tool",
             "input": "Use the calculator tool to compute 25 * 4. Reply with just the number.",
@@ -573,7 +573,7 @@ async fn e2e_tensorzero_ag_ui_tool_call() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/calc/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/calc/runs",
         json!({
             "threadId": "tz-agui-tool",
             "runId": "r-tool-2",
@@ -642,7 +642,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 
     let (status, text1) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": "tz-sdk-multi",
             "input": "Remember the code word: banana. Just say OK.",
@@ -668,7 +668,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn() {
 
     let (status, text2) = post_sse(
         app2,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": "tz-sdk-multi",
             "input": "What was the code word? Reply with just the word.",
@@ -734,7 +734,7 @@ async fn e2e_tensorzero_ai_sdk_finish_max_rounds() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/limited/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/limited/runs",
         json!({
             "sessionId": "tz-sdk-error",
             "input": "Use the calculator to add 1 and 2.",
@@ -786,7 +786,7 @@ async fn e2e_tensorzero_ai_sdk_multistep_tool() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/calc/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/calc/runs",
         json!({
             "sessionId": "tz-sdk-multistep",
             "input": "Use the calculator to multiply 12 by 5. Reply with just the number.",
@@ -870,7 +870,7 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
 
     let (status, _) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/deepseek/runs",
         json!({
             "threadId": "tz-agui-multi",
             "runId": "r-am1",
@@ -893,7 +893,7 @@ async fn e2e_tensorzero_ag_ui_multiturn() {
 
     let (status, text2) = post_sse(
         app2,
-        "/v1/agents/deepseek/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/deepseek/runs",
         json!({
             "threadId": "tz-agui-multi",
             "runId": "r-am2",
@@ -965,7 +965,7 @@ async fn e2e_tensorzero_ag_ui_run_finished_max_rounds() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/limited/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/limited/runs",
         json!({
             "threadId": "tz-agui-error",
             "runId": "r-err-1",
@@ -1018,7 +1018,7 @@ async fn e2e_tensorzero_ag_ui_multistep_tool() {
 
     let (status, text) = post_sse(
         app,
-        "/v1/agents/calc/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/calc/runs",
         json!({
             "threadId": "tz-agui-multistep",
             "runId": "r-ms-1",
@@ -1119,7 +1119,7 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
     });
     let (status, text1) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": thread_id,
             "input": "Remember the animal: elephant. Just say OK.",
@@ -1141,7 +1141,7 @@ async fn e2e_tensorzero_ai_sdk_load_history() {
         read_store: storage.clone(),
     });
     let (status, history_text) =
-        get_json(app2, &format!("/v1/threads/{thread_id}/messages/ai-sdk")).await;
+        get_json(app2, &format!("/v1/ai-sdk/threads/{thread_id}/messages")).await;
 
     println!("=== AI SDK History ===\n{history_text}");
     assert_eq!(status, StatusCode::OK);
@@ -1211,7 +1211,7 @@ async fn e2e_tensorzero_ag_ui_load_history() {
     });
     let (status, _) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ag-ui/sse",
+        "/v1/ag-ui/agents/deepseek/runs",
         json!({
             "threadId": thread_id,
             "runId": "r-agui-hist-1",
@@ -1232,7 +1232,7 @@ async fn e2e_tensorzero_ag_ui_load_history() {
         read_store: storage.clone(),
     });
     let (status, history_text) =
-        get_json(app2, &format!("/v1/threads/{thread_id}/messages/ag-ui")).await;
+        get_json(app2, &format!("/v1/ag-ui/threads/{thread_id}/messages")).await;
 
     println!("=== AG-UI History ===\n{history_text}");
     assert_eq!(status, StatusCode::OK);
@@ -1293,7 +1293,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     });
     let (status, _) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": thread_id,
             "input": "Remember: the secret is mango. Just say OK.",
@@ -1312,7 +1312,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     });
     let (status, text2) = post_sse(
         app2,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": thread_id,
             "input": "What was the secret? Reply with just the word.",
@@ -1338,7 +1338,7 @@ async fn e2e_tensorzero_ai_sdk_multiturn_history() {
     });
     let (status, history_text) = get_json(
         app3,
-        &format!("/v1/threads/{thread_id}/messages/ai-sdk?limit=200"),
+        &format!("/v1/ai-sdk/threads/{thread_id}/messages?limit=200"),
     )
     .await;
 
@@ -1405,7 +1405,7 @@ async fn e2e_tensorzero_raw_message_history() {
     });
     let (status, sse_text) = post_sse(
         app1,
-        "/v1/agents/deepseek/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/deepseek/runs",
         json!({
             "sessionId": thread_id,
             "input": "Say hello.",
@@ -1475,7 +1475,7 @@ async fn e2e_tensorzero_history_not_found() {
         read_store: storage,
     });
 
-    let (status, _) = get_json(app, "/v1/threads/nonexistent-thread/messages/ai-sdk").await;
+    let (status, _) = get_json(app, "/v1/ai-sdk/threads/nonexistent-thread/messages").await;
 
     assert_eq!(
         status,
@@ -1505,7 +1505,7 @@ async fn e2e_tensorzero_tool_call_history() {
     });
     let (status, text) = post_sse(
         app1,
-        "/v1/agents/calc/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/calc/runs",
         json!({
             "sessionId": thread_id,
             "input": "Use the calculator to add 7 and 8. Reply with just the number.",
@@ -1528,7 +1528,7 @@ async fn e2e_tensorzero_tool_call_history() {
     });
     let (status, history_text) = get_json(
         app2,
-        &format!("/v1/threads/{thread_id}/messages/ai-sdk?limit=200&visibility=none"),
+        &format!("/v1/ai-sdk/threads/{thread_id}/messages?limit=200&visibility=none"),
     )
     .await;
 
@@ -1577,7 +1577,7 @@ async fn e2e_tensorzero_tool_call_history() {
     });
     let (status, agui_text) = get_json(
         app3,
-        &format!("/v1/threads/{thread_id}/messages/ag-ui?limit=200&visibility=none"),
+        &format!("/v1/ag-ui/threads/{thread_id}/messages?limit=200&visibility=none"),
     )
     .await;
 

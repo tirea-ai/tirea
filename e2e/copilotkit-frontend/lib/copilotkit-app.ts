@@ -12,7 +12,7 @@ const runtime = new CopilotRuntime({
     // Type cast needed: top-level @ag-ui/client may differ from CopilotKit's internal version
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     default: new HttpAgent({
-      url: `${BACKEND_URL}/v1/agents/default/runs/ag-ui/sse`,
+      url: `${BACKEND_URL}/v1/ag-ui/agents/default/runs`,
     }) as any,
   },
 });

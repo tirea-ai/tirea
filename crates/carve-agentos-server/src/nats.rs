@@ -15,8 +15,8 @@ use tracing;
 use crate::transport::pump_encoded_stream;
 use async_nats::ConnectErrorKind;
 
-const SUBJECT_RUN_AGUI: &str = "agentos.run.agui";
-const SUBJECT_RUN_AISDK: &str = "agentos.run.aisdk";
+const SUBJECT_RUN_AGUI: &str = "agentos.ag-ui.runs";
+const SUBJECT_RUN_AISDK: &str = "agentos.ai-sdk.runs";
 
 #[derive(Debug, thiserror::Error)]
 pub enum NatsGatewayError {

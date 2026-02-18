@@ -10,7 +10,7 @@ export async function GET(req: NextRequest) {
   }
 
   const upstream = await fetch(
-    `${BACKEND_URL}/v1/threads/${encodeURIComponent(sessionId)}/messages/ai-sdk?limit=200`,
+    `${BACKEND_URL}/v1/ai-sdk/threads/${encodeURIComponent(sessionId)}/messages?limit=200`,
   );
 
   if (!upstream.ok) {

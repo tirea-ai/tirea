@@ -132,7 +132,7 @@ async fn publish_agui_and_collect(
     });
     client
         .publish(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -191,7 +191,7 @@ async fn test_nats_agui_happy_path() {
 
     client
         .publish(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -267,7 +267,7 @@ async fn test_nats_aisdk_happy_path() {
 
     client
         .publish(
-            "agentos.run.aisdk",
+            "agentos.ai-sdk.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -350,7 +350,7 @@ async fn test_nats_agui_agent_not_found() {
 
     client
         .publish(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -391,7 +391,7 @@ async fn test_nats_aisdk_agent_not_found() {
 
     client
         .publish(
-            "agentos.run.aisdk",
+            "agentos.ai-sdk.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -430,7 +430,7 @@ async fn test_nats_agui_bad_json() {
 
     // Bad JSON — handler should return Err (logged), no reply expected.
     client
-        .publish("agentos.run.agui", bytes::Bytes::from_static(b"not json"))
+        .publish("agentos.ag-ui.runs", bytes::Bytes::from_static(b"not json"))
         .await
         .unwrap();
 
@@ -446,7 +446,7 @@ async fn test_nats_aisdk_bad_json() {
     let (_storage, client) = setup_gateway(&nats_url).await;
 
     client
-        .publish("agentos.run.aisdk", bytes::Bytes::from_static(b"{bad"))
+        .publish("agentos.ai-sdk.runs", bytes::Bytes::from_static(b"{bad"))
         .await
         .unwrap();
 
@@ -469,7 +469,7 @@ async fn test_nats_aisdk_empty_input() {
 
     client
         .publish(
-            "agentos.run.aisdk",
+            "agentos.ai-sdk.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -498,7 +498,7 @@ async fn test_nats_agui_missing_reply_subject() {
 
     client
         .publish(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -523,7 +523,7 @@ async fn test_nats_aisdk_missing_reply_subject() {
 
     client
         .publish(
-            "agentos.run.aisdk",
+            "agentos.ai-sdk.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await
@@ -554,7 +554,7 @@ async fn test_nats_agui_reply_subject_from_nats_reply_header() {
 
     client
         .publish_with_reply(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             reply_subject.to_string(),
             serde_json::to_vec(&payload).unwrap().into(),
         )
@@ -607,7 +607,7 @@ async fn test_nats_aisdk_reply_subject_from_nats_reply_header() {
 
     client
         .publish_with_reply(
-            "agentos.run.aisdk",
+            "agentos.ai-sdk.runs",
             reply_subject.to_string(),
             serde_json::to_vec(&payload).unwrap().into(),
         )
@@ -762,7 +762,7 @@ async fn test_nats_agui_slow_consumer_still_finishes_and_persists() {
 
     client
         .publish(
-            "agentos.run.agui",
+            "agentos.ag-ui.runs",
             serde_json::to_vec(&payload).unwrap().into(),
         )
         .await

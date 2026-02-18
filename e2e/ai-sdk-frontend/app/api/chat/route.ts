@@ -34,7 +34,7 @@ export async function POST(req: Request) {
   }
 
   const upstream = await fetch(
-    `${BACKEND_URL}/v1/agents/${AGENT_ID}/runs/ai-sdk/sse`,
+    `${BACKEND_URL}/v1/ai-sdk/agents/${AGENT_ID}/runs`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

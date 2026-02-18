@@ -132,7 +132,7 @@ async fn e2e_http_matrix_96() {
                 "runId": ai_run_id,
             });
             let (status, body) =
-                post_json(app.clone(), "/v1/agents/test/runs/ai-sdk/sse", ai_payload).await;
+                post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", ai_payload).await;
             assert_eq!(status, StatusCode::OK);
             assert!(
                 body.contains(r#""type":"start""#),
@@ -168,7 +168,7 @@ async fn e2e_http_matrix_96() {
                 "tools": []
             });
             let (status, body) =
-                post_json(app.clone(), "/v1/agents/test/runs/ag-ui/sse", ag_payload).await;
+                post_json(app.clone(), "/v1/ag-ui/agents/test/runs", ag_payload).await;
             assert_eq!(status, StatusCode::OK);
             assert!(
                 body.contains(r#""type":"RUN_STARTED""#),
@@ -215,7 +215,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
                 "input": format!("hi-ai-{i}"),
                 "runId": format!("run-ai-{i}"),
             });
-            post_json(app_clone, "/v1/agents/test/runs/ai-sdk/sse", payload).await
+            post_json(app_clone, "/v1/ai-sdk/agents/test/runs", payload).await
         }));
     }
 
@@ -229,7 +229,7 @@ async fn e2e_http_concurrent_48_all_persisted() {
                 "messages": [{"role": "user", "content": format!("hi-ag-{i}")}],
                 "tools": []
             });
-            post_json(app_clone, "/v1/agents/test/runs/ag-ui/sse", payload).await
+            post_json(app_clone, "/v1/ag-ui/agents/test/runs", payload).await
         }));
     }
 
@@ -281,7 +281,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     });
     let (status, body) = post_json(
         app.clone(),
-        "/v1/agents/test/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/test/runs",
         first_payload,
     )
     .await;
@@ -295,7 +295,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
     });
     let (status, body) = post_json(
         app.clone(),
-        "/v1/agents/test/runs/ai-sdk/sse",
+        "/v1/ai-sdk/agents/test/runs",
         second_payload,
     )
     .await;
@@ -311,7 +311,7 @@ async fn e2e_http_multiturn_history_endpoints_are_consistent() {
         "missing second turn in raw page: {raw_page_text}"
     );
 
-    let (status, encoded_page) = get_json(app, "/v1/threads/history-e2e-thread/messages/ai-sdk").await;
+    let (status, encoded_page) = get_json(app, "/v1/ai-sdk/threads/history-e2e-thread/messages").await;
     assert_eq!(status, StatusCode::OK);
     let encoded_page_text = encoded_page.to_string();
     assert!(
@@ -339,7 +339,7 @@ async fn e2e_http_ai_sdk_large_payload_roundtrip() {
         "input": large_input,
         "runId": "large-payload-run",
     });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains(r#""type":"finish""#),
@@ -385,7 +385,7 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
                     "runId": format!("mixed-ai-run-{i}")
                 });
                 let (status, body) =
-                    post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+                    post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
                 (format!("mixed-ai-{i}"), input, status, body)
             } else {
                 let input = if i % 5 == 1 {
@@ -400,7 +400,7 @@ async fn e2e_http_mixed_large_payload_concurrency_64() {
                     "tools": []
                 });
                 let (status, body) =
-                    post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+                    post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
                 (format!("mixed-ag-{i}"), input, status, body)
             }
         }));

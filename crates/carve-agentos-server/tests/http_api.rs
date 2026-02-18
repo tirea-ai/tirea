@@ -267,7 +267,7 @@ async fn test_ai_sdk_sse_and_persists_session() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -319,7 +319,7 @@ async fn test_ai_sdk_sse_sets_expected_headers_and_done_trailer() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -367,7 +367,7 @@ async fn test_ai_sdk_sse_auto_generated_run_id_is_uuid_v7() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -427,7 +427,7 @@ async fn test_agui_sse_and_persists_session() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .uri("/v1/ag-ui/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -472,7 +472,7 @@ async fn test_industry_common_persistence_saves_user_message_before_run_complete
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -517,7 +517,7 @@ async fn test_industry_common_persistence_saves_inbound_request_messages_agui() 
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .uri("/v1/ag-ui/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -562,7 +562,7 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .uri("/v1/ag-ui/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from(payload.to_string()))
                 .unwrap(),
@@ -719,7 +719,7 @@ async fn test_ai_sdk_sse_empty_thread_id() {
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "  ", "input": "hi" });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap_or("").contains("sessionId"),
@@ -734,7 +734,7 @@ async fn test_ai_sdk_sse_empty_input() {
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "  " });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap_or("").contains("input"),
@@ -749,7 +749,7 @@ async fn test_ai_sdk_sse_agent_not_found() {
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
-    let (status, body) = post_json(app, "/v1/agents/no_such_agent/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/no_such_agent/runs", payload).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),
@@ -767,7 +767,7 @@ async fn test_ai_sdk_sse_malformed_json() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ai-sdk/sse")
+                .uri("/v1/ai-sdk/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from("not json"))
                 .unwrap(),
@@ -793,7 +793,7 @@ async fn test_agui_sse_agent_not_found() {
         "messages": [{"role": "user", "content": "hi"}],
         "tools": []
     });
-    let (status, body) = post_json(app, "/v1/agents/no_such_agent/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/no_such_agent/runs", payload).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
         body["error"].as_str().unwrap_or("").contains("not found"),
@@ -811,7 +811,7 @@ async fn test_agui_sse_empty_thread_id() {
         "threadId": "", "runId": "r1",
         "messages": [], "tools": []
     });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap_or("").contains("threadId"),
@@ -829,7 +829,7 @@ async fn test_agui_sse_empty_run_id() {
         "threadId": "th1", "runId": "",
         "messages": [], "tools": []
     });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         body["error"].as_str().unwrap_or("").contains("runId"),
@@ -847,7 +847,7 @@ async fn test_agui_sse_malformed_json() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/agents/test/runs/ag-ui/sse")
+                .uri("/v1/ag-ui/agents/test/runs")
                 .header("content-type", "application/json")
                 .body(axum::body::Body::from("{bad"))
                 .unwrap(),
@@ -970,7 +970,7 @@ async fn test_ai_sdk_sse_storage_load_error() {
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -989,7 +989,7 @@ async fn test_agui_sse_storage_load_error() {
         "messages": [{"role": "user", "content": "hi"}],
         "tools": []
     });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -1058,7 +1058,7 @@ async fn test_ai_sdk_sse_storage_save_error() {
     let app = make_app(os, read_store);
 
     let payload = json!({ "sessionId": "s1", "input": "hi" });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -1078,7 +1078,7 @@ async fn test_agui_sse_storage_save_error() {
         "messages": [{"role": "user", "content": "hi"}],
         "tools": []
     });
-    let (status, body) = post_json(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_json(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(
         body["error"].as_str().unwrap_or("").contains("denied"),
@@ -1305,7 +1305,7 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
 
     let app = make_app(os, read_store);
 
-    let (status, body) = get_json(app.clone(), "/v1/threads/s-internal-history/messages/ag-ui").await;
+    let (status, body) = get_json(app.clone(), "/v1/ag-ui/threads/s-internal-history/messages").await;
     assert_eq!(status, StatusCode::OK);
     let body_text = body.to_string();
     assert!(
@@ -1315,7 +1315,7 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     assert!(body_text.contains("visible-user"));
     assert!(body_text.contains("visible-assistant"));
 
-    let (status, body) = get_json(app, "/v1/threads/s-internal-history/messages/ai-sdk").await;
+    let (status, body) = get_json(app, "/v1/ai-sdk/threads/s-internal-history/messages").await;
     assert_eq!(status, StatusCode::OK);
     let body_text = body.to_string();
     assert!(
@@ -1434,7 +1434,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         ],
         "tools": []
     });
-    let (status, body) = post_sse_text(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_sse_text(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains("RUN_FINISHED"),
@@ -1494,7 +1494,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
         ],
         "tools": []
     });
-    let (status, body) = post_sse_text(app, "/v1/agents/test/runs/ag-ui/sse", payload).await;
+    let (status, body) = post_sse_text(app, "/v1/ag-ui/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         body.contains("RUN_FINISHED"),

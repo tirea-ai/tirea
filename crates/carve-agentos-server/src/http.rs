@@ -80,20 +80,26 @@ impl From<AgentOsRunError> for ApiError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        // Generic thread resources
         .route("/v1/threads", get(list_agent_states))
         .route("/v1/threads/:id", get(get_thread))
         .route("/v1/threads/:id/messages", get(get_thread_messages))
-        .route(
-            "/v1/threads/:id/messages/ag-ui",
-            get(get_thread_messages_agui),
-        )
-        .route(
-            "/v1/threads/:id/messages/ai-sdk",
-            get(get_thread_messages_ai_sdk),
-        )
-        .route("/v1/agents/:agent_id/runs/ai-sdk/sse", post(run_ai_sdk_sse))
-        .route("/v1/agents/:agent_id/runs/ag-ui/sse", post(run_ag_ui_sse))
+        // Protocol subtrees
+        .nest("/v1/ag-ui", ag_ui_router())
+        .nest("/v1/ai-sdk", ai_sdk_router())
         .with_state(state)
+}
+
+fn ag_ui_router() -> Router<AppState> {
+    Router::new()
+        .route("/agents/:agent_id/runs", post(run_ag_ui_sse))
+        .route("/threads/:id/messages", get(get_thread_messages_agui))
+}
+
+fn ai_sdk_router() -> Router<AppState> {
+    Router::new()
+        .route("/agents/:agent_id/runs", post(run_ai_sdk_sse))
+        .route("/threads/:id/messages", get(get_thread_messages_ai_sdk))
 }
 
 async fn health() -> impl IntoResponse {

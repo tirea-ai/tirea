@@ -247,7 +247,7 @@ async fn e2e_http_ai_sdk_persists_through_nats_buffered_postgres() {
         "input": "hello np",
         "runId": "np-run-1",
     });
-    let (status, body) = post_json(app.clone(), "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+    let (status, body) = post_json(app.clone(), "/v1/ai-sdk/agents/test/runs", payload).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(r#""type":"start""#), "missing start event: {body}");
     assert!(
@@ -392,7 +392,7 @@ async fn e2e_http_same_thread_concurrent_runs_preserve_all_user_messages() {
                 "input": input,
                 "runId": format!("np-same-run-{i}"),
             });
-            let (status, body) = post_json(app, "/v1/agents/test/runs/ai-sdk/sse", payload).await;
+            let (status, body) = post_json(app, "/v1/ai-sdk/agents/test/runs", payload).await;
             (input, status, body)
         }));
     }

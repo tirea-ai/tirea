@@ -8,7 +8,7 @@ Next.js frontend using [CopilotKit](https://copilotkit.ai) to chat with `carve-a
 Browser (CopilotChat) → CopilotKit Runtime → carve-agentos-server (AG-UI SSE) → LLM
 ```
 
-No protocol bridge needed — CopilotKit's `HttpAgent` connects directly to our AG-UI endpoint at `/v1/agents/default/runs/ag-ui/sse`. The `@copilotkit/runtime` handles the AG-UI event stream natively.
+No protocol bridge needed — CopilotKit's `HttpAgent` connects directly to our AG-UI endpoint at `/v1/ag-ui/agents/default/runs`. The `@copilotkit/runtime` handles the AG-UI event stream natively.
 
 ## Prerequisites
 

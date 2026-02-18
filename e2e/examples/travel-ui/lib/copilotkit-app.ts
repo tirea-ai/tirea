@@ -10,7 +10,7 @@ const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8080";
 const runtime = new CopilotRuntime({
   agents: {
     travel: new HttpAgent({
-      url: `${BACKEND_URL}/v1/agents/travel/runs/ag-ui/sse`,
+      url: `${BACKEND_URL}/v1/ag-ui/agents/travel/runs`,
     }) as any,
   },
 });
