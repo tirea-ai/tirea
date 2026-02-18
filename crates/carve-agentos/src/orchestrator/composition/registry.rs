@@ -10,6 +10,12 @@ use genai::Client;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn sorted_registry_ids<T>(entries: &HashMap<String, T>) -> Vec<String> {
+    let mut ids: Vec<String> = entries.keys().cloned().collect();
+    ids.sort();
+    ids
+}
+
 #[derive(Clone, Default)]
 pub struct InMemoryProviderRegistry {
     providers: HashMap<String, Client>,
@@ -65,9 +71,7 @@ impl ProviderRegistry for InMemoryProviderRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.providers.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.providers)
     }
 
     fn snapshot(&self) -> HashMap<String, Client> {
@@ -110,7 +114,7 @@ impl ProviderRegistry for CompositeProviderRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        self.merged.ids()
+        sorted_registry_ids(&self.merged.providers)
     }
 
     fn snapshot(&self) -> HashMap<String, Client> {
@@ -190,9 +194,7 @@ impl PluginRegistry for InMemoryPluginRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.plugins.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.plugins)
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
@@ -235,7 +237,7 @@ impl PluginRegistry for CompositePluginRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        self.merged.ids()
+        sorted_registry_ids(&self.merged.plugins)
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn AgentPlugin>> {
@@ -346,9 +348,7 @@ impl ToolRegistry for InMemoryToolRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.tools.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.tools)
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
@@ -391,9 +391,7 @@ impl ToolRegistry for CompositeToolRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.merged.tools.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.merged.tools)
     }
 
     fn snapshot(&self) -> HashMap<String, Arc<dyn Tool>> {
@@ -472,9 +470,7 @@ impl AgentRegistry for InMemoryAgentRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.agents.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.agents)
     }
 
     fn snapshot(&self) -> HashMap<String, AgentDefinition> {
@@ -517,9 +513,7 @@ impl AgentRegistry for CompositeAgentRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.merged.agents.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.merged.agents)
     }
 
     fn snapshot(&self) -> HashMap<String, AgentDefinition> {
@@ -597,9 +591,7 @@ impl ModelRegistry for InMemoryModelRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.models.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.models)
     }
 
     fn snapshot(&self) -> HashMap<String, ModelDefinition> {
@@ -642,9 +634,7 @@ impl ModelRegistry for CompositeModelRegistry {
     }
 
     fn ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.merged.models.keys().cloned().collect();
-        ids.sort();
-        ids
+        sorted_registry_ids(&self.merged.models)
     }
 
     fn snapshot(&self) -> HashMap<String, ModelDefinition> {

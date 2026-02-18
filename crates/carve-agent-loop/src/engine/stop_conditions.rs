@@ -36,10 +36,8 @@
 //! }
 //! ```
 
-use crate::contracts::runtime::{
-    StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats,
-};
 pub use crate::contracts::runtime::StopReason;
+use crate::contracts::runtime::{StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats};
 use crate::contracts::state::{AgentState, ToolCall};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -103,7 +101,9 @@ impl<'a> StopCheckContext<'a> {
 // Stop policy helpers
 // ---------------------------------------------------------------------------
 
-fn stop_check_context_from_policy_input<'a>(input: &'a StopPolicyInput<'a>) -> StopCheckContext<'a> {
+fn stop_check_context_from_policy_input<'a>(
+    input: &'a StopPolicyInput<'a>,
+) -> StopCheckContext<'a> {
     StopCheckContext {
         rounds: input.stats.step,
         total_input_tokens: input.stats.total_input_tokens,
@@ -115,6 +115,21 @@ fn stop_check_context_from_policy_input<'a>(input: &'a StopPolicyInput<'a>) -> S
         tool_call_history: input.stats.tool_call_history,
         thread: input.agent_state,
     }
+}
+
+macro_rules! impl_stop_policy_via_check {
+    ($ty:ty, $id:literal) => {
+        impl StopPolicy for $ty {
+            fn id(&self) -> &str {
+                $id
+            }
+
+            fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
+                let ctx = stop_check_context_from_policy_input(input);
+                self.check(&ctx)
+            }
+        }
+    };
 }
 
 /// Evaluate canonical stop policies in declaration order and return the first match.
@@ -147,16 +162,7 @@ impl MaxRounds {
     }
 }
 
-impl StopPolicy for MaxRounds {
-    fn id(&self) -> &str {
-        "max_rounds"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(MaxRounds, "max_rounds");
 
 /// Stop after a wall-clock duration elapses.
 pub struct Timeout(pub Duration);
@@ -171,16 +177,7 @@ impl Timeout {
     }
 }
 
-impl StopPolicy for Timeout {
-    fn id(&self) -> &str {
-        "timeout"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(Timeout, "timeout");
 
 /// Stop when cumulative token usage exceeds a budget.
 pub struct TokenBudget {
@@ -200,16 +197,7 @@ impl TokenBudget {
     }
 }
 
-impl StopPolicy for TokenBudget {
-    fn id(&self) -> &str {
-        "token_budget"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(TokenBudget, "token_budget");
 
 /// Stop after N consecutive rounds where all tool executions failed.
 pub struct ConsecutiveErrors(pub usize);
@@ -224,16 +212,7 @@ impl ConsecutiveErrors {
     }
 }
 
-impl StopPolicy for ConsecutiveErrors {
-    fn id(&self) -> &str {
-        "consecutive_errors"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(ConsecutiveErrors, "consecutive_errors");
 
 /// Stop when a specific tool is called by the LLM.
 pub struct StopOnTool(pub String);
@@ -249,16 +228,7 @@ impl StopOnTool {
     }
 }
 
-impl StopPolicy for StopOnTool {
-    fn id(&self) -> &str {
-        "stop_on_tool"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(StopOnTool, "stop_on_tool");
 
 /// Stop when LLM output text contains a literal pattern.
 pub struct ContentMatch(pub String);
@@ -273,16 +243,7 @@ impl ContentMatch {
     }
 }
 
-impl StopPolicy for ContentMatch {
-    fn id(&self) -> &str {
-        "content_match"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(ContentMatch, "content_match");
 
 /// Stop when the same tool call pattern repeats within a sliding window.
 ///
@@ -313,16 +274,7 @@ impl LoopDetection {
     }
 }
 
-impl StopPolicy for LoopDetection {
-    fn id(&self) -> &str {
-        "loop_detection"
-    }
-
-    fn evaluate(&self, input: &StopPolicyInput<'_>) -> Option<StopReason> {
-        let ctx = stop_check_context_from_policy_input(input);
-        self.check(&ctx)
-    }
-}
+impl_stop_policy_via_check!(LoopDetection, "loop_detection");
 
 // ---------------------------------------------------------------------------
 // StopConditionSpec resolution

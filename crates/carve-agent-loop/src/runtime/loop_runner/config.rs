@@ -102,7 +102,10 @@ impl LlmExecutor for GenaiLlmExecutor {
         chat_req: genai::chat::ChatRequest,
         options: Option<&ChatOptions>,
     ) -> genai::Result<crate::contracts::runtime::LlmEventStream> {
-        let resp = self.client.exec_chat_stream(model, chat_req, options).await?;
+        let resp = self
+            .client
+            .exec_chat_stream(model, chat_req, options)
+            .await?;
         Ok(Box::pin(resp.stream))
     }
 
@@ -236,36 +239,7 @@ impl std::fmt::Debug for AgentConfig {
 }
 
 impl AgentConfig {
-    /// Create a new agent config with the given model.
-    pub fn new(model: impl Into<String>) -> Self {
-        Self {
-            model: model.into(),
-            ..Default::default()
-        }
-    }
-
-    /// Create a new agent config with explicit id and model.
-    pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            model: model.into(),
-            ..Default::default()
-        }
-    }
-
-    /// Set system prompt.
-    #[must_use]
-    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = prompt.into();
-        self
-    }
-
-    /// Set max rounds.
-    #[must_use]
-    pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
-        self.max_rounds = max_rounds;
-        self
-    }
+    carve_agent_contract::impl_shared_agent_builder_methods!();
 
     /// Set tool executor strategy.
     #[must_use]
@@ -282,82 +256,6 @@ impl AgentConfig {
         } else {
             Arc::new(SequentialToolExecutor)
         };
-        self
-    }
-
-    /// Set chat options.
-    #[must_use]
-    pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
-        self.chat_options = Some(options);
-        self
-    }
-
-    /// Set fallback model ids to try after the primary model.
-    #[must_use]
-    pub fn with_fallback_models(mut self, models: Vec<String>) -> Self {
-        self.fallback_models = models;
-        self
-    }
-
-    /// Add a single fallback model id.
-    #[must_use]
-    pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
-        self.fallback_models.push(model.into());
-        self
-    }
-
-    /// Set LLM retry policy.
-    #[must_use]
-    pub fn with_llm_retry_policy(mut self, policy: LlmRetryPolicy) -> Self {
-        self.llm_retry_policy = policy;
-        self
-    }
-
-    /// Set plugins.
-    #[must_use]
-    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
-        self.plugins = plugins;
-        self
-    }
-
-    /// Add a single plugin.
-    #[must_use]
-    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-        self.plugins.push(plugin);
-        self
-    }
-
-    /// Add a stop policy.
-    ///
-    /// When any stop conditions are set, the `max_rounds` field is ignored
-    /// and only explicit stop policies are checked.
-    #[must_use]
-    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
-        self.stop_conditions.push(Arc::new(condition));
-        self
-    }
-
-    /// Set all stop policies, replacing any previously set.
-    #[must_use]
-    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
-        self.stop_conditions = conditions;
-        self
-    }
-
-    /// Add a declarative stop policy spec.
-    ///
-    /// Specs are resolved to `Arc<dyn StopPolicy>` at runtime and
-    /// appended after explicit `stop_conditions` in evaluation order.
-    #[must_use]
-    pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
-        self.stop_condition_specs.push(spec);
-        self
-    }
-
-    /// Set all declarative stop policy specs, replacing any previously set.
-    #[must_use]
-    pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
-        self.stop_condition_specs = specs;
         self
     }
 

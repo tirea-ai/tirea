@@ -118,68 +118,11 @@ impl std::fmt::Debug for AgentDefinition {
 }
 
 impl AgentDefinition {
-    /// Create a new agent definition with the given model.
-    pub fn new(model: impl Into<String>) -> Self {
-        Self {
-            model: model.into(),
-            ..Default::default()
-        }
-    }
-
-    /// Create a new agent definition with explicit id and model.
-    pub fn with_id(id: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            model: model.into(),
-            ..Default::default()
-        }
-    }
-
-    #[must_use]
-    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = prompt.into();
-        self
-    }
-
-    #[must_use]
-    pub fn with_max_rounds(mut self, max_rounds: usize) -> Self {
-        self.max_rounds = max_rounds;
-        self
-    }
+    carve_agent_contract::impl_shared_agent_builder_methods!();
 
     #[must_use]
     pub fn with_parallel_tools(mut self, parallel: bool) -> Self {
         self.parallel_tools = parallel;
-        self
-    }
-
-    #[must_use]
-    pub fn with_chat_options(mut self, options: ChatOptions) -> Self {
-        self.chat_options = Some(options);
-        self
-    }
-
-    #[must_use]
-    pub fn with_fallback_models(mut self, models: Vec<String>) -> Self {
-        self.fallback_models = models;
-        self
-    }
-
-    #[must_use]
-    pub fn with_fallback_model(mut self, model: impl Into<String>) -> Self {
-        self.fallback_models.push(model.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_llm_retry_policy(mut self, policy: LlmRetryPolicy) -> Self {
-        self.llm_retry_policy = policy;
-        self
-    }
-
-    #[must_use]
-    pub fn with_plugins(mut self, plugins: Vec<Arc<dyn AgentPlugin>>) -> Self {
-        self.plugins = plugins;
         self
     }
 
@@ -204,12 +147,6 @@ impl AgentDefinition {
     #[must_use]
     pub fn with_policy_id(mut self, policy_id: impl Into<String>) -> Self {
         self.policy_ids.push(policy_id.into());
-        self
-    }
-
-    #[must_use]
-    pub fn with_plugin(mut self, plugin: Arc<dyn AgentPlugin>) -> Self {
-        self.plugins.push(plugin);
         self
     }
 
@@ -249,37 +186,12 @@ impl AgentDefinition {
         self
     }
 
-    #[must_use]
-    pub fn with_stop_condition(mut self, condition: impl StopPolicy + 'static) -> Self {
-        self.stop_conditions.push(Arc::new(condition));
-        self
-    }
-
-    #[must_use]
-    pub fn with_stop_conditions(mut self, conditions: Vec<Arc<dyn StopPolicy>>) -> Self {
-        self.stop_conditions = conditions;
-        self
-    }
-
-    #[must_use]
-    pub fn with_stop_condition_spec(mut self, spec: StopConditionSpec) -> Self {
-        self.stop_condition_specs.push(spec);
-        self
-    }
-
-    #[must_use]
-    pub fn with_stop_condition_specs(mut self, specs: Vec<StopConditionSpec>) -> Self {
-        self.stop_condition_specs = specs;
-        self
-    }
-
     pub fn into_loop_config(self) -> AgentConfig {
-        let tool_executor: Arc<dyn ToolExecutor> =
-            if self.parallel_tools {
-                Arc::new(ParallelToolExecutor)
-            } else {
-                Arc::new(SequentialToolExecutor)
-            };
+        let tool_executor: Arc<dyn ToolExecutor> = if self.parallel_tools {
+            Arc::new(ParallelToolExecutor)
+        } else {
+            Arc::new(SequentialToolExecutor)
+        };
         AgentConfig {
             id: self.id,
             model: self.model,
