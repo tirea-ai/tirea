@@ -9,9 +9,10 @@ use crate::contracts::AgentState;
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;
 use crate::runtime::control::{
-    RunState, RunStatus, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    AGENT_RUNS_STATE_PATH, RUNTIME_CONTROL_STATE_PATH,
+    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
+    RUNTIME_CONTROL_STATE_PATH,
 };
+use types::{DelegationRecord, DelegationState, DelegationStatus, DELEGATION_STATE_PATH};
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
     ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_SCOPE_CALLER_MESSAGES_KEY,
@@ -62,6 +63,7 @@ mod manager;
 mod plugins;
 mod state;
 mod tools;
+mod types;
 
 use manager::execute_target_agent;
 #[cfg(test)]

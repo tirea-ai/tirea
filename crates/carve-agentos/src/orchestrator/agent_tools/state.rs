@@ -8,12 +8,12 @@ pub(super) fn parent_run_id_from_thread(
         .map(str::to_string)
 }
 
-pub(super) fn as_agent_run_state(
+pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
     thread: Option<crate::contracts::state::AgentState>,
-) -> RunState {
+) -> DelegationRecord {
     let parent_run_id = parent_run_id_from_thread(thread.as_ref());
-    RunState {
+    DelegationRecord {
         run_id: summary.run_id.clone(),
         parent_run_id,
         target_agent_id: summary.target_agent_id.clone(),
@@ -24,7 +24,7 @@ pub(super) fn as_agent_run_state(
     }
 }
 
-pub(super) fn as_agent_run_summary(run_id: &str, state: &RunState) -> AgentRunSummary {
+pub(super) fn as_agent_run_summary(run_id: &str, state: &DelegationRecord) -> AgentRunSummary {
     AgentRunSummary {
         run_id: run_id.to_string(),
         target_agent_id: state.target_agent_id.clone(),
@@ -34,33 +34,33 @@ pub(super) fn as_agent_run_summary(run_id: &str, state: &RunState) -> AgentRunSu
     }
 }
 
-pub(super) fn set_persisted_run(ctx: &AgentState, run_id: &str, run: RunState) {
-    let agent = ctx.state::<crate::runtime::control::AgentRunsState>(AGENT_RUNS_STATE_PATH);
+pub(super) fn set_persisted_run(ctx: &AgentState, run_id: &str, run: DelegationRecord) {
+    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
     agent.runs_insert(run_id.to_string(), run);
 }
 
-pub(super) fn parse_persisted_runs(ctx: &AgentState) -> HashMap<String, RunState> {
-    let agent = ctx.state::<crate::runtime::control::AgentRunsState>(AGENT_RUNS_STATE_PATH);
+pub(super) fn parse_persisted_runs(ctx: &AgentState) -> HashMap<String, DelegationRecord> {
+    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
     agent.runs().ok().unwrap_or_default()
 }
 
-pub(super) fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, RunState> {
-    doc.get(AGENT_RUNS_STATE_PATH)
+pub(super) fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, DelegationRecord> {
+    doc.get(DELEGATION_STATE_PATH)
         .and_then(|v| v.get("runs"))
         .cloned()
-        .and_then(|v| serde_json::from_value::<HashMap<String, RunState>>(v).ok())
+        .and_then(|v| serde_json::from_value::<HashMap<String, DelegationRecord>>(v).ok())
         .unwrap_or_default()
 }
 
-pub(super) fn make_orphaned_running_state(run: &RunState) -> RunState {
+pub(super) fn make_orphaned_running_state(run: &DelegationRecord) -> DelegationRecord {
     let mut next = run.clone();
-    next.status = RunStatus::Stopped;
+    next.status = DelegationStatus::Stopped;
     next.error = Some("No live executor found in current process; marked stopped".to_string());
     next
 }
 
 pub(super) fn collect_descendant_run_ids_from_state(
-    runs: &HashMap<String, RunState>,
+    runs: &HashMap<String, DelegationRecord>,
     root_run_id: &str,
     include_root: bool,
 ) -> Vec<String> {
@@ -84,7 +84,7 @@ pub(super) fn recovery_interaction_id(run_id: &str) -> String {
     format!("{AGENT_RECOVERY_INTERACTION_PREFIX}{run_id}")
 }
 
-pub(super) fn build_recovery_interaction(run_id: &str, run: &RunState) -> Interaction {
+pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -> Interaction {
     Interaction::new(
         recovery_interaction_id(run_id),
         AGENT_RECOVERY_INTERACTION_ACTION,
@@ -192,11 +192,11 @@ pub(super) struct ReconcileOutcome {
 
 pub(super) fn set_agent_runs_patch_from_state_doc(
     state: &Value,
-    next_runs: HashMap<String, RunState>,
+    next_runs: HashMap<String, DelegationRecord>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_transient(state, call_id, AGENT_TOOLS_PLUGIN_ID);
-    let agent = ctx.state::<crate::runtime::control::AgentRunsState>(AGENT_RUNS_STATE_PATH);
+    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
     agent.set_runs(next_runs);
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
@@ -209,7 +209,7 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
 pub(super) async fn reconcile_persisted_runs(
     manager: &AgentRunManager,
     owner_thread_id: &str,
-    runs: &mut HashMap<String, RunState>,
+    runs: &mut HashMap<String, DelegationRecord>,
 ) -> ReconcileOutcome {
     let summaries = manager.all_for_owner(owner_thread_id).await;
     let mut by_id: HashMap<String, AgentRunSummary> = HashMap::new();
@@ -229,7 +229,7 @@ pub(super) async fn reconcile_persisted_runs(
         if let Some(summary) = by_id.get(&run_id) {
             let thread = manager.owned_record(owner_thread_id, &run_id).await;
             let mut next =
-                as_agent_run_state(summary, thread.or_else(|| current.agent_state.clone()));
+                as_delegation_record(summary, thread.or_else(|| current.agent_state.clone()));
             if next.parent_run_id.is_none() {
                 next.parent_run_id = current.parent_run_id.clone();
             }
@@ -246,7 +246,7 @@ pub(super) async fn reconcile_persisted_runs(
             continue;
         }
 
-        if current.status == RunStatus::Running {
+        if current.status == DelegationStatus::Running {
             runs.insert(run_id.clone(), make_orphaned_running_state(&current));
             changed = true;
             orphaned_run_ids.push(run_id);
@@ -258,7 +258,7 @@ pub(super) async fn reconcile_persisted_runs(
             continue;
         }
         let thread = manager.owned_record(owner_thread_id, &run_id).await;
-        runs.insert(run_id.clone(), as_agent_run_state(&summary, thread));
+        runs.insert(run_id.clone(), as_delegation_record(&summary, thread));
         changed = true;
     }
 

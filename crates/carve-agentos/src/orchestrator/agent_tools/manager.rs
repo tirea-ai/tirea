@@ -3,7 +3,7 @@ use super::*;
 pub struct AgentRunSummary {
     pub run_id: String,
     pub target_agent_id: String,
-    pub status: RunStatus,
+    pub status: DelegationStatus,
     pub assistant: Option<String>,
     pub error: Option<String>,
 }
@@ -14,7 +14,7 @@ pub(super) struct AgentRunRecord {
     pub(super) owner_thread_id: String,
     pub(super) target_agent_id: String,
     pub(super) parent_run_id: Option<String>,
-    pub(super) status: RunStatus,
+    pub(super) status: DelegationStatus,
     pub(super) thread: crate::contracts::state::AgentState,
     pub(super) assistant: Option<String>,
     pub(super) error: Option<String>,
@@ -63,7 +63,7 @@ impl AgentRunManager {
                     return None;
                 }
                 match rec.status {
-                    RunStatus::Running | RunStatus::Stopped => Some(AgentRunSummary {
+                    DelegationStatus::Running | DelegationStatus::Stopped => Some(AgentRunSummary {
                         run_id: run_id.clone(),
                         target_agent_id: rec.target_agent_id.clone(),
                         status: rec.status,
@@ -140,9 +140,9 @@ impl AgentRunManager {
         let mut out = Vec::with_capacity(run_ids.len());
         for id in run_ids {
             if let Some(rec) = runs.get_mut(&id) {
-                if rec.status == RunStatus::Running {
+                if rec.status == DelegationStatus::Running {
                     rec.run_cancellation_requested = true;
-                    rec.status = RunStatus::Stopped;
+                    rec.status = DelegationStatus::Stopped;
                     stopped = true;
                     if let Some(token) = rec.cancellation_token.take() {
                         token.cancel();
@@ -186,7 +186,7 @@ impl AgentRunManager {
                 owner_thread_id,
                 target_agent_id,
                 parent_run_id,
-                status: RunStatus::Running,
+                status: DelegationStatus::Running,
                 thread,
                 assistant: None,
                 error: None,
@@ -215,7 +215,7 @@ impl AgentRunManager {
 
         // Explicit run-cancellation request wins over terminal status from executor.
         rec.status = if rec.run_cancellation_requested {
-            RunStatus::Stopped
+            DelegationStatus::Stopped
         } else {
             completion.status
         };
@@ -249,7 +249,7 @@ impl AgentRunManager {
 #[derive(Debug)]
 pub(super) struct AgentRunCompletion {
     pub(super) thread: crate::contracts::state::AgentState,
-    pub(super) status: RunStatus,
+    pub(super) status: DelegationStatus,
     pub(super) assistant: Option<String>,
     pub(super) error: Option<String>,
 }
@@ -280,7 +280,7 @@ pub(super) async fn execute_target_agent(
         Err(e) => {
             return AgentRunCompletion {
                 thread,
-                status: RunStatus::Failed,
+                status: DelegationStatus::Failed,
                 assistant: None,
                 error: Some(e.to_string()),
             };
@@ -325,15 +325,15 @@ pub(super) async fn execute_target_agent(
     if saw_error.is_some() {
         return AgentRunCompletion {
             thread: final_thread,
-            status: RunStatus::Failed,
+            status: DelegationStatus::Failed,
             assistant,
             error: saw_error,
         };
     }
 
     let status = match termination {
-        Some(crate::contracts::runtime::TerminationReason::Cancelled) => RunStatus::Stopped,
-        _ => RunStatus::Completed,
+        Some(crate::contracts::runtime::TerminationReason::Cancelled) => DelegationStatus::Stopped,
+        _ => DelegationStatus::Completed,
     };
 
     AgentRunCompletion {

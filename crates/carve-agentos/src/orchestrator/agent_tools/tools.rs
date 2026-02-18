@@ -179,7 +179,7 @@ impl AgentRunTool {
         tool_name: &str,
     ) -> ToolResult {
         let thread = self.manager.owned_record(owner_thread_id, run_id).await;
-        set_persisted_run(ctx, run_id, as_agent_run_state(&summary, thread));
+        set_persisted_run(ctx, run_id, as_delegation_record(&summary, thread));
         to_tool_result(tool_name, summary)
     }
 
@@ -225,11 +225,11 @@ impl AgentRunTool {
                     .await;
             });
 
-            let running = RunState {
+            let running = DelegationRecord {
                 run_id: run_id.clone(),
                 parent_run_id,
                 target_agent_id,
-                status: RunStatus::Running,
+                status: DelegationStatus::Running,
                 assistant: None,
                 error: None,
                 agent_state: Some(thread),
@@ -251,7 +251,7 @@ impl AgentRunTool {
             .await;
         let completion =
             execute_target_agent(self.os.clone(), target_agent_id.clone(), thread, None).await;
-        let completion_state = RunState {
+        let completion_state = DelegationRecord {
             run_id: run_id.clone(),
             parent_run_id,
             target_agent_id,
@@ -319,7 +319,7 @@ impl Tool for AgentRunTool {
                 .await
             {
                 match existing.status {
-                    RunStatus::Running | RunStatus::Completed | RunStatus::Failed => {
+                    DelegationStatus::Running | DelegationStatus::Completed | DelegationStatus::Failed => {
                         let result = self
                             .persist_existing_live_summary(
                                 ctx,
@@ -331,7 +331,7 @@ impl Tool for AgentRunTool {
                             .await;
                         return Ok(result);
                     }
-                    RunStatus::Stopped => {
+                    DelegationStatus::Stopped => {
                         let record = match self
                             .manager
                             .record_for_resume(&owner_thread_id, &run_id)
@@ -380,7 +380,7 @@ impl Tool for AgentRunTool {
                 ));
             };
 
-            let orphaned_running = persisted.status == RunStatus::Running;
+            let orphaned_running = persisted.status == DelegationStatus::Running;
             if orphaned_running {
                 persisted = make_orphaned_running_state(&persisted);
                 set_persisted_run(ctx, &run_id, persisted.clone());
@@ -391,13 +391,13 @@ impl Tool for AgentRunTool {
             }
 
             match persisted.status {
-                RunStatus::Running | RunStatus::Completed | RunStatus::Failed => {
+                DelegationStatus::Running | DelegationStatus::Completed | DelegationStatus::Failed => {
                     return Ok(to_tool_result(
                         tool_name,
                         as_agent_run_summary(&run_id, &persisted),
                     ));
                 }
-                RunStatus::Stopped => {
+                DelegationStatus::Stopped => {
                     if let Err(error) = self.ensure_target_visible(
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
@@ -576,7 +576,7 @@ impl Tool for AgentStopTool {
             let Some(run) = persisted_runs.get_mut(id) else {
                 continue;
             };
-            if run.status != RunStatus::Running {
+            if run.status != DelegationStatus::Running {
                 continue;
             }
 

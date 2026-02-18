@@ -116,7 +116,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
             epoch1,
             AgentRunCompletion {
                 thread: AgentState::new("old"),
-                status: RunStatus::Completed,
+                status: DelegationStatus::Completed,
                 assistant: Some("old".to_string()),
                 error: None,
             },
@@ -128,7 +128,7 @@ async fn manager_ignores_stale_completion_by_epoch() {
         .get_owned_summary("owner", "run-1")
         .await
         .expect("run should still exist");
-    assert_eq!(summary.status, RunStatus::Running);
+    assert_eq!(summary.status, DelegationStatus::Running);
 
     let applied = manager
         .update_after_completion(
@@ -136,14 +136,14 @@ async fn manager_ignores_stale_completion_by_epoch() {
             epoch2,
             AgentRunCompletion {
                 thread: AgentState::new("new"),
-                status: RunStatus::Completed,
+                status: DelegationStatus::Completed,
                 assistant: Some("new".to_string()),
                 error: None,
             },
         )
         .await
         .expect("latest epoch completion should apply");
-    assert_eq!(applied.status, RunStatus::Completed);
+    assert_eq!(applied.status, DelegationStatus::Completed);
     assert_eq!(applied.assistant.as_deref(), Some("new"));
 }
 
@@ -368,19 +368,19 @@ async fn manager_stop_tree_stops_descendants() {
         .get_owned_summary("owner-thread", "parent-run")
         .await
         .expect("parent run should exist");
-    assert_eq!(parent.status, RunStatus::Stopped);
+    assert_eq!(parent.status, DelegationStatus::Stopped);
 
     let child = manager
         .get_owned_summary("owner-thread", "child-run")
         .await
         .expect("child run should exist");
-    assert_eq!(child.status, RunStatus::Stopped);
+    assert_eq!(child.status, DelegationStatus::Stopped);
 
     let grandchild = manager
         .get_owned_summary("owner-thread", "grandchild-run")
         .await
         .expect("grandchild run should exist");
-    assert_eq!(grandchild.status, RunStatus::Stopped);
+    assert_eq!(grandchild.status, DelegationStatus::Stopped);
 
     let denied = manager
         .stop_owned_tree("owner-thread", "other-owner-run")
@@ -739,17 +739,17 @@ async fn agent_stop_tool_stops_descendant_runs() {
         .get_owned_summary(&os_thread.id, parent_run_id)
         .await
         .expect("parent run should exist");
-    assert_eq!(parent.status, RunStatus::Stopped);
+    assert_eq!(parent.status, DelegationStatus::Stopped);
     let child = manager
         .get_owned_summary(&os_thread.id, child_run_id)
         .await
         .expect("child run should exist");
-    assert_eq!(child.status, RunStatus::Stopped);
+    assert_eq!(child.status, DelegationStatus::Stopped);
     let grandchild = manager
         .get_owned_summary(&os_thread.id, grandchild_run_id)
         .await
         .expect("grandchild run should exist");
-    assert_eq!(grandchild.status, RunStatus::Stopped);
+    assert_eq!(grandchild.status, DelegationStatus::Stopped);
 
     let patch = ctx.take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
@@ -1144,7 +1144,7 @@ fn parse_persisted_runs_from_doc_reads_new_path() {
     });
     let runs = parse_persisted_runs_from_doc(&doc);
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs["run-1"].status, RunStatus::Stopped);
+    assert_eq!(runs["run-1"].status, DelegationStatus::Stopped);
 }
 
 #[test]
