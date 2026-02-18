@@ -14,19 +14,7 @@ fn to_tool_result(tool_name: &str, summary: AgentRunSummary) -> ToolResult {
 }
 
 fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolResult {
-    let message = message.into();
-    ToolResult {
-        tool_name: tool_name.to_string(),
-        status: ToolStatus::Error,
-        data: json!({
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        }),
-        message: Some(format!("[{code}] {message}")),
-        metadata: HashMap::new(),
-    }
+    ToolResult::error_with_code(tool_name, code, message)
 }
 
 fn scope_string(scope: Option<&carve_state::ScopeState>, key: &str) -> Option<String> {
@@ -331,9 +319,7 @@ impl Tool for AgentRunTool {
                 .await
             {
                 match existing.status {
-                    RunStatus::Running
-                    | RunStatus::Completed
-                    | RunStatus::Failed => {
+                    RunStatus::Running | RunStatus::Completed | RunStatus::Failed => {
                         let result = self
                             .persist_existing_live_summary(
                                 ctx,

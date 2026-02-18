@@ -4,7 +4,7 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::runtime::{AgentEvent, Interaction};
 use crate::contracts::state::{Message, Role, ToolCall};
-use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult, ToolStatus};
+use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::AgentState;
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;

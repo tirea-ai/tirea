@@ -76,6 +76,29 @@ impl ToolResult {
         }
     }
 
+    /// Create a structured error result with stable error code payload.
+    pub fn error_with_code(
+        tool_name: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        let tool_name = tool_name.into();
+        let code = code.into();
+        let message = message.into();
+        Self {
+            tool_name,
+            status: ToolStatus::Error,
+            data: serde_json::json!({
+                "error": {
+                    "code": code,
+                    "message": message,
+                }
+            }),
+            message: Some(format!("[{code}] {message}")),
+            metadata: HashMap::new(),
+        }
+    }
+
     /// Create a pending result (waiting for interaction).
     pub fn pending(tool_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
@@ -409,6 +432,27 @@ mod tests {
         assert!(!result.is_success());
         assert!(result.is_error());
         assert!(!result.is_pending());
+    }
+
+    #[test]
+    fn test_tool_result_error_with_code() {
+        let result = ToolResult::error_with_code("my_tool", "invalid_arguments", "missing input");
+        assert_eq!(result.tool_name, "my_tool");
+        assert_eq!(result.status, ToolStatus::Error);
+        assert_eq!(
+            result.data,
+            json!({
+                "error": {
+                    "code": "invalid_arguments",
+                    "message": "missing input"
+                }
+            })
+        );
+        assert_eq!(
+            result.message,
+            Some("[invalid_arguments] missing input".to_string())
+        );
+        assert!(result.is_error());
     }
 
     #[test]

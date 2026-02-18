@@ -1,34 +1,13 @@
 use carve_state::ScopeState;
-use serde_json::Value;
+
+use crate::contracts::runtime::{is_id_allowed, is_scope_allowed as runtime_is_scope_allowed};
 
 pub fn is_tool_allowed(
     tool_id: &str,
     allowed: Option<&[String]>,
     excluded: Option<&[String]>,
 ) -> bool {
-    if let Some(allowed) = allowed {
-        if !allowed.iter().any(|t| t == tool_id) {
-            return false;
-        }
-    }
-    if let Some(excluded) = excluded {
-        if excluded.iter().any(|t| t == tool_id) {
-            return false;
-        }
-    }
-    true
-}
-
-fn parse_scope_filter(values: Option<&Value>) -> Option<Vec<String>> {
-    let arr = values?.as_array()?;
-    let parsed: Vec<String> = arr
-        .iter()
-        .filter_map(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    Some(parsed)
+    is_id_allowed(tool_id, allowed, excluded)
 }
 
 pub fn is_scope_allowed(
@@ -37,9 +16,7 @@ pub fn is_scope_allowed(
     allowed_key: &str,
     excluded_key: &str,
 ) -> bool {
-    let allowed = parse_scope_filter(scope.and_then(|s| s.value(allowed_key)));
-    let excluded = parse_scope_filter(scope.and_then(|s| s.value(excluded_key)));
-    is_tool_allowed(id, allowed.as_deref(), excluded.as_deref())
+    runtime_is_scope_allowed(scope, id, allowed_key, excluded_key)
 }
 
 #[cfg(test)]

@@ -6,11 +6,9 @@
 //! DEEPSEEK_API_KEY=<key> cargo test --package carve-agentos-server --test e2e_deepseek -- --ignored --nocapture
 //! ```
 
-use async_trait::async_trait;
-use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agent::contracts::storage::{AgentStateReader, AgentStateStore};
-use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent::contracts::tool::Tool;
 use carve_agent::orchestrator::AgentDefinition;
 use carve_agent::orchestrator::AgentOsBuilder;
 use carve_agentos_server::http::{router, AppState};
@@ -20,6 +18,10 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tower::ServiceExt;
+
+mod common;
+
+use common::{extract_agui_text, extract_ai_sdk_text, post_sse, CalculatorTool};
 
 fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
@@ -41,67 +43,6 @@ If runtime context entries are provided, treat them as authoritative facts and a
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs")
-}
-
-/// A deterministic calculator tool for E2E tests — avoids external network calls.
-struct CalculatorTool;
-
-#[async_trait]
-impl Tool for CalculatorTool {
-    fn descriptor(&self) -> ToolDescriptor {
-        ToolDescriptor::new(
-            "calculator",
-            "Calculator",
-            "Perform basic arithmetic. Supports add, subtract, multiply, divide.",
-        )
-        .with_parameters(json!({
-            "type": "object",
-            "properties": {
-                "operation": {
-                    "type": "string",
-                    "enum": ["add", "subtract", "multiply", "divide"],
-                    "description": "The arithmetic operation to perform"
-                },
-                "a": { "type": "number", "description": "First operand" },
-                "b": { "type": "number", "description": "Second operand" }
-            },
-            "required": ["operation", "a", "b"]
-        }))
-    }
-
-    async fn execute(
-        &self,
-        args: Value,
-        _ctx: &carve_agent::prelude::AgentState,
-    ) -> Result<ToolResult, ToolError> {
-        let op = args["operation"]
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidArguments("missing operation".into()))?;
-        let a = args["a"]
-            .as_f64()
-            .ok_or_else(|| ToolError::InvalidArguments("missing a".into()))?;
-        let b = args["b"]
-            .as_f64()
-            .ok_or_else(|| ToolError::InvalidArguments("missing b".into()))?;
-
-        let result = match op {
-            "add" => a + b,
-            "subtract" => a - b,
-            "multiply" => a * b,
-            "divide" => {
-                if b == 0.0 {
-                    return Err(ToolError::ExecutionFailed("division by zero".into()));
-                }
-                a / b
-            }
-            _ => return Err(ToolError::InvalidArguments(format!("unknown op: {op}"))),
-        };
-
-        Ok(ToolResult::success(
-            "calculator",
-            json!({ "result": result }),
-        ))
-    }
 }
 
 /// Build AgentOs with a calculator tool and multi-round support.
@@ -145,46 +86,6 @@ fn make_multiturn_os(write_store: Arc<dyn AgentStateStore>) -> carve_agent::orch
         .with_agent_state_store(write_store)
         .build()
         .expect("failed to build AgentOs for multi-turn")
-}
-
-/// Helper: send a POST request and return (status, body_text).
-async fn post_sse(app: axum::Router, uri: &str, payload: Value) -> (StatusCode, String) {
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(payload.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    let status = resp.status();
-    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-    let text = String::from_utf8(body.to_vec()).unwrap();
-    (status, text)
-}
-
-/// Extract concatenated text-delta values from AI SDK SSE output.
-fn extract_ai_sdk_text(sse: &str) -> String {
-    sse.lines()
-        .filter(|l| l.starts_with("data: "))
-        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
-        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("text-delta"))
-        .filter_map(|v| v.get("delta").and_then(|t| t.as_str()).map(String::from))
-        .collect()
-}
-
-/// Extract concatenated TEXT_MESSAGE_CONTENT deltas from AG-UI SSE output.
-fn extract_agui_text(sse: &str) -> String {
-    sse.lines()
-        .filter(|l| l.starts_with("data: "))
-        .filter_map(|l| serde_json::from_str::<Value>(&l[6..]).ok())
-        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("TEXT_MESSAGE_CONTENT"))
-        .filter_map(|v| v.get("delta").and_then(|d| d.as_str()).map(String::from))
-        .collect()
 }
 
 // ============================================================================
