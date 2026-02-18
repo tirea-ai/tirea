@@ -8,7 +8,7 @@ use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_protocol_ag_ui::{AGUIMessage, AgUiInputAdapter, RunAgentRequest};
 use carve_protocol_ag_ui_runtime::build_agui_run_scope;
 use carve_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6RunRequest};
-use carve_protocol_contract::ProtocolInputAdapter;
+use carve_agent_contract::ProtocolInputAdapter;
 use carve_thread_store_adapters::MemoryStore;
 use futures::StreamExt;
 use std::sync::Arc;

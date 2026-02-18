@@ -108,6 +108,7 @@ macro_rules! impl_shared_agent_builder_methods {
 }
 
 pub mod plugin;
+pub mod protocol;
 pub mod runtime;
 pub mod state;
 pub mod storage;
@@ -133,4 +134,5 @@ pub use storage::{
     MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
 };
 pub use tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
+pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 pub use tool_registry::{ToolRegistry, ToolRegistryError};

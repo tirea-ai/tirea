@@ -1,5 +1,5 @@
+use carve_agent_contract::ProtocolOutputEncoder;
 use carve_agentos::contracts::runtime::AgentEvent;
-use carve_protocol_contract::ProtocolOutputEncoder;
 use futures::Stream;
 use futures::StreamExt;
 use std::future::Future;

@@ -1,8 +1,7 @@
 #![allow(missing_docs)]
 
-use carve_agent_contract::{AgentEvent, StopReason, TerminationReason};
+use carve_agent_contract::{AgentEvent, ProtocolOutputEncoder, StopReason, TerminationReason};
 use carve_protocol_ai_sdk_v6::{AiSdkV6ProtocolEncoder, UIStreamEvent};
-use carve_protocol_contract::ProtocolOutputEncoder;
 
 #[test]
 fn protocol_encoder_prologue_includes_run_info_event() {

@@ -7,7 +7,6 @@ description = "AI SDK v6 protocol types and adapters for carve-agent"
 
 [dependencies]
 carve-agent-contract = { path = "../carve-agent-contract" }
-carve-protocol-contract = { path = "../carve-protocol-contract" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tracing = "0.1"

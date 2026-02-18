@@ -6,7 +6,7 @@ use carve_agentos::contracts::storage::AgentStateReader;
 use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use carve_agentos_server::transport::pump_encoded_stream;
 use carve_protocol_ai_sdk_v6::{AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest};
-use carve_protocol_contract::ProtocolInputAdapter;
+use carve_agent_contract::ProtocolInputAdapter;
 use carve_thread_store_adapters::MemoryStore;
 use futures::future::ready;
 use std::sync::Arc;

@@ -1,7 +1,6 @@
 use super::request::convert_agui_messages;
 use super::RunAgentRequest;
-use carve_agent_contract::RunRequest;
-use carve_protocol_contract::ProtocolInputAdapter;
+use carve_agent_contract::{ProtocolInputAdapter, RunRequest};
 
 pub struct AgUiInputAdapter;
 

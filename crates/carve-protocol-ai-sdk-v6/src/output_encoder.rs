@@ -1,6 +1,5 @@
 use super::{AiSdkEncoder, UIStreamEvent, AI_SDK_VERSION};
-use carve_agent_contract::AgentEvent;
-use carve_protocol_contract::ProtocolOutputEncoder;
+use carve_agent_contract::{AgentEvent, ProtocolOutputEncoder};
 use serde_json::json;
 
 const RUN_INFO_EVENT_NAME: &str = "run-info";

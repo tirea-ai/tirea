@@ -12,7 +12,6 @@ members = [
     "crates/carve-agent-extension-observability",
     "crates/carve-agent-extension-skills",
     "crates/carve-agent-extension-mcp",
-    "crates/carve-protocol-contract",
     "crates/carve-protocol-ag-ui",
     "crates/carve-protocol-ag-ui-runtime",
     "crates/carve-protocol-ai-sdk-v6",
@@ -42,7 +41,6 @@ carve-agent-extension-interaction = { path = "crates/carve-agent-extension-inter
 carve-agent-extension-observability = { path = "crates/carve-agent-extension-observability" }
 carve-agent-extension-skills = { path = "crates/carve-agent-extension-skills" }
 carve-agent-extension-mcp = { path = "crates/carve-agent-extension-mcp" }
-carve-protocol-contract = { path = "crates/carve-protocol-contract" }
 carve-protocol-ag-ui = { path = "crates/carve-protocol-ag-ui" }
 carve-protocol-ag-ui-runtime = { path = "crates/carve-protocol-ag-ui-runtime" }
 carve-protocol-ai-sdk-v6 = { path = "crates/carve-protocol-ai-sdk-v6" }

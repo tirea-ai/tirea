@@ -5,7 +5,7 @@ use carve_protocol_ag_ui_runtime::build_agui_run_scope;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
-use carve_protocol_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
+use carve_agent_contract::{ProtocolInputAdapter, ProtocolOutputEncoder};
 use futures::StreamExt;
 use serde::Deserialize;
 use serde::Serialize;

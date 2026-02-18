@@ -1,11 +1,9 @@
 #![allow(missing_docs)]
 
-use carve_agent_contract::Role;
-use carve_agent_contract::{AgentEvent, Interaction, TerminationReason};
+use carve_agent_contract::{AgentEvent, Interaction, ProtocolInputAdapter, Role, TerminationReason};
 use carve_protocol_ag_ui::{
     AGUIContext, AGUIEvent, AGUIMessage, AgUiInputAdapter, RunAgentRequest,
 };
-use carve_protocol_contract::ProtocolInputAdapter;
 
 #[test]
 fn agui_context_pending_closes_text_and_emits_interaction_tool_events() {

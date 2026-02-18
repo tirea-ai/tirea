@@ -1,6 +1,6 @@
+use carve_agent_contract::ProtocolOutputEncoder;
 use carve_agentos::contracts::runtime::AgentEvent;
 use carve_agentos_server::transport::pump_encoded_stream;
-use carve_protocol_contract::ProtocolOutputEncoder;
 use futures::{future::ready, stream};
 use std::pin::Pin;
 

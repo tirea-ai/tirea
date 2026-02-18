@@ -1,6 +1,4 @@
-use carve_agent_contract::Message;
-use carve_agent_contract::RunRequest;
-use carve_protocol_contract::ProtocolInputAdapter;
+use carve_agent_contract::{Message, ProtocolInputAdapter, RunRequest};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct AiSdkV6RunRequest {

@@ -20,9 +20,7 @@ use carve_protocol_ai_sdk_v6::{
     AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,
 };
-use carve_protocol_contract::{
-    ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder,
-};
+use carve_agent_contract::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
