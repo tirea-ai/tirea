@@ -1,5 +1,6 @@
 use super::*;
 use crate::contracts::AgentState as ContextAgentState;
+use carve_state::State;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
 }
@@ -20,7 +21,7 @@ impl AgentRecoveryPlugin {
         }
 
         let has_pending_interaction = state
-            .get(LOOP_CONTROL_STATE_PATH)
+            .get(crate::runtime::control::LoopControlState::PATH)
             .and_then(|a| a.get("pending_interaction"))
             .is_some_and(|v| !v.is_null());
 

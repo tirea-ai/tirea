@@ -195,6 +195,17 @@ impl AgentState {
         )
     }
 
+    /// Typed state reference at the type's canonical path.
+    ///
+    /// Panics if `T::PATH` is empty (no bound path via `#[carve(path = "...")]`).
+    pub fn state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use state::<T>(path) instead"
+        );
+        self.state::<T>(T::PATH)
+    }
+
     /// Typed state reference for current call (`tool_calls.<call_id>`).
     pub fn call_state<T: State>(&self) -> T::Ref<'_> {
         let path = format!("tool_calls.{}", self.transient.call_id);
@@ -293,6 +304,17 @@ impl ActivityContext {
             ops: Mutex::new(Vec::new()),
             manager,
         }
+    }
+
+    /// Typed activity state reference at the type's canonical path.
+    ///
+    /// Panics if `T::PATH` is empty (no bound path via `#[carve(path = "...")]`).
+    pub fn state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use state::<T>(path) instead"
+        );
+        self.state::<T>(T::PATH)
     }
 
     /// Get a typed activity state reference at the specified path.

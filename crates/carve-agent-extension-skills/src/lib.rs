@@ -42,5 +42,4 @@ pub use tools::{LoadSkillResourceTool, SkillActivateTool, SkillScriptTool};
 pub use types::{
     collect_skills, material_key, LoadedAsset, LoadedReference, ScriptResult, Skill, SkillError,
     SkillMaterializeError, SkillMeta, SkillResource, SkillResourceKind, SkillState, SkillWarning,
-    SKILLS_STATE_PATH,
 };

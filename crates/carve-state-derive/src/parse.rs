@@ -19,6 +19,10 @@ pub struct ViewModelInput {
 
     /// Struct data (fields).
     pub data: ast::Data<(), FieldInput>,
+
+    /// Canonical JSON path for this state type (e.g., `#[carve(path = "reminders")]`).
+    #[darling(default)]
+    pub path: Option<String>,
 }
 
 impl ViewModelInput {

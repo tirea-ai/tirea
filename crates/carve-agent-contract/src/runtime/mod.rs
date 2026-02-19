@@ -12,7 +12,7 @@ pub mod result;
 pub mod termination;
 
 pub use crate::state::{ActivityContext, ActivityManager};
-pub use control::{InferenceError, LoopControlExt, LoopControlState, LOOP_CONTROL_STATE_PATH};
+pub use control::{InferenceError, LoopControlExt, LoopControlState};
 pub use event::AgentEvent;
 pub use executor::{
     LlmEventStream, LlmExecutor, ToolExecution, ToolExecutionRequest, ToolExecutionResult,

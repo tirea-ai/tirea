@@ -1,4 +1,5 @@
 use super::*;
+use carve_state::State;
 pub(super) fn parent_run_id_from_thread(
     thread: Option<&crate::contracts::state::AgentState>,
 ) -> Option<String> {
@@ -35,17 +36,17 @@ pub(super) fn as_agent_run_summary(run_id: &str, state: &DelegationRecord) -> Ag
 }
 
 pub(super) fn set_persisted_run(ctx: &AgentState, run_id: &str, run: DelegationRecord) {
-    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
+    let agent = ctx.state_of::<DelegationState>();
     agent.runs_insert(run_id.to_string(), run);
 }
 
 pub(super) fn parse_persisted_runs(ctx: &AgentState) -> HashMap<String, DelegationRecord> {
-    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
+    let agent = ctx.state_of::<DelegationState>();
     agent.runs().ok().unwrap_or_default()
 }
 
 pub(super) fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, DelegationRecord> {
-    doc.get(DELEGATION_STATE_PATH)
+    doc.get(DelegationState::PATH)
         .and_then(|v| v.get("runs"))
         .cloned()
         .and_then(|v| serde_json::from_value::<HashMap<String, DelegationRecord>>(v).ok())
@@ -103,12 +104,11 @@ pub(super) fn build_recovery_interaction(run_id: &str, run: &DelegationRecord) -
     }))
 }
 
-/// Interaction outbox path — matches `carve_agent_extension_interaction::INTERACTION_OUTBOX_PATH`.
 const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
 
 pub(super) fn parse_pending_interaction_from_state(state: &Value) -> Option<Interaction> {
     state
-        .get(LOOP_CONTROL_STATE_PATH)
+        .get(crate::runtime::control::LoopControlState::PATH)
         .and_then(|a| a.get("pending_interaction"))
         .cloned()
         .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
@@ -129,7 +129,7 @@ pub(super) fn set_pending_interaction_patch(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
-    let lc = ctx.state::<crate::runtime::control::LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    let lc = ctx.state_of::<crate::runtime::control::LoopControlState>();
     lc.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {
@@ -202,7 +202,7 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
     let ctx = AgentState::new_transient(state, call_id, AGENT_TOOLS_PLUGIN_ID);
-    let agent = ctx.state::<DelegationState>(DELEGATION_STATE_PATH);
+    let agent = ctx.state_of::<DelegationState>();
     agent.set_runs(next_runs);
     let patch = ctx.take_patch();
     if patch.patch().is_empty() {

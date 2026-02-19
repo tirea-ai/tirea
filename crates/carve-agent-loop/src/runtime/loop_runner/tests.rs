@@ -8,7 +8,7 @@ use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
-use carve_agent_extension_interaction::{InteractionOutbox, INTERACTION_OUTBOX_PATH};
+use carve_agent_extension_interaction::InteractionOutbox;
 use carve_state::{Op, Patch, State};
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
@@ -179,9 +179,7 @@ fn skill_activation_result(
     let patch = instruction.map(|text| {
         let base = json!({});
         let ctx = ContextAgentState::new_transient(&base, call_id, "skill_test");
-        let skill_state = ctx.state::<carve_agent_extension_skills::SkillState>(
-            carve_agent_extension_skills::SKILLS_STATE_PATH,
-        );
+        let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
         skill_state.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
         ctx.take_patch()
     });
@@ -1259,9 +1257,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::runtime::control::LoopControlState>(
-                        LOOP_CONTROL_STATE_PATH,
-                    );
+                    let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
                     let err = agent
                         .inference_error()
                         .ok()
@@ -1609,9 +1605,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
     let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
-    let skill_state = ctx.state::<carve_agent_extension_skills::SkillState>(
-        carve_agent_extension_skills::SKILLS_STATE_PATH,
-    );
+    let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
     skill_state.append_user_messages_insert(
         "call_1".to_string(),
         vec!["first".to_string(), "second".to_string()],
@@ -1653,9 +1647,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
     let state = json!({});
     let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
-    let skill_state = ctx.state::<carve_agent_extension_skills::SkillState>(
-        carve_agent_extension_skills::SKILLS_STATE_PATH,
-    );
+    let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
     skill_state.append_user_messages_insert(
         "call_1".to_string(),
         vec!["".to_string(), "   ".to_string()],
@@ -3155,9 +3147,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
                 return;
             }
 
-            let agent = ctx.state::<crate::runtime::control::LoopControlState>(
-                crate::runtime::control::LOOP_CONTROL_STATE_PATH,
-            );
+            let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
         }
@@ -4446,7 +4436,7 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                let outbox = ctx.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -4512,7 +4502,7 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
         ) {
             match phase {
                 Phase::RunStart => {
-                    let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                    let outbox = ctx.state_of::<InteractionOutbox>();
                     outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                         "replay_call_1",
                         "echo",
@@ -4582,7 +4572,7 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
             ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
-                let outbox = ctx.state::<InteractionOutbox>(INTERACTION_OUTBOX_PATH);
+                let outbox = ctx.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -5950,9 +5940,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state::<crate::runtime::control::LoopControlState>(
-                        crate::runtime::control::LOOP_CONTROL_STATE_PATH,
-                    );
+                    let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
                 }

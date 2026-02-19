@@ -2,8 +2,7 @@ use crate::skill_md::{parse_allowed_tool_token, parse_skill_md};
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
 use crate::{
     material_key, Skill, SkillError, SkillMaterializeError, SkillResource, SkillResourceKind,
-    SkillState, SKILLS_STATE_PATH, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID,
-    SKILL_SCRIPT_TOOL_ID,
+    SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 use carve_agent_contract::AgentState;
@@ -101,7 +100,7 @@ impl Tool for SkillActivateTool {
         let instructions = doc.body;
         let instruction_for_message = instructions.clone();
 
-        let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+        let state = ctx.state_of::<SkillState>();
         let active = state.active().ok().unwrap_or_default();
         if !active.iter().any(|s| s == &meta.id) {
             state.active_push(meta.id.clone());
@@ -146,7 +145,7 @@ impl Tool for SkillActivateTool {
         }
 
         if !instruction_for_message.trim().is_empty() {
-            let skill_state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+            let skill_state = ctx.state_of::<SkillState>();
             skill_state.append_user_messages_insert(
                 ctx.call_id().to_string(),
                 vec![instruction_for_message.clone()],
@@ -250,7 +249,7 @@ impl Tool for LoadSkillResourceTool {
         match resource {
             SkillResource::Reference(mat) => {
                 let key = material_key(&meta.id, &mat.path);
-                let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+                let state = ctx.state_of::<SkillState>();
                 state.references_insert(key, mat.clone());
 
                 debug!(
@@ -277,7 +276,7 @@ impl Tool for LoadSkillResourceTool {
             }
             SkillResource::Asset(asset) => {
                 let key = material_key(&meta.id, &asset.path);
-                let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+                let state = ctx.state_of::<SkillState>();
                 state.assets_insert(key, asset.clone());
 
                 debug!(
@@ -397,7 +396,7 @@ impl Tool for SkillScriptTool {
         };
 
         let key = material_key(&meta.id, &res.script);
-        let state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+        let state = ctx.state_of::<SkillState>();
         state.scripts_insert(key, res.clone());
 
         debug!(

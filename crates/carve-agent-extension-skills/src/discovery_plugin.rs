@@ -1,5 +1,5 @@
 use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY};
-use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID, SKILLS_STATE_PATH};
+use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
@@ -127,7 +127,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
             return;
         }
 
-        let skill_state = ctx.state::<SkillState>(SKILLS_STATE_PATH);
+        let skill_state = ctx.state_of::<SkillState>();
         let active: HashSet<String> = skill_state
             .active()
             .ok()

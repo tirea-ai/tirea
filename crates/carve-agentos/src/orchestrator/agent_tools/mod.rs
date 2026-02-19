@@ -11,8 +11,7 @@ use crate::extensions::permission::ToolPermissionBehavior;
 use carve_agent_extension_interaction::{
     AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
 };
-use crate::runtime::control::LOOP_CONTROL_STATE_PATH;
-use types::{DelegationRecord, DelegationState, DelegationStatus, DELEGATION_STATE_PATH};
+use types::{DelegationRecord, DelegationState, DelegationStatus};
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
     ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_SCOPE_CALLER_MESSAGES_KEY,

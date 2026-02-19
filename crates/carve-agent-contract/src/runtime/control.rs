@@ -8,9 +8,6 @@ use crate::state::AgentState;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 
-/// JSON path under `AgentState.state` where loop control data is stored.
-pub const LOOP_CONTROL_STATE_PATH: &str = "loop_control";
-
 /// Inference error emitted by the loop and consumed by telemetry plugins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InferenceError {
@@ -26,6 +23,7 @@ pub struct InferenceError {
 /// Used for cross-step and cross-run flow control that must survive restarts
 /// (not ephemeral in-memory variables).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "loop_control")]
 pub struct LoopControlState {
     /// Pending interaction that must be resolved by the client before the run can continue.
     #[carve(default = "None")]
@@ -49,7 +47,7 @@ pub trait LoopControlExt {
 
 impl LoopControlExt for AgentState {
     fn loop_control(&self) -> <LoopControlState as carve_state::State>::Ref<'_> {
-        self.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH)
+        self.state_of::<LoopControlState>()
     }
 
     fn pending_interaction(&self) -> Option<Interaction> {
@@ -61,7 +59,7 @@ impl LoopControlExt for AgentState {
             .ok()
             .and_then(|state| {
                 state
-                    .get(LOOP_CONTROL_STATE_PATH)
+                    .get(LoopControlState::PATH)
                     .and_then(|rt| rt.get("pending_interaction"))
                     .cloned()
             })

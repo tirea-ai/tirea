@@ -21,6 +21,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
         .filter(|f| f.is_included())
         .collect();
 
+    let path_value = input.path.as_deref().unwrap_or("");
+
     let read_methods = generate_read_methods(&fields)?;
     let write_methods = generate_write_methods(&fields)?;
     let delete_methods = generate_delete_methods(&fields)?;
@@ -58,6 +60,8 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
 
         impl ::carve_state::State for #struct_name {
             type Ref<'a> = #ref_name<'a>;
+
+            const PATH: &'static str = #path_value;
 
             fn state_ref<'a>(
                 doc: &'a ::serde_json::Value,

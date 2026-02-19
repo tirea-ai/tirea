@@ -97,6 +97,18 @@ impl<'a> StateContext<'a> {
         T::state_ref(self.doc, base, PatchSink::new(&self.ops))
     }
 
+    /// Get a typed state reference at the type's canonical path.
+    ///
+    /// Requires `T` to have `#[carve(path = "...")]` set.
+    /// Panics if `T::PATH` is empty.
+    pub fn state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use state::<T>(path) instead"
+        );
+        self.state::<T>(T::PATH)
+    }
+
     /// Extract collected operations as a plain patch.
     pub fn take_patch(&self) -> Patch {
         let ops = std::mem::take(&mut *self.ops.lock().unwrap());
@@ -161,6 +173,12 @@ pub fn parse_path(path: &str) -> Path {
 pub trait State: Sized {
     /// The reference type that provides typed access.
     type Ref<'a>;
+
+    /// Canonical JSON path for this state type.
+    ///
+    /// When set via `#[carve(path = "...")]`, enables `state_of::<T>()` access
+    /// without an explicit path argument. Empty string means no bound path.
+    const PATH: &'static str = "";
 
     /// Create a state reference at the specified path.
     ///

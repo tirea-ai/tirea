@@ -19,4 +19,4 @@ pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
 
 pub use context_provider::{ContextCategory, ContextProvider};
 pub use interaction_plugin::InteractionPlugin;
-pub use outbox::{InteractionOutbox, INTERACTION_OUTBOX_PATH};
+pub use outbox::InteractionOutbox;

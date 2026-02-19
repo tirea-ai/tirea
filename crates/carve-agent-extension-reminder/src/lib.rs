@@ -28,11 +28,9 @@ use serde::{Deserialize, Serialize};
 mod system_reminder;
 pub use system_reminder::SystemReminder;
 
-/// State path for reminders.
-pub const REMINDER_STATE_PATH: &str = "reminders";
-
 /// Reminder state stored in session state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "reminders")]
 pub struct ReminderState {
     /// List of reminder texts.
     #[serde(default)]
@@ -59,12 +57,12 @@ pub trait ReminderContextExt {
 
 impl ReminderContextExt for ContextAgentState {
     fn add_reminder(&self, text: impl Into<String>) {
-        let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
+        let state = self.state_of::<ReminderState>();
         state.items_push(text.into());
     }
 
     fn reminders(&self) -> Vec<String> {
-        let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
+        let state = self.state_of::<ReminderState>();
         state.items().ok().unwrap_or_default()
     }
 
@@ -73,14 +71,14 @@ impl ReminderContextExt for ContextAgentState {
     }
 
     fn clear_reminders(&self) {
-        let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
+        let state = self.state_of::<ReminderState>();
         state.set_items(Vec::new());
     }
 
     fn remove_reminder(&self, text: &str) {
         let reminders = self.reminders();
         let filtered: Vec<String> = reminders.into_iter().filter(|r| r != text).collect();
-        let state = self.state::<ReminderState>(REMINDER_STATE_PATH);
+        let state = self.state_of::<ReminderState>();
         state.set_items(filtered);
     }
 }

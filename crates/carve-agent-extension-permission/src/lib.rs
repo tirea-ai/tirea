@@ -30,9 +30,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-/// State path for permission configuration inside `AgentState.state`.
-pub const PERMISSION_STATE_PATH: &str = "permissions";
-
 /// Tool permission behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -48,6 +45,7 @@ pub enum ToolPermissionBehavior {
 
 /// Persisted permission state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "permissions")]
 pub struct PermissionState {
     /// Default behavior for tools not explicitly configured.
     pub default_behavior: ToolPermissionBehavior,
@@ -81,22 +79,22 @@ pub trait PermissionContextExt {
 
 impl PermissionContextExt for ContextAgentState {
     fn allow_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
     }
 
     fn deny_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         state.tools_insert(tool_id.into(), ToolPermissionBehavior::Deny);
     }
 
     fn ask_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         state.tools_insert(tool_id.into(), ToolPermissionBehavior::Ask);
     }
 
     fn get_permission(&self, tool_id: &str) -> ToolPermissionBehavior {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         if let Ok(tools) = state.tools() {
             if let Some(permission) = tools.get(tool_id) {
                 return *permission;
@@ -106,12 +104,12 @@ impl PermissionContextExt for ContextAgentState {
     }
 
     fn set_default_permission(&self, behavior: ToolPermissionBehavior) {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         state.set_default_behavior(behavior);
     }
 
     fn get_default_permission(&self) -> ToolPermissionBehavior {
-        let state = self.state::<PermissionState>(PERMISSION_STATE_PATH);
+        let state = self.state_of::<PermissionState>();
         state.default_behavior().ok().unwrap_or_default()
     }
 }

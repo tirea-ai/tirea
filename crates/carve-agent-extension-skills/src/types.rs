@@ -13,9 +13,6 @@ pub struct SkillMeta {
     pub allowed_tools: Vec<String>,
 }
 
-/// State path for skill state inside `AgentState.state`.
-pub const SKILLS_STATE_PATH: &str = "skills";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillWarning {
     pub path: PathBuf,
@@ -74,6 +71,7 @@ pub struct LoadedAsset {
 
 /// Persisted skill state (instructions + loaded materials).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "skills")]
 pub struct SkillState {
     /// Activated skill IDs (stable identifiers from the registry).
     #[serde(default)]

@@ -6,9 +6,7 @@
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
-use carve_agent_contract::runtime::control::{
-    InferenceError, LoopControlState, LOOP_CONTROL_STATE_PATH,
-};
+use carve_agent_contract::runtime::control::{InferenceError, LoopControlState};
 use carve_agent_contract::AgentState as ContextAgentState;
 use genai::chat::{ChatOptions, Usage};
 use serde::{Deserialize, Serialize};
@@ -643,7 +641,7 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
 }
 
 fn inference_error_from_state(ctx: &ContextAgentState) -> Option<InferenceError> {
-    let lc = ctx.state::<LoopControlState>(LOOP_CONTROL_STATE_PATH);
+    let lc = ctx.state_of::<LoopControlState>();
     lc.inference_error().ok().flatten()
 }
 

@@ -8,11 +8,9 @@ use carve_agent_contract::state::ToolCall;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 
-/// JSON path under `AgentState.state` where the interaction outbox is stored.
-pub const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
-
 /// Persisted outbox for interaction-driven tool replay and resolution events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "interaction_outbox")]
 pub struct InteractionOutbox {
     /// Tool calls to replay at session start after an interaction is approved.
     #[carve(default = "Vec::new()")]

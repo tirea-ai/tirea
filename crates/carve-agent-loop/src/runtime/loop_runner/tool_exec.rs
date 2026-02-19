@@ -19,7 +19,8 @@ use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
-use crate::runtime::control::LOOP_CONTROL_STATE_PATH;
+use crate::runtime::control::LoopControlState;
+use carve_state::State;
 use async_trait::async_trait;
 use carve_state::{PatchExt, TrackedPatch};
 use serde_json::Value;
@@ -289,7 +290,7 @@ pub(super) fn apply_tool_results_impl(
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     if state
-        .get(LOOP_CONTROL_STATE_PATH)
+        .get(LoopControlState::PATH)
         .and_then(|v| v.get("pending_interaction"))
         .is_some()
     {

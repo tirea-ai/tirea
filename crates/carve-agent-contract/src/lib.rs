@@ -121,7 +121,6 @@ pub use runtime::{
     LoopControlExt, LoopControlState, RunRequest, StopConditionSpec,
     StopPolicy, StopPolicyInput, StopPolicyStats, StopReason, StreamResult, TerminationReason,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
-    LOOP_CONTROL_STATE_PATH,
 };
 pub use state::{
     gen_message_id, AgentChangeSet, AgentState, AgentStateMetadata, CheckpointReason, Message,

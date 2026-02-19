@@ -8,9 +8,6 @@ use carve_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// JSON path under `AgentState.state` where delegation data is stored.
-pub const DELEGATION_STATE_PATH: &str = "agent_runs";
-
 /// Status of a delegated agent run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -57,6 +54,7 @@ pub struct DelegationRecord {
 
 /// Persisted sub-agent delegation state at `state["agent_runs"]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
+#[carve(path = "agent_runs")]
 pub struct DelegationState {
     /// Delegated runs keyed by `run_id`.
     #[carve(default = "HashMap::new()")]
