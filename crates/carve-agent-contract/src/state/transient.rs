@@ -24,6 +24,23 @@ pub trait ActivityManager: Send + Sync {
 }
 
 impl AgentState {
+    /// Create a `ToolCallContext` view of this `AgentState`'s transient execution state.
+    ///
+    /// This bridges the old `AgentState`-based API to the new `ToolCallContext` API,
+    /// allowing gradual migration of tool and plugin implementations.
+    pub fn as_tool_call_context(&self) -> crate::context::ToolCallContext<'_> {
+        crate::context::ToolCallContext::new(
+            self.run_doc(),
+            self.transient.ops.as_ref(),
+            self.transient.run_overlay.clone(),
+            &self.transient.call_id,
+            &self.transient.source,
+            &self.scope,
+            self.transient.pending_messages.as_ref(),
+            self.transient.activity_manager.clone(),
+        )
+    }
+
     /// Get or lazily create the shared mutable document for write-through reads.
     fn run_doc(&self) -> &DocCell {
         self.transient
