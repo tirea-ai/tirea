@@ -4,10 +4,8 @@
 
 use super::{INTERACTION_RESPONSE_PLUGIN_ID, RECOVERY_RESUME_TOOL_ID};
 use crate::outbox::{InteractionOutbox, INTERACTION_OUTBOX_PATH};
-use carve_agent_contract::runtime::control::{
-    LoopControlState, AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
-    LOOP_CONTROL_STATE_PATH,
-};
+use crate::{AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX};
+use carve_agent_contract::runtime::control::{LoopControlState, LOOP_CONTROL_STATE_PATH};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};

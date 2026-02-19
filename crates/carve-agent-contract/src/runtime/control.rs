@@ -11,12 +11,6 @@ use serde::{Deserialize, Serialize};
 /// JSON path under `AgentState.state` where loop control data is stored.
 pub const LOOP_CONTROL_STATE_PATH: &str = "loop_control";
 
-/// Interaction action used for agent run recovery confirmation.
-pub const AGENT_RECOVERY_INTERACTION_ACTION: &str = "recover_agent_run";
-
-/// Interaction ID prefix used for agent run recovery confirmation.
-pub const AGENT_RECOVERY_INTERACTION_PREFIX: &str = "agent_recovery_";
-
 /// Inference error emitted by the loop and consumed by telemetry plugins.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InferenceError {

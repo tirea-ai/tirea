@@ -1,19 +1,6 @@
 use carve_state::ScopeState;
 use serde_json::Value;
 
-/// Scope key: tool allow-list policy.
-pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
-/// Scope key: tool deny-list policy.
-pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
-/// Scope key: skill allow-list policy.
-pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
-/// Scope key: skill deny-list policy.
-pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
-/// Scope key: delegate-agent allow-list policy.
-pub const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
-/// Scope key: delegate-agent deny-list policy.
-pub const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
-
 /// Check whether an identifier is allowed by optional allow/deny lists.
 #[must_use]
 pub fn is_id_allowed(id: &str, allowed: Option<&[String]>, excluded: Option<&[String]>) -> bool {
@@ -79,25 +66,27 @@ mod tests {
 
     #[test]
     fn is_scope_allowed_reads_filters_from_scope() {
+        let allowed_key = "__test_allowed";
+        let excluded_key = "__test_excluded";
         let mut scope = ScopeState::new();
         scope
-            .set(SCOPE_ALLOWED_TOOLS_KEY, vec!["a", "b"])
-            .expect("set allowed tools");
+            .set(allowed_key, vec!["a", "b"])
+            .expect("set allowed");
         scope
-            .set(SCOPE_EXCLUDED_TOOLS_KEY, vec!["b"])
-            .expect("set excluded tools");
+            .set(excluded_key, vec!["b"])
+            .expect("set excluded");
 
         assert!(is_scope_allowed(
             Some(&scope),
             "a",
-            SCOPE_ALLOWED_TOOLS_KEY,
-            SCOPE_EXCLUDED_TOOLS_KEY,
+            allowed_key,
+            excluded_key,
         ));
         assert!(!is_scope_allowed(
             Some(&scope),
             "b",
-            SCOPE_ALLOWED_TOOLS_KEY,
-            SCOPE_EXCLUDED_TOOLS_KEY,
+            allowed_key,
+            excluded_key,
         ));
     }
 }

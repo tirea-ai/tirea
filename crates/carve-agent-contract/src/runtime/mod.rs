@@ -12,10 +12,7 @@ pub mod result;
 pub mod termination;
 
 pub use crate::state::{ActivityContext, ActivityManager};
-pub use control::{
-    InferenceError, LoopControlExt, LoopControlState, AGENT_RECOVERY_INTERACTION_ACTION,
-    AGENT_RECOVERY_INTERACTION_PREFIX, LOOP_CONTROL_STATE_PATH,
-};
+pub use control::{InferenceError, LoopControlExt, LoopControlState, LOOP_CONTROL_STATE_PATH};
 pub use event::AgentEvent;
 pub use executor::{
     LlmEventStream, LlmExecutor, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
@@ -24,11 +21,7 @@ pub use executor::{
 pub use interaction::{Interaction, InteractionResponse};
 pub use phase::{Phase, StepContext, StepOutcome, ToolContext};
 pub use policy::{StopPolicy, StopPolicyInput, StopPolicyStats};
-pub use policy_scope::{
-    is_id_allowed, is_scope_allowed, parse_scope_filter, SCOPE_ALLOWED_AGENTS_KEY,
-    SCOPE_ALLOWED_SKILLS_KEY, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_AGENTS_KEY,
-    SCOPE_EXCLUDED_SKILLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
-};
+pub use policy_scope::{is_id_allowed, is_scope_allowed, parse_scope_filter};
 pub use request::RunRequest;
 pub use result::{StreamResult, ToolResult, ToolStatus};
 pub use termination::{StopConditionSpec, StopReason, TerminationReason};

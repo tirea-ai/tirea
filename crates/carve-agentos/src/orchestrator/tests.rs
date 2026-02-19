@@ -984,19 +984,19 @@ fn resolve_sets_runtime_caller_agent_id() {
     assert_eq!(
         thread
             .scope
-            .value(crate::contracts::runtime::SCOPE_ALLOWED_SKILLS_KEY),
+            .value(carve_agent_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
         thread
             .scope
-            .value(crate::contracts::runtime::SCOPE_ALLOWED_AGENTS_KEY),
+            .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
         thread
             .scope
-            .value(crate::contracts::runtime::SCOPE_ALLOWED_TOOLS_KEY),
+            .value(carve_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
 }

@@ -11,8 +11,9 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
 use crate::contracts::runtime::{
     Interaction, StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, ToolExecutorError, SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
+    ToolExecutor, ToolExecutorError,
 };
+use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 use crate::contracts::state::{ActivityManager, AgentState};
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};

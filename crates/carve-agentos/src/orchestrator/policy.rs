@@ -4,11 +4,18 @@ use carve_state::ScopeState;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(super) use crate::contracts::runtime::{
-    is_id_allowed, is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_ALLOWED_SKILLS_KEY,
-    SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_AGENTS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
-    SCOPE_EXCLUDED_TOOLS_KEY,
+pub(super) use crate::contracts::runtime::{is_id_allowed, is_scope_allowed};
+pub(super) use carve_agent_loop::engine::tool_filter::{
+    SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY,
 };
+pub(super) use carve_agent_extension_skills::{
+    SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLUDED_SKILLS_KEY,
+};
+
+/// Scope key: delegate-agent allow-list policy.
+pub(super) const SCOPE_ALLOWED_AGENTS_KEY: &str = "__agent_policy_allowed_agents";
+/// Scope key: delegate-agent deny-list policy.
+pub(super) const SCOPE_EXCLUDED_AGENTS_KEY: &str = "__agent_policy_excluded_agents";
 
 pub(super) fn filter_tools_in_place(
     tools: &mut HashMap<String, Arc<dyn Tool>>,

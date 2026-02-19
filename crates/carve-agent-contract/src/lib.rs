@@ -121,7 +121,6 @@ pub use runtime::{
     LoopControlExt, LoopControlState, RunRequest, StopConditionSpec,
     StopPolicy, StopPolicyInput, StopPolicyStats, StopReason, StreamResult, TerminationReason,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
-    AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX,
     LOOP_CONTROL_STATE_PATH,
 };
 pub use state::{

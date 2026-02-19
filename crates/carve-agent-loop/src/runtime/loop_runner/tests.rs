@@ -1794,7 +1794,7 @@ fn test_execute_tools_with_config_enforces_scope_tool_policy_at_execution() {
         thread
             .scope
             .set(
-                crate::contracts::runtime::SCOPE_ALLOWED_TOOLS_KEY,
+                crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY,
                 vec!["other"],
             )
             .unwrap();

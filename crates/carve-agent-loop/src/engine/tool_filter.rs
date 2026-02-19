@@ -2,6 +2,11 @@ use carve_state::ScopeState;
 
 use crate::contracts::runtime::{is_id_allowed, is_scope_allowed as runtime_is_scope_allowed};
 
+/// Scope key: tool allow-list policy.
+pub const SCOPE_ALLOWED_TOOLS_KEY: &str = "__agent_policy_allowed_tools";
+/// Scope key: tool deny-list policy.
+pub const SCOPE_EXCLUDED_TOOLS_KEY: &str = "__agent_policy_excluded_tools";
+
 pub fn is_tool_allowed(
     tool_id: &str,
     allowed: Option<&[String]>,
@@ -22,7 +27,7 @@ pub fn is_scope_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
+    use super::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
 
     #[test]
     fn test_is_tool_allowed_allows_when_no_filters() {
