@@ -36,12 +36,12 @@ pub trait StateCommitter: Send + Sync {
     ) -> Result<u64, StateCommitError>;
 }
 
-/// Optional lifecycle context for a streaming agent run.
+/// Infrastructure services for a streaming agent run.
 ///
-/// Run-specific data (run_id, parent_run_id, etc.) should be set on
-/// `thread.scope` before starting the loop.
+/// Carries cooperative runtime controls (cancellation, state commit sink)
+/// that are orthogonal to business data in `RunContext`.
 #[derive(Clone, Default)]
-pub struct RunContext {
+pub struct RunServices {
     /// Cancellation token for cooperative loop termination.
     ///
     /// When cancelled, this is the **run cancellation signal**:
@@ -55,9 +55,9 @@ pub struct RunContext {
     pub state_committer: Option<Arc<dyn StateCommitter>>,
 }
 
-impl std::fmt::Debug for RunContext {
+impl std::fmt::Debug for RunServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunContext")
+        f.debug_struct("RunServices")
             .field(
                 "cancellation_token",
                 &self.cancellation_token.as_ref().map(|_| "<set>"),
@@ -70,7 +70,7 @@ impl std::fmt::Debug for RunContext {
     }
 }
 
-impl RunContext {
+impl RunServices {
     pub fn run_cancellation_token(&self) -> Option<&RunCancellationToken> {
         self.cancellation_token.as_ref()
     }
@@ -84,6 +84,10 @@ impl RunContext {
         self
     }
 }
+
+/// Deprecated alias for `RunServices`.
+#[deprecated(note = "renamed to `RunServices`")]
+pub type RunContext = RunServices;
 
 /// Scope key: caller session id visible to tools.
 pub const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";

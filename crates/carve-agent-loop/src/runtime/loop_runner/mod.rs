@@ -78,8 +78,9 @@ use uuid::Uuid;
 use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
+#[allow(deprecated)]
 pub use crate::runtime::run_context::{
-    RunCancellationToken, RunContext, StateCommitError, StateCommitter,
+    RunCancellationToken, RunContext, RunServices, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
