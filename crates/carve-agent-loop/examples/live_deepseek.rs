@@ -379,7 +379,7 @@ async fn test_simple_conversation() -> Result<(), Box<dyn std::error::Error>> {
     let thread = ConversationAgentState::new("test-simple")
         .with_message(Message::user("What is 2 + 2? Reply briefly."));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -401,7 +401,7 @@ async fn test_calculator(
         .with_message(Message::system("You are a helpful assistant. Use the calculator tool when asked to perform calculations."))
         .with_message(Message::user("Please calculate 15 * 7 + 23 using the calculator tool."));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -428,7 +428,7 @@ async fn test_streaming() -> Result<(), Box<dyn std::error::Error>> {
     let thread = ConversationAgentState::new("test-stream")
         .with_message(Message::user("Count from 1 to 5, one number per line."));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
 
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
@@ -472,7 +472,7 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
         .with_message(Message::system("You are a helpful assistant. Use the counter tool to manage a counter. Always use the tool when asked about the counter."))
         .with_message(Message::user("Please increment the counter by 5, then increment it by 3 more. Tell me the final value."));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -501,7 +501,7 @@ async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .with_message(Message::user("My name is Alice. Remember it."));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -558,7 +558,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
             .with_message(Message::user("What is the current counter value?"));
 
     // Run 1: Get current value
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -646,7 +646,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
                 "My favorite number is 42. Remember it. Also, what is the counter?",
             ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -715,7 +715,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
         "What was my favorite number? And what is the counter now?",
     ));
 
-    let run_ctx = RunContext::from_thread(&loaded_thread)?;
+    let run_ctx = RunContext::from_thread(&loaded_thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -784,7 +784,7 @@ async fn test_parallel_tool_calls() -> Result<(), Box<dyn std::error::Error>> {
              2) Get the weather in Tokyo",
         ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -848,7 +848,7 @@ async fn test_max_rounds_limit() -> Result<(), Box<dyn std::error::Error>> {
             "Check the status of the 'api' component completely.",
         ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -900,7 +900,7 @@ async fn test_tool_failure_recovery() -> Result<(), Box<dyn std::error::Error>> 
             "Please use the API to process the query 'hello world'.",
         ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -957,7 +957,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
                 "Increment the counter 3 times by 10 each time.",
             ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -988,7 +988,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n[Phase 3: Continue after snapshot]");
     let snapshot_thread = snapshot_thread.with_message(Message::user("What is the counter now? Then add 5 more."));
 
-    let run_ctx = RunContext::from_thread(&snapshot_thread)?;
+    let run_ctx = RunContext::from_thread(&snapshot_thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -1027,7 +1027,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
             .with_message(Message::user("Set the counter to 10."));
 
     // Run 1: Set counter to 10
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let state_after_1 = outcome.run_ctx.rebuild_state()?;
@@ -1140,7 +1140,7 @@ async fn test_long_conversation() -> Result<(), Box<dyn std::error::Error>> {
         "What was the number I mentioned in message 15? Reply with just the number.",
     ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
 
     let request_start = std::time::Instant::now();
     let outcome = run_loop(&config, run_ctx, None, None).await;

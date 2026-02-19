@@ -2,20 +2,11 @@ use super::*;
 use carve_agent_contract::tool::context::ToolCallContext;
 use carve_state::{DocCell, State};
 use std::sync::{Arc, Mutex};
-pub(super) fn parent_run_id_from_thread(
-    thread: Option<&crate::contracts::thread::Thread>,
-) -> Option<String> {
-    thread
-        .and_then(|s| s.run_config.value(SCOPE_PARENT_RUN_ID_KEY))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
+    parent_run_id: Option<String>,
     thread: Option<crate::contracts::thread::Thread>,
 ) -> DelegationRecord {
-    let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     DelegationRecord {
         run_id: summary.run_id.clone(),
         parent_run_id,
@@ -241,11 +232,8 @@ pub(super) async fn reconcile_persisted_runs(
         };
         if let Some(summary) = by_id.get(&run_id) {
             let thread = manager.owned_record(owner_thread_id, &run_id).await;
-            let mut next =
-                as_delegation_record(summary, thread.or_else(|| current.agent_state.clone()));
-            if next.parent_run_id.is_none() {
-                next.parent_run_id = current.parent_run_id.clone();
-            }
+            let next =
+                as_delegation_record(summary, current.parent_run_id.clone(), thread.or_else(|| current.agent_state.clone()));
             if current.status != next.status
                 || current.assistant != next.assistant
                 || current.error != next.error
@@ -271,7 +259,7 @@ pub(super) async fn reconcile_persisted_runs(
             continue;
         }
         let thread = manager.owned_record(owner_thread_id, &run_id).await;
-        runs.insert(run_id.clone(), as_delegation_record(&summary, thread));
+        runs.insert(run_id.clone(), as_delegation_record(&summary, None, thread));
         changed = true;
     }
 

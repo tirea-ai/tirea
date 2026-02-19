@@ -517,19 +517,16 @@ impl AgentOs {
     pub fn resolve(
         &self,
         agent_id: &str,
-        mut thread: Thread,
+        thread: Thread,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let definition = self
             .agents
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        if thread.run_config.value(SCOPE_CALLER_AGENT_ID_KEY).is_none() {
-            let _ = thread
-                .run_config
-                .set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
-        }
-        let _ = set_scope_filters_from_definition_if_absent(&mut thread.run_config, &definition);
+        let mut run_config = crate::contracts::RunConfig::new();
+        let _ = run_config.set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
+        let _ = set_scope_filters_from_definition_if_absent(&mut run_config, &definition);
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();
@@ -541,6 +538,6 @@ impl AgentOs {
             excluded_tools.as_deref(),
         );
         self.resolve_model(&mut cfg)?;
-        Ok((cfg, tools, thread))
+        Ok((cfg, tools, thread, run_config))
     }
 }

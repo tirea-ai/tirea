@@ -51,7 +51,7 @@ pub use composition::{
     ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
+type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread, crate::contracts::RunConfig);
 
 
 

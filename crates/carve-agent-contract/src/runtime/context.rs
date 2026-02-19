@@ -258,12 +258,12 @@ impl RunContext {
     /// Convenience constructor from a `Thread`.
     ///
     /// Rebuilds state from the thread's base state + patches, then wraps
-    /// the thread's messages and run_config into a `RunContext`. Version
-    /// metadata is carried over from thread metadata.
-    pub fn from_thread(thread: &crate::thread::Thread) -> Result<Self, carve_state::CarveError> {
+    /// the thread's messages and the given `run_config` into a `RunContext`.
+    /// Version metadata is carried over from thread metadata.
+    pub fn from_thread(thread: &crate::thread::Thread, run_config: RunConfig) -> Result<Self, carve_state::CarveError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
-        let mut ctx = Self::new(thread.id.clone(), state, messages, thread.run_config.clone());
+        let mut ctx = Self::new(thread.id.clone(), state, messages, run_config);
         if let Some(v) = thread.metadata.version {
             ctx.set_version(v, thread.metadata.version_timestamp);
         }
@@ -513,7 +513,7 @@ mod tests {
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         ));
 
-        let ctx = RunContext::from_thread(&thread).unwrap();
+        let ctx = RunContext::from_thread(&thread, RunConfig::default()).unwrap();
         // State is pre-rebuilt (includes thread patches)
         assert_eq!(ctx.state()["counter"], 5);
         // No run patches yet
@@ -530,7 +530,7 @@ mod tests {
         thread.metadata.version = Some(42);
         thread.metadata.version_timestamp = Some(1700000000);
 
-        let ctx = RunContext::from_thread(&thread).unwrap();
+        let ctx = RunContext::from_thread(&thread, RunConfig::default()).unwrap();
         assert_eq!(ctx.version(), 42);
         assert_eq!(ctx.version_timestamp(), Some(1700000000));
     }
@@ -548,7 +548,7 @@ mod tests {
             }]),
         ));
 
-        let result = RunContext::from_thread(&thread);
+        let result = RunContext::from_thread(&thread, RunConfig::default());
         assert!(result.is_err(), "broken patch should cause from_thread to fail");
     }
 

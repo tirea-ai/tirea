@@ -4,7 +4,6 @@
 //! message history and patches.
 
 use crate::thread::message::Message;
-use crate::RunConfig;
 use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,7 +32,7 @@ impl PendingDelta {
 /// `Thread` uses an owned builder pattern: `with_*` methods consume `self`
 /// and return a new `Thread` (e.g., `thread.with_message(msg)`).
 ///
-/// Runtime fields (`run_config`, `pending`, `run_overlay`) are transient —
+/// Runtime fields (`pending`, `run_overlay`) are transient —
 /// not serialized. They exist for backward compatibility and will be removed
 /// once all callers migrate to `RunContext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,10 +54,6 @@ pub struct Thread {
     /// Metadata.
     #[serde(default)]
     pub metadata: ThreadMetadata,
-    /// Per-run run config context (not persisted).
-    /// Deprecated: use `RunContext.run_config` instead.
-    #[serde(skip)]
-    pub run_config: RunConfig,
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     /// Deprecated: use `RunContext.take_delta()` instead.
     #[serde(skip)]
@@ -109,7 +104,6 @@ impl Thread {
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
@@ -125,7 +119,6 @@ impl Thread {
             state,
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
-            run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
@@ -142,13 +135,6 @@ impl Thread {
     #[must_use]
     pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
         self.parent_thread_id = Some(parent_thread_id.into());
-        self
-    }
-
-    /// Set the run config (pure function, returns new Thread).
-    #[must_use]
-    pub fn with_run_config(mut self, run_config: RunConfig) -> Self {
-        self.run_config = run_config;
         self
     }
 
@@ -257,7 +243,6 @@ impl Thread {
             state: current_state,
             patches: Vec::new(),
             metadata: self.metadata,
-            run_config: self.run_config,
             pending: self.pending,
             run_overlay: self.run_overlay,
         })
@@ -445,23 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_with_run_config() {
-        let mut rt = RunConfig::new();
-        rt.set("user_id", "u1").unwrap();
-        let thread = Thread::new("t-1").with_run_config(rt);
-        assert_eq!(thread.run_config.value("user_id"), Some(&json!("u1")));
-    }
-
-    #[test]
-    fn test_scope_is_set_once() {
-        let mut thread = Thread::new("t-1");
-        thread.run_config.set("run_id", "run-1").unwrap();
-        let err = thread.run_config.set("run_id", "run-2").unwrap_err();
-        assert!(matches!(err, carve_state::SealedStateError::AlreadySet(key) if key == "run_id"));
-        assert_eq!(thread.run_config.value("run_id"), Some(&json!("run-1")));
-    }
-
-    #[test]
     fn test_thread_with_initial_state() {
         let state = json!({"counter": 0});
         let thread = Thread::with_initial_state("test-1", state.clone());
@@ -551,32 +519,11 @@ mod tests {
 
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
-        // RunConfig is not serialized
-        assert!(!restored.run_config.contains_key("anything"));
     }
 
     #[test]
-    fn test_thread_serialization_skips_scope() {
-        let mut rt = RunConfig::new();
-        rt.set("token", "secret").unwrap();
-        let thread = Thread::new("test-1").with_run_config(rt);
-
-        let json_str = serde_json::to_string(&thread).unwrap();
-        assert!(!json_str.contains("secret"));
-        assert!(!json_str.contains("scope"));
-
-        // Deserialized thread has default (empty) scope
-        let restored: Thread = serde_json::from_str(&json_str).unwrap();
-        assert!(!restored.run_config.contains_key("token"));
-    }
-
-    #[test]
-    fn test_state_persists_but_scope_is_transient_after_serialization() {
-        let mut rt = RunConfig::new();
-        rt.set("run_id", "run-1").unwrap();
-
+    fn test_state_persists_after_serialization() {
         let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
-            .with_run_config(rt)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -588,10 +535,6 @@ mod tests {
         assert_eq!(
             rebuilt["counter"], 5,
             "persisted state should survive serialization"
-        );
-        assert!(
-            !restored.run_config.contains_key("run_id"),
-            "run_config data must not be persisted"
         );
     }
 

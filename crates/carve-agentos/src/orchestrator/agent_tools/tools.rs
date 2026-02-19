@@ -31,42 +31,10 @@ fn scope_run_id(scope: Option<&carve_agent_contract::RunConfig>) -> Option<Strin
 
 fn bind_child_lineage(
     mut thread: crate::contracts::thread::Thread,
-    run_id: &str,
-    parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
 ) -> crate::contracts::thread::Thread {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
-    }
-    let current_run_id = thread
-        .run_config
-        .value(SCOPE_RUN_ID_KEY)
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let current_parent_run_id = thread
-        .run_config
-        .value(SCOPE_PARENT_RUN_ID_KEY)
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-
-    let parent_mismatch = match (current_parent_run_id.as_deref(), parent_run_id) {
-        (Some(cur), Some(expected)) => cur != expected,
-        (Some(_), None) => true,
-        _ => false,
-    };
-    let run_mismatch = current_run_id.as_deref().is_some_and(|cur| cur != run_id);
-
-    if run_mismatch || parent_mismatch {
-        thread = thread.with_run_config(carve_agent_contract::RunConfig::new());
-    }
-
-    if thread.run_config.value(SCOPE_RUN_ID_KEY).is_none() {
-        let _ = thread.run_config.set(SCOPE_RUN_ID_KEY, run_id);
-    }
-    if let Some(parent_run_id) = parent_run_id {
-        if thread.run_config.value(SCOPE_PARENT_RUN_ID_KEY).is_none() {
-            let _ = thread.run_config.set(SCOPE_PARENT_RUN_ID_KEY, parent_run_id);
-        }
     }
     thread
 }
@@ -176,12 +144,13 @@ impl AgentRunTool {
         ctx: &ToolCallContext<'_>,
         owner_thread_id: &str,
         run_id: &str,
+        parent_run_id: Option<String>,
         summary: AgentRunSummary,
         tool_name: &str,
     ) -> ToolResult {
         let thread = self.manager.owned_record(owner_thread_id, run_id).await;
         let agent = ctx.state_of::<DelegationState>();
-        agent.runs_insert(run_id.to_string(), as_delegation_record(&summary, thread));
+        agent.runs_insert(run_id.to_string(), as_delegation_record(&summary, parent_run_id, thread));
         to_tool_result(tool_name, summary)
     }
 
@@ -327,6 +296,7 @@ impl Tool for AgentRunTool {
                                 ctx,
                                 &owner_thread_id,
                                 &run_id,
+                                caller_run_id.clone(),
                                 existing,
                                 tool_name,
                             )
@@ -354,8 +324,6 @@ impl Tool for AgentRunTool {
 
                         let mut child_thread = bind_child_lineage(
                             record.thread,
-                            &run_id,
-                            caller_run_id.as_deref(),
                             Some(&owner_thread_id),
                         );
                         if let Some(prompt) = optional_string(&args, "prompt") {
@@ -423,8 +391,6 @@ impl Tool for AgentRunTool {
                     };
                     child_thread = bind_child_lineage(
                         child_thread,
-                        &run_id,
-                        caller_run_id.as_deref(),
                         Some(&owner_thread_id),
                     );
 
@@ -482,8 +448,6 @@ impl Tool for AgentRunTool {
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(
             child_thread,
-            &run_id,
-            caller_run_id.as_deref(),
             Some(&owner_thread_id),
         );
 

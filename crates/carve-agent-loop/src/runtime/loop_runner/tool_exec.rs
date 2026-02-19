@@ -443,7 +443,7 @@ pub async fn execute_tools_with_plugins_and_executor(
         &thread.id,
         rebuilt_state.clone(),
         thread.messages.clone(),
-        thread.run_config.clone(),
+        carve_agent_contract::RunConfig::default(),
     );
 
     let tool_descriptors: Vec<ToolDescriptor> =

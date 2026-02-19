@@ -461,20 +461,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         .owned_record("owner-thread", &run_id)
         .await
         .expect("child thread should be tracked");
-    assert_eq!(
-        child_thread
-            .run_config
-            .value(SCOPE_RUN_ID_KEY)
-            .and_then(|v| v.as_str()),
-        Some(run_id.as_str())
-    );
-    assert_eq!(
-        child_thread
-            .run_config
-            .value(SCOPE_PARENT_RUN_ID_KEY)
-            .and_then(|v| v.as_str()),
-        Some("parent-run-42")
-    );
+    assert_eq!(child_thread.parent_thread_id.as_deref(), Some("owner-thread"));
 
     let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let base = json!({});
@@ -575,20 +562,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         .owned_record("owner-thread", "run-1")
         .await
         .expect("resumed run should be tracked");
-    assert_eq!(
-        child_thread
-            .run_config
-            .value(SCOPE_RUN_ID_KEY)
-            .and_then(|v| v.as_str()),
-        Some("run-1")
-    );
-    assert_eq!(
-        child_thread
-            .run_config
-            .value(SCOPE_PARENT_RUN_ID_KEY)
-            .and_then(|v| v.as_str()),
-        Some("new-parent-run")
-    );
+    assert_eq!(child_thread.parent_thread_id.as_deref(), Some("owner-thread"));
 
     let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();

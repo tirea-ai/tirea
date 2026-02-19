@@ -234,7 +234,7 @@ async fn test_unit_converter(
             "Convert 100 miles to kilometers. Use the unit-converter skill.",
         ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
@@ -291,7 +291,7 @@ async fn test_todo_manager_streaming(
              Use the counter to track the task count.",
             ));
 
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
 
     print!("User: Add 3 tasks to todo list.\nAssistant: ");
 
@@ -347,7 +347,7 @@ async fn test_multi_skill(
             ));
 
     // Turn 1: Use unit converter
-    let run_ctx = RunContext::from_thread(&thread)?;
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();

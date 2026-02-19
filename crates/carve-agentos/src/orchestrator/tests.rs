@@ -493,7 +493,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
 
     assert_eq!(cfg.id, "a1");
     assert!(tools.contains_key("base_tool"));
@@ -579,7 +579,7 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
         .expect("build agent os");
 
     let thread1 = Thread::with_initial_state("freeze-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1) = os.resolve("a1", thread1).expect("resolve #1");
+    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("a1", thread1).expect("resolve #1");
     assert!(tools_first_run.contains_key("mcp__s1__echo"));
     assert!(!tools_first_run.contains_key("mcp__s1__sum"));
 
@@ -591,7 +591,7 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
 
     // The next resolve picks up refreshed registry state.
     let thread2 = Thread::with_initial_state("freeze-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2) = os.resolve("a1", thread2).expect("resolve #2");
+    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("a1", thread2).expect("resolve #2");
     assert!(!tools_second_run.contains_key("mcp__s1__echo"));
     assert!(tools_second_run.contains_key("mcp__s1__sum"));
 }
@@ -649,7 +649,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .expect("build agent os");
 
     let thread1 = Thread::with_initial_state("freeze-agent-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
+    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("root", thread1).expect("resolve #1");
     let run_tool_first = tools_first_run
         .get("agent_run")
         .cloned()
@@ -688,7 +688,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
 
     // Next resolve should use refreshed source and reject worker_a.
     let thread2 = Thread::with_initial_state("freeze-agent-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
+    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("root", thread2).expect("resolve #2");
     let run_tool_second = tools_second_run
         .get("agent_run")
         .cloned()
@@ -821,7 +821,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .expect("build agent os");
 
     let thread1 = Thread::with_initial_state("freeze-skill-1", json!({}));
-    let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
+    let (_cfg1, tools_first_run, _thread1, _rc1) = os.resolve("root", thread1).expect("resolve #1");
     let activate_first = tools_first_run
         .get("skill")
         .cloned()
@@ -840,7 +840,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
     );
 
     let thread2 = Thread::with_initial_state("freeze-skill-2", json!({}));
-    let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
+    let (_cfg2, tools_second_run, _thread2, _rc2) = os.resolve("root", thread2).expect("resolve #2");
     let activate_second = tools_second_run
         .get("skill")
         .cloned()
@@ -961,29 +961,25 @@ fn resolve_sets_runtime_caller_agent_id() {
         .build()
         .unwrap();
     let thread = Thread::with_initial_state("s", json!({}));
-    let (_cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
+    let (_cfg, _tools, _thread, run_config) = os.resolve("a1", thread).unwrap();
     assert_eq!(
-        thread
-            .run_config
+        run_config
             .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("a1")
     );
     assert_eq!(
-        thread
-            .run_config
+        run_config
             .value(carve_agent_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
-        thread
-            .run_config
+        run_config
             .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
-        thread
-            .run_config
+        run_config
             .value(carve_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
@@ -1043,7 +1039,7 @@ async fn resolve_wires_agent_tools_by_default() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("agent_run"));
     assert!(tools.contains_key("agent_stop"));
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
@@ -1153,7 +1149,7 @@ async fn resolve_rewrites_model_when_registry_present() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.model, "gpt-4o-mini");
 }
 
@@ -1185,7 +1181,7 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
     assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
     let fixture = TestFixture::new();
@@ -1211,7 +1207,7 @@ async fn resolve_wires_policies_before_plugins() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, _tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
     assert_eq!(cfg.plugins[1].id(), "agent_recovery");
     assert_eq!(cfg.plugins[2].id(), "policy1");
@@ -1242,7 +1238,7 @@ async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
         .unwrap();
 
     let thread = Thread::with_initial_state("s", json!({}));
-    let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
+    let (cfg, tools, _thread, _run_config) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("skill"));
     assert!(tools.contains_key("load_skill_resource"));
     assert!(tools.contains_key("skill_script"));

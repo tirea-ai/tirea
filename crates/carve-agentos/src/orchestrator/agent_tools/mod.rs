@@ -27,7 +27,6 @@ const SCOPE_CALLER_SESSION_ID_KEY: &str = TOOL_SCOPE_CALLER_THREAD_ID_KEY;
 const SCOPE_CALLER_STATE_KEY: &str = TOOL_SCOPE_CALLER_STATE_KEY;
 const SCOPE_CALLER_MESSAGES_KEY: &str = TOOL_SCOPE_CALLER_MESSAGES_KEY;
 const SCOPE_RUN_ID_KEY: &str = "run_id";
-const SCOPE_PARENT_RUN_ID_KEY: &str = "parent_run_id";
 pub(crate) const AGENT_TOOLS_PLUGIN_ID: &str = "agent_tools";
 pub(crate) const AGENT_RECOVERY_PLUGIN_ID: &str = "agent_recovery";
 pub(crate) const AGENT_RUN_TOOL_ID: &str = "agent_run";

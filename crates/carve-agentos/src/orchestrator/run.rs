@@ -81,13 +81,7 @@ impl AgentOs {
             thread.resource_id = Some(resource_id.clone());
         }
 
-        // 3. Set run identity on thread runtime
-        let _ = thread.run_config.set("run_id", run_id.clone());
-        if let Some(parent) = parent_run_id.as_deref() {
-            let _ = thread.run_config.set("parent_run_id", parent.to_string());
-        }
-
-        // 4. Deduplicate and append inbound messages
+        // 3. Deduplicate and append inbound messages
         let deduped = Self::dedup_messages(&thread, request.messages);
         if !deduped.is_empty() {
             thread = thread.with_messages(deduped);
@@ -111,10 +105,16 @@ impl AgentOs {
         }
         thread.metadata.version = Some(version);
 
-        // 6. Resolve static wiring.
-        let (mut cfg, mut tools, thread) = self.resolve(&request.agent_id, thread)?;
+        // 4. Resolve static wiring.
+        let (mut cfg, mut tools, thread, mut run_config) = self.resolve(&request.agent_id, thread)?;
 
-        // 7. Append run-scoped plugins (dedup check).
+        // Set run identity on the run_config
+        let _ = run_config.set("run_id", run_id.clone());
+        if let Some(parent) = parent_run_id.as_deref() {
+            let _ = run_config.set("parent_run_id", parent.to_string());
+        }
+
+        // 5. Append run-scoped plugins (dedup check).
         if !scope.plugins.is_empty() {
             cfg.plugins.extend(scope.plugins);
             Self::ensure_unique_plugin_ids(&cfg.plugins)
@@ -122,7 +122,7 @@ impl AgentOs {
                 .map_err(AgentOsRunError::from)?;
         }
 
-        // 8. Overlay run-scoped tool registries (outside allowed_tools filtering).
+        // 6. Overlay run-scoped tool registries (outside allowed_tools filtering).
         for reg in &scope.tool_registries {
             for (id, tool) in reg.snapshot() {
                 tools.entry(id).or_insert(tool);
@@ -131,7 +131,7 @@ impl AgentOs {
 
         cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
 
-        let run_ctx = RunContext::from_thread(&thread)
+        let run_ctx = RunContext::from_thread(&thread, run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
 
         Ok(PreparedRun {
@@ -223,9 +223,9 @@ impl AgentOs {
         cancellation_token: Option<RunCancellationToken>,
         state_committer: Option<Arc<dyn StateCommitter>>,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
-        let (cfg, tools, thread) = self.resolve(agent_id, thread)?;
+        let (cfg, tools, thread, run_config) = self.resolve(agent_id, thread)?;
         let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-        let run_ctx = RunContext::from_thread(&thread)
+        let run_ctx = RunContext::from_thread(&thread, run_config)
             .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
         Ok(run_loop_stream(cfg, run_ctx, cancellation_token, state_committer))
     }

@@ -1179,7 +1179,7 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
     }
 
     let thread = Thread::with_initial_state("test", json!({}));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
     let phases = Arc::new(Mutex::new(Vec::new()));
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(PhaseBlockPlugin {
@@ -1258,7 +1258,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
     }
 
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let tool_descriptors = vec![ToolDescriptor::new("echo", "Echo", "Echo")];
     let phases = Arc::new(Mutex::new(Vec::new()));
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(CleanupPlugin {
@@ -1497,7 +1497,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
 #[test]
 fn test_apply_tool_results_rejects_multiple_pending_interactions() {
     let thread = Thread::new("test");
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let mut first = tool_execution_result("call_1", None);
     first.pending_interaction =
@@ -1517,7 +1517,7 @@ fn test_apply_tool_results_rejects_multiple_pending_interactions() {
 #[test]
 fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("## DOCX\nUse docx-js."));
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -1538,7 +1538,7 @@ fn test_apply_tool_results_appends_skill_instruction_as_user_message() {
 #[test]
 fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", Some("Use docx-js."));
     let meta = MessageMetadata {
         run_id: Some("run-1".to_string()),
@@ -1557,7 +1557,7 @@ fn test_apply_tool_results_skill_instruction_user_message_attaches_metadata() {
 #[test]
 fn test_apply_tool_results_skill_without_instruction_does_not_append_user_message() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let result = skill_activation_result("call_1", "docx", None);
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[result], None, false)
@@ -1573,7 +1573,7 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 #[test]
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
@@ -1616,7 +1616,7 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 #[test]
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let fix = TestFixture::new();
     let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
@@ -1649,7 +1649,7 @@ fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
 #[test]
 fn test_apply_tool_results_keeps_tool_and_appended_user_message_order_stable() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let first = skill_activation_result("call_2", "beta", Some("Instruction B"));
     let second = skill_activation_result("call_1", "alpha", Some("Instruction A"));
 
@@ -1751,50 +1751,16 @@ fn test_execute_tools_with_config_basic() {
     });
 }
 
-#[test]
-fn test_execute_tools_with_config_enforces_scope_tool_policy_at_execution() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let mut thread = Thread::new("test");
-        thread
-            .run_config
-            .set(
-                crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY,
-                vec!["other"],
-            )
-            .unwrap();
-        let result = StreamResult {
-            text: "Calling tool".to_string(),
-            tool_calls: vec![crate::contracts::thread::ToolCall::new(
-                "call_1",
-                "echo",
-                json!({"message": "test"}),
-            )],
-            usage: None,
-        };
-        let tools = tool_map([EchoTool]);
-        let config = AgentConfig::new("gpt-4");
-
-        let thread = execute_tools_with_config(thread, &result, &tools, &config)
-            .await
-            .unwrap();
-
-        assert_eq!(thread.message_count(), 1);
-        let msg = &thread.messages[0];
-        let result: ToolResult = serde_json::from_str(&msg.content).expect("tool result");
-        assert!(result.is_error());
-        assert!(result
-            .message
-            .unwrap_or_default()
-            .contains("not allowed by current policy"));
-    });
-}
+// Scope-based tool policy enforcement is tested via RunContext at the
+// orchestrator level (prepare_run / run_stream_with_context), where RunConfig
+// is explicitly wired. The low-level execute_tools_with_config path uses
+// RunConfig::default() and is not the right place to test scope filtering.
 
 #[test]
 fn test_execute_tools_with_config_attaches_scope_run_metadata() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let mut thread = Thread::new("test").with_message(
+        let thread = Thread::new("test").with_message(
             Message::assistant_with_tool_calls(
                 "calling tool",
                 vec![crate::contracts::thread::ToolCall::new(
@@ -1808,7 +1774,6 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
                 step_index: Some(7),
             }),
         );
-        thread.run_config.set("run_id", "run-meta-1").unwrap();
 
         let result = StreamResult {
             text: "Calling tool".to_string(),
@@ -2152,7 +2117,7 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
     let tools = HashMap::new();
 
     let config = config.with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(config, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -2199,7 +2164,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
     let tools = HashMap::new();
 
     let config = config.with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(config, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -2252,7 +2217,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
     let tools = HashMap::new();
 
     let config = config.with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(config, run_ctx, None, None)).await;
 
     assert!(matches!(events.get(0), Some(AgentEvent::RunStart { .. })));
@@ -2320,7 +2285,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
     let tools = HashMap::new();
 
     let config = config.with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream(config, run_ctx, None, None)).await;
 
     assert!(matches!(events.first(), Some(AgentEvent::RunStart { .. })));
@@ -2571,7 +2536,7 @@ async fn test_run_loop_skip_inference_emits_run_end_phase() {
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested (not NaturalEnd)
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
@@ -2632,7 +2597,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
 
@@ -2668,7 +2633,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
@@ -2703,7 +2668,7 @@ async fn test_run_loop_phase_sequence_on_skip_inference() {
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     // skip_inference in run_loop terminates with PluginRequested
     assert!(matches!(outcome.termination, TerminationReason::PluginRequested));
@@ -2749,7 +2714,7 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     assert!(
         matches!(outcome.termination, TerminationReason::Error),
@@ -2815,7 +2780,7 @@ async fn test_stream_run_finish_has_matching_thread_id() {
     let tools = HashMap::new();
 
     let config = config.with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream(config, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -2837,16 +2802,16 @@ async fn test_stream_run_finish_has_matching_thread_id() {
 }
 
 #[test]
-fn test_scope_run_id_in_session() {
-    let mut thread = Thread::new("test");
-    thread.run_config.set("run_id", "my-run").unwrap();
-    thread.run_config.set("parent_run_id", "parent-run").unwrap();
+fn test_scope_run_id_in_run_config() {
+    let mut run_config = carve_agent_contract::RunConfig::new();
+    run_config.set("run_id", "my-run").unwrap();
+    run_config.set("parent_run_id", "parent-run").unwrap();
     assert_eq!(
-        thread.run_config.value("run_id").and_then(|v| v.as_str()),
+        run_config.value("run_id").and_then(|v| v.as_str()),
         Some("my-run")
     );
     assert_eq!(
-        thread.run_config.value("parent_run_id").and_then(|v| v.as_str()),
+        run_config.value("parent_run_id").and_then(|v| v.as_str()),
         Some("parent-run")
     );
 }
@@ -3026,7 +2991,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
         .with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
@@ -3095,7 +3060,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
     assert_eq!(outcome.termination, TerminationReason::Error);
@@ -3128,7 +3093,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
@@ -3158,7 +3123,7 @@ async fn test_nonstream_cancellation_token_during_inference() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(&config, run_ctx, Some(token_for_run), None).await
@@ -3237,7 +3202,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("usage-stats").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
@@ -3274,7 +3239,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
     let thread = Thread::new("error-stats").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
@@ -3313,7 +3278,7 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(tool_map([tool]));
     let thread = Thread::new("test").with_message(Message::user("go"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let handle = tokio::spawn(async move {
         run_loop(&config, run_ctx, Some(token_for_run), None).await
@@ -3360,7 +3325,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
     let nonstream_config = AgentConfig::new("mock")
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
         .with_tools(tools.clone());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(&nonstream_config, run_ctx, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::NaturalEnd);
@@ -3403,7 +3368,7 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
     let nonstream_config = AgentConfig::new("mock")
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
         .with_tools(tools.clone());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(&nonstream_config, run_ctx, Some(nonstream_token), None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::Cancelled);
@@ -3469,7 +3434,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     let nonstream_config = config.clone()
         .with_llm_executor(nonstream_provider as Arc<dyn LlmExecutor>)
         .with_tools(tools.clone());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let nonstream_outcome = run_loop(&nonstream_config, run_ctx, None, None).await;
     assert_eq!(nonstream_outcome.termination, TerminationReason::PendingInteraction);
@@ -3810,7 +3775,7 @@ async fn run_mock_stream(
     tools: HashMap<String, Arc<dyn Tool>>,
 ) -> Vec<AgentEvent> {
     let config = config.with_llm_executor(Arc::new(provider)).with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, None);
     collect_stream_events(stream).await
 }
@@ -3880,7 +3845,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>).with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -3907,7 +3872,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(provider.clone() as Arc<dyn LlmExecutor>).with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, None);
     let events = collect_stream_events(stream).await;
 
@@ -3961,7 +3926,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
     let committer: Arc<dyn StateCommitter> = Arc::new(ChannelStateCommitter::new(checkpoint_tx));
     let config = config.with_llm_executor(Arc::new(provider)).with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, cancellation_token, Some(committer));
     let events = collect_stream_events(stream).await;
     while let Some(changeset) = checkpoint_rx.recv().await {
@@ -4127,7 +4092,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
@@ -4158,7 +4123,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
             MockResponse::text("tool").with_tool_call("call_1", "echo", json!({"message":"hi"}))
         ])) as Arc<dyn LlmExecutor>)
         .with_tools(tool_map([EchoTool]));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
@@ -4194,7 +4159,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![MockResponse::text("done")])) as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
@@ -4228,7 +4193,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
         .with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>)
         .with_llm_executor(Arc::new(MockStreamProvider::new(vec![])) as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, None, Some(committer.clone() as Arc<dyn StateCommitter>));
     let events = collect_stream_events(stream).await;
 
@@ -4613,7 +4578,7 @@ async fn test_stop_natural_end_no_tools() {
 #[test]
 fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4647,7 +4612,7 @@ fn test_apply_tool_results_rejects_conflicting_parallel_state_patches() {
 #[test]
 fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
     let thread = Thread::with_initial_state("test", json!({}));
-    let mut run_ctx = RunContext::from_thread(&thread).unwrap();
+    let mut run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let left = tool_execution_result(
         "call_a",
         Some(TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -4847,7 +4812,7 @@ async fn test_stop_cancellation_token() {
     let tools = HashMap::new();
 
     let config = config.with_llm_executor(Arc::new(provider) as Arc<dyn LlmExecutor>).with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, Some(token), None);
     let events = collect_stream_events(stream).await;
     assert_eq!(
@@ -4896,7 +4861,7 @@ async fn test_stop_cancellation_token_during_inference_stream() {
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(HangingStreamProvider) as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, Some(token.clone()), None);
 
     let collect_task = tokio::spawn(async move { collect_stream_events(stream).await });
@@ -4943,7 +4908,7 @@ async fn test_run_loop_with_context_cancellation_token() {
     let token = CancellationToken::new();
     token.cancel();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, Some(token), None).await;
 
     assert!(
@@ -5692,7 +5657,7 @@ async fn test_run_step_skip_inference_returns_empty_result_without_assistant_mes
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
 
     // skip_inference in run_loop terminates with PluginRequested
@@ -5740,7 +5705,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
         Thread::new("test").with_message(crate::contracts::thread::Message::user("hello"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config.clone().with_tools(tools), run_ctx, None, None).await;
     assert!(matches!(outcome.termination, TerminationReason::PendingInteraction));
 
@@ -5853,7 +5818,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
     let config = config
         .with_llm_executor(Arc::new(FailingStartProvider::new(10)) as Arc<dyn LlmExecutor>)
         .with_tools(HashMap::new());
-    let run_ctx = RunContext::from_thread(&initial_thread).unwrap();
+    let run_ctx = RunContext::from_thread(&initial_thread, carve_agent_contract::RunConfig::default()).unwrap();
     let events = collect_stream_events(run_loop_stream_impl(
         config,
         run_ctx,
@@ -5929,7 +5894,7 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
     let config = AgentConfig::new("mock")
         .with_llm_executor(Arc::new(MockStreamProvider::new(responses)) as Arc<dyn LlmExecutor>)
         .with_tools(tool_map([tool]));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let stream = run_loop_stream_impl(config, run_ctx, Some(token.clone()), None);
 
     let collector = tokio::spawn(async move { collect_stream_events(stream).await });
@@ -6295,7 +6260,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
     let config = AgentConfig::new("mock")
         .with_llm_executor(provider as Arc<dyn LlmExecutor>)
         .with_tools(tools);
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     assert!(

@@ -94,7 +94,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state", json!({}))
         .with_message(Message::user("hi"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let _ = run_loop(&config, run_ctx, None, None).await;
 
@@ -153,7 +153,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
         .with_message(Message::user("hi"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
     assert!(matches!(outcome.termination, carve_agent_loop::contracts::TerminationReason::Error));
@@ -265,7 +265,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
-    let run_ctx = RunContext::from_thread(&thread).unwrap();
+    let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
     let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
