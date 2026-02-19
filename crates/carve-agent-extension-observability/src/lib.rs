@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
 use carve_agent_contract::runtime::control::{InferenceError, LoopControlState};
 use genai::chat::{ChatOptions, Usage};
 use serde::{Deserialize, Serialize};
@@ -651,9 +651,9 @@ fn inference_error_from_state(step: &StepContext<'_>) -> Option<InferenceError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::runtime::phase::ToolContext as PhaseToolContext;
+    use carve_agent_contract::plugin::phase::ToolContext as PhaseToolContext;
     use carve_agent_contract::runtime::StreamResult;
-    use carve_agent_contract::state::ToolCall;
+    use carve_agent_contract::thread::ToolCall;
     use carve_agent_contract::testing::TestFixture;
     use carve_agent_contract::tool::ToolResult;
     use futures::future::join_all;

@@ -129,9 +129,9 @@ mod tests {
     use super::*;
     use crate::{FsSkill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
     use async_trait::async_trait;
-    use carve_agent_contract::runtime::phase::{Phase, StepContext};
-    use carve_agent_contract::state::Thread;
-    use carve_agent_contract::state::{Message, ToolCall};
+    use carve_agent_contract::plugin::phase::{Phase, StepContext};
+    use carve_agent_contract::thread::Thread;
+    use carve_agent_contract::thread::{Message, ToolCall};
     use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
     use carve_agent_contract::testing::TestFixture;
     use carve_state::TrackedPatch;
@@ -186,7 +186,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &carve_agent_contract::context::ToolCallContext<'_>,
+            _ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>,
         ) -> Result<carve_agent_contract::tool::ToolResult, carve_agent_contract::tool::ToolError>
         {
             Ok(carve_agent_contract::tool::ToolResult::success(
@@ -256,7 +256,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &carve_agent_contract::context::ToolCallContext<'_>,
+            _ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }

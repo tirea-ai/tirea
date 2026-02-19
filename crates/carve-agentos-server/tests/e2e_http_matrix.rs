@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::plugin::phase::{Phase, StepContext};
 use carve_agentos::contracts::storage::AgentStateReader;
 use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use carve_agentos_server::http::{router, AppState};

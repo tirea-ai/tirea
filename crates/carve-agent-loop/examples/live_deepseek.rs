@@ -7,9 +7,9 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent_loop::contracts::runtime::AgentEvent;
-use carve_agent_loop::contracts::state::Thread as ConversationAgentState;
-use carve_agent_loop::contracts::state::Message;
+use carve_agent_loop::contracts::AgentEvent;
+use carve_agent_loop::contracts::thread::Thread as ConversationAgentState;
+use carve_agent_loop::contracts::thread::Message;
 use carve_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
@@ -914,7 +914,7 @@ async fn test_tool_failure_recovery() -> Result<(), Box<dyn std::error::Error>> 
         if let Some(ref calls) = msg.tool_calls {
             tool_calls += calls.len();
         }
-        if msg.role == carve_agent_loop::contracts::state::Role::Tool
+        if msg.role == carve_agent_loop::contracts::thread::Role::Tool
             && msg.content.contains("error")
         {
             error_messages += 1;

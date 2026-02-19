@@ -3,7 +3,7 @@ use super::core::{
 };
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::{Phase, StepContext};
+use crate::contracts::plugin::phase::{Phase, StepContext};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;

@@ -3,7 +3,7 @@
 //! `Thread` (formerly `AgentState`) represents persisted agent state with
 //! message history and patches.
 
-use super::message::Message;
+use crate::thread::message::Message;
 use crate::RunConfig;
 use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, TrackedPatch};
 use serde::{Deserialize, Serialize};

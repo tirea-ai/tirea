@@ -1,4 +1,4 @@
-use crate::state::Message;
+use crate::thread::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

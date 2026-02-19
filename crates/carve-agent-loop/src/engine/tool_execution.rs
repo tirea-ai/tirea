@@ -1,8 +1,8 @@
 //! Tool execution utilities.
 
 pub use crate::contracts::runtime::ToolExecution;
-use crate::contracts::context::ToolCallContext;
-use crate::contracts::state::ToolCall;
+use crate::contracts::tool::context::ToolCallContext;
+use crate::contracts::thread::ToolCall;
 use crate::contracts::tool::{Tool, ToolResult};
 use carve_agent_contract::RunConfig;
 use carve_state::{apply_patch, DocCell, TrackedPatch};

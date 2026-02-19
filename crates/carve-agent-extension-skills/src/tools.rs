@@ -5,7 +5,7 @@ use crate::{
     SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-use carve_agent_contract::context::ToolCallContext;
+use carve_agent_contract::tool::context::ToolCallContext;
 use carve_agent_extension_permission::PermissionContextExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};

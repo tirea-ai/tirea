@@ -1,5 +1,5 @@
-use crate::state::ToolCall;
-pub use crate::tool::{ToolResult, ToolStatus};
+use crate::thread::ToolCall;
+pub use crate::tool::contract::{ToolResult, ToolStatus};
 use genai::chat::Usage;
 
 /// Result of stream collection used by runtime and plugin phase contracts.

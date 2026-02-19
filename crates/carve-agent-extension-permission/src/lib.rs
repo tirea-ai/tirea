@@ -23,8 +23,8 @@
 
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::Interaction;
-use carve_agent_contract::context::ToolCallContext;
+use carve_agent_contract::event::Interaction;
+use carve_agent_contract::tool::context::ToolCallContext;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -130,10 +130,10 @@ impl AgentPlugin for PermissionPlugin {
 
     async fn on_phase(
         &self,
-        phase: carve_agent_contract::runtime::phase::Phase,
-        step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
+        phase: carve_agent_contract::plugin::phase::Phase,
+        step: &mut carve_agent_contract::plugin::phase::StepContext<'_>,
     ) {
-        use carve_agent_contract::runtime::phase::Phase;
+        use carve_agent_contract::plugin::phase::Phase;
 
         if phase != Phase::BeforeToolExecute {
             return;
@@ -196,13 +196,13 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::runtime::phase::{Phase, ToolContext};
-    use carve_agent_contract::state::ToolCall;
+    use carve_agent_contract::plugin::phase::{Phase, ToolContext};
+    use carve_agent_contract::thread::ToolCall;
     use carve_agent_contract::testing::TestFixture;
     use serde_json::json;
 
     fn apply_interaction_intents(
-        _step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
+        _step: &mut carve_agent_contract::plugin::phase::StepContext<'_>,
     ) {
         // No-op: permission plugin now sets pending interaction directly.
     }

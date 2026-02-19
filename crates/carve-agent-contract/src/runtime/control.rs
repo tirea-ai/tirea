@@ -3,8 +3,8 @@
 //! These types define durable loop-control state for cross-step and cross-run
 //! flow control (pending interactions, inference error envelope).
 
-use crate::runtime::interaction::Interaction;
-use crate::state::Thread;
+use crate::event::interaction::Interaction;
+use crate::thread::Thread;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 

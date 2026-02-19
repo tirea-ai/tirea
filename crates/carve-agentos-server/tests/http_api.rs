@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::Phase;
-use carve_agentos::contracts::runtime::phase::StepContext;
-use carve_agentos::contracts::state::Thread;
+use carve_agentos::contracts::plugin::phase::Phase;
+use carve_agentos::contracts::plugin::phase::StepContext;
+use carve_agentos::contracts::thread::Thread;
 use carve_agentos::contracts::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed,
@@ -199,7 +199,7 @@ async fn test_sessions_query_endpoints() {
     let storage = Arc::new(MemoryStore::new());
 
     let thread =
-        Thread::new("s1").with_message(carve_agentos::contracts::state::Message::user("hello"));
+        Thread::new("s1").with_message(carve_agentos::contracts::thread::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
     let app = router(AppState {
@@ -578,7 +578,7 @@ async fn test_agui_sse_idless_user_message_not_duplicated_by_internal_reapply() 
         .messages
         .iter()
         .filter(|m| {
-            m.role == carve_agentos::contracts::state::Role::User && m.content == "hello without id"
+            m.role == carve_agentos::contracts::thread::Role::User && m.content == "hello without id"
         })
         .count();
     assert_eq!(
@@ -1090,7 +1090,7 @@ async fn test_agui_sse_storage_save_error() {
 fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
     let mut thread = Thread::new(id);
     for i in 0..n {
-        thread = thread.with_message(carve_agentos::contracts::state::Message::user(format!(
+        thread = thread.with_message(carve_agentos::contracts::thread::Message::user(format!(
             "msg-{}",
             i
         )));
@@ -1240,23 +1240,23 @@ async fn test_messages_filter_by_visibility_and_run_id() {
 
     let thread = Thread::new("s-filter")
         .with_message(
-            carve_agentos::contracts::state::Message::user("visible-run-1").with_metadata(
-                carve_agentos::contracts::state::MessageMetadata {
+            carve_agentos::contracts::thread::Message::user("visible-run-1").with_metadata(
+                carve_agentos::contracts::thread::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(0),
                 },
             ),
         )
         .with_message(
-            carve_agentos::contracts::state::Message::internal_system("internal-run-1")
-                .with_metadata(carve_agentos::contracts::state::MessageMetadata {
+            carve_agentos::contracts::thread::Message::internal_system("internal-run-1")
+                .with_metadata(carve_agentos::contracts::thread::MessageMetadata {
                     run_id: Some("run-1".to_string()),
                     step_index: Some(1),
                 }),
         )
         .with_message(
-            carve_agentos::contracts::state::Message::assistant("visible-run-2").with_metadata(
-                carve_agentos::contracts::state::MessageMetadata {
+            carve_agentos::contracts::thread::Message::assistant("visible-run-2").with_metadata(
+                carve_agentos::contracts::thread::MessageMetadata {
                     run_id: Some("run-2".to_string()),
                     step_index: Some(2),
                 },
@@ -1305,13 +1305,13 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
     let thread = Thread::new("s-internal-history")
-        .with_message(carve_agentos::contracts::state::Message::user(
+        .with_message(carve_agentos::contracts::thread::Message::user(
             "visible-user",
         ))
-        .with_message(carve_agentos::contracts::state::Message::internal_system(
+        .with_message(carve_agentos::contracts::thread::Message::internal_system(
             "internal-secret",
         ))
-        .with_message(carve_agentos::contracts::state::Message::assistant(
+        .with_message(carve_agentos::contracts::thread::Message::assistant(
             "visible-assistant",
         ));
     storage.save(&thread).await.unwrap();
@@ -1350,8 +1350,8 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     for i in 0..6usize {
         let run_id = if i % 2 == 0 { "run-a" } else { "run-b" };
         thread = thread.with_message(
-            carve_agentos::contracts::state::Message::user(format!("msg-{i}")).with_metadata(
-                carve_agentos::contracts::state::MessageMetadata {
+            carve_agentos::contracts::thread::Message::user(format!("msg-{i}")).with_metadata(
+                carve_agentos::contracts::thread::MessageMetadata {
                     run_id: Some(run_id.to_string()),
                     step_index: Some(i as u32),
                 },
@@ -1413,16 +1413,16 @@ fn pending_echo_thread(id: &str, payload: &str) -> Thread {
         }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "need permission",
-            vec![carve_agentos::contracts::state::ToolCall::new(
+            vec![carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "echo",
                 json!({"message": payload}),
             )],
         ),
     )
-    .with_message(carve_agentos::contracts::state::Message::tool(
+    .with_message(carve_agentos::contracts::thread::Message::tool(
         "call_1",
         "Tool 'echo' is awaiting approval. Execution paused.",
     ))
@@ -1465,7 +1465,7 @@ async fn test_agui_pending_approval_resumes_and_replays_tool_call() {
         .unwrap()
         .unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
-        m.role == carve_agentos::contracts::state::Role::Tool
+        m.role == carve_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
             && m.content.contains("approved-run")
     });
@@ -1521,7 +1521,7 @@ async fn test_agui_pending_denial_clears_pending_without_replay() {
 
     let saved = storage.load_agent_state("th-deny").await.unwrap().unwrap();
     let replayed_tool = saved.messages.iter().find(|m| {
-        m.role == carve_agentos::contracts::state::Role::Tool
+        m.role == carve_agentos::contracts::thread::Role::Tool
             && m.tool_call_id.as_deref() == Some("call_1")
             && m.content.contains("echoed")
     });

@@ -1,9 +1,9 @@
 use super::policy::{is_scope_allowed, SCOPE_ALLOWED_AGENTS_KEY, SCOPE_EXCLUDED_AGENTS_KEY};
 use super::{AgentOs, AgentRegistry};
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::runtime::{AgentEvent, Interaction};
-use crate::contracts::state::{Message, Role, ToolCall};
+use crate::contracts::plugin::phase::{Phase, StepContext};
+use crate::contracts::{AgentEvent, Interaction};
+use crate::contracts::thread::{Message, Role, ToolCall};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::extensions::permission::PermissionContextExt;
 use crate::extensions::permission::ToolPermissionBehavior;

@@ -8,7 +8,7 @@
 //! - `carve_protocol_ag_ui::AGUIContext::on_agent_event()`: protocol events
 //! - `carve_protocol_ai_sdk_v6::AiSdkEncoder::on_agent_event()`: AI SDK v6 events
 
-use crate::contracts::state::ToolCall;
+use crate::contracts::thread::ToolCall;
 use carve_agent_contract::StreamResult;
 use genai::chat::{ChatStreamEvent, Usage};
 use serde::{Deserialize, Serialize};
@@ -205,8 +205,8 @@ pub enum StreamOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::runtime::AgentEvent;
-    use crate::contracts::runtime::TerminationReason;
+    use crate::contracts::AgentEvent;
+    use crate::contracts::TerminationReason;
     use crate::contracts::tool::ToolResult;
     use serde_json::json;
 
@@ -355,7 +355,7 @@ mod tests {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
             result: Some(json!({"response": "Final response"})),
-            termination: crate::contracts::runtime::TerminationReason::NaturalEnd,
+            termination: crate::contracts::TerminationReason::NaturalEnd,
         };
         if let AgentEvent::RunFinish { result, .. } = &event {
             assert_eq!(AgentEvent::extract_response(result), "Final response");

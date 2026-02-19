@@ -274,14 +274,14 @@ async fn e2e_ai_sdk_client_disconnect_cancels_inflight_stream() {
         saved
             .messages
             .iter()
-            .any(|m| m.role == carve_agentos::contracts::state::Role::User
+            .any(|m| m.role == carve_agentos::contracts::thread::Role::User
                 && m.content.contains("1 to 500")),
         "user ingress message should persist even when stream is cancelled"
     );
     let assistant_count = saved
         .messages
         .iter()
-        .filter(|m| m.role == carve_agentos::contracts::state::Role::Assistant)
+        .filter(|m| m.role == carve_agentos::contracts::thread::Role::Assistant)
         .count();
     assert_eq!(
         assistant_count, 0,

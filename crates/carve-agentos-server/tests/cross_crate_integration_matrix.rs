@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
-use carve_agentos::contracts::runtime::RunRequest;
+use carve_agentos::contracts::plugin::phase::{Phase, StepContext};
+use carve_agentos::contracts::RunRequest;
 use carve_agentos::contracts::storage::AgentStateReader;
 use carve_agentos::orchestrator::{AgentDefinition, AgentOs, AgentOsBuilder};
 use carve_agentos_server::transport::pump_encoded_stream;

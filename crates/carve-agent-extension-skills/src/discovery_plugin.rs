@@ -2,7 +2,7 @@ use crate::tool_filter::{is_scope_allowed, SCOPE_ALLOWED_SKILLS_KEY, SCOPE_EXCLU
 use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -151,7 +151,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 mod tests {
     use super::*;
     use crate::FsSkill;
-    use carve_agent_contract::state::Thread;
+    use carve_agent_contract::thread::Thread;
     use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::testing::TestFixture;
     use serde_json::json;

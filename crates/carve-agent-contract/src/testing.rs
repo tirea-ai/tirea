@@ -3,10 +3,10 @@
 //! Gated behind the `test-support` cargo feature so production builds are
 //! unaffected.  Enable via `[dev-dependencies] carve-agent-contract = { ..., features = ["test-support"] }`.
 
-use crate::context::ToolCallContext;
-use crate::runtime::phase::StepContext;
-use crate::state::Message;
-use crate::tool::ToolDescriptor;
+use crate::tool::context::ToolCallContext;
+use crate::plugin::phase::StepContext;
+use crate::thread::Message;
+use crate::tool::contract::ToolDescriptor;
 use crate::RunConfig;
 use carve_state::{DocCell, Op};
 use serde_json::Value;

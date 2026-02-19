@@ -36,9 +36,10 @@
 //! }
 //! ```
 
-pub use crate::contracts::runtime::StopReason;
-use crate::contracts::runtime::{StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats};
-use crate::contracts::state::ToolCall;
+pub use crate::contracts::StopReason;
+use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats};
+use crate::contracts::StopConditionSpec;
+use crate::contracts::thread::ToolCall;
 use crate::contracts::RunContext;
 use std::collections::VecDeque;
 use std::sync::Arc;

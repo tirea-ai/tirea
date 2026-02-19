@@ -3,8 +3,8 @@
 //! Stored at `state["interaction_outbox"]`. Written by interaction plugins,
 //! drained by the agent loop.
 
-use carve_agent_contract::runtime::interaction::InteractionResponse;
-use carve_agent_contract::state::ToolCall;
+use carve_agent_contract::event::interaction::InteractionResponse;
+use carve_agent_contract::thread::ToolCall;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 

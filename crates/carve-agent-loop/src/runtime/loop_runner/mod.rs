@@ -48,19 +48,20 @@ mod stream_core;
 mod stream_runner;
 mod tool_exec;
 
-use crate::contracts::runtime::phase::Phase;
+use crate::contracts::plugin::phase::Phase;
+use crate::contracts::{AgentEvent, Interaction, TerminationReason};
 use crate::contracts::runtime::{
-    AgentEvent, Interaction, StopPolicy, StreamResult, TerminationReason, ToolExecutionRequest,
+    StopPolicy, StreamResult, ToolExecutionRequest,
     ToolExecutionResult,
 };
-use crate::contracts::state::CheckpointReason;
-use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::state::ActivityManager;
+use crate::contracts::thread::CheckpointReason;
+use crate::contracts::thread::{gen_message_id, Message, MessageMetadata};
+use crate::contracts::runtime::ActivityManager;
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
-use crate::contracts::runtime::StopReason;
+use crate::contracts::StopReason;
 use crate::runtime::activity::ActivityHub;
 
 use crate::runtime::streaming::StreamCollector;
@@ -76,7 +77,7 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
-use crate::contracts::runtime::phase::StepContext;
+use crate::contracts::plugin::phase::StepContext;
 pub use crate::runtime::run_context::{
     RunCancellationToken, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
@@ -486,11 +487,11 @@ fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> Str
         .first_text()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    let tool_calls: Vec<crate::contracts::state::ToolCall> = response
+    let tool_calls: Vec<crate::contracts::thread::ToolCall> = response
         .tool_calls()
         .into_iter()
         .map(|tc| {
-            crate::contracts::state::ToolCall::new(
+            crate::contracts::thread::ToolCall::new(
                 &tc.call_id,
                 &tc.fn_name,
                 tc.fn_arguments.clone(),

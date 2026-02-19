@@ -1,7 +1,8 @@
-use crate::plugin::AgentPlugin;
-use crate::runtime::interaction::Interaction;
-use crate::state::{ActivityManager, Message, ToolCall};
-use crate::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::plugin::contract::AgentPlugin;
+use crate::event::interaction::Interaction;
+use crate::runtime::activity::ActivityManager;
+use crate::thread::{Message, ToolCall};
+use crate::tool::contract::{Tool, ToolDescriptor, ToolResult};
 use async_trait::async_trait;
 use crate::RunConfig;
 use carve_state::{Op, TrackedPatch};

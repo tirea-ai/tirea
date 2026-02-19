@@ -1,8 +1,8 @@
 use crate::SKILLS_RUNTIME_PLUGIN_ID;
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::Phase;
-use carve_agent_contract::runtime::phase::StepContext;
+use carve_agent_contract::plugin::phase::Phase;
+use carve_agent_contract::plugin::phase::StepContext;
 
 /// Placeholder plugin for activated skill state.
 ///

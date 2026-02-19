@@ -1,7 +1,8 @@
 use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{LlmExecutor, StopConditionSpec, StopPolicy, ToolExecutor};
+use crate::contracts::runtime::{LlmExecutor, StopPolicy, ToolExecutor};
+use crate::contracts::StopConditionSpec;
 use crate::contracts::RunContext;
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;

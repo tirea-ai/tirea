@@ -4,8 +4,8 @@
 //! It replaces direct `&Thread` usage in tool signatures, keeping the persistent
 //! entity (`Thread`) invisible to tools and plugins.
 
-use crate::state::transient::ActivityManager;
-use crate::state::Message;
+use crate::runtime::activity::ActivityManager;
+use crate::thread::Message;
 use crate::RunConfig;
 use carve_state::{parse_path, CarveResult, DocCell, Op, Patch, PatchSink, State, TrackedPatch};
 use serde_json::Value;

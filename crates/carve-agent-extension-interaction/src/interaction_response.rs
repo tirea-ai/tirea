@@ -8,9 +8,9 @@ use crate::{AGENT_RECOVERY_INTERACTION_ACTION, AGENT_RECOVERY_INTERACTION_PREFIX
 use carve_agent_contract::runtime::control::LoopControlState;
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
 use carve_state::State;
-use carve_agent_contract::runtime::{Interaction, InteractionResponse};
+use carve_agent_contract::{Interaction, InteractionResponse};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -118,7 +118,7 @@ impl InteractionResponsePlugin {
         outbox.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
-    fn queue_replay_call(step: &StepContext<'_>, call: carve_agent_contract::state::ToolCall) {
+    fn queue_replay_call(step: &StepContext<'_>, call: carve_agent_contract::thread::ToolCall) {
         let outbox = step.ctx().state_of::<InteractionOutbox>();
         outbox.replay_tool_calls_push(call);
     }
@@ -173,7 +173,7 @@ impl InteractionResponsePlugin {
                 return;
             };
 
-            let replay_call = carve_agent_contract::state::ToolCall::new(
+            let replay_call = carve_agent_contract::thread::ToolCall::new(
                 format!("recovery_resume_{run_id}"),
                 RECOVERY_RESUME_TOOL_ID,
                 json!({
@@ -189,7 +189,7 @@ impl InteractionResponsePlugin {
             .parameters
             .get("origin_tool_call")
             .cloned()
-            .and_then(|v| serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok())
+            .and_then(|v| serde_json::from_value::<carve_agent_contract::thread::ToolCall>(v).ok())
         {
             Self::queue_replay_call(step, replay_call);
             return;
@@ -197,7 +197,7 @@ impl InteractionResponsePlugin {
 
         if let Some(replay_call) =
             pending.parameters.get("tool_call").cloned().and_then(|v| {
-                serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok()
+                serde_json::from_value::<carve_agent_contract::thread::ToolCall>(v).ok()
             })
         {
             Self::queue_replay_call(step, replay_call);
@@ -206,7 +206,7 @@ impl InteractionResponsePlugin {
 
         if !pending_id_owned.starts_with("permission_") {
             if let Some(tool_name) = pending.action.strip_prefix("tool:") {
-                let replay_call = carve_agent_contract::state::ToolCall::new(
+                let replay_call = carve_agent_contract::thread::ToolCall::new(
                     pending_id_owned.clone(),
                     tool_name,
                     pending.parameters.clone(),
@@ -222,7 +222,7 @@ impl InteractionResponsePlugin {
             .iter()
             .rev()
             .find(|m| {
-                m.role == carve_agent_contract::state::Role::Assistant && m.tool_calls.is_some()
+                m.role == carve_agent_contract::thread::Role::Assistant && m.tool_calls.is_some()
             })
             .and_then(|m| m.tool_calls.as_ref())
             .and_then(|calls| {
@@ -328,7 +328,7 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::state::{Message, ToolCall};
+    use carve_agent_contract::thread::{Message, ToolCall};
     use carve_agent_contract::testing::TestFixture;
     use carve_state::DocCell;
     use serde_json::json;

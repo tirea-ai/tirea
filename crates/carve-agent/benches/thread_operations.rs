@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench --package carve-agent --bench session_operations
 
-use carve_agent::contracts::state::Thread;
-use carve_agent::contracts::state::Message;
+use carve_agent::contracts::thread::Thread;
+use carve_agent::contracts::thread::Message;
 use carve_state::{path, Op, Patch, TrackedPatch};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde_json::json;

@@ -1,5 +1,6 @@
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{StopConditionSpec, StopPolicy, ToolExecutor};
+use crate::contracts::StopConditionSpec;
+use crate::contracts::runtime::{StopPolicy, ToolExecutor};
 use crate::runtime::loop_runner::{
     AgentConfig, LlmRetryPolicy, ParallelToolExecutor, SequentialToolExecutor,
 };

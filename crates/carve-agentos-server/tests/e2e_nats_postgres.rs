@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
+use carve_agentos::contracts::plugin::phase::{Phase, StepContext};
 use carve_agentos::contracts::storage::{
     AgentStateReader, AgentStateStore, AgentStateWriter, VersionPrecondition,
 };
@@ -151,7 +151,7 @@ impl FlakySaveStore {
 impl AgentStateWriter for FlakySaveStore {
     async fn create(
         &self,
-        thread: &carve_agentos::contracts::state::Thread,
+        thread: &carve_agentos::contracts::thread::Thread,
     ) -> Result<
         carve_agentos::contracts::storage::Committed,
         carve_agentos::contracts::storage::AgentStateStoreError,
@@ -180,7 +180,7 @@ impl AgentStateWriter for FlakySaveStore {
 
     async fn save(
         &self,
-        thread: &carve_agentos::contracts::state::Thread,
+        thread: &carve_agentos::contracts::thread::Thread,
     ) -> Result<(), carve_agentos::contracts::storage::AgentStateStoreError> {
         let remaining = self.fail_saves_remaining.load(Ordering::SeqCst);
         if remaining > 0 {
@@ -308,8 +308,8 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::Thread::new("np-recover")
-        .with_message(carve_agentos::contracts::state::Message::user("hello"));
+    let thread = carve_agentos::contracts::thread::Thread::new("np-recover")
+        .with_message(carve_agentos::contracts::thread::Message::user("hello"));
     storage
         .create(&thread)
         .await
@@ -318,9 +318,9 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     let delta1 = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
-        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        reason: carve_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(
-            carve_agentos::contracts::state::Message::assistant("mid"),
+            carve_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
         snapshot: None,
@@ -333,9 +333,9 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
     let delta2 = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
-        reason: carve_agentos::contracts::state::CheckpointReason::ToolResultsCommitted,
+        reason: carve_agentos::contracts::thread::CheckpointReason::ToolResultsCommitted,
         messages: vec![Arc::new(
-            carve_agentos::contracts::state::Message::assistant("tail"),
+            carve_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
         snapshot: None,
@@ -508,21 +508,21 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::Thread::new("np-dedup")
-        .with_message(carve_agentos::contracts::state::Message::user("seed"));
+    let thread = carve_agentos::contracts::thread::Thread::new("np-dedup")
+        .with_message(carve_agentos::contracts::thread::Message::user("seed"));
     storage
         .create(&thread)
         .await
         .expect("create should succeed");
 
     let duplicate_msg = Arc::new(
-        carve_agentos::contracts::state::Message::assistant("dup-mid")
+        carve_agentos::contracts::thread::Message::assistant("dup-mid")
             .with_id("fixed-dup-message-id".to_string()),
     );
     let duplicate_delta = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-dedup-run".to_string(),
         parent_run_id: None,
-        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        reason: carve_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![duplicate_msg.clone()],
         patches: vec![],
         snapshot: None,
@@ -582,8 +582,8 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::Thread::new("np-flaky")
-        .with_message(carve_agentos::contracts::state::Message::user("seed"));
+    let thread = carve_agentos::contracts::thread::Thread::new("np-flaky")
+        .with_message(carve_agentos::contracts::thread::Message::user("seed"));
     storage
         .create(&thread)
         .await
@@ -592,9 +592,9 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     let mid = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
-        reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
+        reason: carve_agentos::contracts::thread::CheckpointReason::AssistantTurnCommitted,
         messages: vec![Arc::new(
-            carve_agentos::contracts::state::Message::assistant("mid"),
+            carve_agentos::contracts::thread::Message::assistant("mid"),
         )],
         patches: vec![],
         snapshot: None,
@@ -607,9 +607,9 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
     let run_finished = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
-        reason: carve_agentos::contracts::state::CheckpointReason::RunFinished,
+        reason: carve_agentos::contracts::thread::CheckpointReason::RunFinished,
         messages: vec![Arc::new(
-            carve_agentos::contracts::state::Message::assistant("tail"),
+            carve_agentos::contracts::thread::Message::assistant("tail"),
         )],
         patches: vec![],
         snapshot: None,

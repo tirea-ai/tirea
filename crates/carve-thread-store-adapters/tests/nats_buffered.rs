@@ -7,7 +7,7 @@
 
 #![cfg(feature = "nats")]
 
-use carve_agent_contract::state::ThreadChangeSet;
+use carve_agent_contract::thread::ThreadChangeSet;
 use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
     Thread, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,

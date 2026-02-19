@@ -1,6 +1,6 @@
-use crate::runtime::interaction::Interaction;
-use crate::runtime::result::ToolResult;
-use crate::runtime::termination::TerminationReason;
+use crate::event::interaction::Interaction;
+use crate::tool::contract::ToolResult;
+use crate::event::termination::TerminationReason;
 use carve_state::TrackedPatch;
 use genai::chat::Usage;
 use serde::de::DeserializeOwned;

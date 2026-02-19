@@ -17,7 +17,7 @@ pub trait ActivityManager: Send + Sync {
 #[cfg(test)]
 mod tests {
     use crate::runtime::control::LoopControlState;
-    use crate::state::Thread;
+    use crate::thread::Thread;
     use crate::testing::TestFixture;
     use carve_state::{path, Op};
     use serde_json::json;

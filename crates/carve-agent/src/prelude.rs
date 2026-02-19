@@ -42,14 +42,14 @@ pub use carve_state::StateContext;
 pub use crate::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 
 // Message types
-pub use crate::contracts::state::{Message, Role, ToolCall};
+pub use crate::contracts::thread::{Message, Role, ToolCall};
 
 // Plugin trait
 pub use crate::contracts::plugin::AgentPlugin;
 
 // Phase types for plugins
-pub use crate::contracts::runtime::phase::{Phase, StepContext, StepOutcome, ToolContext};
-pub use crate::contracts::runtime::{Interaction, InteractionResponse};
+pub use crate::contracts::plugin::phase::{Phase, StepContext, StepOutcome, ToolContext};
+pub use crate::contracts::{Interaction, InteractionResponse};
 pub use crate::extensions::permission::ToolPermissionBehavior;
 
 // Extension traits - these add helper methods to Thread

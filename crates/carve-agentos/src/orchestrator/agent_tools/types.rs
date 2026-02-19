@@ -3,7 +3,7 @@
 //! These types model the persisted state of delegated agent runs
 //! (created by `agent_run` / `agent_stop` tools).
 
-use crate::contracts::state::Thread;
+use crate::contracts::thread::Thread;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

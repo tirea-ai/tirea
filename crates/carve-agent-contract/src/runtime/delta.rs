@@ -1,4 +1,4 @@
-use crate::state::Message;
+use crate::thread::Message;
 use carve_state::TrackedPatch;
 use std::sync::Arc;
 

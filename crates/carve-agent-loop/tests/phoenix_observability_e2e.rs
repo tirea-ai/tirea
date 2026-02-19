@@ -2,8 +2,8 @@
 
 use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent_loop::contracts::plugin::AgentPlugin;
-use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
-use carve_agent_loop::contracts::state::{Thread, Message, ToolCall};
+use carve_agent_loop::contracts::{AgentEvent, runtime::StreamResult};
+use carve_agent_loop::contracts::thread::{Thread, Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::{RunContext, ToolCallContext};
 use carve_agent_loop::runtime::loop_runner::{
@@ -156,7 +156,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
     let run_ctx = RunContext::from_thread(&thread).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, carve_agent_loop::contracts::runtime::TerminationReason::Error));
+    assert!(matches!(outcome.termination, carve_agent_loop::contracts::TerminationReason::Error));
 
     let _ = provider.force_flush();
 

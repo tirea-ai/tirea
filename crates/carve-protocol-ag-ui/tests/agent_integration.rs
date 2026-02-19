@@ -4,8 +4,8 @@
 //! work correctly with the new State/Context API.
 
 use async_trait::async_trait;
-use carve_agentos::contracts::runtime::InteractionResponse;
-use carve_agentos::contracts::state::Thread as ConversationAgentState;
+use carve_agentos::contracts::InteractionResponse;
+use carve_agentos::contracts::thread::Thread as ConversationAgentState;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::ToolCallContext;
 use carve_agent_contract::testing::TestFixture;
@@ -162,7 +162,7 @@ impl ContextProvider for CounterContextProvider {
         100
     }
 
-    async fn provide(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
+    async fn provide(&self, ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
         let counter = ctx.state::<CounterState>("counter");
 
         // Provider can also modify state
@@ -192,7 +192,7 @@ impl SystemReminder for TaskReminder {
         "task_reminder"
     }
 
-    async fn remind(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Option<String> {
+    async fn remind(&self, ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>) -> Option<String> {
         let tasks = ctx.state::<TaskState>("tasks");
 
         let count = tasks.count().unwrap_or(0);
@@ -607,7 +607,7 @@ async fn test_tool_provider_reminder_integration() {
 // ============================================================================
 
 use carve_agentos::contracts::runtime::StreamResult;
-use carve_agentos::contracts::state::{Message, Role};
+use carve_agentos::contracts::thread::{Message, Role};
 use carve_agentos::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agentos::runtime::loop_runner::{execute_tools_with_plugins, tool_map, AgentConfig};
 use carve_state::{path, Op, Patch, TrackedPatch};
@@ -634,7 +634,7 @@ async fn test_session_with_tool_workflow() {
     // Simulate first LLM response with tool call
     let result1 = StreamResult {
         text: "I'll increment the counter".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
@@ -661,7 +661,7 @@ async fn test_session_with_tool_workflow() {
     // Simulate second LLM response
     let result2 = StreamResult {
         text: "Incrementing again".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
@@ -873,17 +873,17 @@ async fn test_parallel_tool_execution_order() {
     let result = StreamResult {
         text: "Running parallel tools".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "add_task",
                 json!({"item": "first"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_2",
                 "add_task",
                 json!({"item": "second"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_3",
                 "add_task",
                 json!({"item": "third"}),
@@ -2070,7 +2070,7 @@ fn test_stream_result_needs_tools_variants() {
     // Test with tool calls
     let result_with_tools = StreamResult {
         text: "".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "id",
             "name",
             json!({}),
@@ -2083,8 +2083,8 @@ fn test_stream_result_needs_tools_variants() {
     let result_both = StreamResult {
         text: "Processing...".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new("id1", "search", json!({})),
-            carve_agentos::contracts::state::ToolCall::new("id2", "calculate", json!({})),
+            carve_agentos::contracts::thread::ToolCall::new("id1", "search", json!({})),
+            carve_agentos::contracts::thread::ToolCall::new("id2", "calculate", json!({})),
         ],
         usage: None,
     };
@@ -2114,7 +2114,7 @@ async fn test_execute_tools_empty_result() {
 
 #[test]
 fn test_agent_event_all_variants() {
-    use carve_agentos::contracts::runtime::AgentEvent;
+    use carve_agentos::contracts::AgentEvent;
 
     // TextDelta
     let text_delta = AgentEvent::TextDelta {
@@ -2224,7 +2224,7 @@ fn test_agent_event_all_variants() {
         thread_id: "t1".to_string(),
         run_id: "r1".to_string(),
         result: Some(serde_json::json!({"response": "Final response"})),
-        termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+        termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
     };
     match finish {
         AgentEvent::RunFinish { result, .. } => {
@@ -2236,7 +2236,7 @@ fn test_agent_event_all_variants() {
 
 #[tokio::test]
 async fn test_activity_context_emits_snapshot_on_update() {
-    use carve_agentos::contracts::runtime::AgentEvent;
+    use carve_agentos::contracts::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2312,7 +2312,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
 #[tokio::test]
 async fn test_activity_context_multiple_streams_emit_separately() {
-    use carve_agentos::contracts::runtime::AgentEvent;
+    use carve_agentos::contracts::AgentEvent;
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
@@ -2374,7 +2374,7 @@ fn test_message_role_coverage() {
 
 #[test]
 fn test_tool_call_creation_and_serialization() {
-    let call = carve_agentos::contracts::state::ToolCall::new(
+    let call = carve_agentos::contracts::thread::ToolCall::new(
         "call_abc123",
         "web_search",
         json!({"query": "rust programming", "limit": 10}),
@@ -2391,7 +2391,7 @@ fn test_tool_call_creation_and_serialization() {
     assert!(json_str.contains("web_search"));
 
     // Test deserialization
-    let parsed: carve_agentos::contracts::state::ToolCall =
+    let parsed: carve_agentos::contracts::thread::ToolCall =
         serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed.id, call.id);
     assert_eq!(parsed.name, call.name);
@@ -2512,17 +2512,17 @@ async fn test_sequential_execution_with_conflicting_patches() {
 
     // Create tool calls that modify the same field sequentially
     let calls = vec![
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_3",
             "increment",
             json!({"path": "counter"}),
@@ -2555,8 +2555,8 @@ async fn test_sequential_execution_with_nested_state() {
     tools.insert("nested_state".to_string(), Arc::new(NestedStateTool));
 
     let calls = vec![
-        carve_agentos::contracts::state::ToolCall::new("call_1", "nested_state", json!({})),
-        carve_agentos::contracts::state::ToolCall::new("call_2", "nested_state", json!({})),
+        carve_agentos::contracts::thread::ToolCall::new("call_1", "nested_state", json!({})),
+        carve_agentos::contracts::thread::ToolCall::new("call_2", "nested_state", json!({})),
     ];
 
     // Start with state that has nested structure
@@ -2588,17 +2588,17 @@ async fn test_parallel_execution_state_isolation() {
 
     // Three parallel increment calls
     let calls = vec![
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_3",
             "increment",
             json!({"path": "counter"}),
@@ -2640,17 +2640,17 @@ async fn test_parallel_execution_patch_conflict() {
     let llm_response = StreamResult {
         text: "Running three increments in parallel".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "increment",
                 json!({"path": "counter"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_2",
                 "increment",
                 json!({"path": "counter"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_3",
                 "increment",
                 json!({"path": "counter"}),
@@ -2693,17 +2693,17 @@ async fn test_parallel_execution_different_fields() {
     let llm_response = StreamResult {
         text: "Running three increments to different counters".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "increment",
                 json!({"path": "counter_a"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_2",
                 "increment",
                 json!({"path": "counter_b"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_3",
                 "increment",
                 json!({"path": "counter_c"}),
@@ -2736,12 +2736,12 @@ async fn test_sequential_vs_parallel_execution_difference() {
     tools.insert("increment".to_string(), Arc::new(IncrementTool));
 
     let calls = vec![
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
@@ -2915,7 +2915,7 @@ async fn test_tool_execution_with_empty_patch() {
     use carve_agentos::engine::tool_execution::execute_single_tool;
 
     let tool = ReadOnlyTool;
-    let call = carve_agentos::contracts::state::ToolCall::new("call_1", "read_only", json!({}));
+    let call = carve_agentos::contracts::thread::ToolCall::new("call_1", "read_only", json!({}));
     let state = json!({"counter": {"value": 42, "label": "test"}});
 
     let result = execute_single_tool(Some(&tool), &call, &state).await;
@@ -2936,13 +2936,13 @@ async fn test_sequential_execution_with_mixed_patch_results() {
     tools.insert("increment".to_string(), Arc::new(IncrementTool));
 
     let calls = vec![
-        carve_agentos::contracts::state::ToolCall::new("call_1", "read_only", json!({})),
-        carve_agentos::contracts::state::ToolCall::new(
+        carve_agentos::contracts::thread::ToolCall::new("call_1", "read_only", json!({})),
+        carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
         ),
-        carve_agentos::contracts::state::ToolCall::new("call_3", "read_only", json!({})),
+        carve_agentos::contracts::thread::ToolCall::new("call_3", "read_only", json!({})),
     ];
 
     let initial_state = json!({
@@ -2971,7 +2971,7 @@ async fn test_sequential_execution_with_mixed_patch_results() {
 
 #[test]
 fn test_agent_loop_error_all_variants() {
-    use carve_agentos::contracts::runtime::Interaction;
+    use carve_agentos::contracts::Interaction;
     use carve_agentos::runtime::loop_runner::AgentLoopError;
 
     // LlmError
@@ -3048,7 +3048,7 @@ async fn test_e2e_tool_execution_flow() {
     // 2. Simulate LLM response with tool call
     let llm_response = StreamResult {
         text: "I'll increment the counter for you.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
@@ -3095,12 +3095,12 @@ async fn test_e2e_parallel_tool_calls() {
     let llm_response = StreamResult {
         text: "I'll do both.".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "increment",
                 json!({"path": "counter"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_2",
                 "add_task",
                 json!({"item": "New task"}),
@@ -3143,7 +3143,7 @@ async fn test_e2e_multi_step_with_state() {
 
     let response1 = StreamResult {
         text: "Incrementing.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
@@ -3163,7 +3163,7 @@ async fn test_e2e_multi_step_with_state() {
     thread = thread.with_message(Message::user("Increment again"));
     let response2 = StreamResult {
         text: "Incrementing again.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
@@ -3183,7 +3183,7 @@ async fn test_e2e_multi_step_with_state() {
     thread = thread.with_message(Message::user("One more time"));
     let response3 = StreamResult {
         text: "One more increment.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_3",
             "increment",
             json!({"path": "counter"}),
@@ -3213,7 +3213,7 @@ async fn test_e2e_tool_failure_handling() {
     // LLM calls a tool that doesn't exist
     let llm_response = StreamResult {
         text: "Calling tool.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "nonexistent_tool",
             json!({}),
@@ -3254,7 +3254,7 @@ async fn test_e2e_session_persistence_restore() {
 
     let response = StreamResult {
         text: "Incrementing.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "increment",
             json!({"path": "counter"}),
@@ -3290,7 +3290,7 @@ async fn test_e2e_session_persistence_restore() {
     loaded = loaded.with_message(Message::user("Increment again"));
     let response2 = StreamResult {
         text: "Incrementing again.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_2",
             "increment",
             json!({"path": "counter"}),
@@ -3324,7 +3324,7 @@ async fn test_e2e_snapshot_and_continue() {
     for i in 0..5 {
         let response = StreamResult {
             text: format!("Increment {}", i),
-            tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+            tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
                 format!("call_{}", i),
                 "increment",
                 json!({"path": "counter"}),
@@ -3348,7 +3348,7 @@ async fn test_e2e_snapshot_and_continue() {
     // Continue after snapshot
     let response = StreamResult {
         text: "One more".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_5",
             "increment",
             json!({"path": "counter"}),
@@ -3376,7 +3376,7 @@ async fn test_e2e_state_replay() {
     for i in 0..5 {
         let response = StreamResult {
             text: format!("Step {}", i),
-            tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+            tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
                 format!("call_{}", i),
                 "increment",
                 json!({"path": "counter"}),
@@ -3432,17 +3432,17 @@ async fn test_e2e_sequential_tool_execution() {
     let llm_response = StreamResult {
         text: "Running sequentially.".to_string(),
         tool_calls: vec![
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "increment",
                 json!({"path": "counter"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_2",
                 "increment",
                 json!({"path": "counter"}),
             ),
-            carve_agentos::contracts::state::ToolCall::new(
+            carve_agentos::contracts::thread::ToolCall::new(
                 "call_3",
                 "increment",
                 json!({"path": "counter"}),
@@ -3473,7 +3473,7 @@ async fn test_execute_single_tool_not_found() {
     use carve_agentos::engine::tool_execution::execute_single_tool;
 
     let call =
-        carve_agentos::contracts::state::ToolCall::new("call_1", "nonexistent_tool", json!({}));
+        carve_agentos::contracts::thread::ToolCall::new("call_1", "nonexistent_tool", json!({}));
     let state = json!({});
 
     // Tool is None - not found
@@ -3494,7 +3494,7 @@ async fn test_execute_single_tool_with_complex_state() {
     use carve_agentos::engine::tool_execution::execute_single_tool;
 
     let tool = IncrementTool;
-    let call = carve_agentos::contracts::state::ToolCall::new(
+    let call = carve_agentos::contracts::thread::ToolCall::new(
         "call_1",
         "increment",
         json!({"path": "data.counters.main"}),
@@ -3603,7 +3603,7 @@ async fn test_e2e_multiple_providers_priority() {
             100
         } // Higher priority
 
-        async fn provide(&self, _ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(&self, _ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
             vec!["High priority context".to_string()]
         }
     }
@@ -3620,7 +3620,7 @@ async fn test_e2e_multiple_providers_priority() {
             10
         } // Lower priority
 
-        async fn provide(&self, _ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(&self, _ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
             vec!["Low priority context".to_string()]
         }
     }
@@ -3660,7 +3660,7 @@ async fn test_e2e_conditional_context_provider() {
             50
         }
 
-        async fn provide(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
+        async fn provide(&self, ctx: &carve_agent_contract::tool::context::ToolCallContext<'_>) -> Vec<String> {
             let counter = ctx.state::<CounterState>("counter");
             let value = counter.value().unwrap_or(0);
 
@@ -3825,7 +3825,7 @@ async fn test_e2e_pending_tool_in_session_flow() {
     // Simulate LLM calling dangerous action without confirmation
     let llm_response = StreamResult {
         text: "I'll delete the files.".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_1",
             "dangerous_action",
             json!({}),
@@ -4050,7 +4050,7 @@ async fn test_concurrent_tool_executions_isolated() {
 
             let response = StreamResult {
                 text: "Incrementing".to_string(),
-                tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+                tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
                     format!("call_{}", i),
                     "increment",
                     json!({"path": "counter"}),
@@ -4359,7 +4359,7 @@ fn test_session_with_all_message_types() {
         .with_message(Message::assistant("Hi there!"))
         .with_message(Message::assistant_with_tool_calls(
             "Let me check.",
-            vec![carve_agentos::contracts::state::ToolCall::new(
+            vec![carve_agentos::contracts::thread::ToolCall::new(
                 "call_1",
                 "search",
                 json!({}),
@@ -4643,8 +4643,8 @@ fn test_stream_collector_tool_chunk_with_empty_string_arguments() {
 // Interaction to AG-UI Conversion Scenario Tests
 // ============================================================================
 
-use carve_agentos::contracts::runtime::AgentEvent;
-use carve_agentos::contracts::runtime::Interaction;
+use carve_agentos::contracts::AgentEvent;
+use carve_agentos::contracts::Interaction;
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
 
 /// Test complete scenario: Permission confirmation via Interaction → AG-UI
@@ -4799,8 +4799,8 @@ fn test_scenario_various_interaction_types() {
 // ============================================================================
 
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::{Phase, StepContext, ToolContext};
-use carve_agentos::contracts::state::ToolCall;
+use carve_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+use carve_agentos::contracts::thread::ToolCall;
 use carve_protocol_ag_ui::{AGUIToolDef, RunAgentRequest};
 use std::collections::HashSet;
 
@@ -6450,7 +6450,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6519,7 +6519,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6566,7 +6566,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             &interaction.id,
             "increment",
             json!({"path": "counter"}),
@@ -6591,7 +6591,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         "Blocked tool should produce a message"
     );
     let msg = &resumed_thread.messages[1];
-    assert_eq!(msg.role, carve_agentos::contracts::state::Role::Tool);
+    assert_eq!(msg.role, carve_agentos::contracts::thread::Role::Tool);
     assert!(
         msg.content.contains("denied")
             || msg.content.contains("blocked")
@@ -6623,7 +6623,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     let result = StreamResult {
         text: "Calling increment".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             "call_inc",
             "increment",
             json!({"path": "counter"}),
@@ -6670,7 +6670,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     let resume_result = StreamResult {
         text: "Resuming".to_string(),
-        tool_calls: vec![carve_agentos::contracts::state::ToolCall::new(
+        tool_calls: vec![carve_agentos::contracts::thread::ToolCall::new(
             &interaction.id,
             "increment",
             json!({"path": "counter"}),
@@ -6695,7 +6695,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         "Tool response message should be present after approval"
     );
     let msg = &resumed_thread.messages[1];
-    assert_eq!(msg.role, carve_agentos::contracts::state::Role::Tool);
+    assert_eq!(msg.role, carve_agentos::contracts::thread::Role::Tool);
     assert!(
         msg.content.contains("new_value"),
         "Tool result should contain new_value, got: {}",
@@ -7000,7 +7000,7 @@ fn test_error_flow_run_finish_cancelled() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
-        termination: carve_agentos::contracts::runtime::TerminationReason::Cancelled,
+        termination: carve_agentos::contracts::TerminationReason::Cancelled,
     };
     let ag_events = ctx.on_agent_event(&event);
 
@@ -9213,7 +9213,7 @@ fn test_event_sequence_canceled_run() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
-        termination: carve_agentos::contracts::runtime::TerminationReason::Cancelled,
+        termination: carve_agentos::contracts::TerminationReason::Cancelled,
     };
     let cancel_events = ctx.on_agent_event(&cancel);
     events.extend(cancel_events);
@@ -9270,7 +9270,7 @@ fn test_multiple_text_messages() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "First message"})),
-        termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+        termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish1));
 
@@ -10209,7 +10209,7 @@ fn test_run_started_is_first_event() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Hello"})),
-        termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+        termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
     };
     events.extend(ctx.on_agent_event(&finish));
 
@@ -10394,7 +10394,7 @@ fn test_run_finished_or_error_mutually_exclusive() {
             thread_id: "t1".into(),
             run_id: "r1".into(),
             result: Some(serde_json::json!({"response": "Hello"})),
-            termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+            termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
         },
     ]
     .iter()
@@ -11991,7 +11991,7 @@ fn test_agent_event_run_finish_ends_text_stream() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(json!({"ok": true})),
-        termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+        termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 
@@ -12039,7 +12039,7 @@ fn test_agent_event_run_finish_ends_text_and_run() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: Some(serde_json::json!({"response": "Response"})),
-        termination: carve_agentos::contracts::runtime::TerminationReason::NaturalEnd,
+        termination: carve_agentos::contracts::TerminationReason::NaturalEnd,
     };
     let events = ctx.on_agent_event(&finish);
 
@@ -12062,7 +12062,7 @@ fn test_agent_event_run_finish_cancelled_produces_run_error() {
         thread_id: "t1".into(),
         run_id: "r1".into(),
         result: None,
-        termination: carve_agentos::contracts::runtime::TerminationReason::Cancelled,
+        termination: carve_agentos::contracts::TerminationReason::Cancelled,
     };
     let events = ctx.on_agent_event(&cancelled);
 
@@ -12101,7 +12101,7 @@ fn test_agent_event_error_produces_run_error() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_agent_event_pending_ends_text() {
-    use carve_agentos::contracts::runtime::Interaction;
+    use carve_agentos::contracts::Interaction;
 
     let mut ctx = AGUIContext::new("t1".into(), "r1".into());
 
@@ -12284,7 +12284,7 @@ fn test_tool_call_start_includes_parent_message_id() {
 /// Reference: https://docs.ag-ui.com/concepts/human-in-the-loop
 #[test]
 fn test_interaction_to_ag_ui_events() {
-    use carve_agentos::contracts::runtime::Interaction;
+    use carve_agentos::contracts::Interaction;
 
     let interaction = Interaction::new("int_1", "confirm_delete")
         .with_parameters(json!({"file": "important.txt"}));
@@ -12315,10 +12315,10 @@ fn test_interaction_to_ag_ui_events() {
 mod llmmetry_tracing {
     use carve_agent_contract::testing::TestFixture;
     use carve_agentos::contracts::plugin::AgentPlugin;
-    use carve_agentos::contracts::runtime::phase::{Phase, StepContext, ToolContext};
+    use carve_agentos::contracts::plugin::phase::{Phase, StepContext, ToolContext};
     use carve_agentos::contracts::runtime::StreamResult;
-    use carve_agentos::contracts::state::Thread as ConversationAgentState;
-    use carve_agentos::contracts::state::ToolCall;
+    use carve_agentos::contracts::thread::Thread as ConversationAgentState;
+    use carve_agentos::contracts::thread::ToolCall;
     use carve_agentos::contracts::tool::ToolResult;
     use carve_agentos::extensions::observability::{InMemorySink, LLMMetryPlugin};
     use serde_json::json;
@@ -12580,7 +12580,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
         json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![ToolCall::new(
                 pending_id,
@@ -12589,7 +12589,7 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
             )],
         ),
     )
-    .with_message(carve_agentos::contracts::state::Message::tool(
+    .with_message(carve_agentos::contracts::thread::Message::tool(
         pending_id,
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
@@ -12625,7 +12625,7 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
         json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![ToolCall::new(pending_id, "add_trips", json!({}))],
         ),
@@ -12676,7 +12676,7 @@ async fn test_interaction_response_run_start_mismatched_id() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": "permission_x", "action": "confirm" } } }),
     )
-    .with_message(carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+    .with_message(carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
         "",
         vec![ToolCall::new("permission_x", "some_tool", json!({}))],
     ));
@@ -12707,7 +12707,7 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": pending_id, "action": "confirm" } } }),
     )
-    .with_message(carve_agentos::contracts::state::Message::assistant(
+    .with_message(carve_agentos::contracts::thread::Message::assistant(
         "I need to call a tool",
     ));
 
@@ -12772,7 +12772,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
         }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![ToolCall::new(
                 &interaction.id,
@@ -12781,7 +12781,7 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
             )],
         ),
     )
-    .with_message(carve_agentos::contracts::state::Message::tool(
+    .with_message(carve_agentos::contracts::thread::Message::tool(
         &interaction.id,
         "Tool 'add_trips' is awaiting approval. Execution paused.",
     ));
@@ -12828,7 +12828,7 @@ async fn test_hitl_replay_denial_does_not_schedule() {
         }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![ToolCall::new(pending_id, "add_trips", json!({}))],
         ),
@@ -12871,7 +12871,7 @@ async fn test_hitl_replay_picks_first_tool_call() {
         }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![
                 ToolCall::new(pending_id, "tool_a", json!({"a": 1})),
@@ -12914,7 +12914,7 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
         }),
     )
     .with_message(
-        carve_agentos::contracts::state::Message::assistant_with_tool_calls(
+        carve_agentos::contracts::thread::Message::assistant_with_tool_calls(
             "",
             vec![ToolCall::new(pending_id, "some_tool", json!({}))],
         ),

@@ -6,7 +6,7 @@ use super::interaction_response::InteractionResponsePlugin;
 use super::INTERACTION_PLUGIN_ID;
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {
     static_response: InteractionResponsePlugin,

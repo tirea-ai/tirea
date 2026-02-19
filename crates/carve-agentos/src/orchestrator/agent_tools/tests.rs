@@ -1,5 +1,5 @@
 use super::*;
-use crate::contracts::state::Thread;
+use crate::contracts::thread::Thread;
 use crate::contracts::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
@@ -231,7 +231,7 @@ fn caller_scope_with_state_and_run(
     rt.set(TOOL_SCOPE_CALLER_STATE_KEY, state).unwrap();
     rt.set(
         TOOL_SCOPE_CALLER_MESSAGES_KEY,
-        vec![crate::contracts::state::Message::user("seed message")],
+        vec![crate::contracts::thread::Message::user("seed message")],
     )
     .unwrap();
     rt
@@ -497,8 +497,8 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         .unwrap();
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let doc = json!({
         "agent_runs": {
             "runs": {
@@ -541,8 +541,8 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
     let manager = Arc::new(AgentRunManager::new());
     let run_tool = AgentRunTool::new(os, manager.clone());
 
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let doc = json!({
         "agent_runs": {
             "runs": {
@@ -610,8 +610,8 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         .unwrap();
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let doc = json!({
         "agent_runs": {
             "runs": {
@@ -760,8 +760,8 @@ async fn agent_stop_tool_stops_descendant_runs() {
 #[tokio::test]
 async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -821,8 +821,8 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
 #[tokio::test]
 async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -868,8 +868,8 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
 #[tokio::test]
 async fn recovery_plugin_auto_approve_when_permission_allow() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -922,8 +922,8 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
 #[tokio::test]
 async fn recovery_plugin_auto_deny_when_permission_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -974,8 +974,8 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
 #[tokio::test]
 async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -1022,8 +1022,8 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
 #[tokio::test]
 async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({
@@ -1071,8 +1071,8 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
 #[tokio::test]
 async fn recovery_plugin_tool_rule_overrides_default_behavior() {
     let plugin = AgentRecoveryPlugin::new(Arc::new(AgentRunManager::new()));
-    let child_thread = crate::contracts::state::Thread::new("child-run")
-        .with_message(crate::contracts::state::Message::user("seed"));
+    let child_thread = crate::contracts::thread::Thread::new("child-run")
+        .with_message(crate::contracts::thread::Message::user("seed"));
     let thread = Thread::with_initial_state(
         "owner-1",
         json!({

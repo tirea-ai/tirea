@@ -5,11 +5,11 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
-use crate::context::ToolCallContext;
-use crate::runtime::interaction::Interaction;
+use crate::tool::context::ToolCallContext;
+use crate::event::interaction::Interaction;
 use crate::runtime::result::StreamResult;
-use crate::state::{Message, ToolCall};
-use crate::tool::{ToolDescriptor, ToolResult};
+use crate::thread::{Message, ToolCall};
+use crate::tool::contract::{ToolDescriptor, ToolResult};
 use crate::RunConfig;
 use carve_state::{CarveResult, State, TrackedPatch};
 use serde_json::Value;

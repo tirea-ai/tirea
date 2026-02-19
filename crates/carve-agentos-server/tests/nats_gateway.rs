@@ -11,8 +11,8 @@
 
 use async_trait::async_trait;
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::Phase;
-use carve_agentos::contracts::runtime::phase::StepContext;
+use carve_agentos::contracts::plugin::phase::Phase;
+use carve_agentos::contracts::plugin::phase::StepContext;
 use carve_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::AgentOsBuilder;

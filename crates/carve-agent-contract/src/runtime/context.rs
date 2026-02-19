@@ -1,9 +1,9 @@
-use crate::context::ToolCallContext;
-use crate::run_delta::RunDelta;
+use crate::tool::context::ToolCallContext;
+use crate::runtime::delta::RunDelta;
 use crate::runtime::control::LoopControlState;
-use crate::runtime::interaction::Interaction;
-use crate::state::transient::ActivityManager;
-use crate::state::Message;
+use crate::event::interaction::Interaction;
+use crate::runtime::activity::ActivityManager;
+use crate::thread::Message;
 use crate::RunConfig;
 use carve_state::{
     apply_patch, apply_patches, CarveResult, DeltaTracked, DocCell, Op, Patch, State, TrackedPatch,
@@ -260,7 +260,7 @@ impl RunContext {
     /// Rebuilds state from the thread's base state + patches, then wraps
     /// the thread's messages and run_config into a `RunContext`. Version
     /// metadata is carried over from thread metadata.
-    pub fn from_thread(thread: &crate::state::Thread) -> Result<Self, carve_state::CarveError> {
+    pub fn from_thread(thread: &crate::thread::Thread) -> Result<Self, carve_state::CarveError> {
         let state = thread.rebuild_state()?;
         let messages: Vec<Arc<Message>> = thread.messages.clone();
         let mut ctx = Self::new(thread.id.clone(), state, messages, thread.run_config.clone());
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn from_thread_rebuilds_existing_patches() {
-        use crate::state::Thread;
+        use crate::thread::Thread;
 
         let mut thread = Thread::with_initial_state("t-1", json!({"counter": 0}));
         thread.patches.push(TrackedPatch::new(
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn from_thread_carries_version_metadata() {
-        use crate::state::Thread;
+        use crate::thread::Thread;
 
         let mut thread = Thread::new("t-1");
         thread.metadata.version = Some(42);
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn from_thread_broken_patch_returns_error() {
-        use crate::state::Thread;
+        use crate::thread::Thread;
 
         let mut thread = Thread::with_initial_state("t-1", json!({"x": 1}));
         // Append to a non-array path — this will fail during rebuild_state

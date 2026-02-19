@@ -20,7 +20,7 @@
 //! ```
 
 use async_trait::async_trait;
-use carve_agent_contract::context::ToolCallContext;
+use carve_agent_contract::tool::context::ToolCallContext;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
@@ -126,10 +126,10 @@ impl AgentPlugin for ReminderPlugin {
 
     async fn on_phase(
         &self,
-        phase: carve_agent_contract::runtime::phase::Phase,
-        step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
+        phase: carve_agent_contract::plugin::phase::Phase,
+        step: &mut carve_agent_contract::plugin::phase::StepContext<'_>,
     ) {
-        use carve_agent_contract::runtime::phase::Phase;
+        use carve_agent_contract::plugin::phase::Phase;
 
         if phase != Phase::BeforeInference {
             return;
@@ -154,7 +154,7 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::runtime::phase::Phase;
+    use carve_agent_contract::plugin::phase::Phase;
     use carve_agent_contract::testing::TestFixture;
     use serde_json::json;
 

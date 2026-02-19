@@ -1,7 +1,7 @@
 use super::AgentLoopError;
-use crate::contracts::runtime::phase::StepContext;
-use crate::contracts::runtime::{Interaction, InteractionResponse};
-use crate::contracts::state::{Message, MessageMetadata};
+use crate::contracts::plugin::phase::StepContext;
+use crate::contracts::{Interaction, InteractionResponse};
+use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::contracts::RunContext;
 use crate::runtime::control::{InferenceError, LoopControlState};
@@ -112,7 +112,7 @@ pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
 #[derive(Default)]
 pub(super) struct AgentOutboxDrain {
     pub(super) interaction_resolutions: Vec<InteractionResponse>,
-    pub(super) replay_tool_calls: Vec<crate::contracts::state::ToolCall>,
+    pub(super) replay_tool_calls: Vec<crate::contracts::thread::ToolCall>,
 }
 
 pub(super) fn drain_agent_outbox(
@@ -140,7 +140,7 @@ pub(super) fn drain_agent_outbox(
         .and_then(|outbox| outbox.get("replay_tool_calls"))
         .cloned()
     {
-        Some(raw) => serde_json::from_value::<Vec<crate::contracts::state::ToolCall>>(raw)
+        Some(raw) => serde_json::from_value::<Vec<crate::contracts::thread::ToolCall>>(raw)
             .map_err(|e| {
                 AgentLoopError::StateError(format!(
                     "failed to parse interaction_outbox.replay_tool_calls: {e}"

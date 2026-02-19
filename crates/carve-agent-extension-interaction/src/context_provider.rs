@@ -1,7 +1,7 @@
 //! ContextProvider trait for injecting dynamic context messages.
 
 use async_trait::async_trait;
-use carve_agent_contract::context::ToolCallContext;
+use carve_agent_contract::tool::context::ToolCallContext;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.

@@ -1,6 +1,6 @@
-use crate::state::ThreadChangeSet;
-use crate::state::Thread;
-use crate::state::Version;
+use crate::thread::ThreadChangeSet;
+use crate::thread::Thread;
+use crate::thread::Version;
 use async_trait::async_trait;
 
 use super::{

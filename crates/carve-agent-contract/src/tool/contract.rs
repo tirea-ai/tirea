@@ -2,7 +2,7 @@
 //!
 //! Tools execute actions and can modify state through `Thread`.
 
-use crate::context::ToolCallContext;
+use crate::tool::context::ToolCallContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -239,7 +239,7 @@ impl ToolDescriptor {
 ///
 /// ```ignore
 /// use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolResult};
-/// use carve_agent::contracts::context::ToolCallContext;
+/// use carve_agent::contracts::ToolCallContext;
 /// use carve_state::State;
 ///
 /// #[derive(State)]

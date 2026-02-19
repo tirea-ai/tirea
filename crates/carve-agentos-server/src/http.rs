@@ -5,8 +5,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
-use carve_agentos::contracts::runtime::AgentEvent;
-use carve_agentos::contracts::state::{Thread, Visibility};
+use carve_agentos::contracts::AgentEvent;
+use carve_agentos::contracts::thread::{Thread, Visibility};
 use carve_agentos::contracts::storage::{
     AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
 };

@@ -1,7 +1,7 @@
 use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::runtime::phase::{Phase, StepContext};
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
 use std::sync::Arc;
 
 /// Single plugin wrapper that injects both:

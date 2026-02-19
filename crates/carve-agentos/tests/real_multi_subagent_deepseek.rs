@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
-use carve_agent_contract::runtime::{AgentEvent, RunRequest};
-use carve_agent_contract::state::Message;
+use carve_agent_contract::{AgentEvent, RunRequest};
+use carve_agent_contract::thread::Message;
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::AgentOs;
 use futures::StreamExt;

@@ -1,5 +1,5 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::state::CheckpointReason;
+use crate::contracts::thread::CheckpointReason;
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::ThreadChangeSet;
 use crate::contracts::RunContext;

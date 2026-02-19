@@ -1,4 +1,4 @@
-use crate::contracts::state::ThreadChangeSet;
+use crate::contracts::thread::ThreadChangeSet;
 use crate::contracts::storage::VersionPrecondition;
 use async_trait::async_trait;
 use thiserror::Error;

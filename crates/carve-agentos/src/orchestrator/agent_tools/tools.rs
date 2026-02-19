@@ -30,11 +30,11 @@ fn scope_run_id(scope: Option<&carve_agent_contract::RunConfig>) -> Option<Strin
 }
 
 fn bind_child_lineage(
-    mut thread: crate::contracts::state::Thread,
+    mut thread: crate::contracts::thread::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
-) -> crate::contracts::state::Thread {
+) -> crate::contracts::thread::Thread {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
@@ -96,7 +96,7 @@ fn parse_caller_messages(scope: Option<&carve_agent_contract::RunConfig>) -> Opt
 fn filtered_fork_messages(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
-        .filter(|m| m.visibility == crate::contracts::state::Visibility::All)
+        .filter(|m| m.visibility == crate::contracts::thread::Visibility::All)
         .filter(|m| matches!(m.role, Role::System | Role::User | Role::Assistant))
         .map(|mut m| {
             if m.role == Role::Assistant {
@@ -140,7 +140,7 @@ struct RunLaunch {
     owner_thread_id: String,
     target_agent_id: String,
     parent_run_id: Option<String>,
-    thread: crate::contracts::state::Thread,
+    thread: crate::contracts::thread::Thread,
 }
 
 impl AgentRunTool {
@@ -471,13 +471,13 @@ impl Tool for AgentRunTool {
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let mut forked =
-                crate::contracts::state::Thread::with_initial_state(thread_id, fork_state);
+                crate::contracts::thread::Thread::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(Some(scope)) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::contracts::state::Thread::new(thread_id)
+            crate::contracts::thread::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(

@@ -1,5 +1,5 @@
-use crate::state::Thread;
-use crate::state::Version;
+use crate::thread::Thread;
+use crate::thread::Version;
 use crate::Message;
 use crate::Visibility;
 use serde::{Deserialize, Serialize};

@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench --package carve-agent --bench quick_clone_test
 
-use carve_agent::contracts::state::Message;
+use carve_agent::contracts::thread::Message;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 

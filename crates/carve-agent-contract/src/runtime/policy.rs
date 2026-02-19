@@ -1,6 +1,6 @@
-use crate::run_context::RunContext;
-use crate::runtime::termination::StopReason;
-use crate::state::ToolCall;
+use crate::runtime::context::RunContext;
+use crate::event::termination::StopReason;
+use crate::thread::ToolCall;
 use std::collections::VecDeque;
 use std::time::Duration;
 

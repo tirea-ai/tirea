@@ -110,16 +110,13 @@ macro_rules! impl_shared_agent_builder_methods {
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub mod context;
+pub mod event;
 pub mod plugin;
 pub mod protocol;
-pub mod run_context;
-pub mod run_delta;
 pub mod runtime;
-pub mod state;
 pub mod storage;
+pub mod thread;
 pub mod tool;
-pub mod tool_registry;
 
 /// Per-run configuration — a business alias for the generic `SealedState` container.
 pub type RunConfig = carve_state::SealedState;
@@ -127,25 +124,41 @@ pub type RunConfig = carve_state::SealedState;
 /// Error type for `RunConfig` operations.
 pub type RunConfigError = carve_state::SealedStateError;
 
-pub use context::ToolCallContext;
-pub use plugin::AgentPlugin;
+// thread
+pub use thread::{
+    gen_message_id, CheckpointReason, Message, MessageMetadata, PendingDelta, Role, Thread,
+    ThreadChangeSet, ThreadMetadata, ToolCall, Version, Visibility,
+};
+
+// event
+pub use event::{
+    AgentEvent, Interaction, InteractionResponse, StopConditionSpec, StopReason, TerminationReason,
+};
+
+// tool
+pub use tool::{
+    ActivityContext, Tool, ToolCallContext, ToolDescriptor, ToolError, ToolRegistry,
+    ToolRegistryError, ToolResult, ToolStatus,
+};
+
+// plugin
+pub use plugin::{AgentPlugin, Phase, PhasePolicy, StepContext, StepOutcome, ToolContext};
+
+// runtime
 pub use runtime::{
-    AgentEvent, InferenceError, Interaction, InteractionResponse, LlmExecutor,
-    LoopControlExt, LoopControlState, RunRequest, StopConditionSpec,
-    StopPolicy, StopPolicyInput, StopPolicyStats, StopReason, StreamResult, TerminationReason,
-    ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
+    ActivityManager, InferenceError, LlmExecutor, LoopControlExt, LoopControlState, RunContext,
+    RunDelta, StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult, ToolExecution,
+    ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
-pub use state::{
-    gen_message_id, ThreadChangeSet, CheckpointReason, Message,
-    MessageMetadata, PendingDelta, Role, Thread, ThreadMetadata, ToolCall, Version, Visibility,
-};
+
+// storage
 pub use storage::{
     paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter, Committed,
     MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
 };
-pub use run_context::RunContext;
-pub use run_delta::RunDelta;
-pub use tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
-pub use tool_registry::{ToolRegistry, ToolRegistryError};
+
+// protocol
+pub use protocol::{
+    ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder, RunRequest,
+};

@@ -7,10 +7,10 @@ use futures::Stream;
 use genai::Client;
 
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::{AgentEvent, RunRequest};
-use crate::contracts::state::Thread;
-use crate::contracts::state::CheckpointReason;
-use crate::contracts::state::Message;
+use crate::contracts::{AgentEvent, RunRequest};
+use crate::contracts::thread::Thread;
+use crate::contracts::thread::CheckpointReason;
+use crate::contracts::thread::Message;
 use crate::contracts::storage::{
     AgentStateHead, AgentStateStore, AgentStateStoreError, VersionPrecondition,
 };

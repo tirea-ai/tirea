@@ -2,9 +2,9 @@
 
 use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent_loop::contracts::plugin::AgentPlugin;
-use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
-use carve_agent_loop::contracts::state::Thread;
-use carve_agent_loop::contracts::state::{Message, ToolCall};
+use carve_agent_loop::contracts::{AgentEvent, runtime::StreamResult};
+use carve_agent_loop::contracts::thread::Thread;
+use carve_agent_loop::contracts::thread::{Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::{RunContext, ToolCallContext};
 use carve_agent_loop::runtime::loop_runner::{
@@ -300,7 +300,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     let run_ctx = RunContext::from_thread(&thread).unwrap();
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
-    assert!(matches!(outcome.termination, carve_agent_loop::contracts::runtime::TerminationReason::Error));
+    assert!(matches!(outcome.termination, carve_agent_loop::contracts::TerminationReason::Error));
 
     // Metrics should record the failed inference.
     let m = sink.metrics();

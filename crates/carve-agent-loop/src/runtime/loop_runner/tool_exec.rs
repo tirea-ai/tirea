@@ -8,14 +8,16 @@ use super::{
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use crate::contracts::plugin::AgentPlugin;
-use crate::contracts::runtime::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::plugin::phase::{Phase, StepContext, ToolContext};
+use crate::contracts::Interaction;
 use crate::contracts::runtime::{
-    Interaction, StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
+    StreamResult, ToolExecution, ToolExecutionRequest, ToolExecutionResult,
     ToolExecutor, ToolExecutorError,
 };
 use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
-use crate::contracts::state::{ActivityManager, Thread};
-use crate::contracts::state::{Message, MessageMetadata};
+use crate::contracts::runtime::ActivityManager;
+use crate::contracts::thread::Thread;
+use crate::contracts::thread::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::contracts::RunContext;
 use crate::engine::convert::tool_response;
@@ -491,7 +493,7 @@ pub async fn execute_tools_with_plugins_and_executor(
 /// Execute tools in parallel with phase hooks.
 pub(super) async fn execute_tools_parallel_with_phases(
     tools: &HashMap<String, Arc<dyn Tool>>,
-    calls: &[crate::contracts::state::ToolCall],
+    calls: &[crate::contracts::thread::ToolCall],
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
@@ -571,7 +573,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
 /// Execute tools sequentially with phase hooks.
 pub(super) async fn execute_tools_sequential_with_phases(
     tools: &HashMap<String, Arc<dyn Tool>>,
-    calls: &[crate::contracts::state::ToolCall],
+    calls: &[crate::contracts::thread::ToolCall],
     initial_state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
@@ -676,7 +678,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
 /// Execute a single tool with phase hooks.
 pub(super) async fn execute_single_tool_with_phases(
     tool: Option<&dyn Tool>,
-    call: &crate::contracts::state::ToolCall,
+    call: &crate::contracts::thread::ToolCall,
     state: &Value,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],

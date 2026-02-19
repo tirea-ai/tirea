@@ -57,7 +57,7 @@ impl RunState {
 
     pub(super) fn record_tool_step(
         &mut self,
-        tool_calls: &[crate::contracts::state::ToolCall],
+        tool_calls: &[crate::contracts::thread::ToolCall],
         error_count: usize,
     ) {
         self.step_tool_call_count = tool_calls.len();

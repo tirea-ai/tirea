@@ -1,4 +1,4 @@
-use crate::tool::Tool;
+use crate::tool::contract::Tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 

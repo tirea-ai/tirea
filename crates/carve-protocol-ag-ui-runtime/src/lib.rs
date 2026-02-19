@@ -6,8 +6,8 @@
 
 use async_trait::async_trait;
 use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
-use carve_agentos::contracts::runtime::Interaction;
+use carve_agentos::contracts::plugin::phase::{Phase, StepContext};
+use carve_agentos::contracts::Interaction;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::extensions::interaction::InteractionPlugin;
@@ -166,8 +166,8 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 mod tests {
     use super::*;
     use carve_agent_contract::testing::TestFixture;
-    use carve_agentos::contracts::runtime::phase::{Phase, ToolContext};
-    use carve_agentos::contracts::state::ToolCall;
+    use carve_agentos::contracts::plugin::phase::{Phase, ToolContext};
+    use carve_agentos::contracts::thread::ToolCall;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
     use serde_json::json;
 
