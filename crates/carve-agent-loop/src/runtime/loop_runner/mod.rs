@@ -590,6 +590,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
     pub(super) scope: carve_state::ScopeState,
+    pub(super) run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 }
 
 pub(super) fn prepare_tool_execution_context(
@@ -600,7 +601,8 @@ pub(super) fn prepare_tool_execution_context(
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let scope = scope_with_tool_caller_context(thread, &state, config)?;
-    Ok(ToolExecutionContext { state, scope })
+    let run_overlay = thread.run_overlay();
+    Ok(ToolExecutionContext { state, scope, run_overlay })
 }
 
 pub(super) async fn finalize_run_end(
@@ -1080,6 +1082,7 @@ async fn run_loop_outcome_with_context_provider(
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
             cancellation_token: run_cancellation_token.as_ref(),
+            run_overlay: tool_context.run_overlay.clone(),
         });
         let results = tool_exec_future.await.map_err(AgentLoopError::from);
 

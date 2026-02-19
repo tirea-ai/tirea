@@ -466,6 +466,7 @@ async fn test_activity_event_emitted_before_tool_completion() {
         "test",
         &[],
         0,
+        Arc::new(Mutex::new(Vec::new())),
     ));
 
     tokio::select! {
@@ -547,6 +548,7 @@ async fn test_parallel_tools_emit_activity_before_completion() {
             &[],
             0,
             None,
+            Arc::new(Mutex::new(Vec::new())),
         )
         .await
         .expect("parallel tool execution should succeed")
@@ -620,6 +622,7 @@ async fn test_parallel_tool_executor_honors_cancellation_token() {
             &[],
             0,
             Some(&token_for_task),
+            Arc::new(Mutex::new(Vec::new())),
         )
         .await;
         ready_for_task.notify_one();
@@ -1067,6 +1070,7 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
         "test",
         &[],
         0,
+        Arc::new(Mutex::new(Vec::new())),
     )
     .await
     .expect("tool execution should succeed");
@@ -1123,6 +1127,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
         "real-thread-42",
         &[],
         0,
+        Arc::new(Mutex::new(Vec::new())),
     )
     .await
     .expect("tool execution should succeed");

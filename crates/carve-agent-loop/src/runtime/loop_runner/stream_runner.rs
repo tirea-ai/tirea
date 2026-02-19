@@ -53,6 +53,7 @@ async fn drain_run_start_outbox_and_replay(
             &thread.id,
             &thread.messages,
             agent_state_version(&thread),
+            thread.run_overlay(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -669,6 +670,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,
                         cancellation_token: run_cancellation_token.as_ref(),
+                        run_overlay: tool_context.run_overlay.clone(),
                     })
                     .await
                     .map_err(AgentLoopError::from)

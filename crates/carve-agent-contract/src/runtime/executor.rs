@@ -3,13 +3,13 @@ use crate::runtime::interaction::Interaction;
 use crate::state::{ActivityManager, Message, ToolCall};
 use crate::tool::{Tool, ToolDescriptor, ToolResult};
 use async_trait::async_trait;
-use carve_state::{ScopeState, TrackedPatch};
+use carve_state::{Op, ScopeState, TrackedPatch};
 use futures::Stream;
 use genai::chat::{ChatOptions, ChatRequest, ChatResponse, ChatStreamEvent};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -62,6 +62,7 @@ pub struct ToolExecutionRequest<'a> {
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,
     pub cancellation_token: Option<&'a CancellationToken>,
+    pub run_overlay: Arc<Mutex<Vec<Op>>>,
 }
 
 /// Output item produced by tool execution strategies.
