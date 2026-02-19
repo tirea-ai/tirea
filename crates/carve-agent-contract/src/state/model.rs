@@ -1,6 +1,7 @@
-//! AgentState model and persistent history primitives.
+//! Thread model and persistent history primitives.
 //!
-//! `AgentState` represents persisted agent state with message history and patches.
+//! `Thread` (formerly `AgentState`) represents persisted agent state with
+//! message history and patches.
 
 use super::message::Message;
 use crate::RunConfig;
@@ -27,16 +28,16 @@ impl PendingDelta {
     }
 }
 
-/// Persisted agent state with messages and state history.
+/// Persisted thread state with messages and state history.
 ///
-/// AgentState uses an owned builder pattern: `with_*` methods consume `self`
-/// and return a new `AgentState` (e.g., `thread.with_message(msg)`).
+/// `Thread` uses an owned builder pattern: `with_*` methods consume `self`
+/// and return a new `Thread` (e.g., `thread.with_message(msg)`).
 ///
-/// The `scope` field is an exception — it is transient (not serialized)
-/// and may be mutated in-place during a run (e.g., setting `run_id`).
-/// RunConfig changes are never persisted to storage.
+/// Runtime fields (`run_config`, `pending`, `run_overlay`) are transient —
+/// not serialized. They exist for backward compatibility and will be removed
+/// once all callers migrate to `RunContext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentState {
+pub struct Thread {
     /// Unique thread identifier.
     pub id: String,
     /// Owner/resource identifier (e.g., user_id, org_id).
@@ -53,19 +54,22 @@ pub struct AgentState {
     pub patches: Vec<TrackedPatch>,
     /// Metadata.
     #[serde(default)]
-    pub metadata: AgentStateMetadata,
+    pub metadata: ThreadMetadata,
     /// Per-run run config context (not persisted).
+    /// Deprecated: use `RunContext.run_config` instead.
     #[serde(skip)]
     pub run_config: RunConfig,
     /// Pending delta buffer — tracks new items since last `take_pending()`.
+    /// Deprecated: use `RunContext.take_delta()` instead.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
     /// Run-scoped overlay ops shared across tool calls within a single run (not persisted).
+    /// Deprecated: use `RunContext.run_overlay()` instead.
     #[serde(skip)]
     pub(crate) run_overlay: Arc<Mutex<Vec<Op>>>,
 }
 
-impl AgentState {
+impl Thread {
     /// Borrow the run-scoped overlay ops (not persisted).
     ///
     /// Used by the loop runner to share the overlay across tool calls within a run.
@@ -74,9 +78,13 @@ impl AgentState {
     }
 }
 
-/// AgentState metadata.
+/// Deprecated alias for `Thread`.
+#[deprecated(note = "renamed to `Thread`")]
+pub type AgentState = Thread;
+
+/// Thread metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AgentStateMetadata {
+pub struct ThreadMetadata {
     /// Creation timestamp (unix millis).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<u64>,
@@ -94,7 +102,11 @@ pub struct AgentStateMetadata {
     pub extra: serde_json::Map<String, Value>,
 }
 
-impl AgentState {
+/// Deprecated alias for `ThreadMetadata`.
+#[deprecated(note = "renamed to `ThreadMetadata`")]
+pub type AgentStateMetadata = ThreadMetadata;
+
+impl Thread {
     /// Create a new thread with the given ID.
     pub fn new(id: impl Into<String>) -> Self {
         Self {
@@ -104,7 +116,7 @@ impl AgentState {
             messages: Vec::new(),
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
-            metadata: AgentStateMetadata::default(),
+            metadata: ThreadMetadata::default(),
             run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
@@ -120,35 +132,35 @@ impl AgentState {
             messages: Vec::new(),
             state,
             patches: Vec::new(),
-            metadata: AgentStateMetadata::default(),
+            metadata: ThreadMetadata::default(),
             run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    /// Set the resource_id (pure function, returns new AgentState).
+    /// Set the resource_id (pure function, returns new Thread).
     #[must_use]
     pub fn with_resource_id(mut self, resource_id: impl Into<String>) -> Self {
         self.resource_id = Some(resource_id.into());
         self
     }
 
-    /// Set the parent_thread_id (pure function, returns new AgentState).
+    /// Set the parent_thread_id (pure function, returns new Thread).
     #[must_use]
     pub fn with_parent_thread_id(mut self, parent_thread_id: impl Into<String>) -> Self {
         self.parent_thread_id = Some(parent_thread_id.into());
         self
     }
 
-    /// Set the run config (pure function, returns new AgentState).
+    /// Set the run config (pure function, returns new Thread).
     #[must_use]
     pub fn with_run_config(mut self, run_config: RunConfig) -> Self {
         self.run_config = run_config;
         self
     }
 
-    /// Add a message to the thread (pure function, returns new AgentState).
+    /// Add a message to the thread (pure function, returns new Thread).
     ///
     /// Messages are Arc-wrapped for efficient cloning during agent loops.
     #[must_use]
@@ -159,7 +171,7 @@ impl AgentState {
         self
     }
 
-    /// Add multiple messages (pure function, returns new AgentState).
+    /// Add multiple messages (pure function, returns new Thread).
     #[must_use]
     pub fn with_messages(mut self, msgs: impl IntoIterator<Item = Message>) -> Self {
         let arcs: Vec<Arc<Message>> = msgs.into_iter().map(Arc::new).collect();
@@ -168,7 +180,7 @@ impl AgentState {
         self
     }
 
-    /// Add a patch to the thread (pure function, returns new AgentState).
+    /// Add a patch to the thread (pure function, returns new Thread).
     #[must_use]
     pub fn with_patch(mut self, patch: TrackedPatch) -> Self {
         self.pending.patches.push(patch.clone());
@@ -176,7 +188,7 @@ impl AgentState {
         self
     }
 
-    /// Add multiple patches (pure function, returns new AgentState).
+    /// Add multiple patches (pure function, returns new Thread).
     #[must_use]
     pub fn with_patches(mut self, patches: impl IntoIterator<Item = TrackedPatch>) -> Self {
         let patches: Vec<TrackedPatch> = patches.into_iter().collect();
@@ -194,10 +206,6 @@ impl AgentState {
     }
 
     /// Rebuild the current run-visible state (base + thread patches + run overlay).
-    ///
-    /// When a `run_doc` is present (transient contexts), returns its snapshot
-    /// which already includes all write-through updates. Otherwise falls back
-    /// to computing base + patches + overlay.
     pub fn rebuild_state(&self) -> CarveResult<Value> {
         let base = if self.patches.is_empty() {
             self.state.clone()
@@ -245,7 +253,7 @@ impl AgentState {
 
     /// Create a snapshot, collapsing patches into the base state.
     ///
-    /// Returns a new AgentState with the current state as base and empty patches.
+    /// Returns a new Thread with the current state as base and empty patches.
     /// Uses `rebuild_thread_state()` to exclude run overlay from the snapshot.
     pub fn snapshot(self) -> CarveResult<Self> {
         let current_state = self.rebuild_thread_state()?;
@@ -285,9 +293,11 @@ mod tests {
     use carve_state::{path, Op, Patch};
     use serde_json::json;
 
+    // Tests use Thread directly (the canonical name).
+
     #[test]
     fn test_pending_delta_tracks_messages() {
-        let mut thread = AgentState::new("t-1")
+        let mut thread = Thread::new("t-1")
             .with_message(Message::user("Hello"))
             .with_message(Message::assistant("Hi!"));
 
@@ -303,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_pending_delta_tracks_patches() {
-        let mut thread = AgentState::new("t-1")
+        let mut thread = Thread::new("t-1")
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("a"), json!(1))),
             ))
@@ -322,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_take_pending_resets_buffer() {
-        let mut thread = AgentState::new("t-1").with_message(Message::user("first"));
+        let mut thread = Thread::new("t-1").with_message(Message::user("first"));
         let p1 = thread.take_pending();
         assert_eq!(p1.messages.len(), 1);
 
@@ -339,11 +349,11 @@ mod tests {
 
     #[test]
     fn test_pending_delta_not_serialized() {
-        let thread = AgentState::new("t-1").with_message(Message::user("Hello"));
+        let thread = Thread::new("t-1").with_message(Message::user("Hello"));
         assert_eq!(thread.pending.messages.len(), 1);
 
         let json_str = serde_json::to_string(&thread).unwrap();
-        let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
         assert!(
             restored.pending.is_empty(),
             "pending should not survive serialization"
@@ -353,7 +363,7 @@ mod tests {
 
     #[test]
     fn test_pending_clone_is_independent() {
-        let thread = AgentState::new("t-1").with_message(Message::user("first"));
+        let thread = Thread::new("t-1").with_message(Message::user("first"));
         assert_eq!(thread.pending.messages.len(), 1);
 
         // Clone carries the same pending state
@@ -376,7 +386,7 @@ mod tests {
             Message::assistant("b"),
             Message::user("c"),
         ];
-        let mut thread = AgentState::new("t-1").with_messages(msgs);
+        let mut thread = Thread::new("t-1").with_messages(msgs);
         assert_eq!(thread.messages.len(), 3);
         assert_eq!(thread.pending.messages.len(), 3);
 
@@ -388,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_pending_interleaved_messages_and_patches() {
-        let mut thread = AgentState::new("t-1")
+        let mut thread = Thread::new("t-1")
             .with_message(Message::user("hello"))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("a"), json!(1))),
@@ -429,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_thread_new() {
-        let thread = AgentState::new("test-1");
+        let thread = Thread::new("test-1");
         assert_eq!(thread.id, "test-1");
         assert!(thread.resource_id.is_none());
         assert!(thread.messages.is_empty());
@@ -438,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_thread_with_resource_id() {
-        let thread = AgentState::new("t-1").with_resource_id("user-123");
+        let thread = Thread::new("t-1").with_resource_id("user-123");
         assert_eq!(thread.resource_id.as_deref(), Some("user-123"));
     }
 
@@ -446,13 +456,13 @@ mod tests {
     fn test_thread_with_run_config() {
         let mut rt = RunConfig::new();
         rt.set("user_id", "u1").unwrap();
-        let thread = AgentState::new("t-1").with_run_config(rt);
+        let thread = Thread::new("t-1").with_run_config(rt);
         assert_eq!(thread.run_config.value("user_id"), Some(&json!("u1")));
     }
 
     #[test]
     fn test_scope_is_set_once() {
-        let mut thread = AgentState::new("t-1");
+        let mut thread = Thread::new("t-1");
         thread.run_config.set("run_id", "run-1").unwrap();
         let err = thread.run_config.set("run_id", "run-2").unwrap_err();
         assert!(matches!(err, carve_state::SealedStateError::AlreadySet(key) if key == "run_id"));
@@ -462,13 +472,13 @@ mod tests {
     #[test]
     fn test_thread_with_initial_state() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state.clone());
+        let thread = Thread::with_initial_state("test-1", state.clone());
         assert_eq!(thread.state, state);
     }
 
     #[test]
     fn test_thread_with_message() {
-        let thread = AgentState::new("test-1")
+        let thread = Thread::new("test-1")
             .with_message(Message::user("Hello"))
             .with_message(Message::assistant("Hi!"));
 
@@ -479,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_thread_with_patch() {
-        let thread = AgentState::new("test-1");
+        let thread = Thread::new("test-1");
         let patch = TrackedPatch::new(Patch::new().with_op(Op::set(path!("a"), json!(1))));
 
         let thread = thread.with_patch(patch);
@@ -489,7 +499,7 @@ mod tests {
     #[test]
     fn test_thread_rebuild_state_empty() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state.clone());
+        let thread = Thread::with_initial_state("test-1", state.clone());
 
         let rebuilt = thread.rebuild_state().unwrap();
         assert_eq!(rebuilt, state);
@@ -498,7 +508,7 @@ mod tests {
     #[test]
     fn test_thread_rebuild_state_with_patches() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state)
+        let thread = Thread::with_initial_state("test-1", state)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(1))),
             ))
@@ -514,7 +524,7 @@ mod tests {
     #[test]
     fn test_thread_snapshot() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state).with_patch(TrackedPatch::new(
+        let thread = Thread::with_initial_state("test-1", state).with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         ));
 
@@ -527,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_thread_needs_snapshot() {
-        let thread = AgentState::new("test-1");
+        let thread = Thread::new("test-1");
         assert!(!thread.needs_snapshot(10));
 
         let thread = (0..10).fold(thread, |s, i| {
@@ -542,10 +552,10 @@ mod tests {
 
     #[test]
     fn test_thread_serialization() {
-        let thread = AgentState::new("test-1").with_message(Message::user("Hello"));
+        let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
         let json_str = serde_json::to_string(&thread).unwrap();
-        let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
@@ -557,14 +567,14 @@ mod tests {
     fn test_thread_serialization_skips_scope() {
         let mut rt = RunConfig::new();
         rt.set("token", "secret").unwrap();
-        let thread = AgentState::new("test-1").with_run_config(rt);
+        let thread = Thread::new("test-1").with_run_config(rt);
 
         let json_str = serde_json::to_string(&thread).unwrap();
         assert!(!json_str.contains("secret"));
         assert!(!json_str.contains("scope"));
 
         // Deserialized thread has default (empty) scope
-        let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
         assert!(!restored.run_config.contains_key("token"));
     }
 
@@ -573,14 +583,14 @@ mod tests {
         let mut rt = RunConfig::new();
         rt.set("run_id", "run-1").unwrap();
 
-        let thread = AgentState::with_initial_state("test-1", json!({"counter": 0}))
+        let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
             .with_run_config(rt)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
 
         let json_str = serde_json::to_string(&thread).unwrap();
-        let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
 
         let rebuilt = restored.rebuild_state().unwrap();
         assert_eq!(
@@ -595,18 +605,18 @@ mod tests {
 
     #[test]
     fn test_thread_serialization_includes_resource_id() {
-        let thread = AgentState::new("t-1").with_resource_id("org-42");
+        let thread = Thread::new("t-1").with_resource_id("org-42");
         let json_str = serde_json::to_string(&thread).unwrap();
         assert!(json_str.contains("org-42"));
 
-        let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+        let restored: Thread = serde_json::from_str(&json_str).unwrap();
         assert_eq!(restored.resource_id.as_deref(), Some("org-42"));
     }
 
     #[test]
     fn test_thread_replay_to() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state)
+        let thread = Thread::with_initial_state("test-1", state)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(10))),
             ))
@@ -635,7 +645,7 @@ mod tests {
     #[test]
     fn test_thread_replay_to_empty() {
         let state = json!({"counter": 0});
-        let thread = AgentState::with_initial_state("test-1", state.clone());
+        let thread = Thread::with_initial_state("test-1", state.clone());
 
         let err = thread.replay_to(0).unwrap_err();
         assert!(err
@@ -647,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_rebuild_state_with_empty_overlay() {
-        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -659,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_rebuild_state_with_overlay() {
-        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0, "name": "alice"}))
+        let thread = Thread::with_initial_state("t-1", json!({"counter": 0, "name": "alice"}))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -678,7 +688,7 @@ mod tests {
 
     #[test]
     fn test_rebuild_thread_state_ignores_overlay() {
-        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -698,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_excludes_overlay() {
-        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -741,5 +751,16 @@ mod tests {
             1,
             "overlay must survive take_patch"
         );
+    }
+
+    // --- Backward compatibility with type alias ---
+
+    #[test]
+    fn test_type_alias_backward_compat() {
+        // Verify the deprecated type aliases still work.
+        #[allow(deprecated)]
+        let _thread: AgentState = Thread::new("alias-test");
+        #[allow(deprecated)]
+        let _meta: AgentStateMetadata = ThreadMetadata::default();
     }
 }

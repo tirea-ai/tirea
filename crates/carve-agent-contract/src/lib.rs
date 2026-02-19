@@ -135,9 +135,10 @@ pub use runtime::{
     StopPolicy, StopPolicyInput, StopPolicyStats, StopReason, StreamResult, TerminationReason,
     ToolExecution, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, ToolExecutorError,
 };
+#[allow(deprecated)]
 pub use state::{
     gen_message_id, AgentChangeSet, AgentState, AgentStateMetadata, CheckpointReason, Message,
-    MessageMetadata, PendingDelta, Role, ToolCall, Version, Visibility,
+    MessageMetadata, PendingDelta, Role, Thread, ThreadMetadata, ToolCall, Version, Visibility,
 };
 pub use storage::{
     paginate_in_memory, AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,

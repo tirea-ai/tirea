@@ -7,6 +7,7 @@ pub mod transient;
 
 pub use changeset::{AgentChangeSet, CheckpointReason, Version};
 pub use message::{gen_message_id, Message, MessageMetadata, Role, ToolCall, Visibility};
-pub use model::{AgentState, AgentStateMetadata, PendingDelta};
+#[allow(deprecated)]
+pub use model::{AgentState, AgentStateMetadata, PendingDelta, Thread, ThreadMetadata};
 pub use crate::context::ActivityContext;
 pub use transient::ActivityManager;

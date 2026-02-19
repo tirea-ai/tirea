@@ -4,7 +4,7 @@
 //! flow control (pending interactions, inference error envelope).
 
 use crate::runtime::interaction::Interaction;
-use crate::state::AgentState;
+use crate::state::Thread;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 
@@ -33,13 +33,13 @@ pub struct LoopControlState {
     pub inference_error: Option<InferenceError>,
 }
 
-/// Helpers for accessing loop control state from `AgentState`.
+/// Helpers for accessing loop control state from `Thread`.
 pub trait LoopControlExt {
     /// Read pending interaction from durable control state.
     fn pending_interaction(&self) -> Option<Interaction>;
 }
 
-impl LoopControlExt for AgentState {
+impl LoopControlExt for Thread {
     fn pending_interaction(&self) -> Option<Interaction> {
         self.rebuild_state()
             .ok()
