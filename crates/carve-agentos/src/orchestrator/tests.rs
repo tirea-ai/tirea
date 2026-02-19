@@ -1734,7 +1734,7 @@ async fn execute_prepared_runs_stream() {
         .await
         .unwrap();
 
-    let run = AgentOs::execute_prepared(prepared);
+    let run = AgentOs::execute_prepared(prepared).unwrap();
     let events: Vec<_> = run.events.collect().await;
     assert!(
         events

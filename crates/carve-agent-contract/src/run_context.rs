@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 ///
 /// It does **not** hold the `Thread` itself — only the data needed for
 /// execution. The thread identity is carried as `thread_id`.
-pub struct RunContext<'a> {
-    thread_id: &'a str,
+pub struct RunContext {
+    thread_id: String,
     state: Value,
     messages: DeltaTracked<Arc<Message>>,
     patches: DeltaTracked<TrackedPatch>,
@@ -28,22 +28,22 @@ pub struct RunContext<'a> {
     doc: DocCell,
 }
 
-impl<'a> RunContext<'a> {
+impl RunContext {
     /// Build a run workspace from thread data.
     ///
-    /// - `thread_id`: borrowed thread identifier
+    /// - `thread_id`: thread identifier (owned)
     /// - `state`: already-rebuilt state (base + patches)
     /// - `messages`: initial messages (cursor set to end — no delta)
     /// - `run_config`: per-run sealed configuration
     pub fn new(
-        thread_id: &'a str,
+        thread_id: impl Into<String>,
         state: Value,
         messages: Vec<Arc<Message>>,
         run_config: RunConfig,
     ) -> Self {
         let doc = DocCell::new(state.clone());
         Self {
-            thread_id,
+            thread_id: thread_id.into(),
             state,
             messages: DeltaTracked::new(messages),
             patches: DeltaTracked::empty(),
@@ -57,9 +57,9 @@ impl<'a> RunContext<'a> {
     // Identity
     // =========================================================================
 
-    /// Thread identifier (borrowed from the owning thread).
+    /// Thread identifier.
     pub fn thread_id(&self) -> &str {
-        self.thread_id
+        &self.thread_id
     }
 
     // =========================================================================
@@ -204,9 +204,10 @@ impl<'a> RunContext<'a> {
             activity_manager,
         )
     }
+
 }
 
-impl std::fmt::Debug for RunContext<'_> {
+impl std::fmt::Debug for RunContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RunContext")
             .field("thread_id", &self.thread_id)

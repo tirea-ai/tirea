@@ -360,7 +360,7 @@ async fn run_ai_sdk_sse(
         .prepare_run(run_request, carve_agentos::orchestrator::RunScope::default())
         .await?;
     let run =
-        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
+        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone()));
     let body_stream = encoded_sse_body(run, enc, cancellation_token, Some("data: [DONE]\n\n"));
 
@@ -380,7 +380,7 @@ async fn run_ag_ui_sse(
     let cancellation_token = RunCancellationToken::new();
     let prepared = st.os.prepare_run(run_request, scope).await?;
     let run =
-        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()));
+        AgentOs::execute_prepared(prepared.with_cancellation_token(cancellation_token.clone()))?;
     let enc = AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone());
     let body_stream = encoded_sse_body(run, enc, cancellation_token, None);
 

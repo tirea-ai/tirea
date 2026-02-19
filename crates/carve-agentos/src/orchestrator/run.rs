@@ -149,22 +149,20 @@ impl AgentOs {
     }
 
     /// Execute a previously prepared run.
-    pub fn execute_prepared(prepared: PreparedRun) -> RunStream {
-        let events = run_loop_stream_with_input(
-            prepared.config,
-            LoopRunInput::new(prepared.thread).with_run_context(prepared.run_ctx),
-        );
-        RunStream {
+    pub fn execute_prepared(prepared: PreparedRun) -> Result<RunStream, AgentOsRunError> {
+        let input = LoopRunInput::new(prepared.thread)?.with_run_context(prepared.run_ctx);
+        let events = run_loop_stream_with_input(prepared.config, input);
+        Ok(RunStream {
             thread_id: prepared.thread_id,
             run_id: prepared.run_id,
             events,
-        }
+        })
     }
 
     /// Run an agent from a [`RunRequest`].
     pub async fn run_stream(&self, request: RunRequest) -> Result<RunStream, AgentOsRunError> {
         let prepared = self.prepare_run(request, RunScope::default()).await?;
-        Ok(Self::execute_prepared(prepared))
+        Ok(Self::execute_prepared(prepared)?)
     }
 
     /// Run an agent from a [`RunRequest`] with run-scoped extensions.
@@ -174,7 +172,7 @@ impl AgentOs {
         scope: RunScope,
     ) -> Result<RunStream, AgentOsRunError> {
         let prepared = self.prepare_run(request, scope).await?;
-        Ok(Self::execute_prepared(prepared))
+        Ok(Self::execute_prepared(prepared)?)
     }
 
     /// Deduplicate incoming messages against existing thread messages.
@@ -221,12 +219,10 @@ impl AgentOs {
         agent_id: &str,
         thread: AgentState,
         run_ctx: RunContext,
-    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsResolveError> {
+    ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let (cfg, tools, thread) = self.resolve(agent_id, thread)?;
         let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-        Ok(run_loop_stream_with_input(
-            cfg,
-            LoopRunInput::new(thread).with_run_context(run_ctx),
-        ))
+        let input = LoopRunInput::new(thread)?.with_run_context(run_ctx);
+        Ok(run_loop_stream_with_input(cfg, input))
     }
 }

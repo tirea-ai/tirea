@@ -124,25 +124,50 @@ pub use tool_exec::{
 
 /// Canonical loop invocation input.
 ///
-/// `state` carries persisted + runtime scope state, while `run_ctx` carries
-/// cooperative runtime controls (cancellation/state commit sink).
-#[derive(Clone, Debug)]
+/// `run_ctx` carries the run-scoped workspace (state, messages, patches, config),
+/// while `run_services` carries infrastructure (cancellation, state commit sink).
+///
+/// Internally, `thread` bridges to the legacy `AgentState`-based loop functions.
+/// It will be removed once loop internals are fully migrated to `RunContext`.
+#[derive(Debug)]
 pub struct LoopRunInput {
-    pub state: AgentState,
-    pub run_ctx: RunContext,
+    pub run_ctx: crate::contracts::RunContext,
+    pub run_services: RunServices,
+    /// Legacy bridge — the original thread for internal loop consumption.
+    pub(super) thread: AgentState,
 }
 
 impl LoopRunInput {
-    pub fn new(state: AgentState) -> Self {
-        Self {
-            state,
-            run_ctx: RunContext::default(),
-        }
+    /// Create from an `AgentState`, building both the new `RunContext` and
+    /// keeping the thread for internal loop consumption.
+    #[allow(deprecated)]
+    pub fn new(thread: AgentState) -> Result<Self, AgentLoopError> {
+        let rebuilt = thread
+            .rebuild_thread_state()
+            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+        Ok(Self {
+            run_ctx: crate::contracts::RunContext::new(
+                &thread.id,
+                rebuilt,
+                thread.messages.clone(),
+                thread.run_config.clone(),
+            ),
+            run_services: RunServices::default(),
+            thread,
+        })
     }
 
+    /// Attach run services (builder-style, backward-compatible name).
     #[must_use]
-    pub fn with_run_context(mut self, run_ctx: RunContext) -> Self {
-        self.run_ctx = run_ctx;
+    pub fn with_run_context(mut self, run_services: RunServices) -> Self {
+        self.run_services = run_services;
+        self
+    }
+
+    /// Attach run services (builder-style).
+    #[must_use]
+    pub fn with_run_services(mut self, run_services: RunServices) -> Self {
+        self.run_services = run_services;
         self
     }
 }
@@ -789,9 +814,9 @@ pub async fn run_loop_with_input(
     run_loop_with_context_provider(
         &provider,
         config,
-        input.state,
+        input.thread,
         &no_static_tools,
-        input.run_ctx,
+        input.run_services,
     )
     .await
 }
@@ -1173,9 +1198,9 @@ pub fn run_loop_stream_with_input(
     stream_runner::run_loop_stream_impl_with_provider(
         provider,
         config,
-        input.state,
+        input.thread,
         HashMap::new(),
-        input.run_ctx,
+        input.run_services,
     )
 }
 
