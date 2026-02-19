@@ -5,7 +5,7 @@ use crate::{
     SkillState, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID,
 };
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
-use carve_agent_contract::AgentState;
+use carve_agent_contract::context::ToolCallContext;
 use carve_agent_extension_permission::PermissionContextExt;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -46,7 +46,7 @@ impl Tool for SkillActivateTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_ACTIVATE_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -65,7 +65,7 @@ impl Tool for SkillActivateTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            ctx.scope_ref(),
+            Some(ctx.scope()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,
@@ -201,7 +201,7 @@ impl Tool for LoadSkillResourceTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let tool_name = SKILL_LOAD_RESOURCE_TOOL_ID;
         let key = match required_string_arg(&args, "skill", tool_name) {
             Ok(v) => v,
@@ -225,7 +225,7 @@ impl Tool for LoadSkillResourceTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            ctx.scope_ref(),
+            Some(ctx.scope()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,
@@ -342,7 +342,7 @@ impl Tool for SkillScriptTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let key = match required_string_arg(&args, "skill", SKILL_SCRIPT_TOOL_ID) {
             Ok(v) => v,
             Err(r) => return Ok(r),
@@ -374,7 +374,7 @@ impl Tool for SkillScriptTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            ctx.scope_ref(),
+            Some(ctx.scope()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,

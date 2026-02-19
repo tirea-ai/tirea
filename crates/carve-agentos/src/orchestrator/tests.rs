@@ -5,6 +5,7 @@ use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
+use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
@@ -478,7 +479,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("base_tool", json!({"ok": true})))
         }
@@ -531,7 +532,7 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success(self.0, json!({"ok": true})))
         }
@@ -687,7 +688,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
                 "prompt": "hi",
                 "background": true
             }),
-            &ctx_first,
+            &ctx_first.as_tool_call_context(),
         )
         .await
         .expect("execute first run tool");
@@ -712,7 +713,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
                 "prompt": "hi",
                 "background": false
             }),
-            &ctx_second,
+            &ctx_second.as_tool_call_context(),
         )
         .await
         .expect("execute second run tool");
@@ -842,7 +843,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
 
     let ctx_first = ContextAgentState::new_transient(&doc, "call-skill-1", "tool:skill");
     let first_result = activate_first
-        .execute(json!({"skill": "s1"}), &ctx_first)
+        .execute(json!({"skill": "s1"}), &ctx_first.as_tool_call_context())
         .await
         .expect("execute first skill tool");
     assert!(
@@ -858,7 +859,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .expect("skill activate tool should exist");
     let ctx_second = ContextAgentState::new_transient(&doc, "call-skill-2", "tool:skill");
     let second_result = activate_second
-        .execute(json!({"skill": "s1"}), &ctx_second)
+        .execute(json!({"skill": "s1"}), &ctx_second.as_tool_call_context())
         .await
         .expect("execute second skill tool");
     assert!(
@@ -1015,7 +1016,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("skill", json!({"ok": true})))
         }
@@ -1076,7 +1077,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("agent_run", json!({"ok": true})))
         }
@@ -1962,7 +1963,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("frontend_action", json!({})))
         }
@@ -2021,7 +2022,7 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("agent_run", json!({})))
         }
@@ -2186,7 +2187,7 @@ impl Tool for BundleTestTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success("dup_tool", json!({"ok": true})))
     }

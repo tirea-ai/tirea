@@ -162,7 +162,7 @@ async fn agent_run_tool_requires_scope_context() {
     let result = tool
         .execute(
             json!({"agent_id":"worker","prompt":"hi","background":false}),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -195,7 +195,7 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -274,7 +274,7 @@ async fn background_stop_then_resume_completes() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -289,7 +289,7 @@ async fn background_stop_then_resume_completes() {
         crate::contracts::AgentState::new_transient(&doc, "call-stop", "tool:agent_stop")
             .with_transient_scope(Some(&rt));
     let stopped = stop_tool
-        .execute(json!({ "run_id": run_id.clone() }), &stop_ctx)
+        .execute(json!({ "run_id": run_id.clone() }), &stop_ctx.as_tool_call_context())
         .await
         .unwrap();
     assert_eq!(stopped.status, ToolStatus::Success);
@@ -305,7 +305,7 @@ async fn background_stop_then_resume_completes() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -411,7 +411,7 @@ async fn agent_run_tool_persists_run_state_patch() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -457,7 +457,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -530,7 +530,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -576,7 +576,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -644,7 +644,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
                 "run_id":"run-1",
                 "background": false
             }),
-            &ctx,
+            &ctx.as_tool_call_context(),
         )
         .await
         .unwrap();
@@ -729,7 +729,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
     let ctx = crate::contracts::AgentState::new_transient(&doc, "call-stop", "tool:agent_stop")
         .with_transient_scope(Some(&rt));
     let result = stop_tool
-        .execute(json!({ "run_id": parent_run_id }), &ctx)
+        .execute(json!({ "run_id": parent_run_id }), &ctx.as_tool_call_context())
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);

@@ -114,7 +114,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &crate::contracts::AgentState,
+            _ctx: &crate::contracts::ToolCallContext<'_>,
         ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
             Ok(ToolResult::success("mock", json!({"result": "ok"})))
         }
@@ -234,7 +234,7 @@ mod tests {
             async fn execute(
                 &self,
                 _: serde_json::Value,
-                _: &crate::contracts::AgentState,
+                _: &crate::contracts::ToolCallContext<'_>,
             ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
                 Ok(ToolResult::success("tool1", json!({})))
             }
@@ -248,7 +248,7 @@ mod tests {
             async fn execute(
                 &self,
                 _: serde_json::Value,
-                _: &crate::contracts::AgentState,
+                _: &crate::contracts::ToolCallContext<'_>,
             ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
                 Ok(ToolResult::success("tool2", json!({})))
             }
@@ -262,7 +262,7 @@ mod tests {
             async fn execute(
                 &self,
                 _: serde_json::Value,
-                _: &crate::contracts::AgentState,
+                _: &crate::contracts::ToolCallContext<'_>,
             ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
                 Ok(ToolResult::success("tool3", json!({})))
             }

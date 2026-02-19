@@ -10,6 +10,7 @@ use carve_agentos::contracts::storage::{
     AgentStateStoreError, AgentStateWriter, Committed,
 };
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::contracts::AgentChangeSet;
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
@@ -85,7 +86,7 @@ impl Tool for EchoTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agentos::contracts::AgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let message = args
             .get("message")

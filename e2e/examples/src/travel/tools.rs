@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agentos::contracts::AgentState;
+use carve_agentos::contracts::ToolCallContext;
 use serde_json::{json, Value};
 
 use super::state::{Place, SearchProgress, TravelState, Trip};
@@ -37,7 +37,7 @@ impl Tool for AddTripTool {
             .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let raw_trips = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -96,7 +96,7 @@ impl Tool for UpdateTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let updates = args["trips"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trips' array".into()))?;
@@ -155,7 +155,7 @@ impl Tool for DeleteTripTool {
         .with_confirmation(true)
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let ids: Vec<&str> = args["trip_ids"]
             .as_array()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_ids' array".into()))?
@@ -207,7 +207,7 @@ impl Tool for SelectTripTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let trip_id = args["trip_id"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'trip_id'".into()))?;
@@ -256,7 +256,7 @@ impl Tool for SearchPlacesTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let destination = args["destination"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'destination'".into()))?;

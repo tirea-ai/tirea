@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use carve_agent_contract::runtime::{AgentEvent, RunRequest};
 use carve_agent_contract::state::Message;
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent_contract::ToolCallContext;
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::AgentOs;
 use futures::StreamExt;
@@ -67,7 +68,7 @@ impl Tool for OpenMeteoWeatherTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agent_contract::AgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let city = args
             .get("city")

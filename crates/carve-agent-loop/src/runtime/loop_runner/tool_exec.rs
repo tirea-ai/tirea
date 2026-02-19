@@ -752,7 +752,7 @@ pub(super) async fn execute_single_tool_with_phases(
         );
         let result = match tool
             .unwrap()
-            .execute(call.arguments.clone(), &tool_ctx)
+            .execute(call.arguments.clone(), &tool_ctx.as_tool_call_context())
             .await
         {
             Ok(r) => r,

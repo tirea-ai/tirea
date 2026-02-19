@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::ToolCallContext;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -34,7 +35,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agentos::contracts::AgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let op = args["operation"]
             .as_str()

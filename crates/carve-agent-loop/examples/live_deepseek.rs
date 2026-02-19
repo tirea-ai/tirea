@@ -12,7 +12,7 @@ use carve_agent_loop::contracts::state::AgentState as ConversationAgentState;
 use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_loop::contracts::AgentState;
+use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError, RunContext,
 };
@@ -48,7 +48,7 @@ impl Tool for CalculatorTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'expression'".to_string()))?;
@@ -130,7 +130,7 @@ impl Tool for WeatherTool {
         }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let city = args["city"].as_str().unwrap_or("Unknown");
         // Simulate weather data
         Ok(ToolResult::success(
@@ -176,7 +176,7 @@ impl Tool for UnreliableTool {
             }))
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let query = args["query"].as_str().unwrap_or("unknown");
         let count = self.fail_count.fetch_add(1, Ordering::SeqCst);
 
@@ -218,7 +218,7 @@ impl Tool for InfiniteLoopTool {
         )
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let component = args["component"].as_str().unwrap_or("unknown");
         // Always return "needs more checks" to trigger max_rounds
         Ok(ToolResult::success(
@@ -256,7 +256,7 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;

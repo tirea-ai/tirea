@@ -2,7 +2,7 @@
 //!
 //! Tools execute actions and can modify state through `AgentState`.
 
-use crate::AgentState;
+use crate::context::ToolCallContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -239,7 +239,7 @@ impl ToolDescriptor {
 ///
 /// ```ignore
 /// use carve_agent::contracts::tool::{Tool, ToolDescriptor, ToolResult};
-/// use carve_agent::prelude::AgentState;
+/// use carve_agent::contracts::context::ToolCallContext;
 /// use carve_state::State;
 ///
 /// #[derive(State)]
@@ -258,7 +258,7 @@ impl ToolDescriptor {
 ///     async fn execute(
 ///         &self,
 ///         args: Value,
-///         ctx: &AgentState,
+///         ctx: &ToolCallContext<'_>,
 ///     ) -> Result<ToolResult, ToolError> {
 ///         let state = ctx.call_state::<MyToolState>();
 ///         let current = state.count().unwrap_or(0);
@@ -279,14 +279,14 @@ pub trait Tool: Send + Sync {
     /// # Arguments
     ///
     /// - `args`: Tool arguments as JSON value
-    /// - `ctx`: AgentState for state access (framework extracts patch after execution).
+    /// - `ctx`: Execution context for state access (framework extracts patch after execution).
     ///   `ctx.idempotency_key()` is the current `tool_call_id`.
     ///   Tools should use it as the idempotency key for side effects.
     ///
     /// # Returns
     ///
     /// Tool result or error
-    async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError>;
 }
 
 #[cfg(test)]

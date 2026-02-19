@@ -6,6 +6,7 @@ use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
+use crate::contracts::ToolCallContext;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use carve_agent_extension_interaction::InteractionOutbox;
@@ -44,7 +45,7 @@ impl Tool for EchoTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let msg = args["message"].as_str().unwrap_or("no message");
         Ok(ToolResult::success("echo", json!({ "echoed": msg })))
@@ -75,7 +76,7 @@ impl Tool for CountingEchoTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let msg = args["message"].as_str().unwrap_or("no message");
@@ -101,9 +102,9 @@ impl Tool for ScopeSnapshotTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &ContextAgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let rt = ctx.scope_ref().expect("scope should exist");
+        let rt = ctx.scope();
         let thread_id = rt
             .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
             .and_then(|v| v.as_str())
@@ -146,7 +147,7 @@ impl Tool for ActivityGateTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &ContextAgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let activity = ctx.activity(self.stream_id.clone(), "progress");
         let progress = activity.state::<ActivityProgressState>("");
@@ -607,7 +608,7 @@ impl Tool for CounterTool {
         }))
     }
 
-    async fn execute(&self, args: Value, ctx: &ContextAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let amount = args["amount"].as_i64().unwrap_or(1);
 
         let state = ctx.state::<TestCounterState>("");
@@ -686,7 +687,7 @@ impl Tool for FailingTool {
     async fn execute(
         &self,
         _args: Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed(
             "Intentional failure".to_string(),
@@ -4814,7 +4815,7 @@ async fn test_stop_on_tool_condition() {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &ContextAgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("finish_tool", json!({"done": true})))
         }

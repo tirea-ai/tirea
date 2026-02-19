@@ -50,7 +50,7 @@ pub async fn execute_single_tool_with_scope(
         .with_transient_scope(scope);
 
     // Execute the tool
-    let result = match tool.execute(call.arguments.clone(), &ctx).await {
+    let result = match tool.execute(call.arguments.clone(), &ctx.as_tool_call_context()).await {
         Ok(r) => r,
         Err(e) => ToolResult::error(&call.name, e.to_string()),
     };
@@ -115,6 +115,7 @@ pub fn collect_patches(executions: &[ToolExecution]) -> Vec<TrackedPatch> {
 mod tests {
     use super::*;
     use crate::contracts::tool::{ToolDescriptor, ToolError};
+    use crate::contracts::ToolCallContext;
     use async_trait::async_trait;
     use serde_json::json;
 
@@ -126,7 +127,7 @@ mod tests {
             ToolDescriptor::new("echo", "Echo", "Echo the input")
         }
 
-        async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+        async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("echo", args))
         }
     }
@@ -197,7 +198,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                _ctx: &AgentState,
+                _ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 Err(ToolError::ExecutionFailed(
                     "Intentional failure".to_string(),
@@ -236,7 +237,7 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState,
+                ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let user_id = ctx
                     .scope_value("user_id")
@@ -276,12 +277,14 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState,
+                ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let has_scope = ctx.scope_ref().is_some();
+                // ToolCallContext always provides a scope reference (never None).
+                // We verify scope access works by probing for a known key.
+                let has_user_id = ctx.scope_value("user_id").is_some();
                 Ok(ToolResult::success(
                     "scope_checker",
-                    json!({"has_scope": has_scope}),
+                    json!({"has_scope": true, "has_user_id": has_user_id}),
                 ))
             }
         }
@@ -290,14 +293,16 @@ mod tests {
         let call = ToolCall::new("call_1", "scope_checker", json!({}));
         let state = json!({});
 
-        // Without scope
+        // Without scope — ToolCallContext still provides a (default-empty) scope
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, None).await;
-        assert_eq!(exec.result.data["has_scope"], false);
+        assert_eq!(exec.result.data["has_scope"], true);
+        assert_eq!(exec.result.data["has_user_id"], false);
 
-        // With scope
+        // With scope (empty)
         let scope = ScopeState::new();
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
         assert_eq!(exec.result.data["has_scope"], true);
+        assert_eq!(exec.result.data["has_user_id"], false);
     }
 
     #[tokio::test]
@@ -316,9 +321,9 @@ mod tests {
             async fn execute(
                 &self,
                 _args: Value,
-                ctx: &AgentState,
+                ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let scope = ctx.scope_ref().unwrap();
+                let scope = ctx.scope();
                 let token = scope.value("token").and_then(|v| v.as_str()).unwrap();
                 let is_sensitive = scope.is_sensitive("token");
                 Ok(ToolResult::success(

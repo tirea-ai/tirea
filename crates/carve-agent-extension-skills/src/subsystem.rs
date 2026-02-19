@@ -159,7 +159,7 @@ mod tests {
         };
 
         let ctx = ContextAgentState::new_transient(state, &call.id, format!("tool:{}", call.name));
-        let result = match tool.execute(call.arguments.clone(), &ctx).await {
+        let result = match tool.execute(call.arguments.clone(), &ctx.as_tool_call_context()).await {
             Ok(r) => r,
             Err(e) => ToolResult::error(&call.name, e.to_string()),
         };
@@ -185,7 +185,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &ContextAgentState,
+            _ctx: &carve_agent_contract::context::ToolCallContext<'_>,
         ) -> Result<carve_agent_contract::tool::ToolResult, carve_agent_contract::tool::ToolError>
         {
             Ok(carve_agent_contract::tool::ToolResult::success(
@@ -255,7 +255,7 @@ mod tests {
         async fn execute(
             &self,
             _args: Value,
-            _ctx: &ContextAgentState,
+            _ctx: &carve_agent_contract::context::ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success("other", json!({})))
         }

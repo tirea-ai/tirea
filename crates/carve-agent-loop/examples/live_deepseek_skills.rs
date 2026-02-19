@@ -16,7 +16,7 @@ use carve_agent_loop::contracts::runtime::AgentEvent;
 use carve_agent_loop::contracts::state::AgentState as ConversationAgentState;
 use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_loop::contracts::AgentState as RuntimeAgentState;
+use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
 };
@@ -56,7 +56,7 @@ impl Tool for CalculatorTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &RuntimeAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let expr = args["expression"]
             .as_str()
@@ -121,7 +121,7 @@ impl Tool for CounterTool {
             }))
     }
 
-    async fn execute(&self, args: Value, ctx: &RuntimeAgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| ToolError::InvalidArguments("Missing 'action'".to_string()))?;

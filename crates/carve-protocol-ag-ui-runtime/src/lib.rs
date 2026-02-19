@@ -10,6 +10,7 @@ use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
 use carve_agentos::contracts::runtime::Interaction;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::AgentState as RuntimeAgentState;
+use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::orchestrator::{InMemoryToolRegistry, RunScope, ToolRegistry};
 use carve_protocol_ag_ui::{build_context_addendum, RunAgentRequest};
@@ -88,7 +89,7 @@ impl Tool for FrontendToolStub {
     async fn execute(
         &self,
         _args: Value,
-        _ctx: &RuntimeAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::error(
             &self.descriptor.id,

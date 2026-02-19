@@ -35,16 +35,6 @@ pub(super) fn as_agent_run_summary(run_id: &str, state: &DelegationRecord) -> Ag
     }
 }
 
-pub(super) fn set_persisted_run(ctx: &AgentState, run_id: &str, run: DelegationRecord) {
-    let agent = ctx.state_of::<DelegationState>();
-    agent.runs_insert(run_id.to_string(), run);
-}
-
-pub(super) fn parse_persisted_runs(ctx: &AgentState) -> HashMap<String, DelegationRecord> {
-    let agent = ctx.state_of::<DelegationState>();
-    agent.runs().ok().unwrap_or_default()
-}
-
 pub(super) fn parse_persisted_runs_from_doc(doc: &Value) -> HashMap<String, DelegationRecord> {
     doc.get(DelegationState::PATH)
         .and_then(|v| v.get("runs"))

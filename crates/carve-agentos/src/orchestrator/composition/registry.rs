@@ -730,7 +730,7 @@ impl ModelRegistry for CompositeModelRegistry {
 mod tests {
     use super::*;
     use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
-    use crate::contracts::AgentState;
+    use crate::contracts::ToolCallContext;
     use serde_json::json;
 
     struct StaticTool {
@@ -754,7 +754,7 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-            _ctx: &AgentState,
+            _ctx: &ToolCallContext<'_>,
         ) -> Result<ToolResult, ToolError> {
             Ok(ToolResult::success(
                 self.descriptor.id.clone(),

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_contract::AgentState;
+use carve_agent_contract::ToolCallContext;
 use carve_agent_contract::ToolRegistry;
 use mcp::transport::{McpServerConnectionConfig, McpTransport, McpTransportError, TransportTypeId};
 use mcp::transport_factory::TransportFactory;
@@ -134,7 +134,7 @@ impl Tool for McpTool {
         self.descriptor()
     }
 
-    async fn execute(&self, args: Value, _ctx: &AgentState) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, args: Value, _ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError> {
         let res = self
             .transport
             .call_tool(&self.tool_name, args)
@@ -607,15 +607,14 @@ mod tests {
         assert!(desc.metadata.contains_key("mcp.server"));
         assert!(desc.metadata.contains_key("mcp.tool"));
 
+        let state = carve_agent_contract::AgentState::new_transient(
+            &serde_json::json!({}),
+            "call",
+            "test",
+        );
+        let ctx = state.as_tool_call_context();
         let res = tool
-            .execute(
-                serde_json::json!({"a": 1}),
-                &carve_agent_contract::AgentState::new_transient(
-                    &serde_json::json!({}),
-                    "call",
-                    "test",
-                ),
-            )
+            .execute(serde_json::json!({"a": 1}), &ctx)
             .await
             .unwrap();
         assert!(res.is_success());

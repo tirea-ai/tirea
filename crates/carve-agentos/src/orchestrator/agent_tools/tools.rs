@@ -1,4 +1,5 @@
 use super::*;
+use crate::contracts::ToolCallContext;
 
 fn to_tool_result(tool_name: &str, summary: AgentRunSummary) -> ToolResult {
     ToolResult::success(
@@ -172,20 +173,21 @@ impl AgentRunTool {
 
     async fn persist_existing_live_summary(
         &self,
-        ctx: &AgentState,
+        ctx: &ToolCallContext<'_>,
         owner_thread_id: &str,
         run_id: &str,
         summary: AgentRunSummary,
         tool_name: &str,
     ) -> ToolResult {
         let thread = self.manager.owned_record(owner_thread_id, run_id).await;
-        set_persisted_run(ctx, run_id, as_delegation_record(&summary, thread));
+        let agent = ctx.state_of::<DelegationState>();
+        agent.runs_insert(run_id.to_string(), as_delegation_record(&summary, thread));
         to_tool_result(tool_name, summary)
     }
 
     async fn launch_run(
         &self,
-        ctx: &AgentState,
+        ctx: &ToolCallContext<'_>,
         launch: RunLaunch,
         background: bool,
         tool_name: &str,
@@ -234,7 +236,7 @@ impl AgentRunTool {
                 error: None,
                 agent_state: Some(thread),
             };
-            set_persisted_run(ctx, &run_id, running.clone());
+            ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), running.clone());
             return to_tool_result(tool_name, as_agent_run_summary(&run_id, &running));
         }
 
@@ -265,7 +267,7 @@ impl AgentRunTool {
             .update_after_completion(&run_id, epoch, completion)
             .await
             .unwrap_or_else(|| as_agent_run_summary(&run_id, &completion_state));
-        set_persisted_run(ctx, &run_id, completion_state);
+        ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), completion_state);
         to_tool_result(tool_name, summary)
     }
 }
@@ -293,15 +295,15 @@ impl Tool for AgentRunTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
         let tool_name = AGENT_RUN_TOOL_ID;
         let run_id = optional_string(&args, "run_id");
         let background = required_bool(&args, "background", false);
         let fork_context = required_bool(&args, "fork_context", false);
 
-        let scope = ctx.scope_ref();
-        let owner_thread_id = scope_string(scope, SCOPE_CALLER_SESSION_ID_KEY);
+        let scope = ctx.scope();
+        let owner_thread_id = scope_string(Some(scope), SCOPE_CALLER_SESSION_ID_KEY);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
                 tool_name,
@@ -309,8 +311,8 @@ impl Tool for AgentRunTool {
                 "missing caller thread context",
             ));
         };
-        let caller_agent_id = scope_string(scope, SCOPE_CALLER_AGENT_ID_KEY);
-        let caller_run_id = scope_run_id(scope);
+        let caller_agent_id = scope_string(Some(scope), SCOPE_CALLER_AGENT_ID_KEY);
+        let caller_run_id = scope_run_id(Some(scope));
 
         if let Some(run_id) = run_id {
             if let Some(existing) = self
@@ -344,7 +346,7 @@ impl Tool for AgentRunTool {
                         if let Err(error) = self.ensure_target_visible(
                             &record.target_agent_id,
                             caller_agent_id.as_deref(),
-                            scope,
+                            Some(scope),
                             tool_name,
                         ) {
                             return Ok(error);
@@ -372,7 +374,7 @@ impl Tool for AgentRunTool {
                 }
             }
 
-            let Some(mut persisted) = parse_persisted_runs(ctx).remove(&run_id) else {
+            let Some(mut persisted) = ctx.state_of::<DelegationState>().runs().ok().unwrap_or_default().remove(&run_id) else {
                 return Ok(tool_error(
                     tool_name,
                     "unknown_run",
@@ -383,7 +385,7 @@ impl Tool for AgentRunTool {
             let orphaned_running = persisted.status == DelegationStatus::Running;
             if orphaned_running {
                 persisted = make_orphaned_running_state(&persisted);
-                set_persisted_run(ctx, &run_id, persisted.clone());
+                ctx.state_of::<DelegationState>().runs_insert(run_id.to_string(), persisted.clone());
                 return Ok(to_tool_result(
                     tool_name,
                     as_agent_run_summary(&run_id, &persisted),
@@ -401,7 +403,7 @@ impl Tool for AgentRunTool {
                     if let Err(error) = self.ensure_target_visible(
                         &persisted.target_agent_id,
                         caller_agent_id.as_deref(),
-                        scope,
+                        Some(scope),
                         tool_name,
                     ) {
                         return Ok(error);
@@ -454,7 +456,7 @@ impl Tool for AgentRunTool {
         if let Err(error) = self.ensure_target_visible(
             &target_agent_id,
             caller_agent_id.as_deref(),
-            scope,
+            Some(scope),
             tool_name,
         ) {
             return Ok(error);
@@ -465,12 +467,12 @@ impl Tool for AgentRunTool {
 
         let mut child_thread = if fork_context {
             let fork_state = scope
-                .and_then(|scope: &carve_state::ScopeState| scope.value(SCOPE_CALLER_STATE_KEY))
+                .value(SCOPE_CALLER_STATE_KEY)
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let mut forked =
                 crate::contracts::state::AgentState::with_initial_state(thread_id, fork_state);
-            if let Some(messages) = parse_caller_messages(scope) {
+            if let Some(messages) = parse_caller_messages(Some(scope)) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
@@ -527,7 +529,7 @@ impl Tool for AgentStopTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, crate::contracts::tool::ToolError> {
         let tool_name = AGENT_STOP_TOOL_ID;
         let run_id = match required_string(&args, "run_id", tool_name) {
@@ -535,8 +537,8 @@ impl Tool for AgentStopTool {
             Err(r) => return Ok(r),
         };
         let owner_thread_id = ctx
-            .scope_ref()
-            .and_then(|scope: &carve_state::ScopeState| scope.value(SCOPE_CALLER_SESSION_ID_KEY))
+            .scope()
+            .value(SCOPE_CALLER_SESSION_ID_KEY)
             .and_then(|v: &serde_json::Value| v.as_str())
             .map(|v: &str| v.to_string());
         let Some(owner_thread_id) = owner_thread_id else {
@@ -547,7 +549,7 @@ impl Tool for AgentStopTool {
             ));
         };
 
-        let mut persisted_runs = parse_persisted_runs(ctx);
+        let mut persisted_runs = ctx.state_of::<DelegationState>().runs().ok().unwrap_or_default();
         let mut tree_ids = collect_descendant_run_ids_from_state(&persisted_runs, &run_id, true);
         if tree_ids.is_empty() {
             tree_ids.push(run_id.clone());
@@ -589,7 +591,7 @@ impl Tool for AgentStopTool {
                 *run = stopped;
             }
             stopped_any = true;
-            set_persisted_run(ctx, id, run.clone());
+            ctx.state_of::<DelegationState>().runs_insert(id.to_string(), run.clone());
         }
 
         if !stopped_any {

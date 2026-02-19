@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use carve_agentos::contracts::runtime::InteractionResponse;
 use carve_agentos::contracts::state::AgentState as ConversationAgentState;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::extensions::interaction::{ContextCategory, ContextProvider};
 use carve_agentos::extensions::reminder::SystemReminder;
@@ -66,7 +67,7 @@ impl Tool for IncrementTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let path = args["path"]
             .as_str()
@@ -94,7 +95,7 @@ impl Tool for AddTaskTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let item = args["item"]
             .as_str()
@@ -123,7 +124,7 @@ impl Tool for UpdateCallStateTool {
     async fn execute(
         &self,
         args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let label = args["label"].as_str().unwrap_or("updated");
 
@@ -221,7 +222,7 @@ async fn test_tool_basic_execution() {
     );
 
     let result = tool
-        .execute(json!({"path": "counter"}), &ctx)
+        .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
         .await
         .unwrap();
 
@@ -253,7 +254,7 @@ async fn test_tool_multiple_executions() {
         );
 
         let result = tool
-            .execute(json!({"path": "counter"}), &ctx)
+            .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
             .await
             .unwrap();
 
@@ -286,7 +287,7 @@ async fn test_tool_with_call_state() {
             "tool:update_call",
         );
 
-        let result = tool.execute(json!({"label": "step1"}), &ctx).await.unwrap();
+        let result = tool.execute(json!({"label": "step1"}), &ctx.as_tool_call_context()).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 1);
@@ -303,7 +304,7 @@ async fn test_tool_with_call_state() {
             "tool:update_call",
         );
 
-        let result = tool.execute(json!({"label": "step2"}), &ctx).await.unwrap();
+        let result = tool.execute(json!({"label": "step2"}), &ctx.as_tool_call_context()).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 2);
@@ -329,7 +330,7 @@ async fn test_tool_error_handling() {
     );
 
     // Missing required argument
-    let result = tool.execute(json!({}), &ctx).await;
+    let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
     assert!(result.is_err());
 
     match result {
@@ -547,7 +548,7 @@ async fn test_full_tool_workflow() {
         );
 
         let result = tool
-            .execute(json!({"item": format!("Task {}", i)}), &ctx)
+            .execute(json!({"item": format!("Task {}", i)}), &ctx.as_tool_call_context())
             .await
             .unwrap();
 
@@ -596,7 +597,7 @@ async fn test_tool_provider_reminder_integration() {
             "tool:increment",
         );
         let _ = increment_tool
-            .execute(json!({"path": "counter"}), &ctx)
+            .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
             .await
             .unwrap();
         manager.commit(ctx.take_patch()).await.unwrap();
@@ -611,7 +612,7 @@ async fn test_tool_provider_reminder_integration() {
             "tool:add_task",
         );
         let _ = task_tool
-            .execute(json!({"item": "New task"}), &ctx)
+            .execute(json!({"item": "New task"}), &ctx.as_tool_call_context())
             .await
             .unwrap();
         manager.commit(ctx.take_patch()).await.unwrap();
@@ -1531,7 +1532,7 @@ impl Tool for SlowTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
 
@@ -1555,7 +1556,7 @@ async fn test_tool_execution_with_timeout() {
     // Execute with timeout
     let result = tokio::time::timeout(
         tokio::time::Duration::from_millis(100),
-        tool.execute(json!({}), &ctx),
+        tool.execute(json!({}), &ctx.as_tool_call_context()),
     )
     .await;
 
@@ -1578,7 +1579,7 @@ async fn test_tool_timeout_exceeded() {
     // Execute with short timeout
     let result = tokio::time::timeout(
         tokio::time::Duration::from_millis(50),
-        tool.execute(json!({}), &ctx),
+        tool.execute(json!({}), &ctx.as_tool_call_context()),
     )
     .await;
 
@@ -1607,18 +1608,18 @@ async fn test_multiple_tools_with_varying_timeouts() {
 
     // Fast - should complete
     let ctx = carve_agentos::contracts::AgentState::new_transient(&snapshot, "fast", "tool:fast");
-    let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &ctx)).await;
+    let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
     assert!(fast_result.is_ok());
 
     // Medium - should complete
     let ctx =
         carve_agentos::contracts::AgentState::new_transient(&snapshot, "medium", "tool:medium");
-    let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &ctx)).await;
+    let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
     assert!(medium_result.is_ok());
 
     // Slow - should timeout
     let ctx = carve_agentos::contracts::AgentState::new_transient(&snapshot, "slow", "tool:slow");
-    let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &ctx)).await;
+    let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
     assert!(slow_result.is_err());
 }
 
@@ -1772,7 +1773,7 @@ impl Tool for NetworkErrorTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let count = self
             .fail_count
@@ -1805,21 +1806,21 @@ async fn test_tool_network_error_retry() {
     let snapshot = manager.snapshot().await;
     let ctx =
         carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_1", "tool:network");
-    let result1 = tool.execute(json!({}), &ctx).await;
+    let result1 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
     assert!(result1.is_err());
 
     // Attempt 2 - fails
     let snapshot = manager.snapshot().await;
     let ctx =
         carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_2", "tool:network");
-    let result2 = tool.execute(json!({}), &ctx).await;
+    let result2 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
     assert!(result2.is_err());
 
     // Attempt 3 - succeeds
     let snapshot = manager.snapshot().await;
     let ctx =
         carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_3", "tool:network");
-    let result3 = tool.execute(json!({}), &ctx).await;
+    let result3 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
     assert!(result3.is_ok());
 
     // Apply successful patch
@@ -1844,7 +1845,7 @@ async fn test_tool_error_does_not_corrupt_state() {
             "tool:network",
         );
 
-        let result = tool.execute(json!({}), &ctx).await;
+        let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
         assert!(result.is_err());
 
         // Don't apply patch from failed execution
@@ -2547,7 +2548,7 @@ impl Tool for NestedStateTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         // Modify deeply nested state
         let nested = ctx.state::<NestedState>("deeply.nested");
@@ -2956,7 +2957,7 @@ impl Tool for ReadOnlyTool {
     async fn execute(
         &self,
         _args: Value,
-        ctx: &carve_agentos::contracts::AgentState,
+        ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         // Only read, don't modify
         let counter = ctx.state::<CounterState>("counter");
@@ -3618,7 +3619,7 @@ async fn test_e2e_context_provider_integration() {
         "tool:increment",
     );
     let result = tool
-        .execute(json!({"path": "counter"}), &ctx)
+        .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
         .await
         .unwrap();
 
@@ -3786,7 +3787,7 @@ impl Tool for ConfirmationTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agentos::contracts::AgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let confirmed = args["confirmed"].as_bool().unwrap_or(false);
 
@@ -3816,7 +3817,7 @@ impl Tool for PartialSuccessTool {
     async fn execute(
         &self,
         args: Value,
-        _ctx: &carve_agentos::contracts::AgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         let items = args["items"].as_array().map(|a| a.len()).unwrap_or(0);
 
@@ -3852,7 +3853,7 @@ async fn test_e2e_tool_pending_status() {
         carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_1", "tool:dangerous");
 
     // First call without confirmation
-    let result = tool.execute(json!({}), &ctx).await.unwrap();
+    let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await.unwrap();
 
     assert!(result.is_pending());
     assert!(!result.is_success());
@@ -3861,7 +3862,7 @@ async fn test_e2e_tool_pending_status() {
 
     // Second call with confirmation
     let result = tool
-        .execute(json!({"confirmed": true}), &ctx)
+        .execute(json!({"confirmed": true}), &ctx.as_tool_call_context())
         .await
         .unwrap();
 
@@ -3879,7 +3880,7 @@ async fn test_e2e_tool_warning_status() {
 
     // Process 10 items (80% success = 8 success, 2 failed)
     let result = tool
-        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx)
+        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx.as_tool_call_context())
         .await
         .unwrap();
 

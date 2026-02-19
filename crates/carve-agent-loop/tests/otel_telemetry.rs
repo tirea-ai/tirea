@@ -6,7 +6,7 @@ use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
 use carve_agent_loop::contracts::state::AgentState;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_loop::contracts::AgentState as ContextAgentState;
+use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
     execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
 };
@@ -121,7 +121,7 @@ impl Tool for NoopTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         Ok(ToolResult::success(self.id, json!({"ok": true})))
     }
@@ -140,7 +140,7 @@ impl Tool for ErrorTool {
     async fn execute(
         &self,
         _args: serde_json::Value,
-        _ctx: &ContextAgentState,
+        _ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
         Err(ToolError::ExecutionFailed(format!(
             "{} exploded",
