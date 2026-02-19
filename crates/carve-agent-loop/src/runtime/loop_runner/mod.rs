@@ -467,7 +467,7 @@ pub(super) fn prepare_tool_execution_context(
     config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let run_config = scope_with_tool_caller_context(run_ctx, &state, config)?;
     let run_patch = run_ctx.run_patch();

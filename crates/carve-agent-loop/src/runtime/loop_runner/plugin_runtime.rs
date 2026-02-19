@@ -119,7 +119,7 @@ where
     Extract: FnOnce(&mut StepContext<'_>) -> R,
 {
     let current_state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let doc = DocCell::new(current_state);
     let ops = Mutex::new(Vec::new());
@@ -176,7 +176,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
     message: String,
 ) -> Result<(), AgentLoopError> {
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let set_error_patch = set_agent_inference_error(
         &state,
@@ -198,7 +198,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
     run_ctx.add_thread_patches(pending);
 
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let clear_error_patch = clear_agent_inference_error(&state);
     run_ctx.add_thread_patch(clear_error_patch);
@@ -215,7 +215,7 @@ pub(super) async fn emit_run_end_phase(
     plugins: &[Arc<dyn AgentPlugin>],
 ) {
     let pending = {
-        let current_state = match run_ctx.state() {
+        let current_state = match run_ctx.snapshot() {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "RunEndPhase(RunEnd): failed to rebuild state");

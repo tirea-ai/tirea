@@ -31,7 +31,7 @@ async fn drain_run_start_outbox_and_replay(
 
     let mut replay_state_changed = false;
     for tool_call in &replay_calls {
-        let state = run_ctx.state().map_err(|e| {
+        let state = run_ctx.snapshot().map_err(|e| {
             format!(
                 "failed to rebuild state before replaying tool '{}': {e}",
                 tool_call.id
@@ -97,7 +97,7 @@ async fn drain_run_start_outbox_and_replay(
 
     // Clear pending_interaction state after replaying tools.
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
     let clear_patch = clear_agent_pending_interaction(&state);
     if !clear_patch.patch().is_empty() {
@@ -107,7 +107,7 @@ async fn drain_run_start_outbox_and_replay(
 
     if replay_state_changed {
         let snapshot = run_ctx
-            .state()
+            .snapshot()
             .map_err(|e| format!("failed to rebuild replay snapshot: {e}"))?;
         events.push(AgentEvent::StateSnapshot { snapshot });
     }

@@ -368,7 +368,7 @@ async fn test_multi_skill(
     println!("Turn 2 - Assistant: {response}");
 
     // Summary
-    let final_state = outcome.run_ctx.state()?;
+    let final_state = outcome.run_ctx.snapshot()?;
     println!("\nSession summary:");
     println!("  Total messages: {}", outcome.run_ctx.messages().len());
     println!("  Total patches: {}", outcome.run_ctx.thread_patches().len());

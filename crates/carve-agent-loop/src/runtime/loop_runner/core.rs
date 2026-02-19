@@ -120,7 +120,7 @@ pub(super) fn drain_agent_outbox(
     _call_id: &str,
 ) -> Result<AgentOutboxDrain, AgentLoopError> {
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let interaction_resolutions = match state
@@ -185,7 +185,7 @@ pub(super) fn drain_agent_append_user_messages(
     metadata: Option<&MessageMetadata>,
 ) -> Result<usize, AgentLoopError> {
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let queued_by_call = state

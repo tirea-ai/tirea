@@ -1279,7 +1279,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
         &[Phase::AfterInference, Phase::StepEnd]
     );
     let state = run_ctx
-        .state()
+        .snapshot()
         .expect("state rebuild should succeed");
     assert_eq!(state["debug"]["cleanup_ran"], true);
 }
@@ -1489,7 +1489,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
         assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
-        let state = thread.state().unwrap();
+        let state = thread.snapshot().unwrap();
         assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
@@ -1929,7 +1929,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         assert!(msg.content.contains("awaiting approval"));
 
         // Pending interaction should be persisted via RunContext.
-        let state = thread.state().unwrap();
+        let state = thread.snapshot().unwrap();
         assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
@@ -2606,7 +2606,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
 
-    let state = outcome.run_ctx.state().expect("state should rebuild");
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
         state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
@@ -3466,7 +3466,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     );
 
     let nonstream_state = nonstream_outcome.run_ctx
-        .state()
+        .snapshot()
         .expect("non-stream state should rebuild");
     let stream_state = stream_thread
         .rebuild_state()
@@ -4630,7 +4630,7 @@ fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true)
         .expect("parallel disjoint patches should succeed");
-    let state = run_ctx.state().expect("state rebuild");
+    let state = run_ctx.snapshot().expect("state rebuild");
     assert_eq!(state["debug"]["alpha"], 1);
     assert_eq!(state["debug"]["beta"], 2);
 }
@@ -5714,7 +5714,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
 
-    let state = outcome.run_ctx.state().expect("state should rebuild");
+    let state = outcome.run_ctx.snapshot().expect("state should rebuild");
     assert_eq!(
         state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
@@ -5941,7 +5941,7 @@ fn test_run_ctx_patches_are_lazily_evaluated() {
     assert!(run_ctx.thread_base().get("extra").is_none());
 
     // state() computes the accumulated patches
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["counter"], 1);
     assert_eq!(state["extra"], "added");
 
@@ -5957,8 +5957,8 @@ fn test_run_ctx_state_is_idempotent() {
         Patch::new().with_op(Op::set(carve_state::path!("v"), json!(42))),
     ));
 
-    let s1 = run_ctx.state().unwrap();
-    let s2 = run_ctx.state().unwrap();
+    let s1 = run_ctx.snapshot().unwrap();
+    let s2 = run_ctx.snapshot().unwrap();
     assert_eq!(s1, s2, "state() must be idempotent");
 }
 
@@ -5970,14 +5970,14 @@ fn test_run_ctx_incremental_patches_visible_in_rebuild() {
     run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("a"), json!(1))),
     ));
-    let s1 = run_ctx.state().unwrap();
+    let s1 = run_ctx.snapshot().unwrap();
     assert_eq!(s1["a"], 1);
     assert_eq!(s1["b"], 0);
 
     run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("b"), json!(2))),
     ));
-    let s2 = run_ctx.state().unwrap();
+    let s2 = run_ctx.snapshot().unwrap();
     assert_eq!(s2["a"], 1, "prior patch must still be applied");
     assert_eq!(s2["b"], 2, "new patch must be visible");
 }
@@ -6003,7 +6003,7 @@ fn test_run_ctx_take_delta_tracks_incremental_patches() {
     assert_eq!(d2.patches.len(), 2, "only patches since last take_delta");
 
     // state() still sees ALL patches (delta tracking is orthogonal)
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["x"], 1);
     assert_eq!(state["y"], 2);
     assert_eq!(state["z"], 3);
@@ -6038,7 +6038,7 @@ fn test_parallel_disjoint_patches_applied_atomically() {
     assert_eq!(snapshot["beta"], 20);
 
     // RunContext also reflects both
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["alpha"], 10);
     assert_eq!(state["beta"], 20);
 
@@ -6076,7 +6076,7 @@ fn test_parallel_conflicting_patches_rejected_before_application() {
     assert_eq!(run_ctx.thread_patches().len(), 0, "no patches should be added on conflict");
     assert_eq!(run_ctx.messages().len(), 0, "no messages should be added on conflict");
 
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["shared"], 0, "state must remain unchanged after conflict rejection");
 }
 
@@ -6229,7 +6229,7 @@ fn test_plugin_pending_patches_accumulated_with_tool_patches() {
     )
     .expect("should succeed");
 
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["tool_field"], 100, "tool patch applied");
     assert_eq!(state["plugin_field"], 200, "plugin pending patch applied");
 
@@ -6269,7 +6269,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
         outcome.termination
     );
 
-    let final_state = outcome.run_ctx.state().unwrap();
+    let final_state = outcome.run_ctx.snapshot().unwrap();
     assert_eq!(
         final_state["counter"], 15,
         "patches from both steps must accumulate: 0 + 5 + 10 = 15"
@@ -6697,7 +6697,7 @@ fn test_conflict_rejection_leaves_delta_clean() {
         "conflicting patches must NOT be added to run_ctx"
     );
     // State unchanged
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["counter"], 0, "state unchanged after conflict rejection");
 }
 
@@ -6727,7 +6727,7 @@ fn test_sequential_error_preserves_prior_patches() {
         .expect("single tool should succeed");
 
     // Verify "a" is patched
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["a"], 100);
     assert_eq!(run_ctx.thread_patches().len(), 1);
 
@@ -6743,7 +6743,7 @@ fn test_sequential_error_preserves_prior_patches() {
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[second], None, false)
         .expect("sequential mode allows overwriting");
 
-    let state = run_ctx.state().unwrap();
+    let state = run_ctx.snapshot().unwrap();
     assert_eq!(state["a"], 200, "sequential overwrites are allowed");
     assert_eq!(run_ctx.thread_patches().len(), 2);
 }

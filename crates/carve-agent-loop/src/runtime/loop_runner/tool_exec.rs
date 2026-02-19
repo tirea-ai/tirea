@@ -257,7 +257,7 @@ pub(super) fn apply_tool_results_impl(
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = run_ctx
-            .state()
+            .snapshot()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
@@ -267,7 +267,7 @@ pub(super) fn apply_tool_results_impl(
         let state_snapshot = if state_changed {
             Some(
                 run_ctx
-                    .state()
+                    .snapshot()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
             )
         } else {
@@ -282,7 +282,7 @@ pub(super) fn apply_tool_results_impl(
     // If a previous run left a persisted pending interaction, clear it once we successfully
     // complete tool execution without creating a new pending interaction.
     let state = run_ctx
-        .state()
+        .snapshot()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     if state
         .get(LoopControlState::PATH)
@@ -299,7 +299,7 @@ pub(super) fn apply_tool_results_impl(
     let state_snapshot = if state_changed {
         Some(
             run_ctx
-                .state()
+                .snapshot()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
         )
     } else {

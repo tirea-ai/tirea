@@ -482,7 +482,7 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
     println!("Patches in thread: {}", outcome.run_ctx.thread_patches().len());
 
     // Rebuild state to see final counter value
-    let final_state = outcome.run_ctx.state()?;
+    let final_state = outcome.run_ctx.snapshot()?;
     println!(
         "Final state: {}",
         serde_json::to_string_pretty(&final_state)?
@@ -596,7 +596,7 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     println!("Run 4 - Assistant: {}", response);
 
     // Check state
-    let final_state = outcome.run_ctx.state()?;
+    let final_state = outcome.run_ctx.snapshot()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("\nSession summary:");
@@ -741,7 +741,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Final state check
-    let final_state = outcome.run_ctx.state()?;
+    let final_state = outcome.run_ctx.snapshot()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
     println!(
         "\nFinal state: counter = {} (expected: 142 = 100 + 42)",
@@ -964,7 +964,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     println!("After increments:");
     println!("  Assistant: {}", response);
     println!("  Patches: {}", outcome.run_ctx.thread_patches().len());
-    println!("  State: {:?}", outcome.run_ctx.state()?);
+    println!("  State: {:?}", outcome.run_ctx.snapshot()?);
 
     // Phase 2: Snapshot to collapse patches - need a Thread for this
     println!("\n[Phase 2: Snapshot]");
@@ -992,7 +992,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
-    let final_state = outcome.run_ctx.state()?;
+    let final_state = outcome.run_ctx.snapshot()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("  Assistant: {}", response);
@@ -1030,7 +1030,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_1 = outcome.run_ctx.state()?;
+    let state_after_1 = outcome.run_ctx.snapshot()?;
     let patches_after_1 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 1: counter = {}, patches = {}",
@@ -1043,7 +1043,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_2 = outcome.run_ctx.state()?;
+    let state_after_2 = outcome.run_ctx.snapshot()?;
     let patches_after_2 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 2: counter = {}, patches = {}",
@@ -1056,7 +1056,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_3 = outcome.run_ctx.state()?;
+    let state_after_3 = outcome.run_ctx.snapshot()?;
     let patches_after_3 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 3: counter = {}, patches = {}",

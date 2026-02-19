@@ -7,7 +7,9 @@
 use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
-use carve_state::{parse_path, CarveResult, DocCell, Op, Patch, PatchSink, State, TrackedPatch};
+use carve_state::{
+    get_at_path, parse_path, CarveResult, DocCell, Op, Patch, PatchSink, State, TrackedPatch,
+};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -193,7 +195,6 @@ impl<'a> ToolCallContext<'a> {
             stream_id,
             activity_type,
             self.activity_manager.clone(),
-            Some(self.run_patch.clone()),
         )
     }
 
@@ -207,6 +208,24 @@ impl<'a> ToolCallContext<'a> {
     /// Equivalent to `Thread::rebuild_state()` in transient contexts.
     pub fn snapshot(&self) -> Value {
         self.doc.snapshot()
+    }
+
+    /// Typed snapshot at the type's canonical path.
+    ///
+    /// Reads current doc state and deserializes the value at `T::PATH`.
+    pub fn snapshot_of<T: State>(&self) -> CarveResult<T> {
+        let val = self.doc.snapshot();
+        let at = get_at_path(&val, &parse_path(T::PATH)).unwrap_or(&Value::Null);
+        T::from_value(at)
+    }
+
+    /// Typed snapshot at an explicit path.
+    ///
+    /// Reads current doc state and deserializes the value at the given path.
+    pub fn snapshot_at<T: State>(&self, path: &str) -> CarveResult<T> {
+        let val = self.doc.snapshot();
+        let at = get_at_path(&val, &parse_path(path)).unwrap_or(&Value::Null);
+        T::from_value(at)
     }
 
     // =========================================================================
@@ -237,7 +256,6 @@ pub struct ActivityContext {
     activity_type: String,
     ops: Mutex<Vec<Op>>,
     manager: Option<Arc<dyn ActivityManager>>,
-    run_patch: Option<Arc<Mutex<Vec<Op>>>>,
 }
 
 impl ActivityContext {
@@ -246,7 +264,6 @@ impl ActivityContext {
         stream_id: String,
         activity_type: String,
         manager: Option<Arc<dyn ActivityManager>>,
-        run_patch: Option<Arc<Mutex<Vec<Op>>>>,
     ) -> Self {
         Self {
             doc: DocCell::new(doc),
@@ -254,7 +271,6 @@ impl ActivityContext {
             activity_type,
             ops: Mutex::new(Vec::new()),
             manager,
-            run_patch,
         }
     }
 
@@ -294,31 +310,6 @@ impl ActivityContext {
         }
     }
 
-    /// Typed state reference that writes to the run overlay (not persisted).
-    pub fn run_state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        let overlay = self
-            .run_patch
-            .as_ref()
-            .expect("run_state called without run patch");
-        let doc = &self.doc;
-        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-            doc.apply(op);
-        });
-        T::state_ref(
-            &self.doc,
-            parse_path(path),
-            PatchSink::new_with_hook(overlay.as_ref(), hook),
-        )
-    }
-
-    /// Typed state reference at canonical path, writing to the run overlay.
-    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
-        assert!(
-            !T::PATH.is_empty(),
-            "State type has no bound path; use run_state::<T>(path) instead"
-        );
-        self.run_state::<T>(T::PATH)
-    }
 }
 
 #[cfg(test)]

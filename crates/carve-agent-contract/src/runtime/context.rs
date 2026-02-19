@@ -6,7 +6,8 @@ use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
 use carve_state::{
-    apply_patch, apply_patches, CarveResult, DeltaTracked, DocCell, Op, Patch, State, TrackedPatch,
+    apply_patch, apply_patches, get_at_path, parse_path, CarveResult, DeltaTracked, DocCell, Op,
+    Patch, State, TrackedPatch,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -98,7 +99,7 @@ impl RunContext {
     ///
     /// This rebuilds state and navigates to `loop_control.pending_interaction`.
     pub fn pending_interaction(&self) -> Option<Interaction> {
-        self.state()
+        self.snapshot()
             .ok()
             .and_then(|state| {
                 state
@@ -180,7 +181,7 @@ impl RunContext {
     ///
     /// This is a pure computation that returns a new `Value` without
     /// touching the `DocCell`.
-    pub fn state(&self) -> CarveResult<Value> {
+    pub fn snapshot(&self) -> CarveResult<Value> {
         let patches = self.thread_patches.as_slice();
         let base = if patches.is_empty() {
             self.thread_base.clone()
@@ -193,6 +194,24 @@ impl RunContext {
         } else {
             apply_patch(&base, &Patch::with_ops(run_ops.clone()))
         }
+    }
+
+    /// Typed snapshot at the type's canonical path.
+    ///
+    /// Rebuilds state and deserializes the value at `T::PATH`.
+    pub fn snapshot_of<T: State>(&self) -> CarveResult<T> {
+        let val = self.snapshot()?;
+        let at = get_at_path(&val, &parse_path(T::PATH)).unwrap_or(&Value::Null);
+        T::from_value(at)
+    }
+
+    /// Typed snapshot at an explicit path.
+    ///
+    /// Rebuilds state and deserializes the value at the given path.
+    pub fn snapshot_at<T: State>(&self, path: &str) -> CarveResult<T> {
+        let val = self.snapshot()?;
+        let at = get_at_path(&val, &parse_path(path)).unwrap_or(&Value::Null);
+        T::from_value(at)
     }
 
     /// Borrow the live document.
@@ -333,13 +352,13 @@ mod tests {
     }
 
     #[test]
-    fn state_includes_run_patch() {
+    fn snapshot_includes_run_patch() {
         let ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
         ctx.run_patch
             .lock()
             .unwrap()
             .push(Op::set(path!("counter"), json!(99)));
-        let state = ctx.state().unwrap();
+        let state = ctx.snapshot().unwrap();
         assert_eq!(state["counter"], 99);
     }
 
@@ -440,9 +459,9 @@ mod tests {
     // Category 4: Run patch not leaking to delta
     // =========================================================================
 
-    /// Run patch ops are visible in state() but NOT in take_delta.
+    /// Run patch ops are visible in snapshot() but NOT in take_delta.
     #[test]
-    fn run_patch_visible_in_state_not_in_delta() {
+    fn run_patch_visible_in_snapshot_not_in_delta() {
         let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
 
         // Add run patch op
@@ -451,14 +470,55 @@ mod tests {
             .unwrap()
             .push(Op::set(path!("counter"), json!(42)));
 
-        // Visible in state()
-        let state = ctx.state().unwrap();
+        // Visible in snapshot()
+        let state = ctx.snapshot().unwrap();
         assert_eq!(state["counter"], 42);
 
         // NOT in delta (run patch ops are ephemeral)
         let delta = ctx.take_delta();
         assert!(delta.patches.is_empty(), "run patch ops must not appear in delta");
         assert!(delta.messages.is_empty());
+    }
+
+    // =========================================================================
+    // Category 6: Typed snapshot (snapshot_of / snapshot_at)
+    // =========================================================================
+
+    #[test]
+    fn snapshot_of_deserializes_at_canonical_path() {
+        use crate::runtime::control::LoopControlState;
+
+        let ctx = RunContext::new(
+            "t-1",
+            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
+            vec![],
+            RunConfig::default(),
+        );
+        let ctrl: LoopControlState = ctx.snapshot_of().unwrap();
+        assert!(ctrl.pending_interaction.is_none());
+        assert!(ctrl.inference_error.is_none());
+    }
+
+    #[test]
+    fn snapshot_at_deserializes_at_explicit_path() {
+        use crate::runtime::control::LoopControlState;
+
+        let ctx = RunContext::new(
+            "t-1",
+            json!({"custom": {"pending_interaction": null, "inference_error": null}}),
+            vec![],
+            RunConfig::default(),
+        );
+        let ctrl: LoopControlState = ctx.snapshot_at("custom").unwrap();
+        assert!(ctrl.pending_interaction.is_none());
+    }
+
+    #[test]
+    fn snapshot_of_returns_error_for_missing_path() {
+        use crate::runtime::control::LoopControlState;
+
+        let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        assert!(ctx.snapshot_of::<LoopControlState>().is_err());
     }
 
     /// Run patch ops don't appear in thread_patches() either — they're separate.
@@ -471,8 +531,8 @@ mod tests {
             .push(Op::set(path!("x"), json!(99)));
 
         assert!(ctx.thread_patches().is_empty(), "run patch must not appear in thread_patches()");
-        // But state reflects it
-        assert_eq!(ctx.state().unwrap()["x"], 99);
+        // But snapshot reflects it
+        assert_eq!(ctx.snapshot().unwrap()["x"], 99);
     }
 
     /// Run patch + thread patches coexist: thread patches in delta, run patch not.
@@ -490,8 +550,8 @@ mod tests {
             .unwrap()
             .push(Op::set(path!("b"), json!(20)));
 
-        // State shows both
-        let state = ctx.state().unwrap();
+        // Snapshot shows both
+        let state = ctx.snapshot().unwrap();
         assert_eq!(state["a"], 10);
         assert_eq!(state["b"], 20);
 
@@ -518,8 +578,8 @@ mod tests {
         assert_eq!(ctx.thread_base()["counter"], 5);
         // No run patches yet
         assert!(ctx.thread_patches().is_empty());
-        // state() is consistent with thread_base()
-        assert_eq!(ctx.state().unwrap()["counter"], 5);
+        // snapshot() is consistent with thread_base()
+        assert_eq!(ctx.snapshot().unwrap()["counter"], 5);
     }
 
     #[test]
