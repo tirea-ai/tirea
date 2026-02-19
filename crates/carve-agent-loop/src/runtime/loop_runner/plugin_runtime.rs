@@ -131,7 +131,7 @@ where
         thread.run_overlay(),
         "phase",
         "plugin:phase",
-        &thread.scope,
+        &thread.run_config,
         &pending_messages,
         None,
     );
@@ -237,7 +237,7 @@ pub(super) async fn emit_run_end_phase(
             thread.run_overlay(),
             "phase",
             "plugin:run_end",
-            &thread.scope,
+            &thread.run_config,
             &pending_messages,
             None,
         );

@@ -61,7 +61,7 @@ impl ToolExecutor for ParallelToolExecutor {
             request.tool_descriptors,
             request.plugins,
             request.activity_manager,
-            request.scope,
+            request.run_config,
             request.thread_id,
             request.thread_messages,
             request.state_version,
@@ -98,7 +98,7 @@ impl ToolExecutor for SequentialToolExecutor {
             request.tool_descriptors,
             request.plugins,
             request.activity_manager,
-            request.scope,
+            request.run_config,
             request.thread_id,
             request.thread_messages,
             request.state_version,
@@ -323,7 +323,7 @@ pub(super) fn apply_tool_results_impl(
 
 fn tool_result_metadata_from_session(thread: &AgentState) -> Option<MessageMetadata> {
     let run_id = thread
-        .scope
+        .run_config
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .or_else(|| {
@@ -397,8 +397,8 @@ pub(super) fn scope_with_tool_caller_context(
     thread: &AgentState,
     state: &Value,
     _config: Option<&AgentConfig>,
-) -> Result<carve_state::ScopeState, AgentLoopError> {
-    let mut rt = thread.scope.clone();
+) -> Result<carve_agent_contract::RunConfig, AgentLoopError> {
+    let mut rt = thread.run_config.clone();
     if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
         rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, thread.id.clone())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -458,7 +458,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             tool_descriptors: &tool_descriptors,
             plugins,
             activity_manager: None,
-            scope: Some(&rt_for_tools),
+            run_config: Some(&rt_for_tools),
             thread_id: &thread.id,
             thread_messages: &thread.messages,
             state_version: super::agent_state_version(&thread),
@@ -491,7 +491,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_agent_contract::RunConfig>,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
@@ -506,7 +506,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         });
     }
 
-    // Clone scope state for parallel tasks (ScopeState is Clone).
+    // Clone scope state for parallel tasks (RunConfig is Clone).
     let scope_owned = scope.cloned();
     let thread_id = thread_id.to_string();
     let thread_messages = Arc::new(thread_messages.to_vec());
@@ -565,7 +565,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_agent_contract::RunConfig>,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     state_version: u64,
@@ -666,7 +666,7 @@ pub(super) async fn execute_single_tool_with_phases(
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     activity_manager: Option<Arc<dyn ActivityManager>>,
-    scope: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_agent_contract::RunConfig>,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     _state_version: u64,
@@ -676,7 +676,7 @@ pub(super) async fn execute_single_tool_with_phases(
     let doc = carve_state::DocCell::new(state.clone());
     let ops = std::sync::Mutex::new(Vec::new());
     let pending_messages = std::sync::Mutex::new(Vec::new());
-    let empty_scope = carve_state::ScopeState::default();
+    let empty_scope = carve_agent_contract::RunConfig::default();
     let plugin_scope = scope.unwrap_or(&empty_scope);
     let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,

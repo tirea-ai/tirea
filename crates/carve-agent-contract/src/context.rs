@@ -1,20 +1,19 @@
 //! Execution context types for tools and plugins.
 //!
-//! `ToolCallContext` provides state access, scope, and identity for tool execution.
+//! `ToolCallContext` provides state access, run config, and identity for tool execution.
 //! It replaces direct `&AgentState` usage in tool signatures, keeping the persistent
 //! entity (`AgentState`) invisible to tools and plugins.
 
 use crate::state::transient::ActivityManager;
 use crate::state::Message;
-use carve_state::{
-    parse_path, CarveResult, DocCell, Op, Patch, PatchSink, ScopeState, State, TrackedPatch,
-};
+use crate::RunConfig;
+use carve_state::{parse_path, CarveResult, DocCell, Op, Patch, PatchSink, State, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 /// Execution context for tool invocations.
 ///
-/// Provides typed state access (read/write), scope access, identity,
+/// Provides typed state access (read/write), run config access, identity,
 /// message queuing, and activity tracking. Tools receive `&ToolCallContext`
 /// instead of `&AgentState`.
 pub struct ToolCallContext<'a> {
@@ -23,7 +22,7 @@ pub struct ToolCallContext<'a> {
     run_overlay: Arc<Mutex<Vec<Op>>>,
     call_id: String,
     source: String,
-    scope: &'a ScopeState,
+    run_config: &'a RunConfig,
     pending_messages: &'a Mutex<Vec<Arc<Message>>>,
     activity_manager: Option<Arc<dyn ActivityManager>>,
 }
@@ -36,7 +35,7 @@ impl<'a> ToolCallContext<'a> {
         run_overlay: Arc<Mutex<Vec<Op>>>,
         call_id: impl Into<String>,
         source: impl Into<String>,
-        scope: &'a ScopeState,
+        run_config: &'a RunConfig,
         pending_messages: &'a Mutex<Vec<Arc<Message>>>,
         activity_manager: Option<Arc<dyn ActivityManager>>,
     ) -> Self {
@@ -46,7 +45,7 @@ impl<'a> ToolCallContext<'a> {
             run_overlay,
             call_id: call_id.into(),
             source: source.into(),
-            scope,
+            run_config,
             pending_messages,
             activity_manager,
         }
@@ -74,22 +73,22 @@ impl<'a> ToolCallContext<'a> {
     }
 
     // =========================================================================
-    // Scope
+    // Run Config
     // =========================================================================
 
-    /// Borrow the scope state.
-    pub fn scope(&self) -> &ScopeState {
-        self.scope
+    /// Borrow the run config.
+    pub fn run_config(&self) -> &RunConfig {
+        self.run_config
     }
 
-    /// Typed scope state accessor.
-    pub fn scope_state<T: State>(&self) -> CarveResult<T::Ref<'_>> {
-        Ok(self.scope.get::<T>())
+    /// Typed run config accessor.
+    pub fn config_state<T: State>(&self) -> CarveResult<T::Ref<'_>> {
+        Ok(self.run_config.get::<T>())
     }
 
-    /// Read a scope value by key.
-    pub fn scope_value(&self, key: &str) -> Option<&Value> {
-        self.scope.value(key)
+    /// Read a run config value by key.
+    pub fn config_value(&self, key: &str) -> Option<&Value> {
+        self.run_config.value(key)
     }
 
     // =========================================================================
@@ -332,10 +331,10 @@ mod tests {
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
         overlay: Arc<Mutex<Vec<Op>>>,
-        scope: &'a ScopeState,
+        run_config: &'a RunConfig,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
-        ToolCallContext::new(doc, ops, overlay, "call-1", "test", scope, pending, None)
+        ToolCallContext::new(doc, ops, overlay, "call-1", "test", run_config, pending, None)
     }
 
     #[test]
@@ -343,7 +342,7 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
@@ -357,13 +356,13 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let mut scope = ScopeState::new();
+        let mut scope = RunConfig::new();
         scope.set("user_id", "u1").unwrap();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
-        assert_eq!(ctx.scope_value("user_id"), Some(&json!("u1")));
-        assert_eq!(ctx.scope_value("missing"), None);
+        assert_eq!(ctx.config_value("user_id"), Some(&json!("u1")));
+        assert_eq!(ctx.config_value("missing"), None);
     }
 
     #[test]
@@ -373,7 +372,7 @@ mod tests {
         );
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay.clone(), &scope, &pending);
@@ -402,7 +401,7 @@ mod tests {
         );
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
@@ -426,7 +425,7 @@ mod tests {
         );
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay.clone(), &scope, &pending);
@@ -455,7 +454,7 @@ mod tests {
         );
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
@@ -481,7 +480,7 @@ mod tests {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
@@ -497,7 +496,7 @@ mod tests {
         let doc = DocCell::new(json!({"tool_calls": {}}));
         let ops = Mutex::new(Vec::new());
         let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = ScopeState::default();
+        let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
         let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);

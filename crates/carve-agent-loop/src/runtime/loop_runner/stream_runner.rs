@@ -665,7 +665,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         tool_descriptors: &active_tool_descriptors,
                         plugins: &config.plugins,
                         activity_manager: Some(activity_manager.clone()),
-                        scope: Some(&tool_context.scope),
+                        run_config: Some(&tool_context.run_config),
                         thread_id: &sid_for_tools,
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,

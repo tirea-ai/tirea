@@ -1,4 +1,4 @@
-use carve_state::ScopeState;
+use crate::RunConfig;
 use serde_json::Value;
 
 /// Check whether an identifier is allowed by optional allow/deny lists.
@@ -34,13 +34,13 @@ pub fn parse_scope_filter(values: Option<&Value>) -> Option<Vec<String>> {
 /// Check whether an identifier is allowed by filters stored in scope keys.
 #[must_use]
 pub fn is_scope_allowed(
-    scope: Option<&ScopeState>,
+    run_config: Option<&RunConfig>,
     id: &str,
     allowed_key: &str,
     excluded_key: &str,
 ) -> bool {
-    let allowed = parse_scope_filter(scope.and_then(|s| s.value(allowed_key)));
-    let excluded = parse_scope_filter(scope.and_then(|s| s.value(excluded_key)));
+    let allowed = parse_scope_filter(run_config.and_then(|s| s.value(allowed_key)));
+    let excluded = parse_scope_filter(run_config.and_then(|s| s.value(excluded_key)));
     is_id_allowed(id, allowed.as_deref(), excluded.as_deref())
 }
 
@@ -68,7 +68,7 @@ mod tests {
     fn is_scope_allowed_reads_filters_from_scope() {
         let allowed_key = "__test_allowed";
         let excluded_key = "__test_excluded";
-        let mut scope = ScopeState::new();
+        let mut scope = RunConfig::new();
         scope
             .set(allowed_key, vec!["a", "b"])
             .expect("set allowed");

@@ -40,7 +40,7 @@ impl SkillDiscoveryPlugin {
     fn render_catalog(
         &self,
         _active: &HashSet<String>,
-        runtime: Option<&carve_state::ScopeState>,
+        runtime: Option<&carve_agent_contract::RunConfig>,
     ) -> String {
         let mut metas: Vec<SkillMeta> = self
             .skills
@@ -135,7 +135,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
                 .into_iter()
                 .collect();
             // Clone scope to release immutable borrow on step
-            (active, step.scope().clone())
+            (active, step.run_config().clone())
         };
 
         let rendered = self.render_catalog(&active, Some(&scope));
@@ -336,7 +336,7 @@ mod tests {
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
-        fix.scope
+        fix.run_config
             .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);

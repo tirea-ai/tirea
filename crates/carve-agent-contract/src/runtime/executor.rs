@@ -3,7 +3,8 @@ use crate::runtime::interaction::Interaction;
 use crate::state::{ActivityManager, Message, ToolCall};
 use crate::tool::{Tool, ToolDescriptor, ToolResult};
 use async_trait::async_trait;
-use carve_state::{Op, ScopeState, TrackedPatch};
+use crate::RunConfig;
+use carve_state::{Op, TrackedPatch};
 use futures::Stream;
 use genai::chat::{ChatOptions, ChatRequest, ChatResponse, ChatStreamEvent};
 use serde_json::Value;
@@ -57,7 +58,7 @@ pub struct ToolExecutionRequest<'a> {
     pub tool_descriptors: &'a [ToolDescriptor],
     pub plugins: &'a [Arc<dyn AgentPlugin>],
     pub activity_manager: Option<Arc<dyn ActivityManager>>,
-    pub scope: Option<&'a ScopeState>,
+    pub run_config: Option<&'a RunConfig>,
     pub thread_id: &'a str,
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,

@@ -6,7 +6,7 @@ pub(super) fn parent_run_id_from_thread(
     thread: Option<&crate::contracts::state::AgentState>,
 ) -> Option<String> {
     thread
-        .and_then(|s| s.scope.value(SCOPE_PARENT_RUN_ID_KEY))
+        .and_then(|s| s.run_config.value(SCOPE_PARENT_RUN_ID_KEY))
         .and_then(|v| v.as_str())
         .map(str::to_string)
 }
@@ -118,12 +118,12 @@ pub(super) fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall>
 /// Create storage for a short-lived ToolCallContext used for state patch generation.
 fn patch_context_storage(
     state: &Value,
-) -> (DocCell, Mutex<Vec<carve_state::Op>>, Arc<Mutex<Vec<carve_state::Op>>>, carve_state::ScopeState, Mutex<Vec<Arc<crate::contracts::state::Message>>>) {
+) -> (DocCell, Mutex<Vec<carve_state::Op>>, Arc<Mutex<Vec<carve_state::Op>>>, carve_agent_contract::RunConfig, Mutex<Vec<Arc<crate::contracts::state::Message>>>) {
     (
         DocCell::new(state.clone()),
         Mutex::new(Vec::new()),
         Arc::new(Mutex::new(Vec::new())),
-        carve_state::ScopeState::default(),
+        carve_agent_contract::RunConfig::default(),
         Mutex::new(Vec::new()),
     )
 }

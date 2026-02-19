@@ -65,7 +65,7 @@ impl Tool for SkillActivateTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.scope()),
+            Some(ctx.run_config()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,
@@ -225,7 +225,7 @@ impl Tool for LoadSkillResourceTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.scope()),
+            Some(ctx.run_config()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,
@@ -374,7 +374,7 @@ impl Tool for SkillScriptTool {
         };
         let meta = skill.meta();
         if !is_scope_allowed(
-            Some(ctx.scope()),
+            Some(ctx.run_config()),
             &meta.id,
             SCOPE_ALLOWED_SKILLS_KEY,
             SCOPE_EXCLUDED_SKILLS_KEY,

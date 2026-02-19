@@ -113,7 +113,7 @@ impl AgentToolsPlugin {
     pub(super) fn render_available_agents(
         &self,
         caller_agent: Option<&str>,
-        scope: Option<&carve_state::ScopeState>,
+        scope: Option<&carve_agent_contract::RunConfig>,
     ) -> String {
         let mut ids = self.agents.ids();
         ids.sort();
@@ -222,9 +222,9 @@ impl AgentPlugin for AgentToolsPlugin {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
-                    .scope_value(SCOPE_CALLER_AGENT_ID_KEY)
+                    .config_value(SCOPE_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
-                let rendered = self.render_available_agents(caller_agent, Some(step.scope()));
+                let rendered = self.render_available_agents(caller_agent, Some(step.run_config()));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }

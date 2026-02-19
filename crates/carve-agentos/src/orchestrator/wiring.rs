@@ -524,12 +524,12 @@ impl AgentOs {
             .get(agent_id)
             .ok_or_else(|| AgentOsResolveError::AgentNotFound(agent_id.to_string()))?;
 
-        if thread.scope.value(SCOPE_CALLER_AGENT_ID_KEY).is_none() {
+        if thread.run_config.value(SCOPE_CALLER_AGENT_ID_KEY).is_none() {
             let _ = thread
-                .scope
+                .run_config
                 .set(SCOPE_CALLER_AGENT_ID_KEY, agent_id.to_string());
         }
-        let _ = set_scope_filters_from_definition_if_absent(&mut thread.scope, &definition);
+        let _ = set_scope_filters_from_definition_if_absent(&mut thread.run_config, &definition);
 
         let allowed_tools = definition.allowed_tools.clone();
         let excluded_tools = definition.excluded_tools.clone();

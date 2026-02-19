@@ -1,4 +1,4 @@
-use carve_state::ScopeState;
+use carve_agent_contract::RunConfig;
 
 use crate::contracts::runtime::{is_id_allowed, is_scope_allowed as runtime_is_scope_allowed};
 
@@ -16,12 +16,12 @@ pub fn is_tool_allowed(
 }
 
 pub fn is_scope_allowed(
-    scope: Option<&ScopeState>,
+    run_config: Option<&RunConfig>,
     id: &str,
     allowed_key: &str,
     excluded_key: &str,
 ) -> bool {
-    runtime_is_scope_allowed(scope, id, allowed_key, excluded_key)
+    runtime_is_scope_allowed(run_config, id, allowed_key, excluded_key)
 }
 
 #[cfg(test)]
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn test_is_scope_allowed() {
-        let mut rt = ScopeState::new();
+        let mut rt = RunConfig::new();
         rt.set(SCOPE_ALLOWED_TOOLS_KEY, vec!["a", "b"]).unwrap();
         rt.set(SCOPE_EXCLUDED_TOOLS_KEY, vec!["b"]).unwrap();
         assert!(is_scope_allowed(

@@ -1,6 +1,6 @@
-//! Integration tests for ScopeState and its thread-safety behavior.
+//! Integration tests for SealedState: set-once semantics and thread-safety.
 
-use carve_state::{ScopeState, ScopeStateError};
+use carve_state::{SealedState, SealedStateError};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,12 +23,12 @@ struct NestedConfig {
 }
 
 // ============================================================================
-// ScopeState::get<T>() typed access tests
+// SealedState::get<T>() typed access tests
 // ============================================================================
 
 #[test]
 fn test_scope_get_typed_read() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("user_id", "u-42").unwrap();
     rt.set("locale", "en-US").unwrap();
 
@@ -39,7 +39,7 @@ fn test_scope_get_typed_read() {
 
 #[test]
 fn test_scope_get_at_typed_read() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("config", json!({"timeout_ms": 5000, "retry": true}))
         .unwrap();
 
@@ -50,7 +50,7 @@ fn test_scope_get_at_typed_read() {
 
 #[test]
 fn test_scope_get_missing_field_errors() {
-    let rt = ScopeState::new();
+    let rt = SealedState::new();
     // No data set — reading should produce an error from state ref
     let user = rt.get::<UserInfo>();
     assert!(user.user_id().is_err());
@@ -59,7 +59,7 @@ fn test_scope_get_missing_field_errors() {
 #[test]
 #[should_panic(expected = "read-only sink")]
 fn test_scope_get_write_panics() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("user_id", "u-1").unwrap();
     rt.set("locale", "en").unwrap();
 
@@ -71,7 +71,7 @@ fn test_scope_get_write_panics() {
 #[test]
 #[should_panic(expected = "read-only sink")]
 fn test_scope_get_at_write_panics() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("config", json!({"timeout_ms": 1000, "retry": false}))
         .unwrap();
 
@@ -85,7 +85,7 @@ fn test_scope_get_at_write_panics() {
 
 #[test]
 fn test_set_once_independent_keys() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("a", 1).unwrap();
     rt.set("b", 2).unwrap();
     rt.set("c", 3).unwrap();
@@ -103,7 +103,7 @@ fn test_set_once_independent_keys() {
 
 #[test]
 fn test_set_sensitive_marks_only_specified_keys() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("public", "visible").unwrap();
     rt.set_sensitive("secret", "hidden").unwrap();
 
@@ -118,7 +118,7 @@ fn test_set_sensitive_marks_only_specified_keys() {
 
 #[test]
 fn test_clone_preserves_set_once_and_sensitivity() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("a", 1).unwrap();
     rt.set_sensitive("token", "s3cret").unwrap();
 
@@ -135,7 +135,7 @@ fn test_clone_preserves_set_once_and_sensitivity() {
 
 #[test]
 fn test_set_once_clone_allows_set_on_clone() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("a", 1).unwrap();
 
     let mut rt2 = rt.clone();
@@ -151,32 +151,32 @@ fn test_set_once_clone_allows_set_on_clone() {
 
 #[test]
 fn test_scope_error_display() {
-    let err = ScopeStateError::AlreadySet("my_key".to_string());
-    assert_eq!(err.to_string(), "scope key already set: my_key");
+    let err = SealedStateError::AlreadySet("my_key".to_string());
+    assert_eq!(err.to_string(), "sealed state key already set: my_key");
 
-    let err = ScopeStateError::SerializationError("bad json".to_string());
-    assert_eq!(err.to_string(), "scope serialization error: bad json");
+    let err = SealedStateError::SerializationError("bad json".to_string());
+    assert_eq!(err.to_string(), "sealed state serialization error: bad json");
 }
 
 // ============================================================================
-// ScopeState thread safety tests
+// SealedState thread safety tests
 // ============================================================================
 
 #[test]
 fn test_scope_is_send() {
     fn assert_send<T: Send>() {}
-    assert_send::<ScopeState>();
+    assert_send::<SealedState>();
 }
 
 #[test]
 fn test_scope_is_sync() {
     fn assert_sync<T: Sync>() {}
-    assert_sync::<ScopeState>();
+    assert_sync::<SealedState>();
 }
 
 #[test]
 fn test_scope_concurrent_reads() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("user_id", "u-concurrent").unwrap();
     rt.set("locale", "en").unwrap();
     rt.set_sensitive("token", "secret-token").unwrap();
@@ -211,7 +211,7 @@ fn test_scope_concurrent_reads() {
 
 #[test]
 fn test_scope_clone_isolation_across_threads() {
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("base", "value").unwrap();
 
     let handles: Vec<_> = (0..10)
@@ -238,10 +238,10 @@ fn test_scope_clone_isolation_across_threads() {
 }
 
 // ============================================================================
-// Compile-time verification: ScopeState does NOT implement Serialize
+// Compile-time verification: SealedState does NOT implement Serialize
 // ============================================================================
 
-// This is a compile-time assertion: if ScopeState ever gains Serialize,
+// This is a compile-time assertion: if SealedState ever gains Serialize,
 // this test module will fail to compile because the static assertion
 // function will become callable where it shouldn't be.
 // We verify this by checking the trait bound does NOT hold.
@@ -249,10 +249,10 @@ fn test_scope_clone_isolation_across_threads() {
 fn test_scope_not_serializable_by_design() {
     // We can't directly assert a negative trait bound at compile time,
     // but we verify the intended behavior: serde_json::to_value should
-    // not compile for ScopeState. Instead, we verify the Debug output
-    // works (the approved way to inspect ScopeState) and that sensitive
+    // not compile for SealedState. Instead, we verify the Debug output
+    // works (the approved way to inspect SealedState) and that sensitive
     // values are redacted.
-    let mut rt = ScopeState::new();
+    let mut rt = SealedState::new();
     rt.set("public", "visible").unwrap();
     rt.set_sensitive("secret", "hidden").unwrap();
 

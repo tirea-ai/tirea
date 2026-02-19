@@ -82,9 +82,9 @@ impl AgentOs {
         }
 
         // 3. Set run identity on thread runtime
-        let _ = thread.scope.set("run_id", run_id.clone());
+        let _ = thread.run_config.set("run_id", run_id.clone());
         if let Some(parent) = parent_run_id.as_deref() {
-            let _ = thread.scope.set("parent_run_id", parent.to_string());
+            let _ = thread.run_config.set("parent_run_id", parent.to_string());
         }
 
         // 4. Deduplicate and append inbound messages

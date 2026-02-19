@@ -116,7 +116,7 @@ pub use writer::JsonWriter;
 
 // State types
 pub use manager::{ApplyResult, StateError, StateManager};
-pub use runtime::{ScopeState, ScopeStateError};
+pub use runtime::{SealedState, SealedStateError};
 pub use state::{parse_path, PatchSink, State, StateContext, StateExt};
 
 // Re-export derive macro when feature is enabled

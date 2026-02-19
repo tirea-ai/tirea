@@ -74,7 +74,7 @@ async fn apply_tool_with_scope(
     thread: AgentState,
     tool: &dyn Tool,
     call: ToolCall,
-    scope: &carve_state::ScopeState,
+    scope: &carve_agent_contract::RunConfig,
 ) -> (AgentState, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(scope)).await;
@@ -123,7 +123,7 @@ async fn test_skill_activation_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
-    let mut scope = carve_state::ScopeState::new();
+    let mut scope = carve_agent_contract::RunConfig::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();
@@ -143,7 +143,7 @@ async fn test_load_skill_resource_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let load = LoadSkillResourceTool::new(skills);
     let thread = AgentState::with_initial_state("s", json!({}));
-    let mut scope = carve_state::ScopeState::new();
+    let mut scope = carve_agent_contract::RunConfig::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
         .unwrap();

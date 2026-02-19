@@ -1,8 +1,7 @@
-//! Scope state for ephemeral, non-persistent key/value data.
+//! Sealed state: an ephemeral, non-persistent key/value container.
 //!
-//! `ScopeState` stores transient data with set-once semantics.
-//! It is suitable for temporary execution context, policy filters,
-//! and sensitive values that must not be persisted.
+//! `SealedState` stores data with set-once semantics — each key can be
+//! written exactly once, then becomes immutable for the container's lifetime.
 //!
 //! Sensitive keys are tracked separately and redacted in `Debug` output.
 //! `Serialize` is intentionally **not** implemented to prevent accidental persistence.
@@ -13,23 +12,23 @@ use serde_json::Value;
 use std::collections::HashSet;
 use thiserror::Error;
 
-/// Errors from `ScopeState` operations.
+/// Errors from `SealedState` operations.
 #[derive(Debug, Error)]
-pub enum ScopeStateError {
+pub enum SealedStateError {
     /// Attempted to set a key that was already set.
-    #[error("scope key already set: {0}")]
+    #[error("sealed state key already set: {0}")]
     AlreadySet(String),
     /// JSON serialization failed.
-    #[error("scope serialization error: {0}")]
+    #[error("sealed state serialization error: {0}")]
     SerializationError(String),
 }
 
-/// Ephemeral context with set-once semantics.
+/// Sealed key/value container with set-once semantics.
 ///
 /// Each key can be written exactly once via `put_once()` or `put_sensitive_once()`.
-/// After that, the key is immutable for the lifetime of this scope.
+/// After that, the key is immutable for the container's lifetime.
 ///
-/// Consumers generally receive `&ScopeState` (read-only), so the Rust borrow checker
+/// Consumers generally receive `&SealedState` (read-only), so the Rust borrow checker
 /// guarantees no writes occur during execution.
 ///
 /// # Sensitive keys
@@ -39,17 +38,17 @@ pub enum ScopeStateError {
 ///
 /// # No `Serialize`
 ///
-/// `ScopeState` intentionally does **not** implement `Serialize`,
+/// `SealedState` intentionally does **not** implement `Serialize`,
 /// preventing accidental persistence. This is enforced at compile time.
 #[derive(Clone)]
-pub struct ScopeState {
+pub struct SealedState {
     doc: Value,
     doc_cell: DocCell,
     sensitive_keys: HashSet<String>,
 }
 
-impl ScopeState {
-    /// Create an empty scope state.
+impl SealedState {
+    /// Create an empty sealed state.
     pub fn new() -> Self {
         let doc = Value::Object(Default::default());
         Self {
@@ -64,14 +63,14 @@ impl ScopeState {
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), ScopeStateError> {
+    ) -> Result<(), SealedStateError> {
         let key = key.into();
-        let obj = self.doc.as_object_mut().expect("scope doc is object");
+        let obj = self.doc.as_object_mut().expect("sealed state doc is object");
         if obj.contains_key(&key) {
-            return Err(ScopeStateError::AlreadySet(key));
+            return Err(SealedStateError::AlreadySet(key));
         }
         let v = serde_json::to_value(value)
-            .map_err(|e| ScopeStateError::SerializationError(e.to_string()))?;
+            .map_err(|e| SealedStateError::SerializationError(e.to_string()))?;
         obj.insert(key, v);
         // Keep doc_cell in sync for State trait reads
         *self.doc_cell.get() = self.doc.clone();
@@ -83,7 +82,7 @@ impl ScopeState {
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), ScopeStateError> {
+    ) -> Result<(), SealedStateError> {
         let key = key.into();
         self.sensitive_keys.insert(key.clone());
         self.put_once(key, value)
@@ -94,7 +93,7 @@ impl ScopeState {
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), ScopeStateError> {
+    ) -> Result<(), SealedStateError> {
         self.put_once(key, value)
     }
 
@@ -103,13 +102,13 @@ impl ScopeState {
         &mut self,
         key: impl Into<String>,
         value: impl serde::Serialize,
-    ) -> Result<(), ScopeStateError> {
+    ) -> Result<(), SealedStateError> {
         self.put_sensitive_once(key, value)
     }
 
     /// Get a typed state reference (same API as `ctx.state::<T>()`).
     ///
-    /// Returns a read-only `StateRef` backed by the scope document.
+    /// Returns a read-only `StateRef` backed by the sealed document.
     /// Any write through this ref will panic (read-only sink).
     pub fn get<T: State>(&self) -> T::Ref<'_> {
         T::state_ref(&self.doc_cell, Path::root(), PatchSink::read_only())
@@ -140,7 +139,7 @@ impl ScopeState {
         self.sensitive_keys.contains(key)
     }
 
-    /// Check if the scope contains a key.
+    /// Check if the container has a key.
     pub fn contains_key(&self, key: &str) -> bool {
         self.doc
             .as_object()
@@ -148,13 +147,13 @@ impl ScopeState {
     }
 }
 
-impl Default for ScopeState {
+impl Default for SealedState {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Debug for ScopeState {
+impl std::fmt::Debug for SealedState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut map = f.debug_map();
         if let Some(obj) = self.doc.as_object() {
@@ -177,37 +176,37 @@ mod tests {
 
     #[test]
     fn test_scope_new_is_empty() {
-        let rt = ScopeState::new();
+        let rt = SealedState::new();
         assert!(!rt.contains_key("anything"));
         assert!(rt.value("anything").is_none());
     }
 
     #[test]
     fn test_scope_default() {
-        let rt = ScopeState::default();
+        let rt = SealedState::default();
         assert!(!rt.contains_key("x"));
     }
 
     #[test]
     fn test_set_once_success() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("user_id", "u123").unwrap();
         assert_eq!(rt.value("user_id"), Some(&json!("u123")));
     }
 
     #[test]
     fn test_set_once_duplicate_fails() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("key", "first").unwrap();
         let err = rt.set("key", "second").unwrap_err();
-        assert!(matches!(err, ScopeStateError::AlreadySet(k) if k == "key"));
+        assert!(matches!(err, SealedStateError::AlreadySet(k) if k == "key"));
         // Value unchanged
         assert_eq!(rt.value("key"), Some(&json!("first")));
     }
 
     #[test]
     fn test_set_sensitive() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set_sensitive("token", "secret-abc").unwrap();
         assert!(rt.is_sensitive("token"));
         assert_eq!(rt.value("token"), Some(&json!("secret-abc")));
@@ -215,21 +214,21 @@ mod tests {
 
     #[test]
     fn test_set_sensitive_duplicate_fails() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set_sensitive("token", "first").unwrap();
         let err = rt.set_sensitive("token", "second").unwrap_err();
-        assert!(matches!(err, ScopeStateError::AlreadySet(_)));
+        assert!(matches!(err, SealedStateError::AlreadySet(_)));
     }
 
     #[test]
     fn test_non_sensitive_key() {
-        let rt = ScopeState::new();
+        let rt = SealedState::new();
         assert!(!rt.is_sensitive("anything"));
     }
 
     #[test]
     fn test_debug_redacts_sensitive() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("user_id", "u123").unwrap();
         rt.set_sensitive("token", "secret").unwrap();
 
@@ -241,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("a", 1).unwrap();
         rt.set_sensitive("b", "secret").unwrap();
 
@@ -252,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_value_at_path() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("config", json!({"nested": {"value": 42}})).unwrap();
         assert_eq!(rt.value_at("config.nested.value"), Some(&json!(42)));
         assert_eq!(rt.value_at("config.missing"), None);
@@ -260,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_value_at_empty_path() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("key", "val").unwrap();
         // Empty path returns root doc
         let root = rt.value_at("").unwrap();
@@ -269,7 +268,7 @@ mod tests {
 
     #[test]
     fn test_set_various_types() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         rt.set("string", "hello").unwrap();
         rt.set("number", 42).unwrap();
         rt.set("bool", true).unwrap();
@@ -283,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_contains_key() {
-        let mut rt = ScopeState::new();
+        let mut rt = SealedState::new();
         assert!(!rt.contains_key("x"));
         rt.set("x", 1).unwrap();
         assert!(rt.contains_key("x"));

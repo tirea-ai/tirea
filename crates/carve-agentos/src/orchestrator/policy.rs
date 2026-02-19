@@ -1,6 +1,6 @@
 use super::AgentDefinition;
 use crate::contracts::tool::Tool;
-use carve_state::ScopeState;
+use carve_agent_contract::RunConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,10 +26,10 @@ pub(super) fn filter_tools_in_place(
 }
 
 pub(super) fn set_scope_filter_if_absent(
-    scope: &mut ScopeState,
+    scope: &mut RunConfig,
     key: &str,
     values: Option<&[String]>,
-) -> Result<(), carve_state::ScopeStateError> {
+) -> Result<(), carve_agent_contract::RunConfigError> {
     if scope.value(key).is_some() {
         return Ok(());
     }
@@ -40,9 +40,9 @@ pub(super) fn set_scope_filter_if_absent(
 }
 
 pub(super) fn set_scope_filters_from_definition_if_absent(
-    scope: &mut ScopeState,
+    scope: &mut RunConfig,
     definition: &AgentDefinition,
-) -> Result<(), carve_state::ScopeStateError> {
+) -> Result<(), carve_agent_contract::RunConfigError> {
     set_scope_filter_if_absent(
         scope,
         SCOPE_ALLOWED_TOOLS_KEY,

@@ -105,7 +105,7 @@ impl Tool for ScopeSnapshotTool {
         _args: Value,
         ctx: &ToolCallContext<'_>,
     ) -> Result<ToolResult, ToolError> {
-        let rt = ctx.scope();
+        let rt = ctx.run_config();
         let thread_id = rt
             .value(TOOL_SCOPE_CALLER_THREAD_ID_KEY)
             .and_then(|v| v.as_str())
@@ -1058,7 +1058,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
         ) {
             if phase == Phase::BeforeToolExecute {
                 assert_eq!(step.thread_id(), "real-thread-42");
-                assert_eq!(step.scope().value("user_id"), Some(&json!("u-abc")),);
+                assert_eq!(step.run_config().value("user_id"), Some(&json!("u-abc")),);
                 VERIFIED.store(true, Ordering::SeqCst);
             }
         }
@@ -1072,7 +1072,7 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
     let tool_descriptors = vec![tool.descriptor()];
     let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(SessionCheckPlugin)];
 
-    let mut rt = carve_state::ScopeState::new();
+    let mut rt = carve_agent_contract::RunConfig::new();
     rt.set("user_id", "u-abc").unwrap();
 
     let result = execute_single_tool_with_phases(
@@ -1769,7 +1769,7 @@ fn test_execute_tools_with_config_enforces_scope_tool_policy_at_execution() {
     rt.block_on(async {
         let mut thread = AgentState::new("test");
         thread
-            .scope
+            .run_config
             .set(
                 crate::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY,
                 vec!["other"],
@@ -1820,7 +1820,7 @@ fn test_execute_tools_with_config_attaches_scope_run_metadata() {
                 step_index: Some(7),
             }),
         );
-        thread.scope.set("run_id", "run-meta-1").unwrap();
+        thread.run_config.set("run_id", "run-meta-1").unwrap();
 
         let result = StreamResult {
             text: "Calling tool".to_string(),
@@ -2705,7 +2705,7 @@ async fn test_run_loop_auto_generated_run_id_is_rfc4122_uuid_v7() {
         .await
         .expect("run_loop should succeed");
     let run_id = final_thread
-        .scope
+        .run_config
         .value("run_id")
         .and_then(|v| v.as_str())
         .unwrap_or_else(|| panic!("run_loop must populate scope run_id"));
@@ -2913,14 +2913,14 @@ fn test_run_context_clone() {
 #[test]
 fn test_scope_run_id_in_session() {
     let mut thread = AgentState::new("test");
-    thread.scope.set("run_id", "my-run").unwrap();
-    thread.scope.set("parent_run_id", "parent-run").unwrap();
+    thread.run_config.set("run_id", "my-run").unwrap();
+    thread.run_config.set("parent_run_id", "parent-run").unwrap();
     assert_eq!(
-        thread.scope.value("run_id").and_then(|v| v.as_str()),
+        thread.run_config.value("run_id").and_then(|v| v.as_str()),
         Some("my-run")
     );
     assert_eq!(
-        thread.scope.value("parent_run_id").and_then(|v| v.as_str()),
+        thread.run_config.value("parent_run_id").and_then(|v| v.as_str()),
         Some("parent-run")
     );
 }

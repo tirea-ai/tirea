@@ -4,7 +4,8 @@ pub use crate::contracts::runtime::ToolExecution;
 use crate::contracts::context::ToolCallContext;
 use crate::contracts::state::ToolCall;
 use crate::contracts::tool::{Tool, ToolResult};
-use carve_state::{apply_patch, DocCell, ScopeState, TrackedPatch};
+use carve_agent_contract::RunConfig;
+use carve_state::{apply_patch, DocCell, TrackedPatch};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -35,7 +36,7 @@ pub async fn execute_single_tool_with_scope(
     tool: Option<&dyn Tool>,
     call: &ToolCall,
     state: &Value,
-    scope: Option<&ScopeState>,
+    scope: Option<&RunConfig>,
 ) -> ToolExecution {
     let Some(tool) = tool else {
         return ToolExecution {
@@ -49,7 +50,7 @@ pub async fn execute_single_tool_with_scope(
     let doc = DocCell::new(state.clone());
     let ops = Mutex::new(Vec::new());
     let overlay = Arc::new(Mutex::new(Vec::new()));
-    let default_scope = ScopeState::default();
+    let default_scope = RunConfig::default();
     let scope = scope.unwrap_or(&default_scope);
     let pending_messages = Mutex::new(Vec::new());
     let ctx = ToolCallContext::new(
@@ -237,8 +238,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_single_tool_with_scope_reads() {
-        use carve_state::ScopeState;
-
         /// Tool that reads user_id from scope and returns it.
         struct ScopeReaderTool;
 
@@ -254,7 +253,7 @@ mod tests {
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
                 let user_id = ctx
-                    .scope_value("user_id")
+                    .config_value("user_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 Ok(ToolResult::success(
@@ -264,7 +263,7 @@ mod tests {
             }
         }
 
-        let mut scope = ScopeState::new();
+        let mut scope = RunConfig::new();
         scope.set("user_id", "u-42").unwrap();
 
         let tool = ScopeReaderTool;
@@ -295,7 +294,7 @@ mod tests {
             ) -> Result<ToolResult, ToolError> {
                 // ToolCallContext always provides a scope reference (never None).
                 // We verify scope access works by probing for a known key.
-                let has_user_id = ctx.scope_value("user_id").is_some();
+                let has_user_id = ctx.config_value("user_id").is_some();
                 Ok(ToolResult::success(
                     "scope_checker",
                     json!({"has_scope": true, "has_user_id": has_user_id}),
@@ -313,7 +312,7 @@ mod tests {
         assert_eq!(exec.result.data["has_user_id"], false);
 
         // With scope (empty)
-        let scope = ScopeState::new();
+        let scope = RunConfig::new();
         let exec = execute_single_tool_with_scope(Some(&tool), &call, &state, Some(&scope)).await;
         assert_eq!(exec.result.data["has_scope"], true);
         assert_eq!(exec.result.data["has_user_id"], false);
@@ -321,8 +320,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_scope_sensitive_key() {
-        use carve_state::ScopeState;
-
         /// Tool that reads a sensitive key from scope.
         struct SensitiveReaderTool;
 
@@ -337,7 +334,7 @@ mod tests {
                 _args: Value,
                 ctx: &ToolCallContext<'_>,
             ) -> Result<ToolResult, ToolError> {
-                let scope = ctx.scope();
+                let scope = ctx.run_config();
                 let token = scope.value("token").and_then(|v| v.as_str()).unwrap();
                 let is_sensitive = scope.is_sensitive("token");
                 Ok(ToolResult::success(
@@ -347,7 +344,7 @@ mod tests {
             }
         }
 
-        let mut scope = ScopeState::new();
+        let mut scope = RunConfig::new();
         scope.set_sensitive("token", "super-secret-token").unwrap();
 
         let tool = SensitiveReaderTool;

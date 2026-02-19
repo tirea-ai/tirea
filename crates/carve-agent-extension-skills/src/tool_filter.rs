@@ -1,11 +1,11 @@
 use carve_agent_contract::runtime::is_scope_allowed as runtime_is_scope_allowed;
-use carve_state::ScopeState;
+use carve_agent_contract::RunConfig;
 
 pub const SCOPE_ALLOWED_SKILLS_KEY: &str = "__agent_policy_allowed_skills";
 pub const SCOPE_EXCLUDED_SKILLS_KEY: &str = "__agent_policy_excluded_skills";
 
 pub fn is_scope_allowed(
-    scope: Option<&ScopeState>,
+    scope: Option<&RunConfig>,
     id: &str,
     allowed_key: &str,
     excluded_key: &str,

@@ -7,7 +7,8 @@ use crate::context::ToolCallContext;
 use crate::runtime::phase::StepContext;
 use crate::state::Message;
 use crate::tool::ToolDescriptor;
-use carve_state::{DocCell, Op, ScopeState};
+use crate::RunConfig;
+use carve_state::{DocCell, Op};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +16,7 @@ pub struct TestFixture {
     pub doc: DocCell,
     pub ops: Mutex<Vec<Op>>,
     pub overlay: Arc<Mutex<Vec<Op>>>,
-    pub scope: ScopeState,
+    pub run_config: RunConfig,
     pub pending_messages: Mutex<Vec<Arc<Message>>>,
     pub messages: Vec<Arc<Message>>,
 }
@@ -26,7 +27,7 @@ impl TestFixture {
             doc: DocCell::new(serde_json::json!({})),
             ops: Mutex::new(Vec::new()),
             overlay: Arc::new(Mutex::new(Vec::new())),
-            scope: ScopeState::default(),
+            run_config: RunConfig::default(),
             pending_messages: Mutex::new(Vec::new()),
             messages: Vec::new(),
         }
@@ -46,7 +47,7 @@ impl TestFixture {
             self.overlay.clone(),
             "test",
             "test",
-            &self.scope,
+            &self.run_config,
             &self.pending_messages,
             None,
         )
@@ -63,7 +64,7 @@ impl TestFixture {
             self.overlay.clone(),
             call_id,
             source,
-            &self.scope,
+            &self.run_config,
             &self.pending_messages,
             None,
         )

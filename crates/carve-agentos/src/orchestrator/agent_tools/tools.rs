@@ -18,14 +18,14 @@ fn tool_error(tool_name: &str, code: &str, message: impl Into<String>) -> ToolRe
     ToolResult::error_with_code(tool_name, code, message)
 }
 
-fn scope_string(scope: Option<&carve_state::ScopeState>, key: &str) -> Option<String> {
+fn scope_string(scope: Option<&carve_agent_contract::RunConfig>, key: &str) -> Option<String> {
     scope
-        .and_then(|scope: &carve_state::ScopeState| scope.value(key))
+        .and_then(|scope: &carve_agent_contract::RunConfig| scope.value(key))
         .and_then(|value: &serde_json::Value| value.as_str())
         .map(|value| value.to_string())
 }
 
-fn scope_run_id(scope: Option<&carve_state::ScopeState>) -> Option<String> {
+fn scope_run_id(scope: Option<&carve_agent_contract::RunConfig>) -> Option<String> {
     scope_string(scope, SCOPE_RUN_ID_KEY)
 }
 
@@ -39,12 +39,12 @@ fn bind_child_lineage(
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
     let current_run_id = thread
-        .scope
+        .run_config
         .value(SCOPE_RUN_ID_KEY)
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let current_parent_run_id = thread
-        .scope
+        .run_config
         .value(SCOPE_PARENT_RUN_ID_KEY)
         .and_then(|v| v.as_str())
         .map(str::to_string);
@@ -57,15 +57,15 @@ fn bind_child_lineage(
     let run_mismatch = current_run_id.as_deref().is_some_and(|cur| cur != run_id);
 
     if run_mismatch || parent_mismatch {
-        thread = thread.with_scope(carve_state::ScopeState::new());
+        thread = thread.with_run_config(carve_agent_contract::RunConfig::new());
     }
 
-    if thread.scope.value(SCOPE_RUN_ID_KEY).is_none() {
-        let _ = thread.scope.set(SCOPE_RUN_ID_KEY, run_id);
+    if thread.run_config.value(SCOPE_RUN_ID_KEY).is_none() {
+        let _ = thread.run_config.set(SCOPE_RUN_ID_KEY, run_id);
     }
     if let Some(parent_run_id) = parent_run_id {
-        if thread.scope.value(SCOPE_PARENT_RUN_ID_KEY).is_none() {
-            let _ = thread.scope.set(SCOPE_PARENT_RUN_ID_KEY, parent_run_id);
+        if thread.run_config.value(SCOPE_PARENT_RUN_ID_KEY).is_none() {
+            let _ = thread.run_config.set(SCOPE_PARENT_RUN_ID_KEY, parent_run_id);
         }
     }
     thread
@@ -88,7 +88,7 @@ fn required_string(args: &Value, key: &str, tool_name: &str) -> Result<String, T
         .ok_or_else(|| tool_error(tool_name, "invalid_arguments", format!("missing '{key}'")))
 }
 
-fn parse_caller_messages(scope: Option<&carve_state::ScopeState>) -> Option<Vec<Message>> {
+fn parse_caller_messages(scope: Option<&carve_agent_contract::RunConfig>) -> Option<Vec<Message>> {
     let value = scope.and_then(|scope| scope.value(SCOPE_CALLER_MESSAGES_KEY))?;
     serde_json::from_value::<Vec<Message>>(value.clone()).ok()
 }
@@ -112,7 +112,7 @@ fn is_target_agent_visible(
     registry: &dyn AgentRegistry,
     target: &str,
     caller: Option<&str>,
-    scope: Option<&carve_state::ScopeState>,
+    scope: Option<&carve_agent_contract::RunConfig>,
 ) -> bool {
     if caller.is_some_and(|c| c == target) {
         return false;
@@ -152,7 +152,7 @@ impl AgentRunTool {
         &self,
         target_agent_id: &str,
         caller_agent_id: Option<&str>,
-        scope: Option<&carve_state::ScopeState>,
+        scope: Option<&carve_agent_contract::RunConfig>,
         tool_name: &str,
     ) -> Result<(), ToolResult> {
         if is_target_agent_visible(
@@ -302,7 +302,7 @@ impl Tool for AgentRunTool {
         let background = required_bool(&args, "background", false);
         let fork_context = required_bool(&args, "fork_context", false);
 
-        let scope = ctx.scope();
+        let scope = ctx.run_config();
         let owner_thread_id = scope_string(Some(scope), SCOPE_CALLER_SESSION_ID_KEY);
         let Some(owner_thread_id) = owner_thread_id else {
             return Ok(tool_error(
@@ -537,7 +537,7 @@ impl Tool for AgentStopTool {
             Err(r) => return Ok(r),
         };
         let owner_thread_id = ctx
-            .scope()
+            .run_config()
             .value(SCOPE_CALLER_SESSION_ID_KEY)
             .and_then(|v: &serde_json::Value| v.as_str())
             .map(|v: &str| v.to_string());

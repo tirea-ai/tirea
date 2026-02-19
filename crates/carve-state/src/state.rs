@@ -47,7 +47,7 @@ impl<'a> PatchSink<'a> {
 
     /// Create a read-only PatchSink that panics on collect.
     ///
-    /// Used for `ScopeState::get()` where writes are a programming error.
+    /// Used for `SealedState::get()` where writes are a programming error.
     #[doc(hidden)]
     pub fn read_only() -> Self {
         Self {

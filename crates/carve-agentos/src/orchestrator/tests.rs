@@ -659,7 +659,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
     dynamic_agents.replace_ids(&["worker_b"]);
 
     let scope = {
-        let mut scope = carve_state::ScopeState::new();
+        let mut scope = carve_agent_contract::RunConfig::new();
         scope
             .set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
             .expect("set caller thread id");
@@ -669,7 +669,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         scope
     };
     let mut fix_first = TestFixture::new();
-    fix_first.scope = scope.clone();
+    fix_first.run_config = scope.clone();
     let first_result = run_tool_first
         .execute(
             json!({
@@ -694,7 +694,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .cloned()
         .expect("agent_run tool should exist");
     let mut fix_second = TestFixture::new();
-    fix_second.scope = scope.clone();
+    fix_second.run_config = scope.clone();
     let second_result = run_tool_second
         .execute(
             json!({
@@ -964,26 +964,26 @@ fn resolve_sets_runtime_caller_agent_id() {
     let (_cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(
         thread
-            .scope
+            .run_config
             .value(SCOPE_CALLER_AGENT_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("a1")
     );
     assert_eq!(
         thread
-            .scope
+            .run_config
             .value(carve_agent_extension_skills::SCOPE_ALLOWED_SKILLS_KEY),
         Some(&json!(["s1"]))
     );
     assert_eq!(
         thread
-            .scope
+            .run_config
             .value(super::policy::SCOPE_ALLOWED_AGENTS_KEY),
         Some(&json!(["worker"]))
     );
     assert_eq!(
         thread
-            .scope
+            .run_config
             .value(carve_agent_loop::engine::tool_filter::SCOPE_ALLOWED_TOOLS_KEY),
         Some(&json!(["echo"]))
     );
@@ -1665,11 +1665,11 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     assert_eq!(prepared.thread_id, "t-prepare");
     assert_eq!(prepared.run_id, "run-prepare");
     assert_eq!(
-        prepared.thread.scope.value("run_id"),
+        prepared.thread.run_config.value("run_id"),
         Some(&json!("run-prepare"))
     );
     assert_eq!(
-        prepared.thread.scope.value("parent_run_id"),
+        prepared.thread.run_config.value("parent_run_id"),
         Some(&json!("run-parent"))
     );
 

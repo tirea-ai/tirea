@@ -3,7 +3,8 @@
 //! `AgentState` represents persisted agent state with message history and patches.
 
 use super::message::Message;
-use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, ScopeState, TrackedPatch};
+use crate::RunConfig;
+use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -33,7 +34,7 @@ impl PendingDelta {
 ///
 /// The `scope` field is an exception — it is transient (not serialized)
 /// and may be mutated in-place during a run (e.g., setting `run_id`).
-/// ScopeState changes are never persisted to storage.
+/// RunConfig changes are never persisted to storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentState {
     /// Unique thread identifier.
@@ -53,9 +54,9 @@ pub struct AgentState {
     /// Metadata.
     #[serde(default)]
     pub metadata: AgentStateMetadata,
-    /// Per-run scope context (not persisted).
+    /// Per-run run config context (not persisted).
     #[serde(skip)]
-    pub scope: ScopeState,
+    pub run_config: RunConfig,
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
@@ -104,7 +105,7 @@ impl AgentState {
             state: Value::Object(serde_json::Map::new()),
             patches: Vec::new(),
             metadata: AgentStateMetadata::default(),
-            scope: ScopeState::default(),
+            run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
@@ -120,7 +121,7 @@ impl AgentState {
             state,
             patches: Vec::new(),
             metadata: AgentStateMetadata::default(),
-            scope: ScopeState::default(),
+            run_config: RunConfig::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
@@ -140,10 +141,10 @@ impl AgentState {
         self
     }
 
-    /// Set the scope (pure function, returns new AgentState).
+    /// Set the run config (pure function, returns new AgentState).
     #[must_use]
-    pub fn with_scope(mut self, scope: ScopeState) -> Self {
-        self.scope = scope;
+    pub fn with_run_config(mut self, run_config: RunConfig) -> Self {
+        self.run_config = run_config;
         self
     }
 
@@ -256,7 +257,7 @@ impl AgentState {
             state: current_state,
             patches: Vec::new(),
             metadata: self.metadata,
-            scope: self.scope,
+            run_config: self.run_config,
             pending: self.pending,
             run_overlay: self.run_overlay,
         })
@@ -442,20 +443,20 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_with_scope() {
-        let mut rt = ScopeState::new();
+    fn test_thread_with_run_config() {
+        let mut rt = RunConfig::new();
         rt.set("user_id", "u1").unwrap();
-        let thread = AgentState::new("t-1").with_scope(rt);
-        assert_eq!(thread.scope.value("user_id"), Some(&json!("u1")));
+        let thread = AgentState::new("t-1").with_run_config(rt);
+        assert_eq!(thread.run_config.value("user_id"), Some(&json!("u1")));
     }
 
     #[test]
     fn test_scope_is_set_once() {
         let mut thread = AgentState::new("t-1");
-        thread.scope.set("run_id", "run-1").unwrap();
-        let err = thread.scope.set("run_id", "run-2").unwrap_err();
-        assert!(matches!(err, carve_state::ScopeStateError::AlreadySet(key) if key == "run_id"));
-        assert_eq!(thread.scope.value("run_id"), Some(&json!("run-1")));
+        thread.run_config.set("run_id", "run-1").unwrap();
+        let err = thread.run_config.set("run_id", "run-2").unwrap_err();
+        assert!(matches!(err, carve_state::SealedStateError::AlreadySet(key) if key == "run_id"));
+        assert_eq!(thread.run_config.value("run_id"), Some(&json!("run-1")));
     }
 
     #[test]
@@ -548,15 +549,15 @@ mod tests {
 
         assert_eq!(restored.id, "test-1");
         assert_eq!(restored.message_count(), 1);
-        // ScopeState is not serialized
-        assert!(!restored.scope.contains_key("anything"));
+        // RunConfig is not serialized
+        assert!(!restored.run_config.contains_key("anything"));
     }
 
     #[test]
     fn test_thread_serialization_skips_scope() {
-        let mut rt = ScopeState::new();
+        let mut rt = RunConfig::new();
         rt.set("token", "secret").unwrap();
-        let thread = AgentState::new("test-1").with_scope(rt);
+        let thread = AgentState::new("test-1").with_run_config(rt);
 
         let json_str = serde_json::to_string(&thread).unwrap();
         assert!(!json_str.contains("secret"));
@@ -564,16 +565,16 @@ mod tests {
 
         // Deserialized thread has default (empty) scope
         let restored: AgentState = serde_json::from_str(&json_str).unwrap();
-        assert!(!restored.scope.contains_key("token"));
+        assert!(!restored.run_config.contains_key("token"));
     }
 
     #[test]
     fn test_state_persists_but_scope_is_transient_after_serialization() {
-        let mut rt = ScopeState::new();
+        let mut rt = RunConfig::new();
         rt.set("run_id", "run-1").unwrap();
 
         let thread = AgentState::with_initial_state("test-1", json!({"counter": 0}))
-            .with_scope(rt)
+            .with_run_config(rt)
             .with_patch(TrackedPatch::new(
                 Patch::new().with_op(Op::set(path!("counter"), json!(5))),
             ));
@@ -587,8 +588,8 @@ mod tests {
             "persisted state should survive serialization"
         );
         assert!(
-            !restored.scope.contains_key("run_id"),
-            "scope data must not be persisted"
+            !restored.run_config.contains_key("run_id"),
+            "run_config data must not be persisted"
         );
     }
 

@@ -32,7 +32,7 @@ fn plugin_filters_agents_by_scope_policy() {
         crate::orchestrator::AgentDefinition::new("mock"),
     );
     let plugin = AgentToolsPlugin::new(Arc::new(reg), Arc::new(AgentRunManager::new()));
-    let mut rt = carve_state::ScopeState::new();
+    let mut rt = carve_agent_contract::RunConfig::new();
     rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["writer"]).unwrap();
     let rendered = plugin.render_available_agents(None, Some(&rt));
     assert!(rendered.contains("<id>writer</id>"));
@@ -186,8 +186,8 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .unwrap();
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
     let mut fix = TestFixture::new();
-    fix.scope = caller_scope();
-    fix.scope.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
+    fix.run_config = caller_scope();
+    fix.run_config.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
@@ -222,8 +222,8 @@ impl AgentPlugin for SlowSkipPlugin {
 fn caller_scope_with_state_and_run(
     state: serde_json::Value,
     run_id: &str,
-) -> carve_state::ScopeState {
-    let mut rt = carve_state::ScopeState::new();
+) -> carve_agent_contract::RunConfig {
+    let mut rt = carve_agent_contract::RunConfig::new();
     rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, "owner-thread")
         .unwrap();
     rt.set(TOOL_SCOPE_CALLER_AGENT_ID_KEY, "caller").unwrap();
@@ -237,11 +237,11 @@ fn caller_scope_with_state_and_run(
     rt
 }
 
-fn caller_scope_with_state(state: serde_json::Value) -> carve_state::ScopeState {
+fn caller_scope_with_state(state: serde_json::Value) -> carve_agent_contract::RunConfig {
     caller_scope_with_state_and_run(state, "parent-run-default")
 }
 
-fn caller_scope() -> carve_state::ScopeState {
+fn caller_scope() -> carve_agent_contract::RunConfig {
     caller_scope_with_state(json!({"forked": true}))
 }
 
@@ -260,7 +260,7 @@ async fn background_stop_then_resume_completes() {
     let stop_tool = AgentStopTool::new(manager);
 
     let mut fix = TestFixture::new();
-    fix.scope = caller_scope();
+    fix.run_config = caller_scope();
     let started = run_tool
         .execute(
             json!({
@@ -280,7 +280,7 @@ async fn background_stop_then_resume_completes() {
         .to_string();
 
     let mut stop_fix = TestFixture::new();
-    stop_fix.scope = caller_scope();
+    stop_fix.run_config = caller_scope();
     let stopped = stop_tool
         .execute(json!({ "run_id": run_id.clone() }), &stop_fix.ctx_with("call-stop", "tool:agent_stop"))
         .await
@@ -394,7 +394,7 @@ async fn agent_run_tool_persists_run_state_patch() {
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
     let mut fix = TestFixture::new();
-    fix.scope = caller_scope();
+    fix.run_config = caller_scope();
     let started = run_tool
         .execute(
             json!({
@@ -439,7 +439,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let run_tool = AgentRunTool::new(os, manager.clone());
 
     let mut fix = TestFixture::new();
-    fix.scope = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
+    fix.run_config = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
     let started = run_tool
         .execute(
             json!({
@@ -463,14 +463,14 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         .expect("child thread should be tracked");
     assert_eq!(
         child_thread
-            .scope
+            .run_config
             .value(SCOPE_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some(run_id.as_str())
     );
     assert_eq!(
         child_thread
-            .scope
+            .run_config
             .value(SCOPE_PARENT_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("parent-run-42")
@@ -512,7 +512,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
         }
     });
     let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.scope = caller_scope_with_state(doc);
+    fix.run_config = caller_scope_with_state(doc);
     let resumed = run_tool
         .execute(
             json!({
@@ -557,7 +557,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         }
     });
     let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.scope = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
+    fix.run_config = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
     let resumed = run_tool
         .execute(
             json!({
@@ -577,14 +577,14 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         .expect("resumed run should be tracked");
     assert_eq!(
         child_thread
-            .scope
+            .run_config
             .value(SCOPE_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("run-1")
     );
     assert_eq!(
         child_thread
-            .scope
+            .run_config
             .value(SCOPE_PARENT_RUN_ID_KEY)
             .and_then(|v| v.as_str()),
         Some("new-parent-run")
@@ -625,7 +625,7 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
         }
     });
     let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.scope = caller_scope_with_state(doc);
+    fix.run_config = caller_scope_with_state(doc);
     let summary = run_tool
         .execute(
             json!({
@@ -712,8 +712,8 @@ async fn agent_stop_tool_stops_descendant_runs() {
     });
 
     let mut fix = TestFixture::new_with_state(doc.clone());
-    fix.scope = {
-        let mut rt = carve_state::ScopeState::new();
+    fix.run_config = {
+        let mut rt = carve_agent_contract::RunConfig::new();
         rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, os_thread.id.clone())
             .unwrap();
         rt

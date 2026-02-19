@@ -119,6 +119,12 @@ pub mod storage;
 pub mod tool;
 pub mod tool_registry;
 
+/// Per-run configuration — a business alias for the generic `SealedState` container.
+pub type RunConfig = carve_state::SealedState;
+
+/// Error type for `RunConfig` operations.
+pub type RunConfigError = carve_state::SealedStateError;
+
 pub use context::ToolCallContext;
 pub use plugin::AgentPlugin;
 pub use runtime::{

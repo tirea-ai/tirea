@@ -589,7 +589,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
-    pub(super) scope: carve_state::ScopeState,
+    pub(super) run_config: carve_agent_contract::RunConfig,
     pub(super) run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 }
 
@@ -600,9 +600,9 @@ pub(super) fn prepare_tool_execution_context(
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let scope = scope_with_tool_caller_context(thread, &state, config)?;
+    let run_config = scope_with_tool_caller_context(thread, &state, config)?;
     let run_overlay = thread.run_overlay();
-    Ok(ToolExecutionContext { state, scope, run_overlay })
+    Ok(ToolExecutionContext { state, run_config, run_overlay })
 }
 
 pub(super) async fn finalize_run_end(
@@ -742,7 +742,7 @@ async fn run_step_with_provider(
     // Add assistant message
     let step_meta = step_metadata(
         state
-            .scope
+            .run_config
             .value("run_id")
             .and_then(|v| v.as_str().map(String::from)),
         next_step_index(&state),
@@ -1077,7 +1077,7 @@ async fn run_loop_outcome_with_context_provider(
             tool_descriptors: &active_tool_descriptors,
             plugins: &config.plugins,
             activity_manager: None,
-            scope: Some(&tool_context.scope),
+            run_config: Some(&tool_context.run_config),
             thread_id: &thread.id,
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,

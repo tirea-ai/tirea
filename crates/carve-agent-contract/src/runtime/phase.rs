@@ -10,7 +10,8 @@ use crate::runtime::interaction::Interaction;
 use crate::runtime::result::StreamResult;
 use crate::state::{Message, ToolCall};
 use crate::tool::{ToolDescriptor, ToolResult};
-use carve_state::{CarveResult, ScopeState, State, TrackedPatch};
+use crate::RunConfig;
+use carve_state::{CarveResult, State, TrackedPatch};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -167,7 +168,7 @@ impl ToolContext {
 /// and flow control.
 pub struct StepContext<'a> {
     // === Execution Context ===
-    /// Execution context providing state access, scope, identity.
+    /// Execution context providing state access, run config, identity.
     ctx: ToolCallContext<'a>,
 
     // === Identity (from persistent entity) ===
@@ -262,19 +263,19 @@ impl<'a> StepContext<'a> {
         self.ctx.override_state_of::<T>()
     }
 
-    /// Borrow the scope state.
-    pub fn scope(&self) -> &ScopeState {
-        self.ctx.scope()
+    /// Borrow the run config.
+    pub fn run_config(&self) -> &RunConfig {
+        self.ctx.run_config()
     }
 
-    /// Typed scope state accessor.
-    pub fn scope_state<T: State>(&self) -> CarveResult<T::Ref<'_>> {
-        self.ctx.scope_state::<T>()
+    /// Typed run config accessor.
+    pub fn config_state<T: State>(&self) -> CarveResult<T::Ref<'_>> {
+        self.ctx.config_state::<T>()
     }
 
-    /// Read a scope value by key.
-    pub fn scope_value(&self, key: &str) -> Option<&Value> {
-        self.ctx.scope_value(key)
+    /// Read a run config value by key.
+    pub fn config_value(&self, key: &str) -> Option<&Value> {
+        self.ctx.config_value(key)
     }
 
     /// Snapshot the current document state.

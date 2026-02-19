@@ -2245,7 +2245,7 @@ async fn test_activity_context_emits_snapshot_on_update() {
     let fix = TestFixture::new();
     let ctx = ToolCallContext::new(
         &fix.doc, &fix.ops, fix.overlay.clone(),
-        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
+        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
     let activity = ctx.activity("stream_1", "progress");
@@ -2293,7 +2293,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
     let ctx = ToolCallContext::new(
         &fix.doc, &fix.ops, fix.overlay.clone(),
-        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
+        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub.clone()),
     );
     let activity = ctx.activity("stream_2", "progress");
@@ -2302,7 +2302,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
     let ctx2 = ToolCallContext::new(
         &fix.doc, &fix.ops, fix.overlay.clone(),
-        "call_2", "tool:test", &fix.scope, &fix.pending_messages,
+        "call_2", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
     let activity2 = ctx2.activity("stream_2", "progress");
@@ -2322,7 +2322,7 @@ async fn test_activity_context_multiple_streams_emit_separately() {
 
     let ctx = ToolCallContext::new(
         &fix.doc, &fix.ops, fix.overlay.clone(),
-        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
+        "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
     let activity_a = ctx.activity("stream_a", "progress");
