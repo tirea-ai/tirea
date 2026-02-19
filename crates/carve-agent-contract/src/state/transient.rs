@@ -3,6 +3,7 @@
 //! This module keeps `AgentState`-centric transient behaviors colocated with the
 //! state model (typed state access, checkpoint building, activity state wiring).
 
+use crate::context::ActivityContext;
 use crate::state::{AgentChangeSet, CheckpointReason};
 use crate::state::{AgentState, Message};
 use carve_state::{
@@ -351,97 +352,6 @@ impl AgentState {
     /// Number of queued transient operations.
     pub fn ops_count(&self) -> usize {
         self.transient.ops.lock().unwrap().len()
-    }
-}
-
-/// Activity-scoped state context.
-pub struct ActivityContext {
-    doc: DocCell,
-    stream_id: String,
-    activity_type: String,
-    ops: Mutex<Vec<Op>>,
-    manager: Option<Arc<dyn ActivityManager>>,
-    run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
-}
-
-impl ActivityContext {
-    fn new(
-        doc: Value,
-        stream_id: String,
-        activity_type: String,
-        manager: Option<Arc<dyn ActivityManager>>,
-        run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
-    ) -> Self {
-        Self {
-            doc: DocCell::new(doc),
-            stream_id,
-            activity_type,
-            ops: Mutex::new(Vec::new()),
-            manager,
-            run_overlay,
-        }
-    }
-
-    /// Typed activity state reference at the type's canonical path.
-    ///
-    /// Panics if `T::PATH` is empty (no bound path via `#[carve(path = "...")]`).
-    pub fn state_of<T: State>(&self) -> T::Ref<'_> {
-        assert!(
-            !T::PATH.is_empty(),
-            "State type has no bound path; use state::<T>(path) instead"
-        );
-        self.state::<T>(T::PATH)
-    }
-
-    /// Get a typed activity state reference at the specified path.
-    ///
-    /// All modifications are automatically collected and immediately reported
-    /// to the activity manager (if configured). Writes are applied to the
-    /// shared doc for immediate read-back.
-    pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        let base = parse_path(path);
-        if let Some(manager) = self.manager.clone() {
-            let stream_id = self.stream_id.clone();
-            let activity_type = self.activity_type.clone();
-            let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-                doc.apply(op);
-                manager.on_activity_op(&stream_id, &activity_type, op);
-            });
-            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
-        } else {
-            let doc = &self.doc;
-            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-                doc.apply(op);
-            });
-            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
-        }
-    }
-
-    /// Typed state reference that writes to the run overlay (not persisted).
-    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        let overlay = self
-            .run_overlay
-            .as_ref()
-            .expect("override_state called without run overlay");
-        let doc = &self.doc;
-        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
-            doc.apply(op);
-        });
-        T::state_ref(
-            &self.doc,
-            parse_path(path),
-            PatchSink::new_with_hook(overlay.as_ref(), hook),
-        )
-    }
-
-    /// Typed state reference at canonical path, writing to the run overlay.
-    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
-        assert!(
-            !T::PATH.is_empty(),
-            "State type has no bound path; use override_state::<T>(path) instead"
-        );
-        self.override_state::<T>(T::PATH)
     }
 }
 

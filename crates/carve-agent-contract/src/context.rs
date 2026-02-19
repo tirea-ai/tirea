@@ -242,7 +242,7 @@ pub struct ActivityContext {
 }
 
 impl ActivityContext {
-    fn new(
+    pub(crate) fn new(
         doc: Value,
         stream_id: String,
         activity_type: String,
