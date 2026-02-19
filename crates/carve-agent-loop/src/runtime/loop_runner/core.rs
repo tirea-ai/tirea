@@ -120,7 +120,7 @@ pub(super) fn drain_agent_outbox(
     _call_id: &str,
 ) -> Result<AgentOutboxDrain, AgentLoopError> {
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let interaction_resolutions = match state
@@ -170,7 +170,7 @@ pub(super) fn drain_agent_outbox(
     }
     if !clear_patch.is_empty() {
         let patch = TrackedPatch::new(clear_patch).with_source("agent_loop");
-        run_ctx.add_patch(patch);
+        run_ctx.add_thread_patch(patch);
     }
 
     Ok(AgentOutboxDrain {
@@ -185,7 +185,7 @@ pub(super) fn drain_agent_append_user_messages(
     metadata: Option<&MessageMetadata>,
 ) -> Result<usize, AgentLoopError> {
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
     let queued_by_call = state
@@ -255,6 +255,6 @@ pub(super) fn drain_agent_append_user_messages(
         return Ok(0);
     }
     run_ctx.add_messages(messages);
-    run_ctx.add_patches(patches);
+    run_ctx.add_thread_patches(patches);
     Ok(appended)
 }

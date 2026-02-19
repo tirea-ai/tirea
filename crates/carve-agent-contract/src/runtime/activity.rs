@@ -23,13 +23,13 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_override_state_of_writes_to_overlay() {
+    fn test_run_state_of_writes_to_overlay() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
         let fix = TestFixture::new_with_state(doc);
 
-        // Write via override — should go to run_overlay, not ops
+        // Write via override — should go to run_patch, not ops
         let ctx = fix.ctx_with("call-1", "test");
-        let ctrl = ctx.override_state_of::<LoopControlState>();
+        let ctrl = ctx.run_state_of::<LoopControlState>();
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "rate_limit".into(),
             message: "too many requests".into(),
@@ -123,8 +123,8 @@ mod tests {
         let fix = TestFixture::new_with_state(doc);
         let ctx = fix.ctx_with("call-1", "test");
 
-        // Write via override_state_of (overlay)
-        let ctrl_override = ctx.override_state_of::<LoopControlState>();
+        // Write via run_state_of (overlay)
+        let ctrl_override = ctx.run_state_of::<LoopControlState>();
         ctrl_override.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "overridden".into(),
             message: "from overlay".into(),
@@ -135,7 +135,7 @@ mod tests {
         let err = ctrl.inference_error().unwrap();
         assert!(
             err.is_some(),
-            "state_of read must see override_state_of write"
+            "state_of read must see run_state_of write"
         );
         assert_eq!(err.unwrap().error_type, "overridden");
     }
@@ -153,12 +153,12 @@ mod tests {
             message: "via thread ops".into(),
         }));
 
-        // Read via override_state_of — must see the write
-        let ctrl_override = ctx.override_state_of::<LoopControlState>();
+        // Read via run_state_of — must see the write
+        let ctrl_override = ctx.run_state_of::<LoopControlState>();
         let err = ctrl_override.inference_error().unwrap();
         assert!(
             err.is_some(),
-            "override_state_of read must see state_of write"
+            "run_state_of read must see state_of write"
         );
         assert_eq!(err.unwrap().error_type, "from_state_of");
     }

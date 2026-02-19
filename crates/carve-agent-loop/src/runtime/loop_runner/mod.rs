@@ -428,7 +428,7 @@ pub(super) async fn complete_step_after_inference(
         },
     )
     .await?;
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
 
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
     run_ctx.add_message(Arc::new(assistant));
@@ -441,7 +441,7 @@ pub(super) async fn complete_step_after_inference(
         |_| {},
     )
     .await?;
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
     Ok(())
 }
 
@@ -459,7 +459,7 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
 pub(super) struct ToolExecutionContext {
     pub(super) state: serde_json::Value,
     pub(super) run_config: carve_agent_contract::RunConfig,
-    pub(super) run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
+    pub(super) run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 }
 
 pub(super) fn prepare_tool_execution_context(
@@ -467,11 +467,11 @@ pub(super) fn prepare_tool_execution_context(
     config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let run_config = scope_with_tool_caller_context(run_ctx, &state, config)?;
-    let run_overlay = run_ctx.run_overlay();
-    Ok(ToolExecutionContext { state, run_config, run_overlay })
+    let run_patch = run_ctx.run_patch();
+    Ok(ToolExecutionContext { state, run_config, run_patch })
 }
 
 pub(super) async fn finalize_run_end(
@@ -582,7 +582,7 @@ pub async fn run_loop(
             );
         }
     };
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
 
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {
@@ -612,7 +612,7 @@ pub async fn run_loop(
                 );
             }
         };
-        run_ctx.add_patches(prepared.pending_patches);
+        run_ctx.add_thread_patches(prepared.pending_patches);
 
         if prepared.skip_inference {
             if pending_interaction_from_ctx(&run_ctx).is_some() {
@@ -746,7 +746,7 @@ pub async fn run_loop(
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
             cancellation_token: run_cancellation_token.as_ref(),
-            run_overlay: tool_context.run_overlay.clone(),
+            run_patch: tool_context.run_patch.clone(),
         });
         let results = tool_exec_future.await.map_err(AgentLoopError::from);
 

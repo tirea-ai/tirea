@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 pub struct ToolCallContext<'a> {
     doc: &'a DocCell,
     ops: &'a Mutex<Vec<Op>>,
-    run_overlay: Arc<Mutex<Vec<Op>>>,
+    run_patch: Arc<Mutex<Vec<Op>>>,
     call_id: String,
     source: String,
     run_config: &'a RunConfig,
@@ -32,7 +32,7 @@ impl<'a> ToolCallContext<'a> {
     pub fn new(
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
-        run_overlay: Arc<Mutex<Vec<Op>>>,
+        run_patch: Arc<Mutex<Vec<Op>>>,
         call_id: impl Into<String>,
         source: impl Into<String>,
         run_config: &'a RunConfig,
@@ -42,7 +42,7 @@ impl<'a> ToolCallContext<'a> {
         Self {
             doc,
             ops,
-            run_overlay,
+            run_patch,
             call_id: call_id.into(),
             source: source.into(),
             run_config,
@@ -120,7 +120,7 @@ impl<'a> ToolCallContext<'a> {
     ///
     /// Reads from the shared `doc`; writes go to the run overlay instead of
     /// thread ops but still update `doc` for immediate read-back.
-    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+    pub fn run_state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         let doc = self.doc;
         let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(|op: &Op| {
@@ -129,19 +129,19 @@ impl<'a> ToolCallContext<'a> {
         T::state_ref(
             doc,
             base,
-            PatchSink::new_with_hook(self.run_overlay.as_ref(), hook),
+            PatchSink::new_with_hook(self.run_patch.as_ref(), hook),
         )
     }
 
     /// Typed state reference at canonical path, writing to the run overlay.
     ///
     /// Panics if `T::PATH` is empty.
-    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
         assert!(
             !T::PATH.is_empty(),
-            "State type has no bound path; use override_state::<T>(path) instead"
+            "State type has no bound path; use run_state::<T>(path) instead"
         );
-        self.override_state::<T>(T::PATH)
+        self.run_state::<T>(T::PATH)
     }
 
     /// Typed state reference for current call (`tool_calls.<call_id>`).
@@ -193,7 +193,7 @@ impl<'a> ToolCallContext<'a> {
             stream_id,
             activity_type,
             self.activity_manager.clone(),
-            Some(self.run_overlay.clone()),
+            Some(self.run_patch.clone()),
         )
     }
 
@@ -237,7 +237,7 @@ pub struct ActivityContext {
     activity_type: String,
     ops: Mutex<Vec<Op>>,
     manager: Option<Arc<dyn ActivityManager>>,
-    run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
+    run_patch: Option<Arc<Mutex<Vec<Op>>>>,
 }
 
 impl ActivityContext {
@@ -246,7 +246,7 @@ impl ActivityContext {
         stream_id: String,
         activity_type: String,
         manager: Option<Arc<dyn ActivityManager>>,
-        run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
+        run_patch: Option<Arc<Mutex<Vec<Op>>>>,
     ) -> Self {
         Self {
             doc: DocCell::new(doc),
@@ -254,7 +254,7 @@ impl ActivityContext {
             activity_type,
             ops: Mutex::new(Vec::new()),
             manager,
-            run_overlay,
+            run_patch,
         }
     }
 
@@ -295,11 +295,11 @@ impl ActivityContext {
     }
 
     /// Typed state reference that writes to the run overlay (not persisted).
-    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+    pub fn run_state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let overlay = self
-            .run_overlay
+            .run_patch
             .as_ref()
-            .expect("override_state called without run overlay");
+            .expect("run_state called without run patch");
         let doc = &self.doc;
         let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
             doc.apply(op);
@@ -312,12 +312,12 @@ impl ActivityContext {
     }
 
     /// Typed state reference at canonical path, writing to the run overlay.
-    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
         assert!(
             !T::PATH.is_empty(),
-            "State type has no bound path; use override_state::<T>(path) instead"
+            "State type has no bound path; use run_state::<T>(path) instead"
         );
-        self.override_state::<T>(T::PATH)
+        self.run_state::<T>(T::PATH)
     }
 }
 
@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn test_override_state_of_writes_to_overlay() {
+    fn test_run_state_of_writes_to_overlay() {
         let doc = DocCell::new(
             json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
         );
@@ -430,7 +430,7 @@ mod tests {
 
         let ctx = make_ctx(&doc, &ops, overlay.clone(), &scope, &pending);
 
-        ctx.override_state_of::<LoopControlState>()
+        ctx.run_state_of::<LoopControlState>()
             .set_inference_error(Some(crate::runtime::control::InferenceError {
                 error_type: "overridden".into(),
                 message: "from overlay".into(),

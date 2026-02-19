@@ -6491,7 +6491,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
     );
 
     // pending_interaction persisted in session state
-    let state = suspended_run_ctx.rebuild_state().unwrap();
+    let state = suspended_run_ctx.state().unwrap();
     let pending = &state["loop_control"]["pending_interaction"];
     assert_eq!(pending["id"], "permission_increment");
     assert_eq!(pending["action"], "confirm");
@@ -6543,7 +6543,7 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
 
     // Reconstruct Thread from RunContext for resume
     let suspended_thread = {
-        let state = suspended_run_ctx.rebuild_state().unwrap();
+        let state = suspended_run_ctx.state().unwrap();
         let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
         for msg in suspended_run_ctx.messages() {
             t = t.with_message((**msg).clone());
@@ -6647,7 +6647,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 
     // Reconstruct Thread from RunContext for resume
     let suspended_thread = {
-        let state = suspended_run_ctx.rebuild_state().unwrap();
+        let state = suspended_run_ctx.state().unwrap();
         let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
         for msg in suspended_run_ctx.messages() {
             t = t.with_message((**msg).clone());

@@ -22,11 +22,11 @@ use std::sync::{Arc, Mutex};
 /// execution. The thread identity is carried as `thread_id`.
 pub struct RunContext {
     thread_id: String,
-    state: Value,
+    thread_base: Value,
     messages: DeltaTracked<Arc<Message>>,
-    patches: DeltaTracked<TrackedPatch>,
+    thread_patches: DeltaTracked<TrackedPatch>,
     pub run_config: RunConfig,
-    run_overlay: Arc<Mutex<Vec<Op>>>,
+    run_patch: Arc<Mutex<Vec<Op>>>,
     doc: DocCell,
     version: Option<u64>,
     version_timestamp: Option<u64>,
@@ -48,11 +48,11 @@ impl RunContext {
         let doc = DocCell::new(state.clone());
         Self {
             thread_id: thread_id.into(),
-            state,
+            thread_base: state,
             messages: DeltaTracked::new(messages),
-            patches: DeltaTracked::empty(),
+            thread_patches: DeltaTracked::empty(),
             run_config,
-            run_overlay: Arc::new(Mutex::new(Vec::new())),
+            run_patch: Arc::new(Mutex::new(Vec::new())),
             doc,
             version: None,
             version_timestamp: None,
@@ -98,7 +98,7 @@ impl RunContext {
     ///
     /// This rebuilds state and navigates to `loop_control.pending_interaction`.
     pub fn pending_interaction(&self) -> Option<Interaction> {
-        self.rebuild_state()
+        self.state()
             .ok()
             .and_then(|state| {
                 state
@@ -132,81 +132,81 @@ impl RunContext {
     // State / Patches
     // =========================================================================
 
-    /// The initial rebuilt state (base + thread patches, before run overlay).
-    pub fn state(&self) -> &Value {
-        &self.state
+    /// The initial rebuilt state (base + thread patches, before run patch).
+    pub fn thread_base(&self) -> &Value {
+        &self.thread_base
     }
 
     /// Add a tracked patch from this run.
-    pub fn add_patch(&mut self, patch: TrackedPatch) {
-        self.patches.push(patch);
+    pub fn add_thread_patch(&mut self, patch: TrackedPatch) {
+        self.thread_patches.push(patch);
     }
 
     /// Add multiple tracked patches from this run.
-    pub fn add_patches(&mut self, patches: Vec<TrackedPatch>) {
-        self.patches.extend(patches);
+    pub fn add_thread_patches(&mut self, patches: Vec<TrackedPatch>) {
+        self.thread_patches.extend(patches);
     }
 
     /// All patches accumulated during this run.
-    pub fn patches(&self) -> &[TrackedPatch] {
-        self.patches.as_slice()
+    pub fn thread_patches(&self) -> &[TrackedPatch] {
+        self.thread_patches.as_slice()
     }
 
     // =========================================================================
     // Doc (live document)
     // =========================================================================
 
-    /// Rebuild the live document from `state + patches + overlay`.
+    /// Rebuild the live document from `thread_base + thread_patches + run_patch`.
     ///
     /// Call this when the doc needs to reflect newly added patches.
-    pub fn rebuild_doc(&mut self) {
-        let patches = self.patches.as_slice();
+    pub(crate) fn rebuild_doc(&mut self) {
+        let patches = self.thread_patches.as_slice();
         let base = if patches.is_empty() {
-            self.state.clone()
+            self.thread_base.clone()
         } else {
-            apply_patches(&self.state, patches.iter().map(|p| p.patch()))
-                .unwrap_or_else(|_| self.state.clone())
+            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))
+                .unwrap_or_else(|_| self.thread_base.clone())
         };
-        let overlay_ops = self.run_overlay.lock().unwrap();
-        let value = if overlay_ops.is_empty() {
+        let run_ops = self.run_patch.lock().unwrap();
+        let value = if run_ops.is_empty() {
             base
         } else {
-            apply_patch(&base, &Patch::with_ops(overlay_ops.clone())).unwrap_or(base)
+            apply_patch(&base, &Patch::with_ops(run_ops.clone())).unwrap_or(base)
         };
         self.doc = DocCell::new(value);
     }
 
-    /// Rebuild the current run-visible state (state + patches + overlay).
+    /// Rebuild the current run-visible state (thread_base + thread_patches + run_patch).
     ///
     /// This is a pure computation that returns a new `Value` without
     /// touching the `DocCell`.
-    pub fn rebuild_state(&self) -> CarveResult<Value> {
-        let patches = self.patches.as_slice();
+    pub fn state(&self) -> CarveResult<Value> {
+        let patches = self.thread_patches.as_slice();
         let base = if patches.is_empty() {
-            self.state.clone()
+            self.thread_base.clone()
         } else {
-            apply_patches(&self.state, patches.iter().map(|p| p.patch()))?
+            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))?
         };
-        let overlay_ops = self.run_overlay.lock().unwrap();
-        if overlay_ops.is_empty() {
+        let run_ops = self.run_patch.lock().unwrap();
+        if run_ops.is_empty() {
             Ok(base)
         } else {
-            apply_patch(&base, &Patch::with_ops(overlay_ops.clone()))
+            apply_patch(&base, &Patch::with_ops(run_ops.clone()))
         }
     }
 
     /// Borrow the live document.
-    pub fn doc(&self) -> &DocCell {
+    pub(crate) fn doc(&self) -> &DocCell {
         &self.doc
     }
 
     // =========================================================================
-    // Overlay
+    // Run Patch
     // =========================================================================
 
-    /// Clone the shared run overlay handle.
-    pub fn run_overlay(&self) -> Arc<Mutex<Vec<Op>>> {
-        self.run_overlay.clone()
+    /// Clone the shared run patch handle.
+    pub fn run_patch(&self) -> Arc<Mutex<Vec<Op>>> {
+        self.run_patch.clone()
     }
 
     // =========================================================================
@@ -218,13 +218,13 @@ impl RunContext {
     pub fn take_delta(&mut self) -> RunDelta {
         RunDelta {
             messages: self.messages.take_delta(),
-            patches: self.patches.take_delta(),
+            patches: self.thread_patches.take_delta(),
         }
     }
 
     /// Whether there are un-consumed messages or patches.
     pub fn has_delta(&self) -> bool {
-        self.messages.has_delta() || self.patches.has_delta()
+        self.messages.has_delta() || self.thread_patches.has_delta()
     }
 
     // =========================================================================
@@ -243,7 +243,7 @@ impl RunContext {
         ToolCallContext::new(
             &self.doc,
             ops,
-            self.run_overlay.clone(),
+            self.run_patch.clone(),
             call_id,
             source,
             &self.run_config,
@@ -276,7 +276,7 @@ impl std::fmt::Debug for RunContext {
         f.debug_struct("RunContext")
             .field("thread_id", &self.thread_id)
             .field("messages", &self.messages.len())
-            .field("patches", &self.patches.len())
+            .field("thread_patches", &self.thread_patches.len())
             .field("has_delta", &self.has_delta())
             .finish()
     }
@@ -315,7 +315,7 @@ mod tests {
     fn add_patch_creates_delta() {
         let mut ctx = RunContext::new("t-1", json!({"a": 1}), vec![], RunConfig::default());
         let patch = TrackedPatch::new(Patch::new().with_op(Op::set(path!("a"), json!(2))));
-        ctx.add_patch(patch);
+        ctx.add_thread_patch(patch);
         assert!(ctx.has_delta());
         let delta = ctx.take_delta();
         assert_eq!(delta.patches.len(), 1);
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn rebuild_doc_reflects_patches() {
         let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
         ));
         ctx.rebuild_doc();
@@ -333,13 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_state_includes_overlay() {
+    fn state_includes_run_patch() {
         let ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
-        ctx.run_overlay
+        ctx.run_patch
             .lock()
             .unwrap()
             .push(Op::set(path!("counter"), json!(99)));
-        let state = ctx.rebuild_state().unwrap();
+        let state = ctx.state().unwrap();
         assert_eq!(state["counter"], 99);
     }
 
@@ -393,10 +393,10 @@ mod tests {
     #[test]
     fn all_patches_are_delta() {
         let mut ctx = RunContext::new("t-1", json!({"a": 0}), vec![], RunConfig::default());
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("a"), json!(1))),
         ));
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("a"), json!(2))),
         ));
         let delta = ctx.take_delta();
@@ -410,7 +410,7 @@ mod tests {
 
         // Round 1: 1 message + 1 patch
         ctx.add_message(Arc::new(Message::user("m1")));
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("x"), json!(1))),
         ));
         let d1 = ctx.take_delta();
@@ -420,7 +420,7 @@ mod tests {
         // Round 2: 2 messages + 1 patch (no overlap with d1)
         ctx.add_message(Arc::new(Message::user("m2")));
         ctx.add_message(Arc::new(Message::user("m3")));
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("y"), json!(2))),
         ));
         let d2 = ctx.take_delta();
@@ -433,65 +433,65 @@ mod tests {
 
         // Total accumulated
         assert_eq!(ctx.messages().len(), 3);
-        assert_eq!(ctx.patches().len(), 2);
+        assert_eq!(ctx.thread_patches().len(), 2);
     }
 
     // =========================================================================
-    // Category 4: Run overlay not leaking to delta
+    // Category 4: Run patch not leaking to delta
     // =========================================================================
 
-    /// Overlay ops are visible in rebuild_state but NOT in take_delta.
+    /// Run patch ops are visible in state() but NOT in take_delta.
     #[test]
-    fn overlay_visible_in_state_not_in_delta() {
+    fn run_patch_visible_in_state_not_in_delta() {
         let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
 
-        // Add overlay op
-        ctx.run_overlay
+        // Add run patch op
+        ctx.run_patch
             .lock()
             .unwrap()
             .push(Op::set(path!("counter"), json!(42)));
 
-        // Visible in rebuild_state
-        let state = ctx.rebuild_state().unwrap();
+        // Visible in state()
+        let state = ctx.state().unwrap();
         assert_eq!(state["counter"], 42);
 
-        // NOT in delta (overlay ops are ephemeral)
+        // NOT in delta (run patch ops are ephemeral)
         let delta = ctx.take_delta();
-        assert!(delta.patches.is_empty(), "overlay ops must not appear in delta");
+        assert!(delta.patches.is_empty(), "run patch ops must not appear in delta");
         assert!(delta.messages.is_empty());
     }
 
-    /// Overlay ops don't appear in patches() either — they're separate.
+    /// Run patch ops don't appear in thread_patches() either — they're separate.
     #[test]
-    fn overlay_not_in_patches() {
+    fn run_patch_not_in_thread_patches() {
         let ctx = RunContext::new("t-1", json!({"x": 0}), vec![], RunConfig::default());
-        ctx.run_overlay
+        ctx.run_patch
             .lock()
             .unwrap()
             .push(Op::set(path!("x"), json!(99)));
 
-        assert!(ctx.patches().is_empty(), "overlay must not appear in patches()");
+        assert!(ctx.thread_patches().is_empty(), "run patch must not appear in thread_patches()");
         // But state reflects it
-        assert_eq!(ctx.rebuild_state().unwrap()["x"], 99);
+        assert_eq!(ctx.state().unwrap()["x"], 99);
     }
 
-    /// Overlay + patches coexist: patches in delta, overlay not.
+    /// Run patch + thread patches coexist: thread patches in delta, run patch not.
     #[test]
-    fn overlay_and_patches_coexist_only_patches_in_delta() {
+    fn run_patch_and_thread_patches_coexist_only_thread_patches_in_delta() {
         let mut ctx = RunContext::new("t-1", json!({"a": 0, "b": 0}), vec![], RunConfig::default());
 
         // Durable patch on "a"
-        ctx.add_patch(TrackedPatch::new(
+        ctx.add_thread_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("a"), json!(10))),
         ));
-        // Ephemeral overlay on "b"
-        ctx.run_overlay
+        // Ephemeral run patch on "b"
+        ctx.run_patch
             .lock()
             .unwrap()
             .push(Op::set(path!("b"), json!(20)));
 
         // State shows both
-        let state = ctx.rebuild_state().unwrap();
+        let state = ctx.state().unwrap();
         assert_eq!(state["a"], 10);
         assert_eq!(state["b"], 20);
 
@@ -514,12 +514,12 @@ mod tests {
         ));
 
         let ctx = RunContext::from_thread(&thread, RunConfig::default()).unwrap();
-        // State is pre-rebuilt (includes thread patches)
-        assert_eq!(ctx.state()["counter"], 5);
+        // thread_base is pre-rebuilt (includes thread patches)
+        assert_eq!(ctx.thread_base()["counter"], 5);
         // No run patches yet
-        assert!(ctx.patches().is_empty());
-        // rebuild_state is consistent with state()
-        assert_eq!(ctx.rebuild_state().unwrap()["counter"], 5);
+        assert!(ctx.thread_patches().is_empty());
+        // state() is consistent with thread_base()
+        assert_eq!(ctx.state().unwrap()["counter"], 5);
     }
 
     #[test]

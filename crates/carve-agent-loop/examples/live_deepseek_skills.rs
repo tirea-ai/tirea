@@ -368,10 +368,10 @@ async fn test_multi_skill(
     println!("Turn 2 - Assistant: {response}");
 
     // Summary
-    let final_state = outcome.run_ctx.rebuild_state()?;
+    let final_state = outcome.run_ctx.state()?;
     println!("\nSession summary:");
     println!("  Total messages: {}", outcome.run_ctx.messages().len());
-    println!("  Total patches: {}", outcome.run_ctx.patches().len());
+    println!("  Total patches: {}", outcome.run_ctx.thread_patches().len());
     println!(
         "  Final state: {}",
         serde_json::to_string_pretty(&final_state)?

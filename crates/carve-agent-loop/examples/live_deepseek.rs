@@ -408,7 +408,7 @@ async fn test_calculator(
     println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
     println!("Assistant: {}", response);
     println!("Messages in thread: {}", outcome.run_ctx.messages().len());
-    println!("Patches in thread: {}", outcome.run_ctx.patches().len());
+    println!("Patches in thread: {}", outcome.run_ctx.thread_patches().len());
 
     // Show tool calls from messages
     for msg in outcome.run_ctx.messages() {
@@ -479,10 +479,10 @@ async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
     println!("User: Please increment the counter by 5, then increment it by 3 more. Tell me the final value.");
     println!("Assistant: {}", response);
     println!("Messages in thread: {}", outcome.run_ctx.messages().len());
-    println!("Patches in thread: {}", outcome.run_ctx.patches().len());
+    println!("Patches in thread: {}", outcome.run_ctx.thread_patches().len());
 
     // Rebuild state to see final counter value
-    let final_state = outcome.run_ctx.rebuild_state()?;
+    let final_state = outcome.run_ctx.state()?;
     println!(
         "Final state: {}",
         serde_json::to_string_pretty(&final_state)?
@@ -596,12 +596,12 @@ async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     println!("Run 4 - Assistant: {}", response);
 
     // Check state
-    let final_state = outcome.run_ctx.rebuild_state()?;
+    let final_state = outcome.run_ctx.state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("\nSession summary:");
     println!("  Total messages: {}", outcome.run_ctx.messages().len());
-    println!("  Total patches: {}", outcome.run_ctx.patches().len());
+    println!("  Total patches: {}", outcome.run_ctx.thread_patches().len());
     println!(
         "  Final counter: {} (expected: 12 = 10 + 5 - 3)",
         final_counter
@@ -674,7 +674,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
         persist_thread = persist_thread.with_message((*msg.as_ref()).clone());
     }
     // Copy patches
-    for tp in outcome.run_ctx.patches() {
+    for tp in outcome.run_ctx.thread_patches() {
         persist_thread.patches.push(tp.clone());
     }
 
@@ -741,7 +741,7 @@ async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Final state check
-    let final_state = outcome.run_ctx.rebuild_state()?;
+    let final_state = outcome.run_ctx.state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
     println!(
         "\nFinal state: counter = {} (expected: 142 = 100 + 42)",
@@ -963,8 +963,8 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let response = outcome.response.as_deref().unwrap_or_default();
     println!("After increments:");
     println!("  Assistant: {}", response);
-    println!("  Patches: {}", outcome.run_ctx.patches().len());
-    println!("  State: {:?}", outcome.run_ctx.rebuild_state()?);
+    println!("  Patches: {}", outcome.run_ctx.thread_patches().len());
+    println!("  State: {:?}", outcome.run_ctx.state()?);
 
     // Phase 2: Snapshot to collapse patches - need a Thread for this
     println!("\n[Phase 2: Snapshot]");
@@ -972,7 +972,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     for msg in outcome.run_ctx.messages() {
         snapshot_thread = snapshot_thread.with_message((*msg.as_ref()).clone());
     }
-    for tp in outcome.run_ctx.patches() {
+    for tp in outcome.run_ctx.thread_patches() {
         snapshot_thread.patches.push(tp.clone());
     }
 
@@ -992,7 +992,7 @@ async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
     let response = outcome.response.as_deref().unwrap_or_default();
-    let final_state = outcome.run_ctx.rebuild_state()?;
+    let final_state = outcome.run_ctx.state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("  Assistant: {}", response);
@@ -1030,8 +1030,8 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default())?;
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_1 = outcome.run_ctx.rebuild_state()?;
-    let patches_after_1 = outcome.run_ctx.patches().len();
+    let state_after_1 = outcome.run_ctx.state()?;
+    let patches_after_1 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 1: counter = {}, patches = {}",
         state_after_1["counter"], patches_after_1
@@ -1043,8 +1043,8 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_2 = outcome.run_ctx.rebuild_state()?;
-    let patches_after_2 = outcome.run_ctx.patches().len();
+    let state_after_2 = outcome.run_ctx.state()?;
+    let patches_after_2 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 2: counter = {}, patches = {}",
         state_after_2["counter"], patches_after_2
@@ -1056,8 +1056,8 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
 
     let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_3 = outcome.run_ctx.rebuild_state()?;
-    let patches_after_3 = outcome.run_ctx.patches().len();
+    let state_after_3 = outcome.run_ctx.state()?;
+    let patches_after_3 = outcome.run_ctx.thread_patches().len();
     println!(
         "After run 3: counter = {}, patches = {}",
         state_after_3["counter"], patches_after_3
@@ -1068,7 +1068,7 @@ async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     for msg in outcome.run_ctx.messages() {
         replay_thread = replay_thread.with_message((*msg.as_ref()).clone());
     }
-    for tp in outcome.run_ctx.patches() {
+    for tp in outcome.run_ctx.thread_patches() {
         replay_thread.patches.push(tp.clone());
     }
 

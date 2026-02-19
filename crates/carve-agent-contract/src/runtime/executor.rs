@@ -64,7 +64,7 @@ pub struct ToolExecutionRequest<'a> {
     pub thread_messages: &'a [Arc<Message>],
     pub state_version: u64,
     pub cancellation_token: Option<&'a CancellationToken>,
-    pub run_overlay: Arc<Mutex<Vec<Op>>>,
+    pub run_patch: Arc<Mutex<Vec<Op>>>,
 }
 
 /// Output item produced by tool execution strategies.

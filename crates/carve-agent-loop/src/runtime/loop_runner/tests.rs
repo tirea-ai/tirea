@@ -1279,7 +1279,7 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
         &[Phase::AfterInference, Phase::StepEnd]
     );
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .expect("state rebuild should succeed");
     assert_eq!(state["debug"]["cleanup_ran"], true);
 }
@@ -1489,7 +1489,7 @@ fn test_execute_tools_with_pending_phase_plugin() {
         assert_eq!(msg.role, crate::contracts::thread::Role::Tool);
         assert!(msg.content.contains("awaiting approval"));
 
-        let state = thread.rebuild_state().unwrap();
+        let state = thread.state().unwrap();
         assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
@@ -1929,7 +1929,7 @@ fn test_execute_tools_with_config_with_pending_plugin() {
         assert!(msg.content.contains("awaiting approval"));
 
         // Pending interaction should be persisted via RunContext.
-        let state = thread.rebuild_state().unwrap();
+        let state = thread.state().unwrap();
         assert_eq!(state["loop_control"]["pending_interaction"]["id"], "confirm_1");
     });
 }
@@ -2606,7 +2606,7 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume?");
 
-    let state = outcome.run_ctx.rebuild_state().expect("state should rebuild");
+    let state = outcome.run_ctx.state().expect("state should rebuild");
     assert_eq!(
         state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
@@ -3466,7 +3466,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
     );
 
     let nonstream_state = nonstream_outcome.run_ctx
-        .rebuild_state()
+        .state()
         .expect("non-stream state should rebuild");
     let stream_state = stream_thread
         .rebuild_state()
@@ -4272,7 +4272,7 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
 }
 
 #[tokio::test]
-async fn test_stream_replay_rebuild_state_failure_emits_error() {
+async fn test_stream_replay_state_failure_emits_error() {
     struct ReplayPlugin;
 
     #[async_trait]
@@ -4302,7 +4302,7 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
     )
     .with_source("test:broken_state");
 
-    // Build RunContext with base state, then add the broken patch so rebuild_state()
+    // Build RunContext with base state, then add the broken patch so state()
     // fails lazily during loop execution (not eagerly in from_thread).
     let mut run_ctx = RunContext::new(
         "test",
@@ -4310,7 +4310,7 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
         vec![Arc::new(Message::user("resume"))],
         crate::contracts::RunConfig::default(),
     );
-    run_ctx.add_patch(broken_patch);
+    run_ctx.add_thread_patch(broken_patch);
 
     let config =
         AgentConfig::new("mock").with_plugin(Arc::new(ReplayPlugin) as Arc<dyn AgentPlugin>);
@@ -4630,7 +4630,7 @@ fn test_apply_tool_results_accepts_disjoint_parallel_state_patches() {
 
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true)
         .expect("parallel disjoint patches should succeed");
-    let state = run_ctx.rebuild_state().expect("state rebuild");
+    let state = run_ctx.state().expect("state rebuild");
     assert_eq!(state["debug"]["alpha"], 1);
     assert_eq!(state["debug"]["beta"], 2);
 }
@@ -5714,7 +5714,7 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
     assert_eq!(interaction.action, "recover_agent_run");
     assert_eq!(interaction.message, "resume step?");
 
-    let state = outcome.run_ctx.rebuild_state().expect("state should rebuild");
+    let state = outcome.run_ctx.state().expect("state should rebuild");
     assert_eq!(
         state["loop_control"]["pending_interaction"]["action"],
         Value::String("recover_agent_run".to_string())
@@ -5923,61 +5923,61 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
 // ========================================================================
 
 /// Patches added via `add_patch` are lazily evaluated — they only affect
-/// state when `rebuild_state()` is called.
+/// state when `state()` is called.
 #[test]
 fn test_run_ctx_patches_are_lazily_evaluated() {
     let mut run_ctx = RunContext::new("test", json!({"counter": 0}), vec![], Default::default());
 
-    // Add patches but don't call rebuild_state yet
-    run_ctx.add_patch(TrackedPatch::new(
+    // Add patches but don't call state() yet
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("counter"), json!(1))),
     ));
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("extra"), json!("added"))),
     ));
 
     // Base state is still the original value
-    assert_eq!(run_ctx.state()["counter"], 0);
-    assert!(run_ctx.state().get("extra").is_none());
+    assert_eq!(run_ctx.thread_base()["counter"], 0);
+    assert!(run_ctx.thread_base().get("extra").is_none());
 
-    // rebuild_state computes the accumulated patches
-    let state = run_ctx.rebuild_state().unwrap();
+    // state() computes the accumulated patches
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["counter"], 1);
     assert_eq!(state["extra"], "added");
 
-    // Patches are still tracked (not consumed by rebuild_state)
-    assert_eq!(run_ctx.patches().len(), 2);
+    // Patches are still tracked (not consumed by state())
+    assert_eq!(run_ctx.thread_patches().len(), 2);
 }
 
-/// Multiple `rebuild_state()` calls return consistent results and are idempotent.
+/// Multiple `state()` calls return consistent results and are idempotent.
 #[test]
-fn test_run_ctx_rebuild_state_is_idempotent() {
+fn test_run_ctx_state_is_idempotent() {
     let mut run_ctx = RunContext::new("test", json!({"v": 0}), vec![], Default::default());
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("v"), json!(42))),
     ));
 
-    let s1 = run_ctx.rebuild_state().unwrap();
-    let s2 = run_ctx.rebuild_state().unwrap();
-    assert_eq!(s1, s2, "rebuild_state must be idempotent");
+    let s1 = run_ctx.state().unwrap();
+    let s2 = run_ctx.state().unwrap();
+    assert_eq!(s1, s2, "state() must be idempotent");
 }
 
-/// Patches added between two `rebuild_state` calls are visible in the second call.
+/// Patches added between two `state()` calls are visible in the second call.
 #[test]
 fn test_run_ctx_incremental_patches_visible_in_rebuild() {
     let mut run_ctx = RunContext::new("test", json!({"a": 0, "b": 0}), vec![], Default::default());
 
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("a"), json!(1))),
     ));
-    let s1 = run_ctx.rebuild_state().unwrap();
+    let s1 = run_ctx.state().unwrap();
     assert_eq!(s1["a"], 1);
     assert_eq!(s1["b"], 0);
 
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("b"), json!(2))),
     ));
-    let s2 = run_ctx.rebuild_state().unwrap();
+    let s2 = run_ctx.state().unwrap();
     assert_eq!(s2["a"], 1, "prior patch must still be applied");
     assert_eq!(s2["b"], 2, "new patch must be visible");
 }
@@ -5987,30 +5987,30 @@ fn test_run_ctx_incremental_patches_visible_in_rebuild() {
 fn test_run_ctx_take_delta_tracks_incremental_patches() {
     let mut run_ctx = RunContext::new("test", json!({}), vec![], Default::default());
 
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("x"), json!(1))),
     ));
     let d1 = run_ctx.take_delta();
     assert_eq!(d1.patches.len(), 1);
 
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("y"), json!(2))),
     ));
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("z"), json!(3))),
     ));
     let d2 = run_ctx.take_delta();
     assert_eq!(d2.patches.len(), 2, "only patches since last take_delta");
 
-    // rebuild_state still sees ALL patches (delta tracking is orthogonal)
-    let state = run_ctx.rebuild_state().unwrap();
+    // state() still sees ALL patches (delta tracking is orthogonal)
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["x"], 1);
     assert_eq!(state["y"], 2);
     assert_eq!(state["z"], 3);
 }
 
 /// Parallel disjoint tool patches are applied atomically via `apply_tool_results_to_session`,
-/// and the conflict-free patches from both tools are visible in `rebuild_state()`.
+/// and the conflict-free patches from both tools are visible in `state()`.
 #[test]
 fn test_parallel_disjoint_patches_applied_atomically() {
     let mut run_ctx = RunContext::new("test", json!({"alpha": 0, "beta": 0}), vec![], Default::default());
@@ -6038,7 +6038,7 @@ fn test_parallel_disjoint_patches_applied_atomically() {
     assert_eq!(snapshot["beta"], 20);
 
     // RunContext also reflects both
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["alpha"], 10);
     assert_eq!(state["beta"], 20);
 
@@ -6073,10 +6073,10 @@ fn test_parallel_conflicting_patches_rejected_before_application() {
     }
 
     // Crucially: no patches were applied to run_ctx
-    assert_eq!(run_ctx.patches().len(), 0, "no patches should be added on conflict");
+    assert_eq!(run_ctx.thread_patches().len(), 0, "no patches should be added on conflict");
     assert_eq!(run_ctx.messages().len(), 0, "no messages should be added on conflict");
 
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["shared"], 0, "state must remain unchanged after conflict rejection");
 }
 
@@ -6193,7 +6193,7 @@ fn test_parallel_tools_disjoint_paths_both_visible() {
 }
 
 /// Plugin pending patches from a phase are accumulated into RunContext
-/// alongside tool patches, and both are visible in rebuild_state.
+/// alongside tool patches, and both are visible in state().
 #[test]
 fn test_plugin_pending_patches_accumulated_with_tool_patches() {
     let mut run_ctx = RunContext::new(
@@ -6229,15 +6229,15 @@ fn test_plugin_pending_patches_accumulated_with_tool_patches() {
     )
     .expect("should succeed");
 
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["tool_field"], 100, "tool patch applied");
     assert_eq!(state["plugin_field"], 200, "plugin pending patch applied");
 
     // Both patches are tracked
     assert!(
-        run_ctx.patches().len() >= 2,
+        run_ctx.thread_patches().len() >= 2,
         "both tool and plugin patches should be in run_ctx, got {}",
-        run_ctx.patches().len()
+        run_ctx.thread_patches().len()
     );
 }
 
@@ -6269,7 +6269,7 @@ async fn test_run_loop_patches_accumulate_across_steps() {
         outcome.termination
     );
 
-    let final_state = outcome.run_ctx.rebuild_state().unwrap();
+    let final_state = outcome.run_ctx.state().unwrap();
     assert_eq!(
         final_state["counter"], 15,
         "patches from both steps must accumulate: 0 + 5 + 10 = 15"
@@ -6277,9 +6277,9 @@ async fn test_run_loop_patches_accumulate_across_steps() {
 
     // Verify patches are tracked
     assert!(
-        outcome.run_ctx.patches().len() >= 2,
+        outcome.run_ctx.thread_patches().len() >= 2,
         "at least one patch per tool step, got {}",
-        outcome.run_ctx.patches().len()
+        outcome.run_ctx.thread_patches().len()
     );
 }
 
@@ -6524,7 +6524,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
 
     // Checkpoint 2: assistant turn + patch
     run_ctx.add_message(Arc::new(Message::assistant("hi there")));
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("greeted"), json!(true))),
     ));
     state_commit::commit_pending_delta(
@@ -6540,7 +6540,7 @@ async fn test_consecutive_checkpoints_disjoint_deltas() {
 
     // Checkpoint 3: tool results
     run_ctx.add_message(Arc::new(Message::tool("call-1", "tool result")));
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("tool_done"), json!(true))),
     ));
     state_commit::commit_pending_delta(
@@ -6586,7 +6586,7 @@ async fn test_run_end_checkpoint_captures_remaining() {
     // Add data without committing
     run_ctx.add_message(Arc::new(Message::user("hello")));
     run_ctx.add_message(Arc::new(Message::assistant("world")));
-    run_ctx.add_patch(TrackedPatch::new(
+    run_ctx.add_thread_patch(TrackedPatch::new(
         Patch::new().with_op(Op::set(carve_state::path!("x"), json!(1))),
     ));
 
@@ -6682,7 +6682,7 @@ fn test_conflict_rejection_leaves_delta_clean() {
     );
 
     // Record initial delta state
-    let pre_patches = run_ctx.patches().len();
+    let pre_patches = run_ctx.thread_patches().len();
 
     match apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true) {
         Err(AgentLoopError::StateError(_)) => {} // expected
@@ -6692,12 +6692,12 @@ fn test_conflict_rejection_leaves_delta_clean() {
 
     // Delta should be clean — no patches added
     assert_eq!(
-        run_ctx.patches().len(),
+        run_ctx.thread_patches().len(),
         pre_patches,
         "conflicting patches must NOT be added to run_ctx"
     );
     // State unchanged
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["counter"], 0, "state unchanged after conflict rejection");
 }
 
@@ -6727,9 +6727,9 @@ fn test_sequential_error_preserves_prior_patches() {
         .expect("single tool should succeed");
 
     // Verify "a" is patched
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["a"], 100);
-    assert_eq!(run_ctx.patches().len(), 1);
+    assert_eq!(run_ctx.thread_patches().len(), 1);
 
     // Now apply a second tool that also writes "a" — this should still succeed
     // in non-parallel mode since conflict detection is only for parallel
@@ -6743,7 +6743,7 @@ fn test_sequential_error_preserves_prior_patches() {
     let _applied = apply_tool_results_to_session(&mut run_ctx, &[second], None, false)
         .expect("sequential mode allows overwriting");
 
-    let state = run_ctx.rebuild_state().unwrap();
+    let state = run_ctx.state().unwrap();
     assert_eq!(state["a"], 200, "sequential overwrites are allowed");
-    assert_eq!(run_ctx.patches().len(), 2);
+    assert_eq!(run_ctx.thread_patches().len(), 2);
 }

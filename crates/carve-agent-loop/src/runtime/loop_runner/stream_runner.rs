@@ -31,7 +31,7 @@ async fn drain_run_start_outbox_and_replay(
 
     let mut replay_state_changed = false;
     for tool_call in &replay_calls {
-        let state = run_ctx.rebuild_state().map_err(|e| {
+        let state = run_ctx.state().map_err(|e| {
             format!(
                 "failed to rebuild state before replaying tool '{}': {e}",
                 tool_call.id
@@ -52,7 +52,7 @@ async fn drain_run_start_outbox_and_replay(
             run_ctx.thread_id(),
             run_ctx.messages(),
             run_ctx.version(),
-            run_ctx.run_overlay(),
+            run_ctx.run_patch(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -80,11 +80,11 @@ async fn drain_run_start_outbox_and_replay(
 
         if let Some(patch) = replay_result.execution.patch.clone() {
             replay_state_changed = true;
-            run_ctx.add_patch(patch);
+            run_ctx.add_thread_patch(patch);
         }
         if !replay_result.pending_patches.is_empty() {
             replay_state_changed = true;
-            run_ctx.add_patches(replay_result.pending_patches.clone());
+            run_ctx.add_thread_patches(replay_result.pending_patches.clone());
         }
 
         events.push(AgentEvent::ToolCallDone {
@@ -97,17 +97,17 @@ async fn drain_run_start_outbox_and_replay(
 
     // Clear pending_interaction state after replaying tools.
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
     let clear_patch = clear_agent_pending_interaction(&state);
     if !clear_patch.patch().is_empty() {
         replay_state_changed = true;
-        run_ctx.add_patch(clear_patch);
+        run_ctx.add_thread_patch(clear_patch);
     }
 
     if replay_state_changed {
         let snapshot = run_ctx
-            .rebuild_state()
+            .state()
             .map_err(|e| format!("failed to rebuild replay snapshot: {e}"))?;
         events.push(AgentEvent::StateSnapshot { snapshot });
     }
@@ -360,7 +360,7 @@ pub(super) fn run_loop_stream_impl(
             .await
         {
             Ok(pending) => {
-                run_ctx.add_patches(pending);
+                run_ctx.add_thread_patches(pending);
             }
             Err(e) => {
                 let message = e.to_string();
@@ -422,7 +422,7 @@ pub(super) fn run_loop_stream_impl(
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            run_ctx.add_patches(prepared.pending_patches);
+            run_ctx.add_thread_patches(prepared.pending_patches);
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
 
@@ -655,7 +655,7 @@ pub(super) fn run_loop_stream_impl(
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,
                         cancellation_token: run_cancellation_token.as_ref(),
-                        run_overlay: tool_context.run_overlay.clone(),
+                        run_patch: tool_context.run_patch.clone(),
                     })
                     .await
                     .map_err(AgentLoopError::from)

@@ -68,7 +68,7 @@ impl ToolExecutor for ParallelToolExecutor {
             request.thread_messages,
             request.state_version,
             request.cancellation_token,
-            request.run_overlay,
+            request.run_patch,
         )
         .await
         .map_err(map_tool_executor_error)
@@ -105,7 +105,7 @@ impl ToolExecutor for SequentialToolExecutor {
             request.thread_messages,
             request.state_version,
             request.cancellation_token,
-            request.run_overlay,
+            request.run_patch,
         )
         .await
         .map_err(map_tool_executor_error)
@@ -213,7 +213,7 @@ pub(super) fn apply_tool_results_impl(
         patches.extend(r.pending_patches.iter().cloned());
     }
     let mut state_changed = !patches.is_empty();
-    run_ctx.add_patches(patches);
+    run_ctx.add_thread_patches(patches);
 
     // Add tool result messages for all executions.
     let tool_messages: Vec<Arc<Message>> = results
@@ -257,17 +257,17 @@ pub(super) fn apply_tool_results_impl(
 
     if let Some(interaction) = pending_interaction.clone() {
         let state = run_ctx
-            .rebuild_state()
+            .state()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
             state_changed = true;
-            run_ctx.add_patch(patch);
+            run_ctx.add_thread_patch(patch);
         }
         let state_snapshot = if state_changed {
             Some(
                 run_ctx
-                    .rebuild_state()
+                    .state()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
             )
         } else {
@@ -282,7 +282,7 @@ pub(super) fn apply_tool_results_impl(
     // If a previous run left a persisted pending interaction, clear it once we successfully
     // complete tool execution without creating a new pending interaction.
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     if state
         .get(LoopControlState::PATH)
@@ -292,14 +292,14 @@ pub(super) fn apply_tool_results_impl(
         let patch = clear_agent_pending_interaction(&state);
         if !patch.patch().is_empty() {
             state_changed = true;
-            run_ctx.add_patch(patch);
+            run_ctx.add_thread_patch(patch);
         }
     }
 
     let state_snapshot = if state_changed {
         Some(
             run_ctx
-                .rebuild_state()
+                .state()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
         )
     } else {
@@ -462,7 +462,7 @@ pub async fn execute_tools_with_plugins_and_executor(
             thread_messages: run_ctx.messages(),
             state_version: run_ctx.version(),
             cancellation_token: None,
-            run_overlay: Arc::new(std::sync::Mutex::new(Vec::new())),
+            run_patch: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
         .await?;
 
@@ -503,7 +503,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
     thread_messages: &[Arc<Message>],
     state_version: u64,
     cancellation_token: Option<&RunCancellationToken>,
-    run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
+    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
@@ -531,7 +531,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let rt = scope_owned.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
-        let run_overlay = run_overlay.clone();
+        let run_patch = run_patch.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -545,7 +545,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 &sid,
                 thread_messages.as_slice(),
                 state_version,
-                run_overlay,
+                run_patch,
             )
             .await
         }
@@ -583,7 +583,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
     thread_messages: &[Arc<Message>],
     state_version: u64,
     cancellation_token: Option<&RunCancellationToken>,
-    run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
+    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
 
@@ -622,7 +622,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
                     thread_id,
                     thread_messages,
                     state_version,
-                    run_overlay.clone(),
+                    run_patch.clone(),
                 ) => result?
             }
         } else {
@@ -637,7 +637,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
                 thread_id,
                 thread_messages,
                 state_version,
-                run_overlay.clone(),
+                run_patch.clone(),
             )
             .await?
         };
@@ -687,7 +687,7 @@ pub(super) async fn execute_single_tool_with_phases(
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     _state_version: u64,
-    run_overlay: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
+    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create ToolCallContext for plugin phases
     let doc = carve_state::DocCell::new(state.clone());
@@ -698,7 +698,7 @@ pub(super) async fn execute_single_tool_with_phases(
     let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,
-        run_overlay.clone(),
+        run_patch.clone(),
         "plugin_phase",
         "plugin:tool_phase",
         plugin_scope,
@@ -776,12 +776,12 @@ pub(super) async fn execute_single_tool_with_phases(
         // Execute the tool with its own ToolCallContext
         let tool_doc = carve_state::DocCell::new(state.clone());
         let tool_ops = std::sync::Mutex::new(Vec::new());
-        let tool_overlay = run_overlay.clone();
+        let tool_run_patch = run_patch.clone();
         let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
         let tool_ctx = crate::contracts::ToolCallContext::new(
             &tool_doc,
             &tool_ops,
-            tool_overlay,
+            tool_run_patch,
             &call.id,
             format!("tool:{}", call.name),
             plugin_scope,

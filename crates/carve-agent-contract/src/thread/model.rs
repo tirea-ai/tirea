@@ -59,7 +59,7 @@ pub struct Thread {
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
     /// Run-scoped overlay ops shared across tool calls within a single run (not persisted).
-    /// Deprecated: use `RunContext.run_overlay()` instead.
+    /// Deprecated: use `RunContext.run_patch()` instead.
     #[serde(skip)]
     pub(crate) run_overlay: Arc<Mutex<Vec<Op>>>,
 }

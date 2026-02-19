@@ -119,7 +119,7 @@ where
     Extract: FnOnce(&mut StepContext<'_>) -> R,
 {
     let current_state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let doc = DocCell::new(current_state);
     let ops = Mutex::new(Vec::new());
@@ -127,7 +127,7 @@ where
     let tool_call_ctx = ToolCallContext::new(
         &doc,
         &ops,
-        run_ctx.run_overlay(),
+        run_ctx.run_patch(),
         "phase",
         "plugin:phase",
         &run_ctx.run_config,
@@ -176,7 +176,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
     message: String,
 ) -> Result<(), AgentLoopError> {
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let set_error_patch = set_agent_inference_error(
         &state,
@@ -185,7 +185,7 @@ pub(super) async fn emit_cleanup_phases_and_apply(
             message,
         },
     );
-    run_ctx.add_patch(set_error_patch);
+    run_ctx.add_thread_patch(set_error_patch);
 
     let pending = emit_phase_block(
         Phase::AfterInference,
@@ -195,17 +195,17 @@ pub(super) async fn emit_cleanup_phases_and_apply(
         |_| {},
     )
     .await?;
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
 
     let state = run_ctx
-        .rebuild_state()
+        .state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let clear_error_patch = clear_agent_inference_error(&state);
-    run_ctx.add_patch(clear_error_patch);
+    run_ctx.add_thread_patch(clear_error_patch);
 
     let pending =
         emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
     Ok(())
 }
 
@@ -215,7 +215,7 @@ pub(super) async fn emit_run_end_phase(
     plugins: &[Arc<dyn AgentPlugin>],
 ) {
     let pending = {
-        let current_state = match run_ctx.rebuild_state() {
+        let current_state = match run_ctx.state() {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "RunEndPhase(RunEnd): failed to rebuild state");
@@ -228,7 +228,7 @@ pub(super) async fn emit_run_end_phase(
         let tool_call_ctx = ToolCallContext::new(
             &doc,
             &ops,
-            run_ctx.run_overlay(),
+            run_ctx.run_patch(),
             "phase",
             "plugin:run_end",
             &run_ctx.run_config,
@@ -250,5 +250,5 @@ pub(super) async fn emit_run_end_phase(
         }
         take_step_pending_patches(&mut step)
     };
-    run_ctx.add_patches(pending);
+    run_ctx.add_thread_patches(pending);
 }

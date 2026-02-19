@@ -258,9 +258,9 @@ impl<'a> StepContext<'a> {
         self.ctx.state::<T>(path)
     }
 
-    /// Typed state reference writing to overlay (not persisted).
-    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
-        self.ctx.override_state_of::<T>()
+    /// Typed state reference writing to run patch (not persisted).
+    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
+        self.ctx.run_state_of::<T>()
     }
 
     /// Borrow the run config.
