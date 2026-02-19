@@ -1,12 +1,11 @@
 use super::core::{
-    apply_pending_patches, clear_agent_inference_error, reduce_thread_mutations,
-    set_agent_inference_error, ThreadMutationBatch,
+    clear_agent_inference_error, set_agent_inference_error,
 };
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::state::Thread;
 use crate::contracts::tool::ToolDescriptor;
+use crate::contracts::RunContext;
 use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;
 use carve_state::{DocCell, TrackedPatch};
@@ -108,7 +107,7 @@ fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
 }
 
 pub(super) async fn run_phase_block<R, Setup, Extract>(
-    thread: &Thread,
+    run_ctx: &RunContext,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     phases: &[Phase],
@@ -119,7 +118,7 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
     Extract: FnOnce(&mut StepContext<'_>) -> R,
 {
-    let current_state = thread
+    let current_state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let doc = DocCell::new(current_state);
@@ -128,17 +127,17 @@ where
     let tool_call_ctx = ToolCallContext::new(
         &doc,
         &ops,
-        thread.run_overlay(),
+        run_ctx.run_overlay(),
         "phase",
         "plugin:phase",
-        &thread.run_config,
+        &run_ctx.run_config,
         &pending_messages,
         None,
     );
     let mut step = StepContext::new(
         tool_call_ctx,
-        &thread.id,
-        &thread.messages,
+        run_ctx.thread_id(),
+        run_ctx.messages(),
         tool_descriptors.to_vec(),
     );
     setup(&mut step);
@@ -156,7 +155,7 @@ where
 
 pub(super) async fn emit_phase_block<Setup>(
     phase: Phase,
-    thread: &Thread,
+    run_ctx: &RunContext,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     setup: Setup,
@@ -165,18 +164,18 @@ where
     Setup: FnOnce(&mut StepContext<'_>),
 {
     let (_, pending) =
-        run_phase_block(thread, tool_descriptors, plugins, &[phase], setup, |_| ()).await?;
+        run_phase_block(run_ctx, tool_descriptors, plugins, &[phase], setup, |_| ()).await?;
     Ok(pending)
 }
 
 pub(super) async fn emit_cleanup_phases_and_apply(
-    thread: Thread,
+    run_ctx: &mut RunContext,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     error_type: &'static str,
     message: String,
-) -> Result<Thread, AgentLoopError> {
-    let state = thread
+) -> Result<(), AgentLoopError> {
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let set_error_patch = set_agent_inference_error(
@@ -186,46 +185,41 @@ pub(super) async fn emit_cleanup_phases_and_apply(
             message,
         },
     );
-    let mut thread = reduce_thread_mutations(
-        thread,
-        ThreadMutationBatch::default().with_patch(set_error_patch),
-    );
+    run_ctx.add_patch(set_error_patch);
 
     let pending = emit_phase_block(
         Phase::AfterInference,
-        &thread,
+        run_ctx,
         tool_descriptors,
         plugins,
         |_| {},
     )
     .await?;
-    thread = apply_pending_patches(thread, pending);
+    run_ctx.add_patches(pending);
 
-    let state = thread
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     let clear_error_patch = clear_agent_inference_error(&state);
-    thread = reduce_thread_mutations(
-        thread,
-        ThreadMutationBatch::default().with_patch(clear_error_patch),
-    );
+    run_ctx.add_patch(clear_error_patch);
 
     let pending =
-        emit_phase_block(Phase::StepEnd, &thread, tool_descriptors, plugins, |_| {}).await?;
-    Ok(apply_pending_patches(thread, pending))
+        emit_phase_block(Phase::StepEnd, run_ctx, tool_descriptors, plugins, |_| {}).await?;
+    run_ctx.add_patches(pending);
+    Ok(())
 }
 
 pub(super) async fn emit_run_end_phase(
-    thread: Thread,
+    run_ctx: &mut RunContext,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Thread {
+) {
     let pending = {
-        let current_state = match thread.rebuild_state() {
+        let current_state = match run_ctx.rebuild_state() {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "RunEndPhase(RunEnd): failed to rebuild state");
-                return thread;
+                return;
             }
         };
         let doc = DocCell::new(current_state);
@@ -234,17 +228,17 @@ pub(super) async fn emit_run_end_phase(
         let tool_call_ctx = ToolCallContext::new(
             &doc,
             &ops,
-            thread.run_overlay(),
+            run_ctx.run_overlay(),
             "phase",
             "plugin:run_end",
-            &thread.run_config,
+            &run_ctx.run_config,
             &pending_messages,
             None,
         );
         let mut step = StepContext::new(
             tool_call_ctx,
-            &thread.id,
-            &thread.messages,
+            run_ctx.thread_id(),
+            run_ctx.messages(),
             tool_descriptors.to_vec(),
         );
         if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, plugins).await {
@@ -256,5 +250,5 @@ pub(super) async fn emit_run_end_phase(
         }
         take_step_pending_patches(&mut step)
     };
-    apply_pending_patches(thread, pending)
+    run_ctx.add_patches(pending);
 }

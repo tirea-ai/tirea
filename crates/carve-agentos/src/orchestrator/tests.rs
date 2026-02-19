@@ -1665,11 +1665,11 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
     assert_eq!(prepared.thread_id, "t-prepare");
     assert_eq!(prepared.run_id, "run-prepare");
     assert_eq!(
-        prepared.thread.run_config.value("run_id"),
+        prepared.run_ctx.run_config.value("run_id"),
         Some(&json!("run-prepare"))
     );
     assert_eq!(
-        prepared.thread.run_config.value("parent_run_id"),
+        prepared.run_ctx.run_config.value("parent_run_id"),
         Some(&json!("run-parent"))
     );
 
@@ -1980,7 +1980,7 @@ async fn prepare_run_scope_tool_registry_adds_new_tool() {
     let provider = prepared.config.step_tool_provider.as_ref().unwrap();
     let snapshot = provider
         .provide(StepToolInput {
-            state: &prepared.thread,
+            state: &prepared.run_ctx,
         })
         .await
         .unwrap();
@@ -2039,7 +2039,7 @@ async fn prepare_run_scope_tool_registry_skips_shadowed() {
     let provider = prepared.config.step_tool_provider.as_ref().unwrap();
     let snapshot = provider
         .provide(StepToolInput {
-            state: &prepared.thread,
+            state: &prepared.run_ctx,
         })
         .await
         .unwrap();

@@ -38,7 +38,8 @@
 
 pub use crate::contracts::runtime::StopReason;
 use crate::contracts::runtime::{StopConditionSpec, StopPolicy, StopPolicyInput, StopPolicyStats};
-use crate::contracts::state::{Thread, ToolCall};
+use crate::contracts::state::ToolCall;
+use crate::contracts::RunContext;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,18 +70,18 @@ pub struct StopCheckContext<'a> {
     pub last_text: &'a str,
     /// History of tool call names per round (most recent last), for loop detection.
     pub tool_call_history: &'a VecDeque<Vec<String>>,
-    /// The current thread, providing access to conversation history and state.
+    /// The current run context, providing access to conversation history and state.
     ///
-    /// Custom stop conditions can inspect `thread.messages` for patterns,
-    /// check `thread.message_count()`, or examine the accumulated state.
-    pub thread: &'a Thread,
+    /// Custom stop conditions can inspect messages for patterns or examine
+    /// the accumulated state via `rebuild_state()`.
+    pub run_ctx: &'a RunContext,
 }
 
 impl<'a> StopCheckContext<'a> {
     /// Convert legacy context shape to canonical stop-policy input.
     pub fn as_policy_input(&'a self) -> StopPolicyInput<'a> {
         StopPolicyInput {
-            agent_state: self.thread,
+            agent_state: self.run_ctx,
             stats: StopPolicyStats {
                 step: self.rounds,
                 step_tool_call_count: self.last_tool_calls.len(),
@@ -113,7 +114,7 @@ fn stop_check_context_from_policy_input<'a>(
         last_tool_calls: input.stats.last_tool_calls,
         last_text: input.stats.last_text,
         tool_call_history: input.stats.tool_call_history,
-        thread: input.agent_state,
+        run_ctx: input.agent_state,
     }
 }
 
@@ -300,10 +301,12 @@ pub(crate) fn condition_from_spec(spec: StopConditionSpec) -> Arc<dyn StopPolicy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use carve_agent_contract::RunConfig;
     use serde_json::json;
     use std::sync::LazyLock;
 
-    static TEST_SESSION: LazyLock<Thread> = LazyLock::new(|| Thread::new("test"));
+    static TEST_RUN_CTX: LazyLock<RunContext> =
+        LazyLock::new(|| RunContext::new("test", json!({}), vec![], RunConfig::default()));
 
     fn empty_context() -> StopCheckContext<'static> {
         static EMPTY_TOOL_CALLS: &[ToolCall] = &[];
@@ -317,7 +320,7 @@ mod tests {
             last_tool_calls: EMPTY_TOOL_CALLS,
             last_text: "",
             tool_call_history: &EMPTY_HISTORY,
-            thread: &TEST_SESSION,
+            run_ctx: &TEST_RUN_CTX,
         }
     }
 

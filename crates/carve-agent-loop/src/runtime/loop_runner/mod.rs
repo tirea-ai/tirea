@@ -55,8 +55,9 @@ use crate::contracts::runtime::{
 };
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::state::{ActivityManager, Thread};
+use crate::contracts::state::ActivityManager;
 use crate::contracts::tool::Tool;
+use crate::contracts::RunContext;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
 use crate::contracts::runtime::StopReason;
@@ -64,9 +65,7 @@ use crate::runtime::activity::ActivityHub;
 
 use crate::runtime::streaming::StreamCollector;
 use async_stream::stream;
-use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use genai::chat::ChatOptions;
 use genai::Client;
 use std::collections::HashMap;
 use std::future::Future;
@@ -92,11 +91,10 @@ use core::build_messages;
 #[cfg(test)]
 use core::set_agent_pending_interaction;
 use core::{
-    apply_pending_patches, build_request_for_filtered_tools, clear_agent_pending_interaction,
-    drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_thread,
-    reduce_thread_mutations, ThreadMutationBatch,
+    build_request_for_filtered_tools, clear_agent_pending_interaction,
+    drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_ctx,
 };
-pub use outcome::{run_step_cycle, tool_map, tool_map_from_arc, AgentLoopError, StepResult};
+pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
 #[cfg(test)]
 use plugin_runtime::emit_phase_checked;
@@ -107,92 +105,24 @@ use run_state::{effective_stop_conditions, RunState};
 pub use state_commit::ChannelStateCommitter;
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(test)]
-use stream_runner::run_loop_stream_impl_with_provider;
+use stream_runner::run_loop_stream_impl;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use tool_exec::execute_tools_parallel_with_phases;
 use tool_exec::{
     apply_tool_results_impl, apply_tool_results_to_session, execute_single_tool_with_phases,
-    next_step_index, scope_with_tool_caller_context, step_metadata,
+    scope_with_tool_caller_context, step_metadata,
 };
 pub use tool_exec::{
     execute_tools, execute_tools_with_config, execute_tools_with_plugins,
     execute_tools_with_plugins_and_executor, ParallelToolExecutor, SequentialToolExecutor,
 };
 
-/// Canonical loop invocation input.
-///
-/// `run_ctx` carries the run-scoped workspace (state, messages, patches, config),
-/// while `cancellation_token` and `state_committer` carry infrastructure controls.
-///
-/// Internally, `thread` bridges to the legacy `Thread`-based loop functions.
-/// It will be removed once loop internals are fully migrated to `RunContext`.
-#[derive(Debug)]
-pub struct LoopRunInput {
-    pub run_ctx: crate::contracts::RunContext,
-    /// Cancellation token for cooperative loop termination.
-    pub cancellation_token: Option<RunCancellationToken>,
-    /// Optional state committer for durable state change sets.
-    pub state_committer: Option<Arc<dyn StateCommitter>>,
-    /// Legacy bridge — the original thread for internal loop consumption.
-    pub(super) thread: Thread,
-}
-
-impl LoopRunInput {
-    /// Create from an `Thread`, building both the new `RunContext` and
-    /// keeping the thread for internal loop consumption.
-    #[allow(deprecated)]
-    pub fn new(thread: Thread) -> Result<Self, AgentLoopError> {
-        let rebuilt = thread
-            .rebuild_thread_state()
-            .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-        Ok(Self {
-            run_ctx: crate::contracts::RunContext::new(
-                &thread.id,
-                rebuilt,
-                thread.messages.clone(),
-                thread.run_config.clone(),
-            ),
-            cancellation_token: None,
-            state_committer: None,
-            thread,
-        })
-    }
-
-    /// Attach a cancellation token (builder-style).
-    #[must_use]
-    pub fn with_cancellation_token(mut self, token: RunCancellationToken) -> Self {
-        self.cancellation_token = Some(token);
-        self
-    }
-
-    /// Attach a state committer (builder-style).
-    #[must_use]
-    pub fn with_state_committer(mut self, committer: Arc<dyn StateCommitter>) -> Self {
-        self.state_committer = Some(committer);
-        self
-    }
-}
-
 fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
 
-pub(super) fn agent_state_version(state: &Thread) -> u64 {
-    state.metadata.version.unwrap_or(0)
-}
-
-pub fn set_agent_state_version(
-    state: &mut Thread,
-    version: u64,
-    version_timestamp: Option<u64>,
-) {
-    state.metadata.version = Some(version);
-    if let Some(timestamp) = version_timestamp {
-        state.metadata.version_timestamp = Some(timestamp);
-    }
-}
 
 pub(crate) fn current_unix_millis() -> u64 {
     SystemTime::now()
@@ -321,9 +251,9 @@ pub(super) fn llm_executor_for_run(config: &AgentConfig) -> Arc<dyn LlmExecutor>
 
 pub(super) async fn resolve_step_tool_snapshot(
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    state: &Thread,
+    run_ctx: &RunContext,
 ) -> Result<StepToolSnapshot, AgentLoopError> {
-    step_tool_provider.provide(StepToolInput { state }).await
+    step_tool_provider.provide(StepToolInput { state: run_ctx }).await
 }
 
 fn mark_step_completed(run_state: &mut RunState) {
@@ -331,14 +261,14 @@ fn mark_step_completed(run_state: &mut RunState) {
 }
 
 fn build_loop_outcome(
-    state: Thread,
+    run_ctx: RunContext,
     termination: TerminationReason,
     response: Option<String>,
     run_state: &RunState,
     failure: Option<outcome::LoopFailure>,
 ) -> LoopOutcome {
     LoopOutcome {
-        state,
+        run_ctx,
         termination,
         response: response.filter(|text| !text.is_empty()),
         usage: run_state.usage(),
@@ -350,10 +280,10 @@ fn build_loop_outcome(
 fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
-    state: &Thread,
+    run_ctx: &RunContext,
     stop_conditions: &[Arc<dyn StopPolicy>],
 ) -> Option<StopReason> {
-    let stop_input = run_state.to_policy_input(result, state);
+    let stop_input = run_state.to_policy_input(result, run_ctx);
     check_stop_policies(stop_conditions, &stop_input)
 }
 
@@ -420,95 +350,8 @@ where
     }
 }
 
-#[async_trait]
-trait ChatStreamProvider: Send + Sync {
-    async fn exec_chat_stream_events(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<
-        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
-    >;
-}
-
-#[async_trait]
-trait ChatProvider: Send + Sync {
-    async fn exec_chat_response(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<genai::chat::ChatResponse>;
-}
-
-struct ExecutorChatProvider {
-    executor: Arc<dyn LlmExecutor>,
-}
-
-#[async_trait]
-impl ChatProvider for ExecutorChatProvider {
-    async fn exec_chat_response(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<genai::chat::ChatResponse> {
-        self.executor
-            .exec_chat_response(model, chat_req, options)
-            .await
-    }
-}
-
-struct ExecutorStreamProvider {
-    executor: Arc<dyn LlmExecutor>,
-}
-
-#[async_trait]
-impl ChatStreamProvider for ExecutorStreamProvider {
-    async fn exec_chat_stream_events(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<
-        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
-    > {
-        self.executor
-            .exec_chat_stream_events(model, chat_req, options)
-            .await
-    }
-}
-
-#[async_trait]
-impl ChatProvider for Client {
-    async fn exec_chat_response(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<genai::chat::ChatResponse> {
-        self.exec_chat(model, chat_req, options).await
-    }
-}
-
-#[async_trait]
-impl ChatStreamProvider for Client {
-    async fn exec_chat_stream_events(
-        &self,
-        model: &str,
-        chat_req: genai::chat::ChatRequest,
-        options: Option<&ChatOptions>,
-    ) -> genai::Result<
-        Pin<Box<dyn Stream<Item = genai::Result<genai::chat::ChatStreamEvent>> + Send>>,
-    > {
-        let resp = self.exec_chat_stream(model, chat_req, options).await?;
-        Ok(Box::pin(resp.stream))
-    }
-}
-
-async fn run_step_prepare_phases(
-    thread: &Thread,
+pub(super) async fn run_step_prepare_phases(
+    run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
@@ -516,7 +359,7 @@ async fn run_step_prepare_phases(
     AgentLoopError,
 > {
     let ((messages, filtered_tools, skip_inference), pending) = run_phase_block(
-        thread,
+        run_ctx,
         tool_descriptors,
         &config.plugins,
         &[Phase::StepStart, Phase::BeforeInference],
@@ -535,12 +378,12 @@ pub(super) struct PreparedStep {
 }
 
 pub(super) async fn prepare_step_execution(
-    thread: &Thread,
+    run_ctx: &RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
     let (messages, filtered_tools, skip_inference, pending) =
-        run_step_prepare_phases(thread, tool_descriptors, config).await?;
+        run_step_prepare_phases(run_ctx, tool_descriptors, config).await?;
     Ok(PreparedStep {
         messages,
         filtered_tools,
@@ -550,25 +393,24 @@ pub(super) async fn prepare_step_execution(
 }
 
 pub(super) async fn apply_llm_error_cleanup(
-    thread: &mut Thread,
+    run_ctx: &mut RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
     error_type: &'static str,
     message: String,
 ) -> Result<(), AgentLoopError> {
-    *thread = emit_cleanup_phases_and_apply(
-        thread.clone(),
+    emit_cleanup_phases_and_apply(
+        run_ctx,
         tool_descriptors,
         plugins,
         error_type,
         message,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 pub(super) async fn complete_step_after_inference(
-    thread: &mut Thread,
+    run_ctx: &mut RunContext,
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
@@ -577,7 +419,7 @@ pub(super) async fn complete_step_after_inference(
 ) -> Result<(), AgentLoopError> {
     let pending = emit_phase_block(
         Phase::AfterInference,
-        thread,
+        run_ctx,
         tool_descriptors,
         plugins,
         |step| {
@@ -585,23 +427,20 @@ pub(super) async fn complete_step_after_inference(
         },
     )
     .await?;
-    let thread_after_after_inference = apply_pending_patches(thread.clone(), pending);
+    run_ctx.add_patches(pending);
 
     let assistant = assistant_turn_message(result, step_meta, assistant_message_id);
-    let thread_after_message = reduce_thread_mutations(
-        thread_after_after_inference,
-        ThreadMutationBatch::default().with_message(assistant),
-    );
+    run_ctx.add_message(Arc::new(assistant));
 
     let pending = emit_phase_block(
         Phase::StepEnd,
-        &thread_after_message,
+        run_ctx,
         tool_descriptors,
         plugins,
         |_| {},
     )
     .await?;
-    *thread = apply_pending_patches(thread_after_message, pending);
+    run_ctx.add_patches(pending);
     Ok(())
 }
 
@@ -623,23 +462,23 @@ pub(super) struct ToolExecutionContext {
 }
 
 pub(super) fn prepare_tool_execution_context(
-    thread: &Thread,
+    run_ctx: &RunContext,
     config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
-    let state = thread
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let run_config = scope_with_tool_caller_context(thread, &state, config)?;
-    let run_overlay = thread.run_overlay();
+    let run_config = scope_with_tool_caller_context(run_ctx, &state, config)?;
+    let run_overlay = run_ctx.run_overlay();
     Ok(ToolExecutionContext { state, run_config, run_overlay })
 }
 
 pub(super) async fn finalize_run_end(
-    thread: Thread,
+    run_ctx: &mut RunContext,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
-) -> Thread {
-    emit_run_end_phase(thread, tool_descriptors, plugins).await
+) {
+    emit_run_end_phase(run_ctx, tool_descriptors, plugins).await
 }
 
 fn stream_result_from_chat_response(response: &genai::chat::ChatResponse) -> StreamResult {
@@ -683,239 +522,30 @@ fn assistant_turn_message(
     msg
 }
 
-/// Run one step of the agent loop (non-streaming).
-///
-/// A step consists of:
-/// 1. Emit StepStart phase
-/// 2. Emit BeforeInference phase
-/// 3. Send messages to LLM
-/// 4. Emit AfterInference phase
-/// 5. Emit StepEnd phase
-/// 6. Return the state and result (caller handles tool execution)
-pub async fn run_step(
-    client: &Client,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, StreamResult), AgentLoopError> {
-    run_step_with_provider(client, config, state, tools).await
-}
-
-async fn run_step_with_provider(
-    provider: &dyn ChatProvider,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, StreamResult), AgentLoopError> {
-    let step_tool_provider = step_tool_provider_for_run(config, tools);
-    let mut state = state;
-    let step_tools = resolve_step_tool_snapshot(&step_tool_provider, &state).await?;
-    let tool_descriptors = step_tools.descriptors.clone();
-    let prepared = prepare_step_execution(&state, &tool_descriptors, config).await?;
-    state = apply_pending_patches(state, prepared.pending_patches);
-    let messages = prepared.messages;
-    let filtered_tools = prepared.filtered_tools;
-
-    // Skip inference if requested
-    if prepared.skip_inference {
-        if let Some(interaction) = pending_interaction_from_thread(&state) {
-            return Err(AgentLoopError::PendingInteraction {
-                state: Box::new(state),
-                interaction: Box::new(interaction),
-            });
-        }
-        return Ok((
-            state,
-            StreamResult {
-                text: String::new(),
-                tool_calls: vec![],
-                usage: None,
-            },
-        ));
-    }
-
-    // Call LLM with unified retry + fallback model strategy.
-    let attempt_outcome =
-        run_llm_with_retry_and_fallback(config, None, true, "unknown llm error", |model| {
-            let request =
-                build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
-            async move {
-                provider
-                    .exec_chat_response(&model, request, config.chat_options.as_ref())
-                    .await
-            }
-        })
-        .await;
-    let response = match attempt_outcome {
-        LlmAttemptOutcome::Success { value, .. } => value,
-        LlmAttemptOutcome::Cancelled => {
-            return Err(AgentLoopError::Cancelled {
-                state: Box::new(state),
-            });
-        }
-        LlmAttemptOutcome::Exhausted { last_error, .. } => {
-            apply_llm_error_cleanup(
-                &mut state,
-                &tool_descriptors,
-                &config.plugins,
-                "llm_exec_error",
-                last_error.clone(),
-            )
-            .await?;
-            return Err(AgentLoopError::LlmError(last_error));
-        }
-    };
-
-    let result = stream_result_from_chat_response(&response);
-
-    // Add assistant message
-    let step_meta = step_metadata(
-        state
-            .run_config
-            .value("run_id")
-            .and_then(|v| v.as_str().map(String::from)),
-        next_step_index(&state),
-    );
-    complete_step_after_inference(
-        &mut state,
-        &result,
-        step_meta,
-        None,
-        &tool_descriptors,
-        &config.plugins,
-    )
-    .await?;
-
-    Ok((state, result))
-}
-
 /// Run the full agent loop until completion or a stop condition is met.
 ///
-/// Returns the final state and the last response text.
-pub async fn run_loop(
-    client: &Client,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(Thread, String), AgentLoopError> {
-    run_loop_with_context(client, config, state, tools, None, None).await
-}
-
-/// Run the full agent loop using executors and providers declared in [`AgentConfig`].
-///
-/// This is the recommended entry point for orchestration layers. Tools are
-/// sourced from `config.step_tool_provider`, and LLM calls are delegated to
+/// This is the primary non-streaming entry point. Tools are sourced from
+/// `config.step_tool_provider`, and LLM calls are delegated to
 /// `config.llm_executor` (or a default `GenaiLlmExecutor` when unset).
-pub async fn run_loop_with_input(
+pub async fn run_loop(
     config: &AgentConfig,
-    input: LoopRunInput,
-) -> Result<(Thread, String), AgentLoopError> {
-    let provider = ExecutorChatProvider {
-        executor: llm_executor_for_run(config),
-    };
-    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
-    run_loop_with_context_provider(
-        &provider,
-        config,
-        input.thread,
-        &no_static_tools,
-        input.cancellation_token,
-        input.state_committer,
-    )
-    .await
-}
-
-/// Run the full agent loop with explicit cancellation/commit controls.
-///
-/// This is the non-streaming counterpart of `run_loop_stream(...)`,
-/// allowing cooperative cancellation via `cancellation_token`.
-pub async fn run_loop_with_context(
-    client: &Client,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    cancellation_token: Option<RunCancellationToken>,
-    state_committer: Option<Arc<dyn StateCommitter>>,
-) -> Result<(Thread, String), AgentLoopError> {
-    run_loop_with_context_provider(client, config, state, tools, cancellation_token, state_committer).await
-}
-
-fn legacy_result_from_outcome(
-    outcome: LoopOutcome,
-) -> Result<(Thread, String), AgentLoopError> {
-    let LoopOutcome {
-        state,
-        termination,
-        response,
-        failure,
-        ..
-    } = outcome;
-
-    match termination {
-        TerminationReason::NaturalEnd | TerminationReason::PluginRequested => {
-            Ok((state, response.unwrap_or_default()))
-        }
-        TerminationReason::Stopped(reason) => Err(AgentLoopError::Stopped {
-            state: Box::new(state),
-            reason,
-        }),
-        TerminationReason::Cancelled => Err(AgentLoopError::Cancelled {
-            state: Box::new(state),
-        }),
-        TerminationReason::PendingInteraction => {
-            if let Some(interaction) = pending_interaction_from_thread(&state) {
-                Err(AgentLoopError::PendingInteraction {
-                    state: Box::new(state),
-                    interaction: Box::new(interaction),
-                })
-            } else {
-                Err(AgentLoopError::StateError(
-                    "pending interaction termination without pending interaction state".to_string(),
-                ))
-            }
-        }
-        TerminationReason::Error => match failure {
-            Some(outcome::LoopFailure::Llm(message)) => Err(AgentLoopError::LlmError(message)),
-            Some(outcome::LoopFailure::State(message)) => Err(AgentLoopError::StateError(message)),
-            None => Err(AgentLoopError::StateError(
-                "loop terminated with error".to_string(),
-            )),
-        },
-    }
-}
-
-async fn run_loop_with_context_provider(
-    provider: &dyn ChatProvider,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-    cancellation_token: Option<RunCancellationToken>,
-    state_committer: Option<Arc<dyn StateCommitter>>,
-) -> Result<(Thread, String), AgentLoopError> {
-    let outcome =
-        run_loop_outcome_with_context_provider(provider, config, state, tools, cancellation_token, state_committer).await;
-    legacy_result_from_outcome(outcome)
-}
-
-async fn run_loop_outcome_with_context_provider(
-    provider: &dyn ChatProvider,
-    config: &AgentConfig,
-    mut thread: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
+    mut run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     _state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> LoopOutcome {
+    let executor = llm_executor_for_run(config);
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
     let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
-    let step_tool_provider = step_tool_provider_for_run(config, tools);
-    let run_id = stream_core::resolve_stream_run_identity(&mut thread).run_id;
-    let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let step_tool_provider = step_tool_provider_for_run(config, &no_static_tools);
+    let run_id = stream_core::resolve_stream_run_identity(&mut run_ctx).run_id;
+    let initial_step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
             return build_loop_outcome(
-                thread,
+                run_ctx,
                 TerminationReason::Error,
                 None,
                 &run_state,
@@ -927,15 +557,15 @@ async fn run_loop_outcome_with_context_provider(
 
     macro_rules! terminate_run {
         ($termination:expr, $response:expr, $failure:expr) => {{
-            thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
-            return build_loop_outcome(thread, $termination, $response, &run_state, $failure);
+            finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
+            return build_loop_outcome(run_ctx, $termination, $response, &run_state, $failure);
         }};
     }
 
     // Phase: RunStart
     let pending = match emit_phase_block(
         Phase::RunStart,
-        &thread,
+        &run_ctx,
         &active_tool_descriptors,
         &config.plugins,
         |_| {},
@@ -951,14 +581,14 @@ async fn run_loop_outcome_with_context_provider(
             );
         }
     };
-    thread = apply_pending_patches(thread, pending);
+    run_ctx.add_patches(pending);
 
     loop {
         if is_run_cancelled(run_cancellation_token.as_ref()) {
             terminate_run!(TerminationReason::Cancelled, None, None);
         }
 
-        let step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+        let step_tools = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 terminate_run!(
@@ -970,7 +600,7 @@ async fn run_loop_outcome_with_context_provider(
         };
         active_tool_descriptors = step_tools.descriptors.clone();
 
-        let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, config).await
+        let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, config).await
         {
             Ok(v) => v,
             Err(e) => {
@@ -981,10 +611,10 @@ async fn run_loop_outcome_with_context_provider(
                 );
             }
         };
-        thread = apply_pending_patches(thread, prepared.pending_patches);
+        run_ctx.add_patches(prepared.pending_patches);
 
         if prepared.skip_inference {
-            if pending_interaction_from_thread(&thread).is_some() {
+            if pending_interaction_from_ctx(&run_ctx).is_some() {
                 terminate_run!(TerminationReason::PendingInteraction, None, None);
             }
             terminate_run!(
@@ -1005,8 +635,9 @@ async fn run_loop_outcome_with_context_provider(
             |model| {
                 let request =
                     build_request_for_filtered_tools(&messages, &step_tools.tools, &filtered_tools);
+                let executor = executor.clone();
                 async move {
-                    provider
+                    executor
                         .exec_chat_response(&model, request, config.chat_options.as_ref())
                         .await
                 }
@@ -1029,9 +660,8 @@ async fn run_loop_outcome_with_context_provider(
                 attempts,
             } => {
                 run_state.record_llm_attempts(attempts);
-                // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                 if let Err(phase_error) = apply_llm_error_cleanup(
-                    &mut thread,
+                    &mut run_ctx,
                     &active_tool_descriptors,
                     &config.plugins,
                     "llm_exec_error",
@@ -1061,7 +691,7 @@ async fn run_loop_outcome_with_context_provider(
         let assistant_msg_id = gen_message_id();
         let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
         if let Err(e) = complete_step_after_inference(
-            &mut thread,
+            &mut run_ctx,
             &result,
             step_meta.clone(),
             Some(assistant_msg_id.clone()),
@@ -1082,7 +712,7 @@ async fn run_loop_outcome_with_context_provider(
         if !result.needs_tools() {
             run_state.record_step_without_tools();
             if let Some(reason) =
-                stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+                stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
             {
                 terminate_run!(TerminationReason::Stopped(reason), None, None);
             }
@@ -1090,7 +720,7 @@ async fn run_loop_outcome_with_context_provider(
         }
 
         // Execute tools with phase hooks using configured execution strategy.
-        let tool_context = match prepare_tool_execution_context(&thread, Some(config)) {
+        let tool_context = match prepare_tool_execution_context(&run_ctx, Some(config)) {
             Ok(ctx) => ctx,
             Err(e) => {
                 terminate_run!(
@@ -1100,8 +730,8 @@ async fn run_loop_outcome_with_context_provider(
                 );
             }
         };
-        let thread_messages_for_tools = thread.messages.clone();
-        let thread_version_for_tools = agent_state_version(&thread);
+        let thread_messages_for_tools = run_ctx.messages().to_vec();
+        let thread_version_for_tools = run_ctx.version();
 
         let tool_exec_future = config.tool_executor.execute(ToolExecutionRequest {
             tools: &step_tools.tools,
@@ -1111,7 +741,7 @@ async fn run_loop_outcome_with_context_provider(
             plugins: &config.plugins,
             activity_manager: None,
             run_config: Some(&tool_context.run_config),
-            thread_id: &thread.id,
+            thread_id: run_ctx.thread_id(),
             thread_messages: &thread_messages_for_tools,
             state_version: thread_version_for_tools,
             cancellation_token: run_cancellation_token.as_ref(),
@@ -1133,9 +763,8 @@ async fn run_loop_outcome_with_context_provider(
             }
         };
 
-        let thread_before_apply = thread.clone();
         let applied = match apply_tool_results_to_session(
-            thread,
+            &mut run_ctx,
             &results,
             Some(step_meta),
             config
@@ -1143,16 +772,15 @@ async fn run_loop_outcome_with_context_provider(
                 .requires_parallel_patch_conflict_check(),
         ) {
             Ok(a) => a,
-            Err(e) => {
-                thread = thread_before_apply;
+            Err(_e) => {
+                // On error, we can't easily rollback RunContext, so just terminate
                 terminate_run!(
                     TerminationReason::Error,
                     None,
-                    Some(outcome::LoopFailure::State(e.to_string()))
+                    Some(outcome::LoopFailure::State(_e.to_string()))
                 );
             }
         };
-        thread = applied.thread;
 
         // Pause if any tool is waiting for client response.
         if let Some(_interaction) = applied.pending_interaction {
@@ -1167,7 +795,7 @@ async fn run_loop_outcome_with_context_provider(
         run_state.record_tool_step(&result.tool_calls, error_count);
 
         // Check stop conditions.
-        if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions) {
+        if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions) {
             terminate_run!(TerminationReason::Stopped(reason), None, None);
         }
     }
@@ -1177,40 +805,16 @@ async fn run_loop_outcome_with_context_provider(
 ///
 /// Returns a stream of AgentEvent for real-time updates.
 pub fn run_loop_stream(
-    client: Client,
     config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    stream_runner::run_loop_stream_impl_with_provider(
-        Arc::new(client),
+    stream_runner::run_loop_stream_impl(
         config,
-        thread,
-        tools,
+        run_ctx,
         cancellation_token,
         state_committer,
-    )
-}
-
-/// Run the agent loop with streaming output using [`LoopRunInput`].
-///
-/// This is the streaming counterpart of [`run_loop_with_input`].
-pub fn run_loop_stream_with_input(
-    config: AgentConfig,
-    input: LoopRunInput,
-) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
-    let provider: Arc<dyn ChatStreamProvider> = Arc::new(ExecutorStreamProvider {
-        executor: llm_executor_for_run(&config),
-    });
-    stream_runner::run_loop_stream_impl_with_provider(
-        provider,
-        config,
-        input.thread,
-        HashMap::new(),
-        input.cancellation_token,
-        input.state_committer,
     )
 }
 

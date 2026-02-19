@@ -13,13 +13,13 @@ use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
+use carve_agent_loop::contracts::RunContext;
 use carve_agent_loop::runtime::loop_runner::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
 };
 use carve_state::State;
 use carve_thread_store_adapters::{FileStore, MemoryStore};
 use futures::StreamExt;
-use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -312,9 +312,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("=== DeepSeek Live Test ===\n");
 
-    // Create client
-    let client = Client::default();
-
     // Create tools
     let calc_tool: Arc<dyn Tool> = Arc::new(CalculatorTool);
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
@@ -322,98 +319,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 1: Simple conversation (no tools)
     println!("--- Test 1: Simple Conversation ---");
-    test_simple_conversation(&client).await?;
+    test_simple_conversation().await?;
 
     // Test 2: Tool calling
     println!("\n--- Test 2: Calculator Tool ---");
-    test_calculator(&client, &tools).await?;
+    test_calculator(&tools).await?;
 
     // Test 3: Streaming
     println!("\n--- Test 3: Streaming Response ---");
-    test_streaming(&client).await?;
+    test_streaming().await?;
 
     // Test 4: Tool with state
     println!("\n--- Test 4: Counter Tool with State ---");
-    test_counter_with_state(&client).await?;
+    test_counter_with_state().await?;
 
     // Test 5: Multi-run conversation
     println!("\n--- Test 5: Multi-run Conversation ---");
-    test_multi_run(&client).await?;
+    test_multi_run().await?;
 
     // Test 6: Multi-run with tools
     println!("\n--- Test 6: Multi-run with Tools ---");
-    test_multi_run_with_tools(&client).await?;
+    test_multi_run_with_tools().await?;
 
     // Test 7: Thread persistence and restore
     println!("\n--- Test 7: Thread Persistence & Restore ---");
-    test_session_persistence(&client).await?;
+    test_session_persistence().await?;
 
     // Test 8: Parallel tool calls
     println!("\n--- Test 8: Parallel Tool Calls ---");
-    test_parallel_tool_calls(&client).await?;
+    test_parallel_tool_calls().await?;
 
     // Test 9: Max rounds limit
     println!("\n--- Test 9: Max Rounds Limit ---");
-    test_max_rounds_limit(&client).await?;
+    test_max_rounds_limit().await?;
 
     // Test 10: Tool failure recovery
     println!("\n--- Test 10: Tool Failure Recovery ---");
-    test_tool_failure_recovery(&client).await?;
+    test_tool_failure_recovery().await?;
 
     // Test 11: Thread snapshot continuation
     println!("\n--- Test 11: Thread Snapshot Continuation ---");
-    test_session_snapshot(&client).await?;
+    test_session_snapshot().await?;
 
     // Test 12: State replay
     println!("\n--- Test 12: State Replay ---");
-    test_state_replay(&client).await?;
+    test_state_replay().await?;
 
     // Test 13: Long conversation performance
     println!("\n--- Test 13: Long Conversation Performance ---");
-    test_long_conversation(&client).await?;
+    test_long_conversation().await?;
 
     println!("\n=== All tests completed! ===");
     Ok(())
 }
 
-async fn test_simple_conversation(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_simple_conversation() -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     let thread = ConversationAgentState::new("test-simple")
         .with_message(Message::user("What is 2 + 2? Reply briefly."));
 
-    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: What is 2 + 2? Reply briefly.");
     println!("Assistant: {}", response);
-    println!("Messages in thread: {}", thread.message_count());
+    println!("Messages in thread: {}", outcome.run_ctx.messages().len());
 
     Ok(())
 }
 
 async fn test_calculator(
-    client: &Client,
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(3)
+        .with_tools(tools.clone());
 
     let thread = ConversationAgentState::new("test-calc")
         .with_message(Message::system("You are a helpful assistant. Use the calculator tool when asked to perform calculations."))
         .with_message(Message::user("Please calculate 15 * 7 + 23 using the calculator tool."));
 
-    let (thread, response) = run_loop(client, &config, thread, tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Please calculate 15 * 7 + 23 using the calculator tool.");
     println!("Assistant: {}", response);
-    println!("Messages in thread: {}", thread.message_count());
-    println!("Patches in thread: {}", thread.patch_count());
+    println!("Messages in thread: {}", outcome.run_ctx.messages().len());
+    println!("Patches in thread: {}", outcome.run_ctx.patches().len());
 
     // Show tool calls from messages
-    for msg in &thread.messages {
+    for msg in outcome.run_ctx.messages() {
         if let Some(ref calls) = msg.tool_calls {
             for call in calls {
                 println!("Tool called: {} with args: {}", call.name, call.arguments);
@@ -424,18 +422,18 @@ async fn test_calculator(
     Ok(())
 }
 
-async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_streaming() -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     let thread = ConversationAgentState::new("test-stream")
         .with_message(Message::user("Count from 1 to 5, one number per line."));
 
-    let tools = std::collections::HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread)?;
 
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
 
-    let mut stream = run_loop_stream(client.clone(), config, thread, tools, None, None);
+    let mut stream = run_loop_stream(config, run_ctx, None, None);
 
     while let Some(event) = stream.next().await {
         match event {
@@ -461,28 +459,30 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
+async fn test_counter_with_state() -> Result<(), Box<dyn std::error::Error>> {
+    let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
+    let tools = tool_map_from_arc([counter_tool]);
+
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(5)
+        .with_tools(tools);
 
     // Create session with initial state
     let thread = ConversationAgentState::with_initial_state("test-counter", json!({ "counter": 0 }))
         .with_message(Message::system("You are a helpful assistant. Use the counter tool to manage a counter. Always use the tool when asked about the counter."))
         .with_message(Message::user("Please increment the counter by 5, then increment it by 3 more. Tell me the final value."));
 
-    let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
-    let tools = tool_map_from_arc([counter_tool]);
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let (thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Please increment the counter by 5, then increment it by 3 more. Tell me the final value.");
     println!("Assistant: {}", response);
-    println!("Messages in thread: {}", thread.message_count());
-    println!("Patches in thread: {}", thread.patch_count());
+    println!("Messages in thread: {}", outcome.run_ctx.messages().len());
+    println!("Patches in thread: {}", outcome.run_ctx.patches().len());
 
     // Rebuild state to see final counter value
-    let final_state = thread.rebuild_state()?;
+    let final_state = outcome.run_ctx.rebuild_state()?;
     println!(
         "Final state: {}",
         serde_json::to_string_pretty(&final_state)?
@@ -491,133 +491,127 @@ async fn test_counter_with_state(client: &Client) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-async fn test_multi_run(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_multi_run() -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     // Run 1: Introduce a topic
-    let mut thread = ConversationAgentState::new("test-multi-run")
+    let thread = ConversationAgentState::new("test-multi-run")
         .with_message(Message::system(
             "You are a helpful assistant. Keep your answers brief.",
         ))
         .with_message(Message::user("My name is Alice. Remember it."));
 
-    let (new_thread, response) =
-        run_loop(client, &config, thread, &std::collections::HashMap::new())
-            .await
-            .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 1 - User: My name is Alice. Remember it.");
     println!("Run 1 - Assistant: {}", response);
 
     // Run 2: Test if context is remembered
-    thread = thread.with_message(Message::user("What is my name?"));
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("What is my name?")));
 
-    let (new_thread, response) =
-        run_loop(client, &config, thread, &std::collections::HashMap::new())
-            .await
-            .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 2 - User: What is my name?");
     println!("Run 2 - Assistant: {}", response);
 
     // Run 3: Another follow-up
-    thread = thread.with_message(Message::user("Say my name backwards."));
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("Say my name backwards.")));
 
-    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 3 - User: Say my name backwards.");
     println!("Run 3 - Assistant: {}", response);
-    println!("Total messages in thread: {}", thread.message_count());
+    println!("Total messages in thread: {}", outcome.run_ctx.messages().len());
 
     // Verify context was maintained
     let response_lower = response.to_lowercase();
     if response_lower.contains("ecila") || response_lower.contains("e-c-i-l-a") {
-        println!("✅ Context maintained correctly across runs!");
+        println!("Context maintained correctly across runs!");
     } else {
-        println!("⚠️ Context may not be fully maintained (expected 'ecilA')");
+        println!("Context may not be fully maintained (expected 'ecilA')");
     }
 
     Ok(())
 }
 
-async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
-
+async fn test_multi_run_with_tools() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(3)
+        .with_tools(tools);
+
     // Start with initial state
-    let mut thread =
+    let thread =
         ConversationAgentState::with_initial_state("test-multi-tool", json!({ "counter": 10 }))
             .with_message(Message::system(
                 "You are a helpful assistant. Use the counter tool to manage a counter. \
              Always use the tool when asked about the counter.",
-            ));
+            ))
+            .with_message(Message::user("What is the current counter value?"));
 
     // Run 1: Get current value
-    thread = thread.with_message(Message::user("What is the current counter value?"));
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
-
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 1 - User: What is the current counter value?");
     println!("Run 1 - Assistant: {}", response);
 
     // Run 2: Increment
-    thread = thread.with_message(Message::user("Add 5 to it."));
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("Add 5 to it.")));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 2 - User: Add 5 to it.");
     println!("Run 2 - Assistant: {}", response);
 
     // Run 3: Decrement
-    thread = thread.with_message(Message::user("Now subtract 3."));
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("Now subtract 3.")));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 3 - User: Now subtract 3.");
     println!("Run 3 - Assistant: {}", response);
 
     // Run 4: Verify final state
-    thread = thread.with_message(Message::user("What is the final value?"));
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("What is the final value?")));
 
-    let (thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Run 4 - User: What is the final value?");
     println!("Run 4 - Assistant: {}", response);
 
     // Check state
-    let final_state = thread.rebuild_state()?;
+    let final_state = outcome.run_ctx.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("\nSession summary:");
-    println!("  Total messages: {}", thread.message_count());
-    println!("  Total patches: {}", thread.patch_count());
+    println!("  Total messages: {}", outcome.run_ctx.messages().len());
+    println!("  Total patches: {}", outcome.run_ctx.patches().len());
     println!(
         "  Final counter: {} (expected: 12 = 10 + 5 - 3)",
         final_counter
     );
 
     if final_counter == 12 {
-        println!("✅ Multi-run with tools working correctly!");
+        println!("Multi-run with tools working correctly!");
     } else {
         println!(
-            "⚠️ Final counter value unexpected (got {}, expected 12)",
+            "Final counter value unexpected (got {}, expected 12)",
             final_counter
         );
     }
@@ -625,8 +619,13 @@ async fn test_multi_run_with_tools(client: &Client) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
+async fn test_session_persistence() -> Result<(), Box<dyn std::error::Error>> {
+    let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
+    let tools = tool_map_from_arc([counter_tool]);
+
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(3)
+        .with_tools(tools);
 
     // Create a temporary directory for storage
     let temp_dir = std::env::temp_dir().join(format!("carve-test-{}", std::process::id()));
@@ -635,14 +634,10 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     println!("Storage path: {:?}", temp_dir);
 
-    // Create tools
-    let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
-    let tools = tool_map_from_arc([counter_tool]);
-
     // ========== Phase 1: Create session and have a conversation ==========
     println!("\n[Phase 1: Initial conversation]");
 
-    let mut thread =
+    let thread =
         ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }))
             .with_message(Message::system(
                 "You are a helpful assistant. Use the counter tool. Keep responses brief.",
@@ -651,34 +646,45 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
                 "My favorite number is 42. Remember it. Also, what is the counter?",
             ));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: My favorite number is 42. Remember it. Also, what is the counter?");
     println!("Assistant: {}", response);
 
     // Add another step
-    thread = thread.with_message(Message::user(
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user(
         "Increment the counter by my favorite number.",
-    ));
+    )));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Increment the counter by my favorite number.");
     println!("Assistant: {}", response);
 
-    // Save session
-    storage.save(&thread).await?;
-    println!("\n✅ Thread saved to disk");
-    println!("   Messages: {}", thread.message_count());
-    println!("   Patches: {}", thread.patch_count());
+    // For persistence we need a Thread. Rebuild one from the original thread
+    // by replaying messages from the run_ctx.
+    // Since Thread persistence operations need a Thread, we build one from the
+    // original thread's initial state and append messages from run_ctx.
+    let mut persist_thread = ConversationAgentState::with_initial_state("persist-test", json!({ "counter": 100 }));
+    for msg in outcome.run_ctx.messages() {
+        persist_thread = persist_thread.with_message((*msg.as_ref()).clone());
+    }
+    // Copy patches
+    for tp in outcome.run_ctx.patches() {
+        persist_thread.patches.push(tp.clone());
+    }
 
-    let state_before = thread.rebuild_state()?;
+    // Save session
+    storage.save(&persist_thread).await?;
+    println!("\nThread saved to disk");
+    println!("   Messages: {}", persist_thread.message_count());
+    println!("   Patches: {}", persist_thread.patch_count());
+
+    let state_before = persist_thread.rebuild_state()?;
     println!("   State: counter = {}", state_before["counter"]);
 
     // ========== Phase 2: Load session and continue conversation ==========
@@ -690,7 +696,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
         .await?
         .ok_or("Thread not found")?;
 
-    println!("✅ Thread loaded from disk");
+    println!("Thread loaded from disk");
     println!("   Messages: {}", loaded_thread.message_count());
     println!("   Patches: {}", loaded_thread.patch_count());
 
@@ -704,16 +710,15 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     // Continue conversation with loaded session
-    let mut thread = loaded_thread;
-    thread = thread.with_message(Message::user(
+    let mut loaded_thread = loaded_thread;
+    loaded_thread = loaded_thread.with_message(Message::user(
         "What was my favorite number? And what is the counter now?",
     ));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let run_ctx = RunContext::from_thread(&loaded_thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("\nUser: What was my favorite number? And what is the counter now?");
     println!("Assistant: {}", response);
 
@@ -724,19 +729,19 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     println!("\n[Verification]");
     if remembers_42 {
-        println!("✅ Remembered favorite number (42)");
+        println!("Remembered favorite number (42)");
     } else {
-        println!("⚠️ Did not mention favorite number 42");
+        println!("Did not mention favorite number 42");
     }
 
     if knows_counter {
-        println!("✅ Knows current counter value");
+        println!("Knows current counter value");
     } else {
-        println!("⚠️ Counter value unclear");
+        println!("Counter value unclear");
     }
 
     // Final state check
-    let final_state = thread.rebuild_state()?;
+    let final_state = outcome.run_ctx.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
     println!(
         "\nFinal state: counter = {} (expected: 142 = 100 + 42)",
@@ -744,28 +749,29 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     if final_counter == 142 {
-        println!("✅ Thread persistence and restore working correctly!");
+        println!("Thread persistence and restore working correctly!");
     } else {
-        println!("⚠️ Counter value unexpected");
+        println!("Counter value unexpected");
     }
 
     // Cleanup
     std::fs::remove_dir_all(&temp_dir)?;
-    println!("\n✅ Cleanup completed");
+    println!("\nCleanup completed");
 
     Ok(())
 }
 
 /// Test 8: Parallel tool calls - LLM calls multiple tools at once
-async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat")
-        .with_max_rounds(3)
-        .with_parallel_tools(true);
-
+async fn test_parallel_tool_calls() -> Result<(), Box<dyn std::error::Error>> {
     // Create multiple independent tools
     let calc_tool: Arc<dyn Tool> = Arc::new(CalculatorTool);
     let weather_tool: Arc<dyn Tool> = Arc::new(WeatherTool);
     let tools = tool_map_from_arc([calc_tool, weather_tool]);
+
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(3)
+        .with_parallel_tools(true)
+        .with_tools(tools);
 
     let thread = ConversationAgentState::new("test-parallel")
         .with_message(Message::system(
@@ -778,17 +784,17 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
              2) Get the weather in Tokyo",
         ));
 
-    let (thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Calculate 15*8+20 AND get Tokyo weather (at the same time)");
     println!("Assistant: {}", response);
 
     // Count how many tool calls were made
     let mut tool_call_count = 0;
     let mut tools_in_single_message = 0;
-    for msg in &thread.messages {
+    for msg in outcome.run_ctx.messages() {
         if let Some(ref calls) = msg.tool_calls {
             let count = calls.len();
             tool_call_count += count;
@@ -807,28 +813,31 @@ async fn test_parallel_tool_calls(client: &Client) -> Result<(), Box<dyn std::er
 
     if tools_in_single_message >= 2 {
         println!(
-            "✅ Parallel tool calls working! LLM called {} tools at once.",
+            "Parallel tool calls working! LLM called {} tools at once.",
             tools_in_single_message
         );
     } else if tool_call_count >= 2 {
         println!(
-            "⚠️ Tools were called sequentially ({} total calls)",
+            "Tools were called sequentially ({} total calls)",
             tool_call_count
         );
     } else {
-        println!("⚠️ Expected at least 2 tool calls");
+        println!("Expected at least 2 tool calls");
     }
 
     Ok(())
 }
 
 /// Test 9: Max rounds limit - ensure infinite loops are prevented
-async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_max_rounds_limit() -> Result<(), Box<dyn std::error::Error>> {
     let max_rounds = 3;
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(max_rounds);
 
     let loop_tool: Arc<dyn Tool> = Arc::new(InfiniteLoopTool);
     let tools = tool_map_from_arc([loop_tool]);
+
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(max_rounds)
+        .with_tools(tools);
 
     let thread = ConversationAgentState::new("test-max-rounds")
         .with_message(Message::system(
@@ -839,54 +848,48 @@ async fn test_max_rounds_limit(client: &Client) -> Result<(), Box<dyn std::error
             "Check the status of the 'api' component completely.",
         ));
 
-    let result = run_loop(client, &config, thread, &tools).await;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    match result {
-        Ok((thread, response)) => {
-            println!("User: Check the status (triggers potential infinite loop)");
-            println!("Assistant: {}", response);
-            println!("Messages: {}", thread.message_count());
+    let response = outcome.response.as_deref().unwrap_or_default();
+    println!("User: Check the status (triggers potential infinite loop)");
+    println!("Assistant: {}", response);
+    println!("Messages: {}", outcome.run_ctx.messages().len());
 
-            // Count tool calls
-            let tool_calls: usize = thread
-                .messages
-                .iter()
-                .filter_map(|m| m.tool_calls.as_ref())
-                .map(|c| c.len())
-                .sum();
-            println!("Tool calls made: {}", tool_calls);
+    // Count tool calls
+    let tool_calls: usize = outcome
+        .run_ctx
+        .messages()
+        .iter()
+        .filter_map(|m| m.tool_calls.as_ref())
+        .map(|c| c.len())
+        .sum();
+    println!("Tool calls made: {}", tool_calls);
 
-            if tool_calls <= max_rounds {
-                println!(
-                    "✅ Max rounds limit respected (stopped at {} rounds)",
-                    tool_calls
-                );
-            } else {
-                println!(
-                    "⚠️ Made {} tool calls, expected <= {}",
-                    tool_calls, max_rounds
-                );
-            }
-        }
-        Err(AgentLoopError::Stopped { reason, .. }) => {
-            println!("✅ Agent stopped with reason: {:?} (expected!)", reason);
-        }
-        Err(e) => {
-            println!("Unexpected error: {}", e);
-            return Err(e.into());
-        }
+    if tool_calls <= max_rounds {
+        println!(
+            "Max rounds limit respected (stopped at {} rounds)",
+            tool_calls
+        );
+    } else {
+        println!(
+            "Made {} tool calls, expected <= {}",
+            tool_calls, max_rounds
+        );
     }
 
     Ok(())
 }
 
 /// Test 10: Tool failure recovery - LLM handles tool errors gracefully
-async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
-
+async fn test_tool_failure_recovery() -> Result<(), Box<dyn std::error::Error>> {
     // Tool that fails twice then succeeds
     let unreliable_tool: Arc<dyn Tool> = Arc::new(UnreliableTool::new(2));
     let tools = tool_map_from_arc([unreliable_tool]);
+
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(5)
+        .with_tools(tools);
 
     let thread = ConversationAgentState::new("test-failure-recovery")
         .with_message(Message::system(
@@ -897,17 +900,17 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
             "Please use the API to process the query 'hello world'.",
         ));
 
-    let (thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Process 'hello world' with unreliable API");
     println!("Assistant: {}", response);
 
     // Count tool calls and check for error messages
     let mut tool_calls = 0;
     let mut error_messages = 0;
-    for msg in &thread.messages {
+    for msg in outcome.run_ctx.messages() {
         if let Some(ref calls) = msg.tool_calls {
             tool_calls += calls.len();
         }
@@ -924,26 +927,28 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
 
     if response.to_lowercase().contains("success") || response.to_lowercase().contains("processed")
     {
-        println!("✅ LLM recovered from tool failures and completed the task!");
+        println!("LLM recovered from tool failures and completed the task!");
     } else if error_messages > 0 {
-        println!("⚠️ Tool failed but LLM handled it gracefully");
+        println!("Tool failed but LLM handled it gracefully");
     } else {
-        println!("⚠️ Unexpected behavior");
+        println!("Unexpected behavior");
     }
 
     Ok(())
 }
 
 /// Test 11: Thread snapshot - collapse patches and continue
-async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
-
+async fn test_session_snapshot() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(5)
+        .with_tools(tools.clone());
+
     // Phase 1: Create session with multiple operations
     println!("[Phase 1: Build up patches]");
-    let mut thread =
+    let thread =
         ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }))
             .with_message(Message::system(
                 "You are a helpful assistant. Use the counter tool.",
@@ -952,115 +957,129 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
                 "Increment the counter 3 times by 10 each time.",
             ));
 
-    let (new_thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("After increments:");
     println!("  Assistant: {}", response);
-    println!("  Patches: {}", thread.patch_count());
-    println!("  State: {:?}", thread.rebuild_state()?);
+    println!("  Patches: {}", outcome.run_ctx.patches().len());
+    println!("  State: {:?}", outcome.run_ctx.rebuild_state()?);
 
-    // Phase 2: Snapshot to collapse patches
+    // Phase 2: Snapshot to collapse patches - need a Thread for this
     println!("\n[Phase 2: Snapshot]");
-    let patches_before = thread.patch_count();
-    let thread = thread.snapshot()?;
-    let patches_after = thread.patch_count();
+    let mut snapshot_thread = ConversationAgentState::with_initial_state("test-snapshot", json!({ "counter": 0 }));
+    for msg in outcome.run_ctx.messages() {
+        snapshot_thread = snapshot_thread.with_message((*msg.as_ref()).clone());
+    }
+    for tp in outcome.run_ctx.patches() {
+        snapshot_thread.patches.push(tp.clone());
+    }
+
+    let patches_before = snapshot_thread.patch_count();
+    let snapshot_thread = snapshot_thread.snapshot()?;
+    let patches_after = snapshot_thread.patch_count();
 
     println!("  Patches before snapshot: {}", patches_before);
     println!("  Patches after snapshot: {}", patches_after);
-    println!("  State in thread: {:?}", thread.state);
+    println!("  State in thread: {:?}", snapshot_thread.state);
 
     // Phase 3: Continue after snapshot
     println!("\n[Phase 3: Continue after snapshot]");
-    let thread = thread.with_message(Message::user("What is the counter now? Then add 5 more."));
+    let snapshot_thread = snapshot_thread.with_message(Message::user("What is the counter now? Then add 5 more."));
 
-    let (thread, response) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let run_ctx = RunContext::from_thread(&snapshot_thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let final_state = thread.rebuild_state()?;
+    let response = outcome.response.as_deref().unwrap_or_default();
+    let final_state = outcome.run_ctx.rebuild_state()?;
     let final_counter = final_state["counter"].as_i64().unwrap_or(-1);
 
     println!("  Assistant: {}", response);
     println!("  Final counter: {} (expected: 35 = 30 + 5)", final_counter);
 
     if patches_after == 0 {
-        println!("✅ Snapshot collapsed patches to 0");
+        println!("Snapshot collapsed patches to 0");
     }
     if final_counter >= 30 {
-        println!("✅ Thread continued correctly after snapshot");
+        println!("Thread continued correctly after snapshot");
     }
 
     Ok(())
 }
 
 /// Test 12: State replay - go back to a previous state point
-async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
-    let config = AgentConfig::new("deepseek-chat").with_max_rounds(3);
-
+async fn test_state_replay() -> Result<(), Box<dyn std::error::Error>> {
     let counter_tool: Arc<dyn Tool> = Arc::new(CounterTool);
     let tools = tool_map_from_arc([counter_tool]);
 
+    let config = AgentConfig::new("deepseek-chat")
+        .with_max_rounds(3)
+        .with_tools(tools.clone());
+
     // Build session with multiple state changes
     println!("[Building state history]");
-    let mut thread =
+    let thread =
         ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }))
             .with_message(Message::system(
                 "You are a helpful assistant. Use the counter tool.",
-            ));
+            ))
+            .with_message(Message::user("Set the counter to 10."));
 
     // Run 1: Set counter to 10
-    thread = thread.with_message(Message::user("Set the counter to 10."));
-    let (new_thread, _) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let state_after_1 = thread.rebuild_state()?;
-    let patches_after_1 = thread.patch_count();
+    let state_after_1 = outcome.run_ctx.rebuild_state()?;
+    let patches_after_1 = outcome.run_ctx.patches().len();
     println!(
         "After run 1: counter = {}, patches = {}",
         state_after_1["counter"], patches_after_1
     );
 
     // Run 2: Add 20
-    thread = thread.with_message(Message::user("Now add 20 to the counter."));
-    let (new_thread, _) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("Now add 20 to the counter.")));
 
-    let state_after_2 = thread.rebuild_state()?;
-    let patches_after_2 = thread.patch_count();
+    let outcome = run_loop(&config, run_ctx, None, None).await;
+
+    let state_after_2 = outcome.run_ctx.rebuild_state()?;
+    let patches_after_2 = outcome.run_ctx.patches().len();
     println!(
         "After run 2: counter = {}, patches = {}",
         state_after_2["counter"], patches_after_2
     );
 
     // Run 3: Add 30
-    thread = thread.with_message(Message::user("Add 30 more."));
-    let (new_thread, _) = run_loop(client, &config, thread, &tools)
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
-    thread = new_thread;
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user("Add 30 more.")));
 
-    let state_after_3 = thread.rebuild_state()?;
-    let patches_after_3 = thread.patch_count();
+    let outcome = run_loop(&config, run_ctx, None, None).await;
+
+    let state_after_3 = outcome.run_ctx.rebuild_state()?;
+    let patches_after_3 = outcome.run_ctx.patches().len();
     println!(
         "After run 3: counter = {}, patches = {}",
         state_after_3["counter"], patches_after_3
     );
 
+    // For replay we need a Thread - reconstruct one
+    let mut replay_thread = ConversationAgentState::with_initial_state("test-replay", json!({ "counter": 0 }));
+    for msg in outcome.run_ctx.messages() {
+        replay_thread = replay_thread.with_message((*msg.as_ref()).clone());
+    }
+    for tp in outcome.run_ctx.patches() {
+        replay_thread.patches.push(tp.clone());
+    }
+
     // Now replay to earlier states
     println!("\n[Replaying to earlier states]");
 
-    let total_patches = thread.patch_count();
+    let total_patches = replay_thread.patch_count();
     if total_patches > 0 {
         // Replay through each patch point
         for i in 0..total_patches {
-            let replayed_state = thread.replay_to(i)?;
+            let replayed_state = replay_thread.replay_to(i)?;
             println!(
                 "  State at patch {}: counter = {}",
                 i, replayed_state["counter"]
@@ -1068,22 +1087,22 @@ async fn test_state_replay(client: &Client) -> Result<(), Box<dyn std::error::Er
         }
 
         // Show final state for comparison
-        let final_state = thread.rebuild_state()?;
+        let final_state = replay_thread.rebuild_state()?;
         println!("  Final state: counter = {}", final_state["counter"]);
 
         println!(
-            "\n✅ State replay working! Can access {} historical state points.",
+            "\nState replay working! Can access {} historical state points.",
             total_patches
         );
     } else {
-        println!("⚠️ No patches recorded (LLM may not have used the tool)");
+        println!("No patches recorded (LLM may not have used the tool)");
     }
 
     Ok(())
 }
 
 /// Test 13: Long conversation performance
-async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_long_conversation() -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(1);
 
     println!("[Building long conversation history]");
@@ -1121,28 +1140,35 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
         "What was the number I mentioned in message 15? Reply with just the number.",
     ));
 
+    let run_ctx = RunContext::from_thread(&thread)?;
+
     let request_start = std::time::Instant::now();
-    let (thread, response) = run_loop(client, &config, thread, &std::collections::HashMap::new())
-        .await
-        .map_err(|e| format!("LLM error: {}", e))?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
     let request_time = request_start.elapsed();
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("\n[Results]");
-    println!("  Total messages: {}", thread.message_count());
+    println!("  Total messages: {}", outcome.run_ctx.messages().len());
     println!("  Request time: {:?}", request_time);
     println!("  Assistant: {}", response);
 
     // Check if LLM remembered the context
     if response.contains("150") {
-        println!("✅ LLM correctly remembered context from long conversation!");
+        println!("LLM correctly remembered context from long conversation!");
     } else {
-        println!("⚠️ LLM may not have processed full context (expected '150')");
+        println!("LLM may not have processed full context (expected '150')");
     }
 
     // Test session serialization performance with large history
+    // Need Thread for storage ops
+    let mut storage_thread = ConversationAgentState::new("test-long-conv");
+    for msg in outcome.run_ctx.messages() {
+        storage_thread = storage_thread.with_message((*msg.as_ref()).clone());
+    }
+
     let storage = MemoryStore::new();
     let save_start = std::time::Instant::now();
-    storage.save(&thread).await?;
+    storage.save(&storage_thread).await?;
     let save_time = save_start.elapsed();
 
     let load_start = std::time::Instant::now();
@@ -1155,7 +1181,7 @@ async fn test_long_conversation(client: &Client) -> Result<(), Box<dyn std::erro
     println!("  Loaded messages: {}", loaded.message_count());
 
     if save_time.as_millis() < 100 && load_time.as_millis() < 100 {
-        println!("✅ Storage performance good (<100ms for save/load)");
+        println!("Storage performance good (<100ms for save/load)");
     }
 
     Ok(())

@@ -12,17 +12,19 @@ pub(super) struct StreamRunIdentity {
     pub(super) parent_run_id: Option<String>,
 }
 
-pub(super) fn resolve_stream_run_identity(thread: &mut Thread) -> StreamRunIdentity {
-    let run_id = thread
+pub(super) fn resolve_stream_run_identity(
+    run_ctx: &mut crate::contracts::RunContext,
+) -> StreamRunIdentity {
+    let run_id = run_ctx
         .run_config
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| {
             let id = uuid_v7();
-            let _ = thread.run_config.set("run_id", &id);
+            let _ = run_ctx.run_config.set("run_id", &id);
             id
         });
-    let parent_run_id = thread
+    let parent_run_id = run_ctx
         .run_config
         .value("parent_run_id")
         .and_then(|v| v.as_str().map(String::from));

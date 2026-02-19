@@ -1,10 +1,10 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
-use crate::contracts::state::Thread;
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
-use crate::runtime::control::{InferenceError, LoopControlExt, LoopControlState};
+use crate::contracts::RunContext;
+use crate::runtime::control::{InferenceError, LoopControlState};
 use carve_state::{DocCell, StateContext, TrackedPatch};
 
 /// Skills state path — matches `SkillState::PATH` (avoids type dependency).
@@ -16,52 +16,6 @@ const INTERACTION_OUTBOX_PATH: &str = "interaction_outbox";
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-#[derive(Default)]
-pub(super) struct ThreadMutationBatch {
-    pub(super) messages: Vec<Message>,
-    pub(super) patches: Vec<TrackedPatch>,
-}
-
-impl ThreadMutationBatch {
-    pub(super) fn with_message(mut self, message: Message) -> Self {
-        self.messages.push(message);
-        self
-    }
-
-    pub(super) fn with_messages(mut self, messages: impl IntoIterator<Item = Message>) -> Self {
-        self.messages.extend(messages);
-        self
-    }
-
-    pub(super) fn with_patch(mut self, patch: TrackedPatch) -> Self {
-        self.patches.push(patch);
-        self
-    }
-
-    pub(super) fn with_patches(mut self, patches: impl IntoIterator<Item = TrackedPatch>) -> Self {
-        self.patches.extend(patches);
-        self
-    }
-}
-
-pub(super) fn reduce_thread_mutations(
-    thread: Thread,
-    batch: ThreadMutationBatch,
-) -> Thread {
-    let mut thread = thread;
-    if !batch.patches.is_empty() {
-        thread = thread.with_patches(batch.patches);
-    }
-    if !batch.messages.is_empty() {
-        thread = thread.with_messages(batch.messages);
-    }
-    thread
-}
-
-pub(super) fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
-    reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patches(pending))
-}
 
 pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec<Message> {
     let mut messages = Vec::new();
@@ -135,8 +89,8 @@ pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_tracked_patch("agent_loop")
 }
 
-pub(super) fn pending_interaction_from_thread(thread: &Thread) -> Option<Interaction> {
-    thread.pending_interaction()
+pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Interaction> {
+    run_ctx.pending_interaction()
 }
 
 pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
@@ -162,10 +116,10 @@ pub(super) struct AgentOutboxDrain {
 }
 
 pub(super) fn drain_agent_outbox(
-    mut thread: Thread,
+    run_ctx: &mut RunContext,
     _call_id: &str,
-) -> Result<(Thread, AgentOutboxDrain), AgentLoopError> {
-    let state = thread
+) -> Result<AgentOutboxDrain, AgentLoopError> {
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
@@ -196,7 +150,7 @@ pub(super) fn drain_agent_outbox(
     };
 
     if interaction_resolutions.is_empty() && replay_tool_calls.is_empty() {
-        return Ok((thread, AgentOutboxDrain::default()));
+        return Ok(AgentOutboxDrain::default());
     }
 
     // Clear consumed fields via raw patch (no type dependency on InteractionOutbox)
@@ -216,24 +170,21 @@ pub(super) fn drain_agent_outbox(
     }
     if !clear_patch.is_empty() {
         let patch = TrackedPatch::new(clear_patch).with_source("agent_loop");
-        thread = reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
+        run_ctx.add_patch(patch);
     }
 
-    Ok((
-        thread,
-        AgentOutboxDrain {
-            interaction_resolutions,
-            replay_tool_calls,
-        },
-    ))
+    Ok(AgentOutboxDrain {
+        interaction_resolutions,
+        replay_tool_calls,
+    })
 }
 
 pub(super) fn drain_agent_append_user_messages(
-    mut thread: Thread,
+    run_ctx: &mut RunContext,
     results: &[super::ToolExecutionResult],
     metadata: Option<&MessageMetadata>,
-) -> Result<(Thread, usize), AgentLoopError> {
-    let state = thread
+) -> Result<usize, AgentLoopError> {
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
 
@@ -245,27 +196,28 @@ pub(super) fn drain_agent_append_user_messages(
         .unwrap_or_default();
 
     if queued_by_call.is_empty() {
-        return Ok((thread, 0));
+        return Ok(0);
     }
 
     let mut appended = 0usize;
     let mut seen_call_ids = std::collections::HashSet::new();
-    let mut mutations = ThreadMutationBatch::default();
+    let mut messages = Vec::new();
+    let mut patches = Vec::new();
 
     for result in results {
         let call_id = result.execution.call.id.as_str();
         if !seen_call_ids.insert(call_id.to_string()) {
             continue;
         }
-        let Some(messages) = queued_by_call.get(call_id) else {
+        let Some(queued_messages) = queued_by_call.get(call_id) else {
             continue;
         };
-        for text in messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for text in queued_messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
             let mut msg = Message::user(text.to_string());
             if let Some(meta) = metadata {
                 msg.metadata = Some(meta.clone());
             }
-            mutations = mutations.with_message(msg);
+            messages.push(Arc::new(msg));
             appended += 1;
         }
     }
@@ -276,13 +228,13 @@ pub(super) fn drain_agent_append_user_messages(
         .collect();
     stale_keys.sort();
     for key in stale_keys {
-        if let Some(messages) = queued_by_call.get(key) {
-            for text in messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Some(queued_messages) = queued_by_call.get(key) {
+            for text in queued_messages.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
                 let mut msg = Message::user(text.to_string());
                 if let Some(meta) = metadata {
                     msg.metadata = Some(meta.clone());
                 }
-                mutations = mutations.with_message(msg);
+                messages.push(Arc::new(msg));
                 appended += 1;
             }
         }
@@ -296,12 +248,13 @@ pub(super) fn drain_agent_append_user_messages(
     )]))
     .with_source("agent_loop");
     if !clear_patch.patch().is_empty() {
-        mutations = mutations.with_patch(clear_patch);
+        patches.push(clear_patch);
     }
 
-    if appended == 0 && mutations.patches.is_empty() {
-        return Ok((thread, 0));
+    if appended == 0 && patches.is_empty() {
+        return Ok(0);
     }
-    thread = reduce_thread_mutations(thread, mutations);
-    Ok((thread, appended))
+    run_ctx.add_messages(messages);
+    run_ctx.add_patches(patches);
+    Ok(appended)
 }

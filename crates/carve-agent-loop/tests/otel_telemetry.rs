@@ -6,9 +6,9 @@ use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
 use carve_agent_loop::contracts::state::Thread;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_loop::contracts::ToolCallContext;
+use carve_agent_loop::contracts::{RunContext, ToolCallContext};
 use carve_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
+    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
 };
 use futures::StreamExt;
 use opentelemetry::trace::TracerProvider as _;
@@ -239,17 +239,16 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let (_thread, result) = run_step(&client, &config, thread, &tools).await.unwrap();
-    let usage = result
-        .usage
-        .expect("expected usage in non-streaming result");
-    assert_eq!(usage.prompt_tokens, Some(10));
-    assert_eq!(usage.completion_tokens, Some(5));
-    assert_eq!(usage.total_tokens, Some(15));
+    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let usage = outcome.usage;
+    assert_eq!(usage.prompt_tokens, 10);
+    assert_eq!(usage.completion_tokens, 5);
 
     let _ = provider.force_flush();
     let exported = exporter.get_finished_spans().unwrap();
@@ -294,15 +293,14 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let err = run_step(&client, &config, thread, &tools)
-        .await
-        .err()
-        .unwrap();
-    assert!(err.to_string().contains("LLM error"));
+    let outcome = run_loop(&config, run_ctx, None, None).await;
+    assert!(matches!(outcome.termination, carve_agent_loop::contracts::runtime::TerminationReason::Error));
 
     // Metrics should record the failed inference.
     let m = sink.metrics();
@@ -359,11 +357,13 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let events: Vec<_> = run_loop_stream(client, config, thread, tools, None, None)
+    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -423,11 +423,13 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let events: Vec<_> = run_loop_stream(client, config, thread, tools, None, None)
+    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
         .await;
 
@@ -506,11 +508,13 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let events: Vec<_> = run_loop_stream(client, config, thread, tools, None, None)
+    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -620,11 +624,13 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
         })
         .build();
 
-    let config = AgentConfig::new("gpt-4").with_plugin(plugin);
+    let config = AgentConfig::new("gpt-4")
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let events: Vec<_> = run_loop_stream(client, config, thread, tools, None, None)
+    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));

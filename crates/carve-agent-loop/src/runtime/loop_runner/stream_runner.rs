@@ -8,14 +8,13 @@ use super::*;
 // - delegates deterministic state-machine helpers to `stream_core`
 
 async fn drain_run_start_outbox_and_replay(
-    mut thread: Thread,
+    run_ctx: &mut RunContext,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<(Thread, Vec<AgentEvent>), String> {
-    let (next_thread, outbox) =
-        drain_agent_outbox(thread.clone(), "agent_outbox_run_start").map_err(|e| e.to_string())?;
-    thread = next_thread;
+) -> Result<Vec<AgentEvent>, String> {
+    let outbox =
+        drain_agent_outbox(run_ctx, "agent_outbox_run_start").map_err(|e| e.to_string())?;
 
     let mut events = Vec::new();
     for resolution in outbox.interaction_resolutions {
@@ -27,12 +26,12 @@ async fn drain_run_start_outbox_and_replay(
 
     let replay_calls = outbox.replay_tool_calls;
     if replay_calls.is_empty() {
-        return Ok((thread, events));
+        return Ok(events);
     }
 
     let mut replay_state_changed = false;
     for tool_call in &replay_calls {
-        let state = thread.rebuild_state().map_err(|e| {
+        let state = run_ctx.rebuild_state().map_err(|e| {
             format!(
                 "failed to rebuild state before replaying tool '{}': {e}",
                 tool_call.id
@@ -40,7 +39,7 @@ async fn drain_run_start_outbox_and_replay(
         })?;
 
         let tool = tools.get(&tool_call.name).cloned();
-        let rt_for_replay = scope_with_tool_caller_context(&thread, &state, Some(config))
+        let rt_for_replay = scope_with_tool_caller_context(run_ctx, &state, Some(config))
             .map_err(|e| e.to_string())?;
         let replay_result = execute_single_tool_with_phases(
             tool.as_deref(),
@@ -50,10 +49,10 @@ async fn drain_run_start_outbox_and_replay(
             &config.plugins,
             None,
             Some(&rt_for_replay),
-            &thread.id,
-            &thread.messages,
-            agent_state_version(&thread),
-            thread.run_overlay(),
+            run_ctx.thread_id(),
+            run_ctx.messages(),
+            run_ctx.version(),
+            run_ctx.run_overlay(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -67,28 +66,26 @@ async fn drain_run_start_outbox_and_replay(
 
         // Append real replay tool result as a new tool message (append-only log).
         let replay_msg_id = gen_message_id();
-        let mut replay_mutations = ThreadMutationBatch::default().with_message(
-            tool_response(&tool_call.id, &replay_result.execution.result)
-                .with_id(replay_msg_id.clone()),
-        );
+        let replay_msg = tool_response(&tool_call.id, &replay_result.execution.result)
+            .with_id(replay_msg_id.clone());
+        run_ctx.add_message(Arc::new(replay_msg));
 
         // Preserve reminder emission semantics for replayed tool calls.
         if !replay_result.reminders.is_empty() {
-            let msgs = replay_result.reminders.iter().map(|reminder| {
-                Message::internal_system(format!("<system-reminder>{}</system-reminder>", reminder))
-            });
-            replay_mutations = replay_mutations.with_messages(msgs);
+            let msgs: Vec<Arc<Message>> = replay_result.reminders.iter().map(|reminder| {
+                Arc::new(Message::internal_system(format!("<system-reminder>{}</system-reminder>", reminder)))
+            }).collect();
+            run_ctx.add_messages(msgs);
         }
 
         if let Some(patch) = replay_result.execution.patch.clone() {
             replay_state_changed = true;
-            replay_mutations = replay_mutations.with_patch(patch);
+            run_ctx.add_patch(patch);
         }
         if !replay_result.pending_patches.is_empty() {
             replay_state_changed = true;
-            replay_mutations = replay_mutations.with_patches(replay_result.pending_patches.clone());
+            run_ctx.add_patches(replay_result.pending_patches.clone());
         }
-        thread = reduce_thread_mutations(thread, replay_mutations);
 
         events.push(AgentEvent::ToolCallDone {
             id: tool_call.id.clone(),
@@ -99,31 +96,28 @@ async fn drain_run_start_outbox_and_replay(
     }
 
     // Clear pending_interaction state after replaying tools.
-    let state = thread
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| format!("failed to rebuild state after replay: {e}"))?;
     let clear_patch = clear_agent_pending_interaction(&state);
     if !clear_patch.patch().is_empty() {
         replay_state_changed = true;
-        thread = reduce_thread_mutations(
-            thread,
-            ThreadMutationBatch::default().with_patch(clear_patch),
-        );
+        run_ctx.add_patch(clear_patch);
     }
 
     if replay_state_changed {
-        let snapshot = thread
+        let snapshot = run_ctx
             .rebuild_state()
             .map_err(|e| format!("failed to rebuild replay snapshot: {e}"))?;
         events.push(AgentEvent::StateSnapshot { snapshot });
     }
 
-    Ok((thread, events))
+    Ok(events)
 }
 
-fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), String> {
-    let (next_thread, outbox) =
-        drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
+fn drain_loop_tick_outbox(run_ctx: &mut RunContext) -> Result<Vec<AgentEvent>, String> {
+    let outbox =
+        drain_agent_outbox(run_ctx, "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
 
     if !outbox.replay_tool_calls.is_empty() {
         return Err("unexpected replay_tool_calls outside run start".to_string());
@@ -137,7 +131,7 @@ fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), S
             result: resolution.result,
         })
         .collect::<Vec<_>>();
-    Ok((next_thread, events))
+    Ok(events)
 }
 
 #[derive(Debug)]
@@ -243,30 +237,25 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
     }
 }
 
-pub(super) fn run_loop_stream_impl_with_provider(
-    provider: Arc<dyn ChatStreamProvider>,
+pub(super) fn run_loop_stream_impl(
     config: AgentConfig,
-    thread: Thread,
-    tools: HashMap<String, Arc<dyn Tool>>,
+    run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
-    let mut thread = thread;
+    let mut run_ctx = run_ctx;
+    let executor = llm_executor_for_run(&config);
     let mut run_state = RunState::new();
     let mut last_text = String::new();
     let stop_conditions = effective_stop_conditions(&config);
     let run_cancellation_token = cancellation_token;
-    let step_tool_provider = step_tool_provider_for_run(&config, &tools);
+    let no_static_tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let step_tool_provider = step_tool_provider_for_run(&config, &no_static_tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));
 
-        // Resolve run_id: from runtime if pre-set, otherwise generate.
-        // NOTE: runtime is mutated in-place here. This is intentional —
-        // runtime is transient (not persisted) and the owned-builder pattern
-        // (`with_runtime`) is impractical inside the loop where `thread` is
-        // borrowed across yield points.
-        let run_identity = resolve_stream_run_identity(&mut thread);
+        let run_identity = resolve_stream_run_identity(&mut run_ctx);
         let run_id = run_identity.run_id;
         let parent_run_id = run_identity.parent_run_id;
         let pending_delta_commit = PendingDeltaCommitContext::new(
@@ -275,8 +264,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
             state_committer.as_ref(),
         );
         let mut emitter =
-            StreamEventEmitter::new(run_id.clone(), thread.id.clone(), parent_run_id.clone());
-        let mut active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+            StreamEventEmitter::new(run_id.clone(), run_ctx.thread_id().to_string(), parent_run_id.clone());
+        let mut active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 let message = e.to_string();
@@ -284,7 +273,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     message: message.clone(),
                 });
                 let outcome = build_loop_outcome(
-                    thread,
+                    run_ctx,
                     TerminationReason::Error,
                     None,
                     &run_state,
@@ -299,7 +288,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         macro_rules! emit_run_finished_delta {
             () => {
                 if let Err(e) = pending_delta_commit
-                    .commit(&mut thread, CheckpointReason::RunFinished, true)
+                    .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
                     .await
                 {
                     tracing::warn!(error = %e, "failed to commit run-finished delta");
@@ -310,7 +299,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         macro_rules! ensure_run_finished_delta_or_error {
             () => {
                 if let Err(e) = pending_delta_commit
-                    .commit(&mut thread, CheckpointReason::RunFinished, true)
+                    .commit(&mut run_ctx, CheckpointReason::RunFinished, true)
                     .await
                 {
                     yield emitter.emit_existing(AgentEvent::Error {
@@ -325,10 +314,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ($failure:expr, $message:expr) => {{
                 let failure = $failure;
                 let message = $message;
-                thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
+                finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 emit_run_finished_delta!();
                 let outcome = build_loop_outcome(
-                    thread,
+                    run_ctx,
                     TerminationReason::Error,
                     Some(last_text.clone()),
                     &run_state,
@@ -346,10 +335,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ($termination_expr:expr, $response_expr:expr) => {{
                 let final_termination = $termination_expr;
                 let final_response = $response_expr;
-                thread = finalize_run_end(thread, &active_tool_descriptors, &config.plugins).await;
+                finalize_run_end(&mut run_ctx, &active_tool_descriptors, &config.plugins).await;
                 ensure_run_finished_delta_or_error!();
                 let outcome = build_loop_outcome(
-                    thread,
+                    run_ctx,
                     final_termination,
                     final_response,
                     &run_state,
@@ -363,7 +352,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
         // Phase: RunStart (use scoped block to manage borrow)
         match emit_phase_block(
             Phase::RunStart,
-            &thread,
+            &run_ctx,
             &active_tool_descriptors,
             &config.plugins,
             |_| {},
@@ -371,7 +360,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             .await
         {
             Ok(pending) => {
-                thread = apply_pending_patches(thread, pending);
+                run_ctx.add_patches(pending);
             }
             Err(e) => {
                 let message = e.to_string();
@@ -382,8 +371,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
         yield emitter.run_start();
 
         // Resume pending tool execution requested by plugins at run start.
-        let (next_thread, run_start_events) = match drain_run_start_outbox_and_replay(
-            thread.clone(),
+        let run_start_events = match drain_run_start_outbox_and_replay(
+            &mut run_ctx,
             &active_tool_snapshot.tools,
             &config,
             &active_tool_descriptors,
@@ -396,20 +385,18 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
             }
         };
-        thread = next_thread;
         for event in run_start_events {
             yield emitter.emit_existing(event);
         }
 
         loop {
-            let (next_thread, loop_tick_events) = match drain_loop_tick_outbox(thread.clone()) {
+            let loop_tick_events = match drain_loop_tick_outbox(&mut run_ctx) {
                 Ok(v) => v,
                 Err(e) => {
                     let message = e;
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            thread = next_thread;
             for event in loop_tick_events {
                 yield emitter.emit_existing(event);
             }
@@ -419,7 +406,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 finish_run!(TerminationReason::Cancelled, None);
             }
 
-            active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &thread).await {
+            active_tool_snapshot = match resolve_step_tool_snapshot(&step_tool_provider, &run_ctx).await {
                 Ok(snapshot) => snapshot,
                 Err(e) => {
                     let message = e.to_string();
@@ -428,20 +415,20 @@ pub(super) fn run_loop_stream_impl_with_provider(
             };
             active_tool_descriptors = active_tool_snapshot.descriptors.clone();
 
-            let prepared = match prepare_step_execution(&thread, &active_tool_descriptors, &config).await {
+            let prepared = match prepare_step_execution(&run_ctx, &active_tool_descriptors, &config).await {
                 Ok(v) => v,
                 Err(e) => {
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            thread = apply_pending_patches(thread, prepared.pending_patches);
+            run_ctx.add_patches(prepared.pending_patches);
             let messages = prepared.messages;
             let filtered_tools = prepared.filtered_tools;
 
             // Skip inference if requested
             if prepared.skip_inference {
-                let pending_interaction = pending_interaction_from_thread(&thread);
+                let pending_interaction = pending_interaction_from_ctx(&run_ctx);
                 if let Some(interaction) = pending_interaction.clone() {
                     for event in interaction_requested_pending_events(&interaction) {
                         yield emitter.emit_existing(event);
@@ -471,10 +458,10 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 |model| {
                     let request =
                         build_request_for_filtered_tools(&messages, &active_tool_snapshot.tools, &filtered_tools);
-                    let provider = provider.clone();
+                    let executor = executor.clone();
                     let chat_options = chat_options.clone();
                     async move {
-                        provider
+                        executor
                             .exec_chat_stream_events(&model, request, chat_options.as_ref())
                             .await
                     }
@@ -499,9 +486,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     attempts,
                 } => {
                     run_state.record_llm_attempts(attempts);
-                    // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match apply_llm_error_cleanup(
-                            &mut thread,
+                            &mut run_ctx,
                             &active_tool_descriptors,
                             &config.plugins,
                             "llm_stream_start_error",
@@ -558,9 +544,8 @@ pub(super) fn run_loop_stream_impl_with_provider(
                         }
                     }
                     Err(e) => {
-                        // Ensure AfterInference and StepEnd run so plugins can observe the error and clean up.
                         match apply_llm_error_cleanup(
-                            &mut thread,
+                            &mut run_ctx,
                             &active_tool_descriptors,
                             &config.plugins,
                             "llm_stream_event_error",
@@ -593,7 +578,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
 
             let step_meta = step_metadata(Some(run_id.clone()), run_state.completed_steps as u32);
             if let Err(e) = complete_step_after_inference(
-                &mut thread,
+                &mut run_ctx,
                 &result,
                 step_meta.clone(),
                 Some(assistant_msg_id.clone()),
@@ -607,7 +592,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             if let Err(e) = pending_delta_commit
-                .commit(&mut thread, CheckpointReason::AssistantTurnCommitted, false)
+                .commit(&mut run_ctx, CheckpointReason::AssistantTurnCommitted, false)
                 .await
             {
                 let message = e.to_string();
@@ -626,7 +611,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     finish_run!(TerminationReason::Cancelled, None);
                 }
                 if let Some(reason) =
-                    stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+                    stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
                 {
                     finish_run!(TerminationReason::Stopped(reason), None);
                 }
@@ -643,16 +628,16 @@ pub(super) fn run_loop_stream_impl_with_provider(
             }
 
             // Execute tools with phase hooks
-            let tool_context = match prepare_tool_execution_context(&thread, Some(&config)) {
+            let tool_context = match prepare_tool_execution_context(&run_ctx, Some(&config)) {
                 Ok(ctx) => ctx,
                 Err(e) => {
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            let sid_for_tools = thread.id.clone();
-            let thread_messages_for_tools = thread.messages.clone();
-            let thread_version_for_tools = agent_state_version(&thread);
+            let sid_for_tools = run_ctx.thread_id().to_string();
+            let thread_messages_for_tools = run_ctx.messages().to_vec();
+            let thread_version_for_tools = run_ctx.version();
             let mut tool_future: Pin<
                 Box<dyn Future<Output = Result<Vec<ToolExecutionResult>, AgentLoopError>> + Send>,
             > = Box::pin(async {
@@ -717,13 +702,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
                     }
                 }
             }
-            let thread_before_apply = thread.clone();
             // Pre-generate message IDs for tool results so streaming events
             // and stored Messages share the same ID.
             let tool_msg_ids = preallocate_tool_result_message_ids(&results);
 
             let applied = match apply_tool_results_impl(
-                thread,
+                &mut run_ctx,
                 &results,
                 Some(step_meta),
                 config.tool_executor.requires_parallel_patch_conflict_check(),
@@ -731,15 +715,13 @@ pub(super) fn run_loop_stream_impl_with_provider(
             ) {
                 Ok(a) => a,
                 Err(e) => {
-                    thread = thread_before_apply;
                     let message = e.to_string();
                     terminate_stream_error!(outcome::LoopFailure::State(message.clone()), message);
                 }
             };
-            thread = applied.thread;
 
             if let Err(e) = pending_delta_commit
-                .commit(&mut thread, CheckpointReason::ToolResultsCommitted, false)
+                .commit(&mut run_ctx, CheckpointReason::ToolResultsCommitted, false)
                 .await
             {
                 let message = e.to_string();
@@ -758,13 +740,12 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 }
             }
 
-            // Emit state snapshot when we mutated state (tool patches or Thread pending/clear).
+            // Emit state snapshot when we mutated state (tool patches or pending/clear).
             if let Some(snapshot) = applied.state_snapshot {
                 yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }
 
             // If there are pending interactions, pause the loop.
-            // Client must respond and start a new run to continue.
             if applied.pending_interaction.is_some() {
                 finish_run!(TerminationReason::PendingInteraction, None);
             }
@@ -777,7 +758,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
             run_state.record_tool_step(&result.tool_calls, error_count);
 
             // Check stop conditions.
-            if let Some(reason) = stop_reason_for_step(&run_state, &result, &thread, &stop_conditions)
+            if let Some(reason) = stop_reason_for_step(&run_state, &result, &run_ctx, &stop_conditions)
             {
                 finish_run!(TerminationReason::Stopped(reason), None);
             }

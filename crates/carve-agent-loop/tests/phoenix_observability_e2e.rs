@@ -5,9 +5,9 @@ use carve_agent_loop::contracts::plugin::AgentPlugin;
 use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
 use carve_agent_loop::contracts::state::{Thread, Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agent_loop::contracts::ToolCallContext;
+use carve_agent_loop::contracts::{RunContext, ToolCallContext};
 use carve_agent_loop::runtime::loop_runner::{
-    execute_tools_with_plugins, run_loop_stream, run_step, AgentConfig,
+    execute_tools_with_plugins, run_loop, run_loop_stream, AgentConfig, GenaiLlmExecutor,
 };
 use futures::StreamExt;
 use phoenix_test_helpers::{
@@ -89,14 +89,14 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = Thread::with_initial_state("phoenix-e2e-state", json!({}))
+    let config = AgentConfig::new(model_name.clone())
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
+    let thread = Thread::with_initial_state("phoenix-e2e-state", json!({}))
         .with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let _ = run_step(&client, &config, state, &tools)
-        .await
-        .expect("run_step should succeed");
+    let _ = run_loop(&config, run_ctx, None, None).await;
 
     let _ = provider.force_flush();
 
@@ -148,16 +148,15 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
+    let config = AgentConfig::new(model_name.clone())
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
+    let thread = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
         .with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let err = run_step(&client, &config, state, &tools)
-        .await
-        .err()
-        .expect("run_step should fail for invalid LLM json");
-    assert!(err.to_string().contains("LLM error"));
+    let outcome = run_loop(&config, run_ctx, None, None).await;
+    assert!(matches!(outcome.termination, carve_agent_loop::contracts::runtime::TerminationReason::Error));
 
     let _ = provider.force_flush();
 
@@ -261,12 +260,14 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         })
         .build();
 
-    let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
+    let config = AgentConfig::new(model_name.clone())
+        .with_plugin(plugin)
+        .with_llm_executor(Arc::new(GenaiLlmExecutor::new(client)));
+    let thread = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
-    let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
+    let run_ctx = RunContext::from_thread(&thread).unwrap();
 
-    let events: Vec<_> = run_loop_stream(client, config, state, tools, None, None)
+    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
         .collect()
         .await;
     assert!(

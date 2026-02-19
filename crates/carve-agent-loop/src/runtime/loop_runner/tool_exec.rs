@@ -1,6 +1,6 @@
 use super::core::{
-    clear_agent_pending_interaction, drain_agent_append_user_messages, reduce_thread_mutations,
-    set_agent_pending_interaction, ThreadMutationBatch,
+    clear_agent_pending_interaction, drain_agent_append_user_messages,
+    set_agent_pending_interaction,
 };
 use super::plugin_runtime::emit_phase_checked;
 use super::{
@@ -17,6 +17,7 @@ use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_K
 use crate::contracts::state::{ActivityManager, Thread};
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
+use crate::contracts::RunContext;
 use crate::engine::convert::tool_response;
 use crate::engine::tool_execution::collect_patches;
 use crate::runtime::control::LoopControlState;
@@ -28,15 +29,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(super) struct AppliedToolResults {
-    pub(super) thread: Thread,
     pub(super) pending_interaction: Option<Interaction>,
     pub(super) state_snapshot: Option<Value>,
 }
 
 fn map_tool_executor_error(err: AgentLoopError) -> ToolExecutorError {
     match err {
-        AgentLoopError::Cancelled { state } => ToolExecutorError::Cancelled {
-            thread_id: state.id.clone(),
+        AgentLoopError::Cancelled { run_ctx } => ToolExecutorError::Cancelled {
+            thread_id: run_ctx.thread_id().to_string(),
         },
         other => ToolExecutorError::Failed {
             message: other.to_string(),
@@ -157,13 +157,13 @@ fn validate_parallel_state_patch_conflicts(
 }
 
 pub(super) fn apply_tool_results_to_session(
-    thread: Thread,
+    run_ctx: &mut RunContext,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     check_parallel_patch_conflicts: bool,
 ) -> Result<AppliedToolResults, AgentLoopError> {
     apply_tool_results_impl(
-        thread,
+        run_ctx,
         results,
         metadata,
         check_parallel_patch_conflicts,
@@ -172,7 +172,7 @@ pub(super) fn apply_tool_results_to_session(
 }
 
 pub(super) fn apply_tool_results_impl(
-    thread: Thread,
+    run_ctx: &mut RunContext,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     check_parallel_patch_conflicts: bool,
@@ -201,25 +201,23 @@ pub(super) fn apply_tool_results_impl(
     }
 
     // Collect patches from completed tools and plugin pending patches.
-    let mut mutations = ThreadMutationBatch::default().with_patches(collect_patches(
+    let mut patches: Vec<TrackedPatch> = collect_patches(
         &results
             .iter()
             .map(|r| r.execution.clone())
             .collect::<Vec<_>>(),
-    ));
+    );
     for r in results {
-        mutations = mutations.with_patches(r.pending_patches.iter().cloned());
+        patches.extend(r.pending_patches.iter().cloned());
     }
-    let mut state_changed = !mutations.patches.is_empty();
+    let mut state_changed = !patches.is_empty();
+    run_ctx.add_patches(patches);
 
     // Add tool result messages for all executions.
-    // Pending tools get a placeholder result so the message sequence stays valid
-    // for LLMs that require tool results after every assistant tool_calls message.
-    let tool_messages: Vec<Message> = results
+    let tool_messages: Vec<Arc<Message>> = results
         .iter()
         .flat_map(|r| {
             let mut msgs = if r.pending_interaction.is_some() {
-                // Placeholder result keeps the message sequence valid while awaiting approval.
                 vec![Message::tool(
                     &r.execution.call.id,
                     format!(
@@ -229,7 +227,6 @@ pub(super) fn apply_tool_results_impl(
                 )]
             } else {
                 let mut tool_msg = tool_response(&r.execution.call.id, &r.execution.result);
-                // Apply pre-generated message ID if provided.
                 if let Some(id) = tool_msg_ids.and_then(|ids| ids.get(&r.execution.call.id)) {
                     tool_msg = tool_msg.with_id(id.clone());
                 }
@@ -241,38 +238,33 @@ pub(super) fn apply_tool_results_impl(
                     reminder
                 )));
             }
-            // Attach run/step metadata to each message.
             if let Some(ref meta) = metadata {
                 for msg in &mut msgs {
                     msg.metadata = Some(meta.clone());
                 }
             }
-            msgs
+            msgs.into_iter().map(Arc::new).collect::<Vec<_>>()
         })
         .collect();
 
-    mutations = mutations.with_messages(tool_messages);
-    let mut thread = reduce_thread_mutations(thread, mutations);
-    let (next_thread, appended_count) =
-        drain_agent_append_user_messages(thread, results, metadata.as_ref())?;
-    thread = next_thread;
+    run_ctx.add_messages(tool_messages);
+    let appended_count = drain_agent_append_user_messages(run_ctx, results, metadata.as_ref())?;
     if appended_count > 0 {
         state_changed = true;
     }
 
     if let Some(interaction) = pending_interaction.clone() {
-        let state = thread
+        let state = run_ctx
             .rebuild_state()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
         let patch = set_agent_pending_interaction(&state, interaction.clone());
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread =
-                reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
+            run_ctx.add_patch(patch);
         }
         let state_snapshot = if state_changed {
             Some(
-                thread
+                run_ctx
                     .rebuild_state()
                     .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
             )
@@ -280,7 +272,6 @@ pub(super) fn apply_tool_results_impl(
             None
         };
         return Ok(AppliedToolResults {
-            thread,
             pending_interaction: Some(interaction),
             state_snapshot,
         });
@@ -288,7 +279,7 @@ pub(super) fn apply_tool_results_impl(
 
     // If a previous run left a persisted pending interaction, clear it once we successfully
     // complete tool execution without creating a new pending interaction.
-    let state = thread
+    let state = run_ctx
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     if state
@@ -299,14 +290,13 @@ pub(super) fn apply_tool_results_impl(
         let patch = clear_agent_pending_interaction(&state);
         if !patch.patch().is_empty() {
             state_changed = true;
-            thread =
-                reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patch(patch));
+            run_ctx.add_patch(patch);
         }
     }
 
     let state_snapshot = if state_changed {
         Some(
-            thread
+            run_ctx
                 .rebuild_state()
                 .map_err(|e| AgentLoopError::StateError(e.to_string()))?,
         )
@@ -315,27 +305,26 @@ pub(super) fn apply_tool_results_impl(
     };
 
     Ok(AppliedToolResults {
-        thread,
         pending_interaction: None,
         state_snapshot,
     })
 }
 
-fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
-    let run_id = thread
+fn tool_result_metadata_from_run_ctx(run_ctx: &RunContext) -> Option<MessageMetadata> {
+    let run_id = run_ctx
         .run_config
         .value("run_id")
         .and_then(|v| v.as_str().map(String::from))
         .or_else(|| {
-            thread.messages.iter().rev().find_map(|m| {
+            run_ctx.messages().iter().rev().find_map(|m| {
                 m.metadata
                     .as_ref()
                     .and_then(|meta| meta.run_id.as_ref().cloned())
             })
         });
 
-    let step_index = thread
-        .messages
+    let step_index = run_ctx
+        .messages()
         .iter()
         .rev()
         .find_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index));
@@ -347,9 +336,10 @@ fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata>
     }
 }
 
-pub(super) fn next_step_index(thread: &Thread) -> u32 {
-    thread
-        .messages
+#[allow(dead_code)]
+pub(super) fn next_step_index(run_ctx: &RunContext) -> u32 {
+    run_ctx
+        .messages()
         .iter()
         .filter_map(|m| m.metadata.as_ref().and_then(|meta| meta.step_index))
         .max()
@@ -394,13 +384,13 @@ pub async fn execute_tools_with_config(
 }
 
 pub(super) fn scope_with_tool_caller_context(
-    thread: &Thread,
+    run_ctx: &RunContext,
     state: &Value,
     _config: Option<&AgentConfig>,
 ) -> Result<carve_agent_contract::RunConfig, AgentLoopError> {
-    let mut rt = thread.run_config.clone();
+    let mut rt = run_ctx.run_config.clone();
     if rt.value(TOOL_SCOPE_CALLER_THREAD_ID_KEY).is_none() {
-        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, thread.id.clone())
+        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, run_ctx.thread_id().to_string())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if rt.value(TOOL_SCOPE_CALLER_STATE_KEY).is_none() {
@@ -408,7 +398,7 @@ pub(super) fn scope_with_tool_caller_context(
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     if rt.value(TOOL_SCOPE_CALLER_MESSAGES_KEY).is_none() {
-        rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, thread.messages.clone())
+        rt.set(TOOL_SCOPE_CALLER_MESSAGES_KEY, run_ctx.messages().to_vec())
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
     }
     Ok(rt)
@@ -443,44 +433,59 @@ pub async fn execute_tools_with_plugins_and_executor(
         return Ok(thread);
     }
 
-    let state = thread
+    // Build RunContext from thread for internal use
+    let rebuilt_state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
+    let mut run_ctx = RunContext::new(
+        &thread.id,
+        rebuilt_state.clone(),
+        thread.messages.clone(),
+        thread.run_config.clone(),
+    );
 
     let tool_descriptors: Vec<ToolDescriptor> =
         tools.values().map(|t| t.descriptor().clone()).collect();
-    let rt_for_tools = scope_with_tool_caller_context(&thread, &state, None)?;
+    let rt_for_tools = scope_with_tool_caller_context(&run_ctx, &rebuilt_state, None)?;
     let results = executor
         .execute(ToolExecutionRequest {
             tools,
             calls: &result.tool_calls,
-            state: &state,
+            state: &rebuilt_state,
             tool_descriptors: &tool_descriptors,
             plugins,
             activity_manager: None,
             run_config: Some(&rt_for_tools),
-            thread_id: &thread.id,
-            thread_messages: &thread.messages,
-            state_version: super::agent_state_version(&thread),
+            thread_id: run_ctx.thread_id(),
+            thread_messages: run_ctx.messages(),
+            state_version: run_ctx.version(),
             cancellation_token: None,
             run_overlay: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
         .await?;
 
-    let metadata = tool_result_metadata_from_session(&thread);
+    let metadata = tool_result_metadata_from_run_ctx(&run_ctx);
     let applied = apply_tool_results_to_session(
-        thread,
+        &mut run_ctx,
         &results,
         metadata,
         executor.requires_parallel_patch_conflict_check(),
     )?;
     if let Some(interaction) = applied.pending_interaction {
         return Err(AgentLoopError::PendingInteraction {
-            state: Box::new(applied.thread),
+            run_ctx: Box::new(run_ctx),
             interaction: Box::new(interaction),
         });
     }
-    Ok(applied.thread)
+
+    // Reconstruct thread from RunContext delta
+    let delta = run_ctx.take_delta();
+    let mut out_thread = thread;
+    for msg in delta.messages {
+        out_thread = out_thread.with_message((*msg).clone());
+    }
+    out_thread = out_thread.with_patches(delta.patches);
+    Ok(out_thread)
 }
 
 /// Execute tools in parallel with phase hooks.
@@ -502,7 +507,10 @@ pub(super) async fn execute_tools_parallel_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            state: Box::new(Thread::new(thread_id.to_string())),
+            run_ctx: Box::new(RunContext::new(
+                thread_id, serde_json::json!({}), vec![],
+                carve_agent_contract::RunConfig::default(),
+            )),
         });
     }
 
@@ -546,7 +554,10 @@ pub(super) async fn execute_tools_parallel_with_phases(
         tokio::select! {
             _ = token.cancelled() => {
                 return Err(AgentLoopError::Cancelled {
-                    state: Box::new(Thread::new(thread_id.clone())),
+                    run_ctx: Box::new(RunContext::new(
+                        thread_id.clone(), serde_json::json!({}), vec![],
+                        carve_agent_contract::RunConfig::default(),
+                    )),
                 });
             }
             results = join_future => results,
@@ -576,7 +587,10 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            state: Box::new(Thread::new(thread_id.to_string())),
+            run_ctx: Box::new(RunContext::new(
+                thread_id, serde_json::json!({}), vec![],
+                carve_agent_contract::RunConfig::default(),
+            )),
         });
     }
 
@@ -589,7 +603,10 @@ pub(super) async fn execute_tools_sequential_with_phases(
             tokio::select! {
                 _ = token.cancelled() => {
                     return Err(AgentLoopError::Cancelled {
-                        state: Box::new(Thread::new(thread_id.to_string())),
+                        run_ctx: Box::new(RunContext::new(
+                            thread_id, serde_json::json!({}), vec![],
+                            carve_agent_contract::RunConfig::default(),
+                        )),
                     });
                 }
                 result = execute_single_tool_with_phases(
@@ -644,8 +661,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
         results.push(result);
 
-        // Best-effort flow control: in sequential mode, stop at the first pending interaction.
-        // This prevents later tool calls from executing while the client still needs to respond.
         if results
             .last()
             .and_then(|r| r.pending_interaction.as_ref())
@@ -765,7 +780,6 @@ pub(super) async fn execute_single_tool_with_phases(
             &tool_doc,
             &tool_ops,
             tool_overlay,
-            // `tool_call_id` is the stable idempotency key seen by the tool.
             &call.id,
             format!("tool:{}", call.name),
             plugin_scope,

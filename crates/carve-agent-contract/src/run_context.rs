@@ -1,10 +1,12 @@
 use crate::context::ToolCallContext;
 use crate::run_delta::RunDelta;
+use crate::runtime::control::LoopControlState;
+use crate::runtime::interaction::Interaction;
 use crate::state::transient::ActivityManager;
 use crate::state::Message;
 use crate::RunConfig;
 use carve_state::{
-    apply_patch, apply_patches, CarveResult, DeltaTracked, DocCell, Op, Patch, TrackedPatch,
+    apply_patch, apply_patches, CarveResult, DeltaTracked, DocCell, Op, Patch, State, TrackedPatch,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,8 @@ pub struct RunContext {
     pub run_config: RunConfig,
     run_overlay: Arc<Mutex<Vec<Op>>>,
     doc: DocCell,
+    version: Option<u64>,
+    version_timestamp: Option<u64>,
 }
 
 impl RunContext {
@@ -50,6 +54,8 @@ impl RunContext {
             run_config,
             run_overlay: Arc::new(Mutex::new(Vec::new())),
             doc,
+            version: None,
+            version_timestamp: None,
         }
     }
 
@@ -60,6 +66,47 @@ impl RunContext {
     /// Thread identifier.
     pub fn thread_id(&self) -> &str {
         &self.thread_id
+    }
+
+    // =========================================================================
+    // Version
+    // =========================================================================
+
+    /// Current committed version (0 if never committed).
+    pub fn version(&self) -> u64 {
+        self.version.unwrap_or(0)
+    }
+
+    /// Update version after a successful state commit.
+    pub fn set_version(&mut self, version: u64, timestamp: Option<u64>) {
+        self.version = Some(version);
+        if let Some(ts) = timestamp {
+            self.version_timestamp = Some(ts);
+        }
+    }
+
+    /// Timestamp of the last committed version.
+    pub fn version_timestamp(&self) -> Option<u64> {
+        self.version_timestamp
+    }
+
+    // =========================================================================
+    // Pending interaction
+    // =========================================================================
+
+    /// Read pending interaction from durable control state.
+    ///
+    /// This rebuilds state and navigates to `loop_control.pending_interaction`.
+    pub fn pending_interaction(&self) -> Option<Interaction> {
+        self.rebuild_state()
+            .ok()
+            .and_then(|state| {
+                state
+                    .get(LoopControlState::PATH)
+                    .and_then(|lc| lc.get("pending_interaction"))
+                    .cloned()
+            })
+            .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
     }
 
     // =========================================================================
@@ -205,6 +252,23 @@ impl RunContext {
         )
     }
 
+}
+
+impl RunContext {
+    /// Convenience constructor from a `Thread`.
+    ///
+    /// Rebuilds state from the thread's base state + patches, then wraps
+    /// the thread's messages and run_config into a `RunContext`. Version
+    /// metadata is carried over from thread metadata.
+    pub fn from_thread(thread: &crate::state::Thread) -> Result<Self, carve_state::CarveError> {
+        let state = thread.rebuild_state()?;
+        let messages: Vec<Arc<Message>> = thread.messages.clone();
+        let mut ctx = Self::new(thread.id.clone(), state, messages, thread.run_config.clone());
+        if let Some(v) = thread.metadata.version {
+            ctx.set_version(v, thread.metadata.version_timestamp);
+        }
+        Ok(ctx)
+    }
 }
 
 impl std::fmt::Debug for RunContext {

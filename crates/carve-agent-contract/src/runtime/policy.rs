@@ -1,5 +1,6 @@
+use crate::run_context::RunContext;
 use crate::runtime::termination::StopReason;
-use crate::state::{Thread, ToolCall};
+use crate::state::ToolCall;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -27,10 +28,10 @@ pub struct StopPolicyStats<'a> {
     pub tool_call_history: &'a VecDeque<Vec<String>>,
 }
 
-/// Canonical stop-policy input: persisted state + runtime stats.
+/// Canonical stop-policy input: run context + runtime stats.
 pub struct StopPolicyInput<'a> {
-    /// Current agent state snapshot.
-    pub agent_state: &'a Thread,
+    /// Current run context.
+    pub agent_state: &'a RunContext,
     /// Runtime run stats.
     pub stats: StopPolicyStats<'a>,
 }

@@ -17,12 +17,12 @@ use carve_agent_loop::contracts::state::Thread as ConversationAgentState;
 use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
+use carve_agent_loop::contracts::RunContext;
 use carve_agent_loop::runtime::loop_runner::{
     run_loop, run_loop_stream, tool_map_from_arc, AgentConfig,
 };
 use carve_state::State;
 use futures::StreamExt;
-use genai::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -172,8 +172,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("=== DeepSeek Skills Live Test ===\n");
 
-    let client = Client::default();
-
     // Discover skills from examples/skills/
     let skills_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
@@ -202,28 +200,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 1: Activate a skill and use it
     println!("--- Test 1: Unit Converter Skill ---");
-    test_unit_converter(&client, &tools, &subsystem).await?;
+    test_unit_converter(&tools, &subsystem).await?;
 
     // Test 2: Skill activation via streaming
     println!("\n--- Test 2: Todo Manager Skill (Streaming) ---");
-    test_todo_manager_streaming(&client, &tools, &subsystem).await?;
+    test_todo_manager_streaming(&tools, &subsystem).await?;
 
     // Test 3: Multi-skill conversation
     println!("\n--- Test 3: Multi-Skill Conversation ---");
-    test_multi_skill(&client, &tools, &subsystem).await?;
+    test_multi_skill(&tools, &subsystem).await?;
 
     println!("\n=== All skill tests completed! ===");
     Ok(())
 }
 
 async fn test_unit_converter(
-    client: &Client,
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
     subsystem: &SkillSubsystem,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat")
         .with_max_rounds(5)
-        .with_plugin(subsystem.plugin());
+        .with_plugin(subsystem.plugin())
+        .with_tools(tools.clone());
 
     let thread = ConversationAgentState::with_initial_state("test-unit-converter", json!({}))
         .with_message(Message::system(
@@ -236,16 +234,16 @@ async fn test_unit_converter(
             "Convert 100 miles to kilometers. Use the unit-converter skill.",
         ));
 
-    let (thread, response) = run_loop(client, &config, thread, tools)
-        .await
-        .map_err(|e| format!("LLM error: {e}"))?;
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("User: Convert 100 miles to kilometers.");
     println!("Assistant: {response}");
-    println!("Messages: {}", thread.message_count());
+    println!("Messages: {}", outcome.run_ctx.messages().len());
 
     // Check if skill was activated via tool calls
-    let skill_activated = thread.messages.iter().any(|m| {
+    let skill_activated = outcome.run_ctx.messages().iter().any(|m| {
         m.tool_calls
             .as_ref()
             .is_some_and(|calls| calls.iter().any(|c| c.name == "skill"))
@@ -258,7 +256,7 @@ async fn test_unit_converter(
     }
 
     // Check if calculator was used
-    let calc_used = thread.messages.iter().any(|m| {
+    let calc_used = outcome.run_ctx.messages().iter().any(|m| {
         m.tool_calls
             .as_ref()
             .is_some_and(|calls| calls.iter().any(|c| c.name == "calculator"))
@@ -272,13 +270,13 @@ async fn test_unit_converter(
 }
 
 async fn test_todo_manager_streaming(
-    client: &Client,
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
     subsystem: &SkillSubsystem,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat")
         .with_max_rounds(8)
-        .with_plugin(subsystem.plugin());
+        .with_plugin(subsystem.plugin())
+        .with_tools(tools.clone());
 
     let thread =
         ConversationAgentState::with_initial_state("test-todo-skills", json!({ "counter": 0 }))
@@ -293,16 +291,11 @@ async fn test_todo_manager_streaming(
              Use the counter to track the task count.",
             ));
 
+    let run_ctx = RunContext::from_thread(&thread)?;
+
     print!("User: Add 3 tasks to todo list.\nAssistant: ");
 
-    let mut stream = run_loop_stream(
-        client.clone(),
-        config,
-        thread,
-        tools.clone(),
-        None,
-        None,
-    );
+    let mut stream = run_loop_stream(config, run_ctx, None, None);
 
     let mut final_text = String::new();
     while let Some(event) = stream.next().await {
@@ -334,62 +327,60 @@ async fn test_todo_manager_streaming(
 }
 
 async fn test_multi_skill(
-    client: &Client,
     tools: &std::collections::HashMap<String, Arc<dyn Tool>>,
     subsystem: &SkillSubsystem,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat")
         .with_max_rounds(8)
-        .with_plugin(subsystem.plugin());
+        .with_plugin(subsystem.plugin())
+        .with_tools(tools.clone());
 
     // Multi-turn conversation activating both skills
-    let mut thread =
+    let thread =
         ConversationAgentState::with_initial_state("test-multi-skill", json!({ "counter": 0 }))
             .with_message(Message::system(
                 "You are a helpful assistant with skills and tools. \
              Activate the appropriate skill before performing related tasks.",
+            ))
+            .with_message(Message::user(
+                "I need to convert 5 pounds to kilograms. Use the unit-converter skill.",
             ));
 
     // Turn 1: Use unit converter
-    thread = thread.with_message(Message::user(
-        "I need to convert 5 pounds to kilograms. Use the unit-converter skill.",
-    ));
+    let run_ctx = RunContext::from_thread(&thread)?;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
-    let (new_thread, response) = run_loop(client, &config, thread, tools)
-        .await
-        .map_err(|e| format!("LLM error: {e}"))?;
-    thread = new_thread;
-
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("Turn 1 - User: Convert 5 pounds to kilograms.");
     println!("Turn 1 - Assistant: {response}");
 
     // Turn 2: Use todo manager
-    thread = thread.with_message(Message::user(
+    let mut run_ctx = outcome.run_ctx;
+    run_ctx.add_message(Arc::new(Message::user(
         "Now activate the todo-manager skill and add a task: 'buy 2.27kg of flour'. \
          Use the counter to track tasks.",
-    ));
+    )));
 
-    let (new_thread, response) = run_loop(client, &config, thread, tools)
-        .await
-        .map_err(|e| format!("LLM error: {e}"))?;
-    thread = new_thread;
+    let outcome = run_loop(&config, run_ctx, None, None).await;
 
+    let response = outcome.response.as_deref().unwrap_or_default();
     println!("\nTurn 2 - User: Add a task using todo-manager skill.");
     println!("Turn 2 - Assistant: {response}");
 
     // Summary
-    let final_state = thread.rebuild_state()?;
+    let final_state = outcome.run_ctx.rebuild_state()?;
     println!("\nSession summary:");
-    println!("  Total messages: {}", thread.message_count());
-    println!("  Total patches: {}", thread.patch_count());
+    println!("  Total messages: {}", outcome.run_ctx.messages().len());
+    println!("  Total patches: {}", outcome.run_ctx.patches().len());
     println!(
         "  Final state: {}",
         serde_json::to_string_pretty(&final_state)?
     );
 
     // Check which skills were activated
-    let skill_calls: Vec<_> = thread
-        .messages
+    let skill_calls: Vec<_> = outcome
+        .run_ctx
+        .messages()
         .iter()
         .filter_map(|m| m.tool_calls.as_ref())
         .flatten()

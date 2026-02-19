@@ -1,24 +1,6 @@
 use super::*;
 use serde_json::{json, Value};
 
-/// Single step-cycle execution for fine-grained control.
-///
-/// This allows callers to control the loop manually.
-#[derive(Debug)]
-pub enum StepResult {
-    /// LLM responded with text, no tools needed.
-    Done {
-        state: Thread,
-        response: String,
-    },
-    /// LLM requested tool calls, tools have been executed.
-    ToolsExecuted {
-        state: Thread,
-        text: String,
-        tool_calls: Vec<crate::contracts::state::ToolCall>,
-    },
-}
-
 /// Aggregated token usage for one loop run.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LoopUsage {
@@ -45,13 +27,14 @@ pub(super) enum LoopFailure {
 }
 
 /// Unified terminal state for loop execution.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoopOutcome {
-    pub state: Thread,
+    pub run_ctx: crate::contracts::RunContext,
     pub termination: TerminationReason,
     pub response: Option<String>,
     pub usage: LoopUsage,
     pub stats: LoopStats,
+    #[allow(dead_code)]
     pub(super) failure: Option<LoopFailure>,
 }
 
@@ -70,7 +53,7 @@ impl LoopOutcome {
     /// Project unified outcome into stream `RunFinish` event.
     pub fn to_run_finish_event(self, run_id: String) -> AgentEvent {
         AgentEvent::RunFinish {
-            thread_id: self.state.id.clone(),
+            thread_id: self.run_ctx.thread_id().to_string(),
             run_id,
             result: self.run_finish_result(),
             termination: self.termination,
@@ -78,37 +61,8 @@ impl LoopOutcome {
     }
 }
 
-/// Run a single step-cycle of the agent loop.
-///
-/// This gives you fine-grained control over the loop.
-pub async fn run_step_cycle(
-    client: &Client,
-    config: &AgentConfig,
-    state: Thread,
-    tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<StepResult, AgentLoopError> {
-    // Run one step
-    let (state, result) = run_step(client, config, state, tools).await?;
-
-    if !result.needs_tools() {
-        return Ok(StepResult::Done {
-            state,
-            response: result.text,
-        });
-    }
-
-    // Execute tools
-    let state = execute_tools_with_config(state, &result, tools, config).await?;
-
-    Ok(StepResult::ToolsExecuted {
-        state,
-        text: result.text,
-        tool_calls: result.tool_calls,
-    })
-}
-
 /// Error type for agent loop operations.
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum AgentLoopError {
     #[error("LLM error: {0}")]
     LlmError(String),
@@ -116,25 +70,27 @@ pub enum AgentLoopError {
     StateError(String),
     /// The agent loop terminated normally due to a stop condition.
     ///
-    /// This is not an error but a structured stop with a reason. The run state
+    /// This is not an error but a structured stop with a reason. The run context
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
-        state: Box<Thread>,
+        run_ctx: Box<crate::contracts::RunContext>,
         reason: StopReason,
     },
     /// Pending user interaction; execution should pause until the client responds.
     ///
-    /// The returned state includes any patches applied up to the point where the
+    /// The returned run context includes any patches applied up to the point where the
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        state: Box<Thread>,
+        run_ctx: Box<crate::contracts::RunContext>,
         interaction: Box<Interaction>,
     },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]
-    Cancelled { state: Box<Thread> },
+    Cancelled {
+        run_ctx: Box<crate::contracts::RunContext>,
+    },
 }
 
 impl AgentLoopError {
@@ -154,7 +110,12 @@ impl From<crate::contracts::runtime::ToolExecutorError> for AgentLoopError {
         match value {
             crate::contracts::runtime::ToolExecutorError::Cancelled { thread_id } => {
                 Self::Cancelled {
-                    state: Box::new(Thread::new(thread_id)),
+                    run_ctx: Box::new(crate::contracts::RunContext::new(
+                        thread_id,
+                        serde_json::json!({}),
+                        vec![],
+                        crate::contracts::RunConfig::default(),
+                    )),
                 }
             }
             crate::contracts::runtime::ToolExecutorError::Failed { message } => {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::contracts::storage::VersionPrecondition;
-use crate::runtime::loop_runner::StaticStepToolProvider;
+use crate::runtime::loop_runner::{run_loop_stream, StaticStepToolProvider};
 
 impl AgentOs {
     pub fn agent_state_store(&self) -> Option<&Arc<dyn AgentStateStore>> {
@@ -109,12 +109,7 @@ impl AgentOs {
                 .await?;
             version = committed.version;
         }
-        let version_timestamp = thread.metadata.version_timestamp;
-        crate::runtime::loop_runner::set_agent_state_version(
-            &mut thread,
-            version,
-            version_timestamp,
-        );
+        thread.metadata.version = Some(version);
 
         // 6. Resolve static wiring.
         let (mut cfg, mut tools, thread) = self.resolve(&request.agent_id, thread)?;
@@ -136,11 +131,14 @@ impl AgentOs {
 
         cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
 
+        let run_ctx = RunContext::from_thread(&thread)
+            .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+
         Ok(PreparedRun {
             thread_id,
             run_id,
             config: cfg,
-            thread,
+            run_ctx,
             cancellation_token: None,
             state_committer: Some(Arc::new(
                 AgentStateStoreStateCommitter::new(agent_state_store.clone()),
@@ -150,10 +148,12 @@ impl AgentOs {
 
     /// Execute a previously prepared run.
     pub fn execute_prepared(prepared: PreparedRun) -> Result<RunStream, AgentOsRunError> {
-        let mut input = LoopRunInput::new(prepared.thread)?;
-        input.cancellation_token = prepared.cancellation_token;
-        input.state_committer = prepared.state_committer;
-        let events = run_loop_stream_with_input(prepared.config, input);
+        let events = run_loop_stream(
+            prepared.config,
+            prepared.run_ctx,
+            prepared.cancellation_token,
+            prepared.state_committer,
+        );
         Ok(RunStream {
             thread_id: prepared.thread_id,
             run_id: prepared.run_id,
@@ -225,9 +225,8 @@ impl AgentOs {
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let (cfg, tools, thread) = self.resolve(agent_id, thread)?;
         let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-        let mut input = LoopRunInput::new(thread)?;
-        input.cancellation_token = cancellation_token;
-        input.state_committer = state_committer;
-        Ok(run_loop_stream_with_input(cfg, input))
+        let run_ctx = RunContext::from_thread(&thread)
+            .map_err(|e| AgentOsRunError::Loop(AgentLoopError::StateError(e.to_string())))?;
+        Ok(run_loop_stream(cfg, run_ctx, cancellation_token, state_committer))
     }
 }

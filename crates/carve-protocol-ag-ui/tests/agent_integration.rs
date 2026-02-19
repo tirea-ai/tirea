@@ -2986,7 +2986,9 @@ fn test_agent_loop_error_all_variants() {
 
     // Stopped
     let stopped_err = AgentLoopError::Stopped {
-        state: Box::new(ConversationAgentState::new("s")),
+        run_ctx: Box::new(carve_agentos::contracts::RunContext::new(
+            "s", serde_json::json!({}), vec![], Default::default(),
+        )),
         reason: carve_agentos::engine::stop_conditions::StopReason::MaxRoundsReached,
     };
     let display = stopped_err.to_string();
@@ -2998,7 +3000,9 @@ fn test_agent_loop_error_all_variants() {
 
     // PendingInteraction
     let pending_err = AgentLoopError::PendingInteraction {
-        state: Box::new(ConversationAgentState::new("s")),
+        run_ctx: Box::new(carve_agentos::contracts::RunContext::new(
+            "s", serde_json::json!({}), vec![], Default::default(),
+        )),
         interaction: Box::new(Interaction::new("int_1", "confirm")),
     };
     let display = pending_err.to_string();
@@ -6463,8 +6467,8 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         .await
         .unwrap_err();
 
-    let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
+    let (suspended_run_ctx, interaction) = match err {
+        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
@@ -6475,19 +6479,19 @@ async fn test_e2e_permission_suspend_with_real_tool() {
 
     // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
     assert_eq!(
-        suspended_thread.message_count(),
+        suspended_run_ctx.messages().len(),
         1,
         "Pending tool should have placeholder result"
     );
     assert!(
-        suspended_thread.messages[0]
+        suspended_run_ctx.messages()[0]
             .content
             .contains("awaiting approval"),
         "Placeholder should mention awaiting approval"
     );
 
     // pending_interaction persisted in session state
-    let state = suspended_thread.rebuild_state().unwrap();
+    let state = suspended_run_ctx.rebuild_state().unwrap();
     let pending = &state["loop_control"]["pending_interaction"];
     assert_eq!(pending["id"], "permission_increment");
     assert_eq!(pending["action"], "confirm");
@@ -6532,9 +6536,19 @@ async fn test_e2e_permission_deny_blocks_via_execute_tools() {
         .await
         .unwrap_err();
 
-    let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
+    let (suspended_run_ctx, interaction) = match err {
+        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
+    };
+
+    // Reconstruct Thread from RunContext for resume
+    let suspended_thread = {
+        let state = suspended_run_ctx.rebuild_state().unwrap();
+        let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
+        for msg in suspended_run_ctx.messages() {
+            t = t.with_message((**msg).clone());
+        }
+        t
     };
 
     // Phase 2: Client denies
@@ -6626,9 +6640,19 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
         .await
         .unwrap_err();
 
-    let (suspended_thread, interaction) = match err {
-        AgentLoopError::PendingInteraction { state, interaction } => (*state, *interaction),
+    let (suspended_run_ctx, interaction) = match err {
+        AgentLoopError::PendingInteraction { run_ctx, interaction } => (*run_ctx, *interaction),
         other => panic!("Expected PendingInteraction, got: {:?}", other),
+    };
+
+    // Reconstruct Thread from RunContext for resume
+    let suspended_thread = {
+        let state = suspended_run_ctx.rebuild_state().unwrap();
+        let mut t = ConversationAgentState::with_initial_state(suspended_run_ctx.thread_id(), state);
+        for msg in suspended_run_ctx.messages() {
+            t = t.with_message((**msg).clone());
+        }
+        t
     };
 
     // Phase 2: Client approves

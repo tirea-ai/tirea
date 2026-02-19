@@ -20,8 +20,9 @@ use crate::extensions::skills::{
     SkillPlugin, SkillRegistry, SkillRegistryError, SkillRegistryManagerError, SkillRuntimePlugin,
     SkillSubsystem, SkillSubsystemError,
 };
+use crate::contracts::RunContext;
 use crate::runtime::loop_runner::{
-    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput,
+    AgentConfig, AgentLoopError,
     RunCancellationToken, StateCommitError, StateCommitter,
 };
 
@@ -316,7 +317,7 @@ pub struct PreparedRun {
     /// Resolved run ID (may have been auto-generated).
     pub run_id: String,
     config: AgentConfig,
-    thread: Thread,
+    run_ctx: RunContext,
     cancellation_token: Option<RunCancellationToken>,
     state_committer: Option<Arc<dyn StateCommitter>>,
 }

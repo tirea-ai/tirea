@@ -2,7 +2,7 @@ use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{LlmExecutor, StopConditionSpec, StopPolicy, ToolExecutor};
-use crate::contracts::state::Thread;
+use crate::contracts::RunContext;
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
@@ -36,8 +36,8 @@ impl Default for LlmRetryPolicy {
 
 /// Input context passed to per-step tool providers.
 pub struct StepToolInput<'a> {
-    /// Current Thread at step boundary.
-    pub state: &'a Thread,
+    /// Current run context at step boundary.
+    pub state: &'a RunContext,
 }
 
 /// Tool snapshot resolved for one step.
@@ -257,6 +257,12 @@ impl AgentConfig {
             Arc::new(SequentialToolExecutor)
         };
         self
+    }
+
+    /// Set static tool map (wraps in [`StaticStepToolProvider`]).
+    #[must_use]
+    pub fn with_tools(self, tools: HashMap<String, Arc<dyn Tool>>) -> Self {
+        self.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)))
     }
 
     /// Set per-step tool provider.
