@@ -107,6 +107,7 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
+pub mod context;
 pub mod plugin;
 pub mod protocol;
 pub mod runtime;
@@ -115,6 +116,7 @@ pub mod storage;
 pub mod tool;
 pub mod tool_registry;
 
+pub use context::ToolCallContext;
 pub use plugin::AgentPlugin;
 pub use runtime::{
     AgentEvent, InferenceError, Interaction, InteractionResponse, LlmExecutor,
