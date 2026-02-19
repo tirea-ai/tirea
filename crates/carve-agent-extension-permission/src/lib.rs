@@ -170,7 +170,6 @@ impl AgentPlugin for PermissionPlugin {
         &self,
         phase: carve_agent_contract::runtime::phase::Phase,
         step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
-        ctx: &ContextAgentState,
     ) {
         use carve_agent_contract::runtime::phase::Phase;
 
@@ -182,7 +181,7 @@ impl AgentPlugin for PermissionPlugin {
             return;
         };
 
-        let permission = ctx.get_permission(tool_id);
+        let permission = step.ctx().get_permission(tool_id);
 
         match permission {
             ToolPermissionBehavior::Allow => {

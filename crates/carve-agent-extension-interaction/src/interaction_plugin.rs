@@ -7,8 +7,6 @@ use super::INTERACTION_PLUGIN_ID;
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
-use carve_agent_contract::AgentState;
-
 /// Unified interaction mechanism plugin.
 pub struct InteractionPlugin {
     static_response: InteractionResponsePlugin,
@@ -64,9 +62,9 @@ impl AgentPlugin for InteractionPlugin {
         INTERACTION_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         let response = self.response_plugin();
-        response.on_phase(phase, step, ctx).await;
+        response.on_phase(phase, step).await;
     }
 }
 

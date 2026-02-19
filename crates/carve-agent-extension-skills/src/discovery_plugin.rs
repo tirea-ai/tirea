@@ -3,7 +3,6 @@ use crate::{Skill, SkillMeta, SkillState, SKILLS_DISCOVERY_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
-use carve_agent_contract::AgentState as ContextAgentState;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -122,20 +121,24 @@ impl AgentPlugin for SkillDiscoveryPlugin {
         SKILLS_DISCOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase != Phase::BeforeInference {
             return;
         }
 
-        let skill_state = ctx.state_of::<SkillState>();
-        let active: HashSet<String> = skill_state
-            .active()
-            .ok()
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let (active, scope) = {
+            let skill_state = step.state_of::<SkillState>();
+            let active: HashSet<String> = skill_state
+                .active()
+                .ok()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            // Clone scope to release immutable borrow on step
+            (active, step.scope().clone())
+        };
 
-        let rendered = self.render_catalog(&active, Some(&step.thread.scope));
+        let rendered = self.render_catalog(&active, Some(&scope));
         if rendered.is_empty() {
             return;
         }

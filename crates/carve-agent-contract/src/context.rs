@@ -199,6 +199,18 @@ impl<'a> ToolCallContext<'a> {
     }
 
     // =========================================================================
+    // State snapshot
+    // =========================================================================
+
+    /// Snapshot the current document state.
+    ///
+    /// Returns the current state including all write-through updates.
+    /// Equivalent to `AgentState::rebuild_state()` in transient contexts.
+    pub fn snapshot(&self) -> Value {
+        self.doc.snapshot()
+    }
+
+    // =========================================================================
     // Patch extraction
     // =========================================================================
 

@@ -1,5 +1,4 @@
 use super::*;
-use crate::contracts::AgentState as ContextAgentState;
 use carve_state::State;
 pub struct AgentRecoveryPlugin {
     manager: Arc<AgentRunManager>,
@@ -10,11 +9,8 @@ impl AgentRecoveryPlugin {
         Self { manager }
     }
 
-    async fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
-        let state = match step.thread.rebuild_state() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+    async fn on_run_start(&self, step: &mut StepContext<'_>) {
+        let state = step.snapshot();
         let mut runs = parse_persisted_runs_from_doc(&state);
         if runs.is_empty() {
             return;
@@ -26,12 +22,12 @@ impl AgentRecoveryPlugin {
             .is_some_and(|v| !v.is_null());
 
         let outcome =
-            reconcile_persisted_runs(self.manager.as_ref(), &step.thread.id, &mut runs).await;
+            reconcile_persisted_runs(self.manager.as_ref(), step.thread_id(), &mut runs).await;
         if outcome.changed {
             if let Some(patch) = set_agent_runs_patch_from_state_doc(
                 &state,
                 runs.clone(),
-                &format!("agent_recovery_reconcile_{}", step.thread.id),
+                &format!("agent_recovery_reconcile_{}", step.thread_id()),
             ) {
                 step.pending_patches.push(patch);
             }
@@ -46,7 +42,7 @@ impl AgentRecoveryPlugin {
             return;
         };
 
-        let behavior = ctx.get_permission(AGENT_RECOVERY_INTERACTION_ACTION);
+        let behavior = step.ctx().get_permission(AGENT_RECOVERY_INTERACTION_ACTION);
         match behavior {
             ToolPermissionBehavior::Allow => {
                 schedule_recovery_replay(&state, step, &run_id);
@@ -64,10 +60,7 @@ impl AgentRecoveryPlugin {
     }
 
     async fn on_before_inference(&self, step: &mut StepContext<'_>) {
-        let state = match step.thread.rebuild_state() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+        let state = step.snapshot();
 
         let Some(pending) = parse_pending_interaction_from_state(&state) else {
             return;
@@ -84,9 +77,9 @@ impl AgentPlugin for AgentRecoveryPlugin {
         AGENT_RECOVERY_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
-            Phase::RunStart => self.on_run_start(step, ctx).await,
+            Phase::RunStart => self.on_run_start(step).await,
             Phase::BeforeInference => self.on_before_inference(step).await,
             _ => {}
         }
@@ -179,7 +172,7 @@ impl AgentToolsPlugin {
     }
 
     async fn maybe_reminder(&self, step: &mut StepContext<'_>) {
-        let owner_thread_id = step.thread.id.as_str();
+        let owner_thread_id = step.thread_id();
         let runs = self
             .manager
             .running_or_stopped_for_owner(owner_thread_id)
@@ -225,15 +218,13 @@ impl AgentPlugin for AgentToolsPlugin {
         AGENT_TOOLS_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::BeforeInference => {
                 let caller_agent = step
-                    .thread
-                    .scope
-                    .value(SCOPE_CALLER_AGENT_ID_KEY)
+                    .scope_value(SCOPE_CALLER_AGENT_ID_KEY)
                     .and_then(|v| v.as_str());
-                let rendered = self.render_available_agents(caller_agent, Some(&step.thread.scope));
+                let rendered = self.render_available_agents(caller_agent, Some(step.scope()));
                 if !rendered.is_empty() {
                     step.system(rendered);
                 }

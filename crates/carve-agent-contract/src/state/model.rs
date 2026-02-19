@@ -138,6 +138,15 @@ pub struct AgentState {
     pub(crate) transient: TransientState,
 }
 
+impl AgentState {
+    /// Borrow the run-scoped overlay ops (not persisted).
+    ///
+    /// Used by the loop runner to share the overlay across tool calls within a run.
+    pub fn run_overlay(&self) -> Arc<Mutex<Vec<Op>>> {
+        self.transient.run_overlay.clone()
+    }
+}
+
 /// AgentState metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentStateMetadata {

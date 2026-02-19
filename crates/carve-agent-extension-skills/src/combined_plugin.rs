@@ -2,7 +2,6 @@ use crate::{SkillDiscoveryPlugin, SkillRuntimePlugin, SKILLS_PLUGIN_ID};
 use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
-use carve_agent_contract::AgentState as ContextAgentState;
 use std::sync::Arc;
 
 /// Single plugin wrapper that injects both:
@@ -40,10 +39,10 @@ impl AgentPlugin for SkillPlugin {
         SKILLS_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         // Keep ordering stable: catalog first (enables selection), then active skill content.
-        self.discovery.on_phase(phase, step, ctx).await;
-        self.runtime.on_phase(phase, step, ctx).await;
+        self.discovery.on_phase(phase, step).await;
+        self.runtime.on_phase(phase, step).await;
     }
 }
 

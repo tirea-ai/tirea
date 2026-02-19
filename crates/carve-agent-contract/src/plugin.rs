@@ -21,7 +21,7 @@
 //! impl AgentPlugin for MyPlugin {
 //!     fn id(&self) -> &str { "my_plugin" }
 //!
-//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
+//!     async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 //!         match phase {
 //!             Phase::StepStart => {
 //!                 step.system(format!("Time: {}", chrono::Local::now()));
@@ -41,7 +41,6 @@
 //! ```
 
 use crate::runtime::phase::{Phase, StepContext};
-use crate::AgentState;
 use async_trait::async_trait;
 
 /// Plugin trait for extending agent behavior.
@@ -55,7 +54,7 @@ use async_trait::async_trait;
 /// Use pattern matching to handle specific phases:
 ///
 /// ```ignore
-/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState) {
+/// async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
 ///     match phase {
 ///         Phase::RunStart => { /* initialize */ }
 ///         Phase::StepStart => { /* prepare context */ }
@@ -76,7 +75,7 @@ use async_trait::async_trait;
 /// - **Inject context**: `step.system()`, `step.thread()`, `step.reminder()`
 /// - **Filter tools**: `step.exclude()`, `step.include_only()`
 /// - **Control execution**: `step.block()`, `step.pending()`, `step.confirm()`
-/// - **Mutate state**: enqueue `step.pending_patches` or write through `ctx.state(...)`
+/// - **Read/write state**: `step.state_of::<T>()`, `step.ctx().state(...)`
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
     /// Plugin identifier for logging and debugging.
@@ -90,19 +89,21 @@ pub trait AgentPlugin: Send + Sync {
     /// # Arguments
     ///
     /// - `phase`: The current execution phase
-    /// - `step`: Mutable context for the current step
-    /// - `ctx`: AgentState for typed state access (read/write ops auto-collected)
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &AgentState);
+    /// - `step`: Mutable context for the current step (includes state access via `step.ctx()`)
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ToolCallContext;
     use crate::runtime::phase::StepContext;
     use crate::runtime::Interaction;
-    use crate::state::ToolCall;
+    use crate::state::{Message, ToolCall};
     use crate::tool::ToolDescriptor;
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
     // =========================================================================
     // Test Plugin Implementations
@@ -124,7 +125,7 @@ mod tests {
             &self.id
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::StepStart => {
                     step.system("Test system context");
@@ -145,7 +146,7 @@ mod tests {
             "noop"
         }
 
-        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &AgentState) {
+        async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
             // No-op
         }
     }
@@ -158,7 +159,7 @@ mod tests {
             "context_injection"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             match phase {
                 Phase::StepStart => {
                     step.system("Current time: 2024-01-01");
@@ -195,7 +196,7 @@ mod tests {
             "permission"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -226,7 +227,7 @@ mod tests {
             "confirmation"
         }
 
-        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &AgentState) {
+        async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
@@ -245,8 +246,43 @@ mod tests {
     // Helper Functions
     // =========================================================================
 
-    fn mock_thread() -> crate::state::AgentState {
-        crate::state::AgentState::new("test-thread")
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -267,19 +303,13 @@ mod tests {
         assert_eq!(plugin.id(), "test");
     }
 
-    fn test_ctx(doc: &serde_json::Value) -> AgentState {
-        AgentState::new_transient(doc, "test", "test")
-    }
-
     #[tokio::test]
     async fn test_plugin_on_phase_step_start() {
         let plugin = TestPlugin::new("test");
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
-        plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
         assert_eq!(step.system_context[0], "Test system context");
@@ -288,14 +318,10 @@ mod tests {
     #[tokio::test]
     async fn test_plugin_on_phase_before_inference() {
         let plugin = TestPlugin::new("test");
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.session_context.len(), 1);
         assert_eq!(step.session_context[0], "Test thread context");
@@ -304,46 +330,35 @@ mod tests {
     #[tokio::test]
     async fn test_context_injection_plugin() {
         let plugin = ContextInjectionPlugin;
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut step = StepContext::new(&thread, tools);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(mock_tools());
 
         // StepStart - adds system context
-        plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
         assert_eq!(step.system_context[0], "Current time: 2024-01-01");
 
         // BeforeInference - adds session context and filters tools
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.session_context[0], "Remember to be helpful.");
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
 
         // AfterToolExecute - adds reminder for read_file
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
         assert_eq!(step.system_reminders[0], "Check for sensitive data.");
     }
 
     #[tokio::test]
     async fn test_permission_plugin_blocks_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_blocked());
     }
@@ -351,17 +366,13 @@ mod tests {
     #[tokio::test]
     async fn test_permission_plugin_allows_tool() {
         let plugin = PermissionPlugin::new(vec!["dangerous_tool"]);
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(!step.tool_blocked());
     }
@@ -369,17 +380,13 @@ mod tests {
     #[tokio::test]
     async fn test_confirmation_plugin_sets_pending() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(step.tool_pending());
     }
@@ -387,17 +394,13 @@ mod tests {
     #[tokio::test]
     async fn test_confirmation_plugin_skips_non_matching() {
         let plugin = ConfirmationPlugin::new(vec!["write_file"]);
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
 
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
 
         assert!(!step.tool_pending());
     }
@@ -409,23 +412,18 @@ mod tests {
             Box::new(PermissionPlugin::new(vec!["dangerous_tool"])),
         ];
 
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut step = StepContext::new(&thread, tools);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(mock_tools());
 
         // Run all plugins for StepStart
         for plugin in &plugins {
-            plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
+            plugin.on_phase(Phase::StepStart, &mut step).await;
         }
         assert!(!step.system_context.is_empty());
 
         // Run all plugins for BeforeInference
         for plugin in &plugins {
-            plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
-                .await;
+            plugin.on_phase(Phase::BeforeInference, &mut step).await;
         }
         assert!(!step.session_context.is_empty());
         assert!(!step.tools.iter().any(|t| t.id == "dangerous_tool"));
@@ -434,9 +432,7 @@ mod tests {
         let call = ToolCall::new("call_1", "dangerous_tool", json!({}));
         step.tool = Some(crate::runtime::phase::ToolContext::new(&call));
         for plugin in &plugins {
-            plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-                .await;
+            plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         }
         assert!(step.tool_blocked());
     }
@@ -444,28 +440,18 @@ mod tests {
     #[tokio::test]
     async fn test_noop_plugin_all_phases() {
         let plugin = NoOpPlugin;
-        let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
-        let doc = json!({});
-        let ctx = test_ctx(&doc);
+        let fix = TestFixture::new();
+        let mut step = fix.step(vec![]);
 
         // All phases should be callable without panic or side effects
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-        plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
-        plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
-            .await;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
-        plugin
-            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
-            .await;
-        plugin.on_phase(Phase::StepEnd, &mut step, &ctx).await;
-        plugin.on_phase(Phase::RunEnd, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
+        plugin.on_phase(Phase::AfterInference, &mut step).await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
+        plugin.on_phase(Phase::AfterToolExecute, &mut step).await;
+        plugin.on_phase(Phase::StepEnd, &mut step).await;
+        plugin.on_phase(Phase::RunEnd, &mut step).await;
 
         // Context should be unchanged
         assert!(step.system_context.is_empty());

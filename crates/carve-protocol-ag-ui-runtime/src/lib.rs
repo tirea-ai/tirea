@@ -9,7 +9,6 @@ use carve_agentos::contracts::plugin::AgentPlugin;
 use carve_agentos::contracts::runtime::phase::{Phase, StepContext};
 use carve_agentos::contracts::runtime::Interaction;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agentos::contracts::AgentState as RuntimeAgentState;
 use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::orchestrator::{InMemoryToolRegistry, RunScope, ToolRegistry};
@@ -116,7 +115,7 @@ impl AgentPlugin for ContextInjectionPlugin {
         "agui_context_injection"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &RuntimeAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::StepStart {
             step.system(&self.addendum);
         }
@@ -140,7 +139,7 @@ impl AgentPlugin for FrontendToolPendingPlugin {
         "agui_frontend_tools"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &RuntimeAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase != Phase::BeforeToolExecute {
             return;
         }

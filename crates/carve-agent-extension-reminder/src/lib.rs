@@ -128,7 +128,6 @@ impl AgentPlugin for ReminderPlugin {
         &self,
         phase: carve_agent_contract::runtime::phase::Phase,
         step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
-        ctx: &ContextAgentState,
     ) {
         use carve_agent_contract::runtime::phase::Phase;
 
@@ -136,7 +135,7 @@ impl AgentPlugin for ReminderPlugin {
             return;
         }
 
-        let reminders = ctx.reminders();
+        let reminders = step.ctx().state_of::<ReminderState>().items().ok().unwrap_or_default();
         if reminders.is_empty() {
             return;
         }
@@ -146,7 +145,8 @@ impl AgentPlugin for ReminderPlugin {
         }
 
         if self.clear_after_llm_request {
-            ctx.clear_reminders();
+            let state = step.ctx().state_of::<ReminderState>();
+            state.set_items(Vec::new());
         }
     }
 }

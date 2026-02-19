@@ -11,7 +11,6 @@ use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_state::State;
 use carve_agent_contract::runtime::{Interaction, InteractionResponse};
-use carve_agent_contract::AgentState as ContextAgentState;
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -99,7 +98,7 @@ impl InteractionResponsePlugin {
     }
 
     fn pending_interaction_from_step_thread(step: &StepContext<'_>) -> Option<Interaction> {
-        let state = step.thread.rebuild_state().ok()?;
+        let state = step.snapshot();
         state
             .get(LoopControlState::PATH)
             .and_then(|agent| agent.get("pending_interaction"))
@@ -107,30 +106,27 @@ impl InteractionResponsePlugin {
             .and_then(|v| serde_json::from_value::<Interaction>(v).ok())
     }
 
-    fn persisted_pending_interaction(
-        step: &StepContext<'_>,
-        ctx: &ContextAgentState,
-    ) -> Option<Interaction> {
+    fn persisted_pending_interaction(step: &StepContext<'_>) -> Option<Interaction> {
         Self::pending_interaction_from_step_thread(step).or_else(|| {
-            let agent = ctx.state_of::<LoopControlState>();
+            let agent = step.state_of::<LoopControlState>();
             agent.pending_interaction().ok().flatten()
         })
     }
 
-    fn push_resolution(ctx: &ContextAgentState, interaction_id: String, result: serde_json::Value) {
-        let outbox = ctx.state_of::<InteractionOutbox>();
+    fn push_resolution(step: &StepContext<'_>, interaction_id: String, result: serde_json::Value) {
+        let outbox = step.ctx().state_of::<InteractionOutbox>();
         outbox.interaction_resolutions_push(InteractionResponse::new(interaction_id, result));
     }
 
-    fn queue_replay_call(ctx: &ContextAgentState, call: carve_agent_contract::state::ToolCall) {
-        let outbox = ctx.state_of::<InteractionOutbox>();
+    fn queue_replay_call(step: &StepContext<'_>, call: carve_agent_contract::state::ToolCall) {
+        let outbox = step.ctx().state_of::<InteractionOutbox>();
         outbox.replay_tool_calls_push(call);
     }
 
     /// During RunStart, detect pending_interaction and schedule tool replay if approved.
-    fn on_run_start(&self, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
-        let loop_ctrl = ctx.state_of::<LoopControlState>();
-        let Some(pending) = Self::persisted_pending_interaction(step, ctx) else {
+    fn on_run_start(&self, step: &mut StepContext<'_>) {
+        let loop_ctrl = step.state_of::<LoopControlState>();
+        let Some(pending) = Self::persisted_pending_interaction(step) else {
             return;
         };
         let pending_id_owned = pending.id.clone();
@@ -139,7 +135,7 @@ impl InteractionResponsePlugin {
         if self.is_denied(pending_id) {
             loop_ctrl.pending_interaction_none();
             Self::push_resolution(
-                ctx,
+                step,
                 pending_id_owned.clone(),
                 self.result_for(pending_id)
                     .cloned()
@@ -154,7 +150,7 @@ impl InteractionResponsePlugin {
             return;
         }
         Self::push_resolution(
-            ctx,
+            step,
             pending_id_owned.clone(),
             self.result_for(pending_id)
                 .cloned()
@@ -185,7 +181,7 @@ impl InteractionResponsePlugin {
                     "background": false
                 }),
             );
-            Self::queue_replay_call(ctx, replay_call);
+            Self::queue_replay_call(step, replay_call);
             return;
         }
 
@@ -195,7 +191,7 @@ impl InteractionResponsePlugin {
             .cloned()
             .and_then(|v| serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok())
         {
-            Self::queue_replay_call(ctx, replay_call);
+            Self::queue_replay_call(step, replay_call);
             return;
         }
 
@@ -204,7 +200,7 @@ impl InteractionResponsePlugin {
                 serde_json::from_value::<carve_agent_contract::state::ToolCall>(v).ok()
             })
         {
-            Self::queue_replay_call(ctx, replay_call);
+            Self::queue_replay_call(step, replay_call);
             return;
         }
 
@@ -215,15 +211,14 @@ impl InteractionResponsePlugin {
                     tool_name,
                     pending.parameters.clone(),
                 );
-                Self::queue_replay_call(ctx, replay_call);
+                Self::queue_replay_call(step, replay_call);
                 return;
             }
         }
 
         // Find the pending tool call from the last assistant message with tool_calls.
         let tool_call = step
-            .thread
-            .messages
+            .messages()
             .iter()
             .rev()
             .find(|m| {
@@ -250,7 +245,7 @@ impl InteractionResponsePlugin {
             });
 
         if let Some(call) = tool_call {
-            Self::queue_replay_call(ctx, call);
+            Self::queue_replay_call(step, call);
         }
     }
 }
@@ -261,10 +256,10 @@ impl AgentPlugin for InteractionResponsePlugin {
         INTERACTION_RESPONSE_PLUGIN_ID
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::RunStart => {
-                self.on_run_start(step, ctx);
+                self.on_run_start(step);
                 return;
             }
             Phase::BeforeToolExecute => {}
@@ -300,8 +295,7 @@ impl AgentPlugin for InteractionResponsePlugin {
         // matches one of the IDs the client claims to be responding to.  Without this
         // check a malicious client could pre-approve arbitrary tool names by injecting
         // approved IDs in a fresh request that has no outstanding pending interaction.
-        let loop_ctrl = ctx.state_of::<LoopControlState>();
-        let persisted_id = Self::persisted_pending_interaction(step, ctx).map(|i| i.id);
+        let persisted_id = Self::persisted_pending_interaction(step).map(|i| i.id);
 
         let id_matches = persisted_id
             .as_deref()
@@ -317,16 +311,16 @@ impl AgentPlugin for InteractionResponsePlugin {
             // Interaction was denied - block the tool
             step.confirm();
             step.block("User denied the action".to_string());
-            loop_ctrl.pending_interaction_none();
+            step.state_of::<LoopControlState>().pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
-            Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(false));
+            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(false));
         } else if is_frontend_approved || is_permission_approved {
             // Interaction was approved - clear any pending state
             // This allows the tool to execute normally.
             step.confirm();
-            loop_ctrl.pending_interaction_none();
+            step.state_of::<LoopControlState>().pending_interaction_none();
             let resolved_id = persisted_id.unwrap_or(permission_interaction_id);
-            Self::push_resolution(ctx, resolved_id, serde_json::Value::Bool(true));
+            Self::push_resolution(step, resolved_id, serde_json::Value::Bool(true));
         }
     }
 }

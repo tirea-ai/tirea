@@ -660,30 +660,36 @@ pub(super) async fn execute_single_tool_with_phases(
     scope: Option<&carve_state::ScopeState>,
     thread_id: &str,
     thread_messages: &[Arc<Message>],
-    state_version: u64,
+    _state_version: u64,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
-    // Create a thread stub so plugins see the real thread id and scope.
-    let mut temp_thread = AgentState::with_initial_state(thread_id, state.clone())
-        .with_messages(thread_messages.iter().map(|msg| (**msg).clone()));
-    if let Some(rt) = scope {
-        temp_thread.scope = rt.clone();
-    }
-
-    // Create plugin Context for tool phases (separate from tool's own Context)
-    let plugin_ctx = crate::contracts::AgentState::from_thread(
-        &temp_thread,
-        state,
+    // Create ToolCallContext for plugin phases
+    let doc = carve_state::DocCell::new(state.clone());
+    let ops = std::sync::Mutex::new(Vec::new());
+    let pending_messages = std::sync::Mutex::new(Vec::new());
+    let empty_scope = carve_state::ScopeState::default();
+    let plugin_scope = scope.unwrap_or(&empty_scope);
+    let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
+        &doc,
+        &ops,
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         "plugin_phase",
         "plugin:tool_phase",
-        state_version,
+        plugin_scope,
+        &pending_messages,
+        None,
     );
 
     // Create StepContext for this tool
-    let mut step = StepContext::new(&temp_thread, tool_descriptors.to_vec());
+    let mut step = StepContext::new(
+        plugin_tool_call_ctx,
+        thread_id,
+        thread_messages,
+        tool_descriptors.to_vec(),
+    );
     step.tool = Some(ToolContext::new(call));
 
     // Phase: BeforeToolExecute
-    emit_phase_checked(Phase::BeforeToolExecute, &mut step, &plugin_ctx, plugins).await?;
+    emit_phase_checked(Phase::BeforeToolExecute, &mut step, plugins).await?;
 
     // Check if blocked or pending
     let (execution, pending_interaction) = if !crate::engine::tool_filter::is_scope_allowed(
@@ -740,19 +746,25 @@ pub(super) async fn execute_single_tool_with_phases(
             None,
         )
     } else {
-        // Execute the tool with its own Context
-        let tool_ctx = crate::contracts::AgentState::from_thread_with_activity_manager(
-            &temp_thread,
-            state,
+        // Execute the tool with its own ToolCallContext
+        let tool_doc = carve_state::DocCell::new(state.clone());
+        let tool_ops = std::sync::Mutex::new(Vec::new());
+        let tool_overlay = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
+        let tool_ctx = crate::contracts::ToolCallContext::new(
+            &tool_doc,
+            &tool_ops,
+            tool_overlay,
             // `tool_call_id` is the stable idempotency key seen by the tool.
             &call.id,
             format!("tool:{}", call.name),
-            state_version,
+            plugin_scope,
+            &tool_pending_msgs,
             activity_manager,
         );
         let result = match tool
             .unwrap()
-            .execute(call.arguments.clone(), &tool_ctx.as_tool_call_context())
+            .execute(call.arguments.clone(), &tool_ctx)
             .await
         {
             Ok(r) => r,
@@ -780,10 +792,10 @@ pub(super) async fn execute_single_tool_with_phases(
     step.set_tool_result(execution.result.clone());
 
     // Phase: AfterToolExecute
-    emit_phase_checked(Phase::AfterToolExecute, &mut step, &plugin_ctx, plugins).await?;
+    emit_phase_checked(Phase::AfterToolExecute, &mut step, plugins).await?;
 
     // Flush plugin state ops into pending patches
-    let plugin_patch = plugin_ctx.take_patch();
+    let plugin_patch = step.ctx().take_patch();
     if !plugin_patch.patch().is_empty() {
         step.pending_patches.push(plugin_patch);
     }

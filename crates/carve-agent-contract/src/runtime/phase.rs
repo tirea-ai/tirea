@@ -5,12 +5,14 @@
 //! - `StepContext`: Mutable context passed through all phases
 //! - `ToolContext`: Tool-call state carried by `StepContext`
 
+use crate::context::ToolCallContext;
 use crate::runtime::interaction::Interaction;
 use crate::runtime::result::StreamResult;
-use crate::state::{AgentState, ToolCall};
+use crate::state::{Message, ToolCall};
 use crate::tool::{ToolDescriptor, ToolResult};
-use carve_state::TrackedPatch;
+use carve_state::{CarveResult, ScopeState, State, TrackedPatch};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,14 +166,22 @@ impl ToolContext {
 /// It provides access to session state, message building, tool filtering,
 /// and flow control.
 pub struct StepContext<'a> {
-    // === AgentState State (read-only) ===
-    /// Current session.
-    pub thread: &'a AgentState,
+    // === Execution Context ===
+    /// Execution context providing state access, scope, identity.
+    ctx: ToolCallContext<'a>,
+
+    // === Identity (from persistent entity) ===
+    /// Thread id (read-only).
+    thread_id: &'a str,
+
+    // === Thread Messages (read-only snapshot from persistent entity) ===
+    /// Messages from the thread (for building LLM requests, finding pending calls).
+    messages: &'a [Arc<Message>],
 
     // === Message Building ===
     /// System context to append to system prompt [Position 1].
     pub system_context: Vec<String>,
-    /// AgentState context messages (before user messages) [Position 2].
+    /// Session context messages (before user messages) [Position 2].
     pub session_context: Vec<String>,
     /// System reminders (after tool results) [Position 7].
     pub system_reminders: Vec<String>,
@@ -197,9 +207,16 @@ pub struct StepContext<'a> {
 
 impl<'a> StepContext<'a> {
     /// Create a new step context.
-    pub fn new(thread: &'a AgentState, tools: Vec<ToolDescriptor>) -> Self {
+    pub fn new(
+        ctx: ToolCallContext<'a>,
+        thread_id: &'a str,
+        messages: &'a [Arc<Message>],
+        tools: Vec<ToolDescriptor>,
+    ) -> Self {
         Self {
-            thread,
+            ctx,
+            thread_id,
+            messages,
             system_context: Vec::new(),
             session_context: Vec::new(),
             system_reminders: Vec::new(),
@@ -209,6 +226,60 @@ impl<'a> StepContext<'a> {
             skip_inference: false,
             pending_patches: Vec::new(),
         }
+    }
+
+    // =========================================================================
+    // Execution context access
+    // =========================================================================
+
+    /// Borrow the underlying execution context.
+    pub fn ctx(&self) -> &ToolCallContext<'a> {
+        &self.ctx
+    }
+
+    /// Thread id.
+    pub fn thread_id(&self) -> &str {
+        self.thread_id
+    }
+
+    /// Thread messages (read-only snapshot from persistent entity).
+    pub fn messages(&self) -> &[Arc<Message>] {
+        self.messages
+    }
+
+    /// Typed state reference at the type's canonical path.
+    pub fn state_of<T: State>(&self) -> T::Ref<'_> {
+        self.ctx.state_of::<T>()
+    }
+
+    /// Typed state reference at path.
+    pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        self.ctx.state::<T>(path)
+    }
+
+    /// Typed state reference writing to overlay (not persisted).
+    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+        self.ctx.override_state_of::<T>()
+    }
+
+    /// Borrow the scope state.
+    pub fn scope(&self) -> &ScopeState {
+        self.ctx.scope()
+    }
+
+    /// Typed scope state accessor.
+    pub fn scope_state<T: State>(&self) -> CarveResult<T::Ref<'_>> {
+        self.ctx.scope_state::<T>()
+    }
+
+    /// Read a scope value by key.
+    pub fn scope_value(&self, key: &str) -> Option<&Value> {
+        self.ctx.scope_value(key)
+    }
+
+    /// Snapshot the current document state.
+    pub fn snapshot(&self) -> Value {
+        self.ctx.snapshot()
     }
 
     /// Reset step-specific state for a new step.
@@ -381,10 +452,48 @@ impl<'a> StepContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ToolCallContext;
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
+    use std::sync::Mutex;
 
-    fn mock_thread() -> AgentState {
-        AgentState::new("test-thread")
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
     }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
@@ -446,9 +555,8 @@ mod tests {
 
     #[test]
     fn test_step_context_new() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let ctx = StepContext::new(&thread, tools.clone());
+        let fix = TestFixture::new();
+        let ctx = fix.step(mock_tools());
 
         assert!(ctx.system_context.is_empty());
         assert!(ctx.session_context.is_empty());
@@ -461,9 +569,8 @@ mod tests {
 
     #[test]
     fn test_step_context_reset() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.system("test");
         ctx.thread("test");
@@ -484,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_system_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -497,8 +604,8 @@ mod tests {
 
     #[test]
     fn test_set_system_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -510,8 +617,8 @@ mod tests {
 
     #[test]
     fn test_clear_system_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.system("Context 1");
         ctx.clear_system();
@@ -521,8 +628,8 @@ mod tests {
 
     #[test]
     fn test_session_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.thread("AgentState 1");
         ctx.thread("AgentState 2");
@@ -532,8 +639,8 @@ mod tests {
 
     #[test]
     fn test_set_session_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.thread("AgentState 1");
         ctx.set_session("Replaced");
@@ -544,8 +651,8 @@ mod tests {
 
     #[test]
     fn test_reminder() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -555,8 +662,8 @@ mod tests {
 
     #[test]
     fn test_clear_reminders() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.clear_reminders();
@@ -570,9 +677,8 @@ mod tests {
 
     #[test]
     fn test_exclude_tool() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.exclude("delete_file");
 
@@ -582,9 +688,8 @@ mod tests {
 
     #[test]
     fn test_include_only_tools() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.include_only(&["read_file"]);
 
@@ -598,8 +703,8 @@ mod tests {
 
     #[test]
     fn test_tool_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({"path": "/test"}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -614,8 +719,8 @@ mod tests {
 
     #[test]
     fn test_block_tool() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "delete_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -631,8 +736,8 @@ mod tests {
 
     #[test]
     fn test_pending_tool() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -646,8 +751,8 @@ mod tests {
 
     #[test]
     fn test_confirm_tool() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -662,8 +767,8 @@ mod tests {
 
     #[test]
     fn test_set_tool_result() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "read_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -681,16 +786,16 @@ mod tests {
 
     #[test]
     fn test_step_result_continue() {
-        let thread = mock_thread();
-        let ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let ctx = fix.step(vec![]);
 
         assert_eq!(ctx.result(), StepOutcome::Continue);
     }
 
     #[test]
     fn test_step_result_pending() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "write_file", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -706,8 +811,8 @@ mod tests {
 
     #[test]
     fn test_step_result_complete() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Done!".to_string(),
@@ -786,8 +891,8 @@ mod tests {
 
     #[test]
     fn test_step_context_empty_session() {
-        let thread = AgentState::new("empty");
-        let ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let ctx = fix.step(vec![]);
 
         assert!(ctx.tools.is_empty());
         assert!(ctx.system_context.is_empty());
@@ -796,8 +901,8 @@ mod tests {
 
     #[test]
     fn test_step_context_multiple_system_contexts() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.system("Context 1");
         ctx.system("Context 2");
@@ -810,8 +915,8 @@ mod tests {
 
     #[test]
     fn test_step_context_multiple_session_contexts() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.thread("AgentState 1");
         ctx.thread("AgentState 2");
@@ -821,8 +926,8 @@ mod tests {
 
     #[test]
     fn test_step_context_multiple_reminders() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.reminder("Reminder 1");
         ctx.reminder("Reminder 2");
@@ -833,10 +938,10 @@ mod tests {
 
     #[test]
     fn test_exclude_nonexistent_tool() {
-        let thread = mock_thread();
+        let fix = TestFixture::new();
         let tools = mock_tools();
         let original_len = tools.len();
-        let mut ctx = StepContext::new(&thread, tools);
+        let mut ctx = fix.step(tools);
 
         ctx.exclude("nonexistent_tool");
 
@@ -846,9 +951,8 @@ mod tests {
 
     #[test]
     fn test_exclude_multiple_tools() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.exclude("read_file");
         ctx.exclude("delete_file");
@@ -859,9 +963,8 @@ mod tests {
 
     #[test]
     fn test_include_only_empty_list() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.include_only(&[]);
 
@@ -870,9 +973,8 @@ mod tests {
 
     #[test]
     fn test_include_only_with_nonexistent() {
-        let thread = mock_thread();
-        let tools = mock_tools();
-        let mut ctx = StepContext::new(&thread, tools);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(mock_tools());
 
         ctx.include_only(&["read_file", "nonexistent"]);
 
@@ -882,8 +984,8 @@ mod tests {
 
     #[test]
     fn test_block_without_tool_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         // No tool context, block should not panic
         ctx.block("test");
@@ -893,8 +995,8 @@ mod tests {
 
     #[test]
     fn test_pending_without_tool_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let interaction = Interaction::new("id", "confirm").with_message("test");
         ctx.pending(interaction);
@@ -904,8 +1006,8 @@ mod tests {
 
     #[test]
     fn test_confirm_without_pending() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         let call = ToolCall::new("call_1", "test", json!({}));
         ctx.tool = Some(ToolContext::new(&call));
@@ -918,16 +1020,16 @@ mod tests {
 
     #[test]
     fn test_tool_args_without_tool() {
-        let thread = mock_thread();
-        let ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let ctx = fix.step(vec![]);
 
         assert!(ctx.tool_args().is_none());
     }
 
     #[test]
     fn test_tool_name_without_tool() {
-        let thread = mock_thread();
-        let ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let ctx = fix.step(vec![]);
 
         assert!(ctx.tool_name().is_none());
         assert!(ctx.tool_call_id().is_none());
@@ -936,16 +1038,16 @@ mod tests {
 
     #[test]
     fn test_tool_result_without_tool() {
-        let thread = mock_thread();
-        let ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let ctx = fix.step(vec![]);
 
         assert!(ctx.tool_result().is_none());
     }
 
     #[test]
     fn test_step_result_with_tool_calls() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.response = Some(StreamResult {
             text: "Calling tools".to_string(),
@@ -959,8 +1061,8 @@ mod tests {
 
     #[test]
     fn test_step_result_empty_text_no_tools() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.response = Some(StreamResult {
             text: String::new(),
@@ -1000,8 +1102,8 @@ mod tests {
 
     #[test]
     fn test_set_clear_session_context() {
-        let thread = mock_thread();
-        let mut ctx = StepContext::new(&thread, vec![]);
+        let fix = TestFixture::new();
+        let mut ctx = fix.step(vec![]);
 
         ctx.thread("Context 1");
         ctx.thread("Context 2");

@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::{Phase, StepContext};
 use carve_agent_contract::runtime::control::{InferenceError, LoopControlState};
-use carve_agent_contract::AgentState as ContextAgentState;
 use genai::chat::{ChatOptions, Usage};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -388,7 +387,7 @@ impl AgentPlugin for LLMMetryPlugin {
         "llmmetry"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::RunStart => {
                 *lock_unpoison(&self.run_start) = Some(Instant::now());
@@ -452,7 +451,7 @@ impl AgentPlugin for LLMMetryPlugin {
                 let (input_tokens, output_tokens, total_tokens) = extract_token_counts(usage);
                 let (cache_read_input_tokens, cache_creation_input_tokens) =
                     extract_cache_tokens(usage);
-                let error = inference_error_from_state(ctx);
+                let error = inference_error_from_state(step);
 
                 let model = lock_unpoison(&self.model).clone();
                 let provider = lock_unpoison(&self.provider).clone();
@@ -640,8 +639,8 @@ fn extract_cache_tokens(usage: Option<&Usage>) -> (Option<i32>, Option<i32>) {
     }
 }
 
-fn inference_error_from_state(ctx: &ContextAgentState) -> Option<InferenceError> {
-    let lc = ctx.state_of::<LoopControlState>();
+fn inference_error_from_state(step: &StepContext<'_>) -> Option<InferenceError> {
+    let lc = step.state_of::<LoopControlState>();
     lc.inference_error().ok().flatten()
 }
 

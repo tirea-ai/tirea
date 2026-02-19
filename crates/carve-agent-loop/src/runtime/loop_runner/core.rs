@@ -80,7 +80,7 @@ pub(super) fn build_messages(step: &StepContext<'_>, system_prompt: &str) -> Vec
         messages.push(Message::system(ctx.clone()));
     }
 
-    for msg in &step.thread.messages {
+    for msg in step.messages() {
         messages.push((**msg).clone());
     }
 

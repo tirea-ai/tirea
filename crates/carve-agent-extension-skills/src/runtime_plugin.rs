@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::phase::Phase;
 use carve_agent_contract::runtime::phase::StepContext;
-use carve_agent_contract::AgentState as ContextAgentState;
 
 /// Placeholder plugin for activated skill state.
 ///
@@ -26,12 +25,7 @@ impl AgentPlugin for SkillRuntimePlugin {
         SKILLS_RUNTIME_PLUGIN_ID
     }
 
-    async fn on_phase(
-        &self,
-        _phase: Phase,
-        _step: &mut StepContext<'_>,
-        _ctx: &ContextAgentState,
-    ) {
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
         // No-op: skill content is delivered via append_user_messages and tool results.
     }
 }

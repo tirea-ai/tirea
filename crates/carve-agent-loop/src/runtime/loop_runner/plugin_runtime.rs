@@ -7,10 +7,10 @@ use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::ToolDescriptor;
-use crate::contracts::AgentState as ContextAgentState;
+use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;
-use carve_state::TrackedPatch;
-use std::sync::Arc;
+use carve_state::{DocCell, TrackedPatch};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhaseMutationSnapshot {
@@ -92,12 +92,11 @@ fn validate_phase_mutation(
 pub(super) async fn emit_phase_checked(
     phase: Phase,
     step: &mut StepContext<'_>,
-    ctx: &ContextAgentState,
     plugins: &[Arc<dyn AgentPlugin>],
 ) -> Result<(), AgentLoopError> {
     for plugin in plugins {
         let before = phase_mutation_snapshot(step);
-        plugin.on_phase(phase, step, ctx).await;
+        plugin.on_phase(phase, step).await;
         let after = phase_mutation_snapshot(step);
         validate_phase_mutation(phase, plugin.id(), &before, &after)?;
     }
@@ -123,19 +122,30 @@ where
     let current_state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
-    let ctx = ContextAgentState::from_thread(
-        thread,
-        &current_state,
+    let doc = DocCell::new(current_state);
+    let ops = Mutex::new(Vec::new());
+    let pending_messages = Mutex::new(Vec::new());
+    let tool_call_ctx = ToolCallContext::new(
+        &doc,
+        &ops,
+        thread.run_overlay(),
         "phase",
         "plugin:phase",
-        super::agent_state_version(thread),
+        &thread.scope,
+        &pending_messages,
+        None,
     );
-    let mut step = StepContext::new(thread, tool_descriptors.to_vec());
+    let mut step = StepContext::new(
+        tool_call_ctx,
+        &thread.id,
+        &thread.messages,
+        tool_descriptors.to_vec(),
+    );
     setup(&mut step);
     for phase in phases {
-        emit_phase_checked(*phase, &mut step, &ctx, plugins).await?;
+        emit_phase_checked(*phase, &mut step, plugins).await?;
     }
-    let plugin_patch = ctx.take_patch();
+    let plugin_patch = step.ctx().take_patch();
     if !plugin_patch.patch().is_empty() {
         step.pending_patches.push(plugin_patch);
     }
@@ -218,18 +228,29 @@ pub(super) async fn emit_run_end_phase(
                 return thread;
             }
         };
-        let ctx = ContextAgentState::from_thread(
-            &thread,
-            &current_state,
+        let doc = DocCell::new(current_state);
+        let ops = Mutex::new(Vec::new());
+        let pending_messages = Mutex::new(Vec::new());
+        let tool_call_ctx = ToolCallContext::new(
+            &doc,
+            &ops,
+            thread.run_overlay(),
             "phase",
             "plugin:run_end",
-            super::agent_state_version(&thread),
+            &thread.scope,
+            &pending_messages,
+            None,
         );
-        let mut step = StepContext::new(&thread, tool_descriptors.to_vec());
-        if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, &ctx, plugins).await {
+        let mut step = StepContext::new(
+            tool_call_ctx,
+            &thread.id,
+            &thread.messages,
+            tool_descriptors.to_vec(),
+        );
+        if let Err(e) = emit_phase_checked(Phase::RunEnd, &mut step, plugins).await {
             tracing::warn!(error = %e, "RunEndPhase(RunEnd) plugin phase validation failed");
         }
-        let plugin_patch = ctx.take_patch();
+        let plugin_patch = step.ctx().take_patch();
         if !plugin_patch.patch().is_empty() {
             step.pending_patches.push(plugin_patch);
         }
