@@ -27,7 +27,6 @@ pub(crate) struct TransientState {
     pub scope_attached: bool,
     pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
     pub ops: Arc<Mutex<Vec<Op>>>,
-    pub run_overlay: Arc<Mutex<Vec<Op>>>,
     pub run_doc: OnceLock<DocCell>,
     pub activity_manager: Option<Arc<dyn crate::state::ActivityManager>>,
 }
@@ -41,7 +40,6 @@ impl Default for TransientState {
             scope_attached: false,
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             ops: Arc::new(Mutex::new(Vec::new())),
-            run_overlay: Arc::new(Mutex::new(Vec::new())),
             run_doc: OnceLock::new(),
             activity_manager: None,
         }
@@ -61,7 +59,6 @@ impl Clone for TransientState {
             scope_attached: self.scope_attached,
             pending_messages: self.pending_messages.clone(),
             ops: self.ops.clone(),
-            run_overlay: self.run_overlay.clone(),
             run_doc,
             activity_manager: self.activity_manager.clone(),
         }
@@ -80,10 +77,6 @@ impl std::fmt::Debug for TransientState {
                 &self.pending_messages.lock().unwrap().len(),
             )
             .field("ops_len", &self.ops.lock().unwrap().len())
-            .field(
-                "run_overlay_len",
-                &self.run_overlay.lock().unwrap().len(),
-            )
             .field("run_doc", &self.run_doc.get().map(|_| "<set>"))
             .field(
                 "activity_manager",
@@ -133,7 +126,11 @@ pub struct AgentState {
     /// Pending delta buffer — tracks new items since last `take_pending()`.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
+    /// Run-scoped overlay ops shared across tool calls within a single run (not persisted).
+    #[serde(skip)]
+    pub(crate) run_overlay: Arc<Mutex<Vec<Op>>>,
     /// Transient execution context (not persisted).
+    /// TODO: Remove once all test code is migrated to ToolCallContext/TestFixture.
     #[serde(skip)]
     pub(crate) transient: TransientState,
 }
@@ -143,7 +140,7 @@ impl AgentState {
     ///
     /// Used by the loop runner to share the overlay across tool calls within a run.
     pub fn run_overlay(&self) -> Arc<Mutex<Vec<Op>>> {
-        self.transient.run_overlay.clone()
+        self.run_overlay.clone()
     }
 }
 
@@ -180,6 +177,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
+            run_overlay: Arc::new(Mutex::new(Vec::new())),
             transient: TransientState::default(),
         }
     }
@@ -196,6 +194,7 @@ impl AgentState {
             metadata: AgentStateMetadata::default(),
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
+            run_overlay: Arc::new(Mutex::new(Vec::new())),
             transient: TransientState::default(),
         }
     }
@@ -280,7 +279,7 @@ impl AgentState {
         } else {
             apply_patches(&self.state, self.patches.iter().map(|p| p.patch()))?
         };
-        let overlay_ops = self.transient.run_overlay.lock().unwrap();
+        let overlay_ops = self.run_overlay.lock().unwrap();
         if overlay_ops.is_empty() {
             Ok(base)
         } else {
@@ -335,6 +334,7 @@ impl AgentState {
             metadata: self.metadata,
             scope: self.scope,
             pending: self.pending,
+            run_overlay: self.run_overlay,
             transient: self.transient,
         })
     }
@@ -742,7 +742,6 @@ mod tests {
 
         // Add overlay ops
         thread
-            .transient
             .run_overlay
             .lock()
             .unwrap()
@@ -761,7 +760,6 @@ mod tests {
             ));
 
         thread
-            .transient
             .run_overlay
             .lock()
             .unwrap()
@@ -782,7 +780,6 @@ mod tests {
             ));
 
         thread
-            .transient
             .run_overlay
             .lock()
             .unwrap()
@@ -808,7 +805,6 @@ mod tests {
             .unwrap()
             .push(Op::set(path!("counter"), json!(1)));
         thread
-            .transient
             .run_overlay
             .lock()
             .unwrap()
@@ -818,7 +814,7 @@ mod tests {
         assert_eq!(patch.patch().len(), 1, "take_patch drains thread ops");
 
         assert_eq!(
-            thread.transient.run_overlay.lock().unwrap().len(),
+            thread.run_overlay.lock().unwrap().len(),
             1,
             "overlay must survive take_patch"
         );

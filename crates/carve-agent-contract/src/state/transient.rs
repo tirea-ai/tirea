@@ -32,7 +32,7 @@ impl AgentState {
         crate::context::ToolCallContext::new(
             self.run_doc(),
             self.transient.ops.as_ref(),
-            self.transient.run_overlay.clone(),
+            self.run_overlay.clone(),
             &self.transient.call_id,
             &self.transient.source,
             &self.scope,
@@ -104,10 +104,10 @@ impl AgentState {
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
         // Share the overlay Arc so writes are visible across references
-        state.transient.run_overlay = thread.transient.run_overlay.clone();
+        state.run_overlay = thread.run_overlay.clone();
         // Apply any existing overlay ops to the run_doc so reads see them
         if let Some(run_doc) = state.transient.run_doc.get() {
-            for op in thread.transient.run_overlay.lock().unwrap().iter() {
+            for op in thread.run_overlay.lock().unwrap().iter() {
                 run_doc.apply(op);
             }
         }
@@ -130,9 +130,9 @@ impl AgentState {
         state.resource_id = thread.resource_id.clone();
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
-        state.transient.run_overlay = thread.transient.run_overlay.clone();
+        state.run_overlay = thread.run_overlay.clone();
         if let Some(run_doc) = state.transient.run_doc.get() {
-            for op in thread.transient.run_overlay.lock().unwrap().iter() {
+            for op in thread.run_overlay.lock().unwrap().iter() {
                 run_doc.apply(op);
             }
         }
@@ -263,7 +263,7 @@ impl AgentState {
         T::state_ref(
             doc,
             base,
-            PatchSink::new_with_hook(self.transient.run_overlay.as_ref(), hook),
+            PatchSink::new_with_hook(self.run_overlay.as_ref(), hook),
         )
     }
 
@@ -304,7 +304,7 @@ impl AgentState {
             stream_id,
             activity_type,
             self.transient.activity_manager.clone(),
-            Some(self.transient.run_overlay.clone()),
+            Some(self.run_overlay.clone()),
         )
     }
 
@@ -469,7 +469,7 @@ mod tests {
             "thread ops must remain empty after override write"
         );
         assert!(
-            !ctx.transient.run_overlay.lock().unwrap().is_empty(),
+            !ctx.run_overlay.lock().unwrap().is_empty(),
             "overlay must contain the override op"
         );
     }
@@ -479,7 +479,6 @@ mod tests {
         let thread = AgentState::new("t-1");
         // Pre-populate overlay on the thread
         thread
-            .transient
             .run_overlay
             .lock()
             .unwrap()
@@ -490,18 +489,17 @@ mod tests {
 
         // The transient context should share the same Arc
         assert!(
-            Arc::ptr_eq(&ctx.transient.run_overlay, &thread.transient.run_overlay),
+            Arc::ptr_eq(&ctx.run_overlay, &thread.run_overlay),
             "from_thread must share the overlay Arc"
         );
 
         // Writes through the ctx should be visible from thread's overlay
-        ctx.transient
-            .run_overlay
+        ctx.run_overlay
             .lock()
             .unwrap()
             .push(Op::set(path!("name"), json!("bob")));
         assert_eq!(
-            thread.transient.run_overlay.lock().unwrap().len(),
+            thread.run_overlay.lock().unwrap().len(),
             2,
             "overlay writes must be visible across shared Arc"
         );
@@ -513,7 +511,7 @@ mod tests {
         let thread = AgentState::with_initial_state("t-1", initial);
 
         // Write overlay ops directly
-        thread.transient.run_overlay.lock().unwrap().push(Op::set(
+        thread.run_overlay.lock().unwrap().push(Op::set(
             path!("loop_control", "inference_error"),
             json!({"type": "timeout", "message": "timed out"}),
         ));
