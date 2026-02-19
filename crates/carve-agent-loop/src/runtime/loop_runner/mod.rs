@@ -795,7 +795,7 @@ pub async fn run_loop(
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Thread, String), AgentLoopError> {
-    run_loop_with_context(client, config, state, tools, RunContext::default()).await
+    run_loop_with_context(client, config, state, tools, RunServices::default()).await
 }
 
 /// Run the full agent loop using executors and providers declared in [`AgentConfig`].
@@ -830,7 +830,7 @@ pub async fn run_loop_with_context(
     config: &AgentConfig,
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> Result<(Thread, String), AgentLoopError> {
     run_loop_with_context_provider(client, config, state, tools, run_ctx).await
 }
@@ -884,7 +884,7 @@ async fn run_loop_with_context_provider(
     config: &AgentConfig,
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> Result<(Thread, String), AgentLoopError> {
     let outcome =
         run_loop_outcome_with_context_provider(provider, config, state, tools, run_ctx).await;
@@ -896,7 +896,7 @@ async fn run_loop_outcome_with_context_provider(
     config: &AgentConfig,
     mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> LoopOutcome {
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
@@ -1174,7 +1174,7 @@ pub fn run_loop_stream(
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_loop_stream_impl_with_provider(
         Arc::new(client),

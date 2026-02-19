@@ -248,7 +248,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut thread = thread;

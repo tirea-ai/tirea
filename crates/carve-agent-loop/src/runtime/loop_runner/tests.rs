@@ -2168,7 +2168,7 @@ async fn test_stream_skip_inference_emits_run_end_phase() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     let events = collect_stream_events(stream).await;
 
@@ -2219,7 +2219,7 @@ async fn test_stream_skip_inference_emits_run_start_and_finish() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     let events = collect_stream_events(stream).await;
 
@@ -2276,7 +2276,7 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     ))
     .await;
 
@@ -2349,7 +2349,7 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     ))
     .await;
 
@@ -2849,7 +2849,7 @@ async fn test_stream_run_finish_has_matching_thread_id() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     let events = collect_stream_events(stream).await;
 
@@ -2871,21 +2871,21 @@ async fn test_stream_run_finish_has_matching_thread_id() {
 }
 
 // ========================================================================
-// RunContext tests
+// RunServices tests
 // ========================================================================
 
 #[test]
 fn test_run_context_default() {
-    let ctx = RunContext::default();
+    let ctx = RunServices::default();
     assert!(ctx.cancellation_token.is_none());
     assert!(ctx.state_committer.is_none());
 }
 
 #[test]
 fn test_run_context_with_cancellation() {
-    let ctx = RunContext {
+    let ctx = RunServices {
         cancellation_token: Some(CancellationToken::new()),
-        ..RunContext::default()
+        ..RunServices::default()
     };
     assert!(ctx.cancellation_token.is_some());
 }
@@ -2893,18 +2893,18 @@ fn test_run_context_with_cancellation() {
 #[test]
 fn test_run_context_run_cancellation_token_accessor() {
     let token = RunCancellationToken::new();
-    let ctx = RunContext {
+    let ctx = RunServices {
         cancellation_token: Some(token),
-        ..RunContext::default()
+        ..RunServices::default()
     };
     assert!(ctx.run_cancellation_token().is_some());
 }
 
 #[test]
 fn test_run_context_clone() {
-    let ctx = RunContext {
+    let ctx = RunServices {
         cancellation_token: None,
-        ..RunContext::default()
+        ..RunServices::default()
     };
     let cloned = ctx.clone();
     assert!(cloned.cancellation_token.is_none());
@@ -3079,7 +3079,7 @@ async fn test_nonstream_uses_fallback_model_after_primary_failures() {
     let tools = HashMap::new();
 
     let (final_thread, last_text) =
-        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunServices::default())
             .await
             .expect("non-stream run should succeed with fallback model");
 
@@ -3147,7 +3147,7 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
     let tools = HashMap::new();
 
     let err =
-        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunServices::default())
             .await
             .expect_err("non-stream run should fail when provider always errors");
     assert!(
@@ -3180,7 +3180,7 @@ async fn test_nonstream_stop_timeout_condition_triggers_on_natural_end_path() {
     let tools = HashMap::new();
 
     let err =
-        run_loop_with_context_provider(&provider, &config, thread, &tools, RunContext::default())
+        run_loop_with_context_provider(&provider, &config, thread, &tools, RunServices::default())
             .await
             .expect_err("timeout stop condition should stop non-stream run");
 
@@ -3220,9 +3220,9 @@ async fn test_nonstream_cancellation_token_during_inference() {
             &AgentConfig::new("mock"),
             Thread::new("test").with_message(Message::user("go")),
             &HashMap::new(),
-            RunContext {
+            RunServices {
                 cancellation_token: Some(token_for_run),
-                ..RunContext::default()
+                ..RunServices::default()
             },
         )
         .await
@@ -3308,7 +3308,7 @@ async fn test_nonstream_loop_outcome_collects_usage_and_stats() {
         &config,
         thread,
         &tools,
-        RunContext::default(),
+        RunServices::default(),
     )
     .await;
 
@@ -3349,7 +3349,7 @@ async fn test_nonstream_loop_outcome_llm_error_tracks_attempts_and_failure_kind(
         &config,
         thread,
         &tools,
-        RunContext::default(),
+        RunServices::default(),
     )
     .await;
 
@@ -3390,9 +3390,9 @@ async fn test_nonstream_cancellation_token_during_tool_execution() {
             &AgentConfig::new("mock"),
             Thread::new("test").with_message(Message::user("go")),
             &tool_map([tool]),
-            RunContext {
+            RunServices {
                 cancellation_token: Some(token_for_run),
-                ..RunContext::default()
+                ..RunServices::default()
             },
         )
         .await
@@ -3444,7 +3444,7 @@ async fn test_golden_run_loop_and_stream_natural_end_alignment() {
         &AgentConfig::new("mock"),
         thread.clone(),
         &tools,
-        RunContext::default(),
+        RunServices::default(),
     )
     .await
     .expect("non-stream run should succeed");
@@ -3488,9 +3488,9 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
         &AgentConfig::new("mock"),
         thread.clone(),
         &tools,
-        RunContext {
+        RunServices {
             cancellation_token: Some(nonstream_token),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     )
     .await;
@@ -3506,9 +3506,9 @@ async fn test_golden_run_loop_and_stream_cancelled_alignment() {
         AgentConfig::new("mock"),
         thread,
         tools,
-        RunContext {
+        RunServices {
             cancellation_token: Some(stream_token),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     )
     .await;
@@ -3564,7 +3564,7 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
         &config,
         thread.clone(),
         &tools,
-        RunContext::default(),
+        RunServices::default(),
     )
     .await;
     let (nonstream_thread, nonstream_interaction) = match nonstream_result {
@@ -3891,7 +3891,7 @@ async fn run_mock_stream(
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     collect_stream_events(stream).await
 }
@@ -3965,7 +3965,7 @@ async fn test_stream_retries_startup_error_then_succeeds() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     let events = collect_stream_events(stream).await;
 
@@ -3996,7 +3996,7 @@ async fn test_stream_uses_fallback_model_after_primary_failures() {
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     );
     let events = collect_stream_events(stream).await;
 
@@ -4031,7 +4031,7 @@ async fn run_mock_stream_with_final_thread(
         config,
         thread,
         tools,
-        RunContext::default(),
+        RunServices::default(),
     )
     .await
 }
@@ -4042,7 +4042,7 @@ async fn run_mock_stream_with_final_thread_with_context(
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 ) -> (Vec<AgentEvent>, Thread) {
     let mut final_thread = thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4211,7 +4211,7 @@ async fn test_stream_state_commit_failure_on_assistant_turn_emits_error_and_run_
         AgentConfig::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         HashMap::new(),
-        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+        RunServices::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
     );
     let events = collect_stream_events(stream).await;
 
@@ -4243,7 +4243,7 @@ async fn test_stream_state_commit_failure_on_tool_results_emits_error_before_too
         AgentConfig::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         tool_map([EchoTool]),
-        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+        RunServices::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
     );
     let events = collect_stream_events(stream).await;
 
@@ -4280,7 +4280,7 @@ async fn test_stream_run_finished_commit_failure_emits_error_without_run_finish_
         AgentConfig::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         HashMap::new(),
-        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+        RunServices::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
     );
     let events = collect_stream_events(stream).await;
 
@@ -4314,7 +4314,7 @@ async fn test_stream_skip_inference_force_commits_run_finished_delta() {
         AgentConfig::new("mock").with_plugin(Arc::new(recorder) as Arc<dyn AgentPlugin>),
         Thread::new("test").with_message(Message::user("go")),
         HashMap::new(),
-        RunContext::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
+        RunServices::default().with_state_committer(committer.clone() as Arc<dyn StateCommitter>),
     );
     let events = collect_stream_events(stream).await;
 
@@ -4931,9 +4931,9 @@ async fn test_stop_cancellation_token() {
         config,
         thread,
         tools,
-        RunContext {
+        RunServices {
             cancellation_token: Some(token),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     );
     let events = collect_stream_events(stream).await;
@@ -4975,9 +4975,9 @@ async fn test_stop_cancellation_token_during_inference_stream() {
         AgentConfig::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         HashMap::new(),
-        RunContext {
+        RunServices {
             cancellation_token: Some(token.clone()),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     );
 
@@ -5031,9 +5031,9 @@ async fn test_run_loop_with_context_cancellation_token() {
         &config,
         thread,
         &tools,
-        RunContext {
+        RunServices {
             cancellation_token: Some(token),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     )
     .await;
@@ -5940,7 +5940,7 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
         Thread::with_initial_state("test", json!({})).with_message(Message::user("go"));
     let mut final_thread = initial_thread.clone();
     let (checkpoint_tx, mut checkpoint_rx) = tokio::sync::mpsc::unbounded_channel();
-    let run_ctx = RunContext::default()
+    let run_ctx = RunServices::default()
         .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
 
     let events = collect_stream_events(run_loop_stream_impl_with_provider(
@@ -6020,9 +6020,9 @@ async fn test_stop_cancellation_token_during_tool_execution_stream() {
         AgentConfig::new("mock"),
         Thread::new("test").with_message(Message::user("go")),
         tool_map([tool]),
-        RunContext {
+        RunServices {
             cancellation_token: Some(token.clone()),
-            ..RunContext::default()
+            ..RunServices::default()
         },
     );
 

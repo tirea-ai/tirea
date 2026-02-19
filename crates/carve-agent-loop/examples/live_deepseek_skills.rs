@@ -18,7 +18,7 @@ use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunContext,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, RunServices,
 };
 use carve_state::State;
 use futures::StreamExt;
@@ -300,7 +300,7 @@ async fn test_todo_manager_streaming(
         config,
         thread,
         tools.clone(),
-        RunContext::default(),
+        RunServices::default(),
     );
 
     let mut final_text = String::new();

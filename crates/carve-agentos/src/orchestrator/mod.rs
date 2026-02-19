@@ -21,7 +21,7 @@ use crate::extensions::skills::{
     SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunContext,
+    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunServices,
     StateCommitError, StateCommitter,
 };
 
@@ -317,7 +317,7 @@ pub struct PreparedRun {
     pub run_id: String,
     config: AgentConfig,
     thread: Thread,
-    run_ctx: RunContext,
+    run_ctx: RunServices,
 }
 
 impl PreparedRun {

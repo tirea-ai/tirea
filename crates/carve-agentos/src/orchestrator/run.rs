@@ -135,7 +135,7 @@ impl AgentOs {
         }
 
         cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));
-        let run_ctx = RunContext::default().with_state_committer(Arc::new(
+        let run_ctx = RunServices::default().with_state_committer(Arc::new(
             AgentStateStoreStateCommitter::new(agent_state_store.clone()),
         ));
 
@@ -218,7 +218,7 @@ impl AgentOs {
         &self,
         agent_id: &str,
         thread: Thread,
-        run_ctx: RunContext,
+        run_ctx: RunServices,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let (cfg, tools, thread) = self.resolve(agent_id, thread)?;
         let cfg = cfg.with_step_tool_provider(Arc::new(StaticStepToolProvider::new(tools)));

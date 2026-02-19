@@ -13,7 +13,7 @@ use carve_agent_extension_interaction::{
 use types::{DelegationRecord, DelegationState, DelegationStatus};
 pub(super) use crate::runtime::loop_runner::TOOL_SCOPE_CALLER_AGENT_ID_KEY as SCOPE_CALLER_AGENT_ID_KEY;
 use crate::runtime::loop_runner::{
-    ChannelStateCommitter, RunCancellationToken, RunContext, TOOL_SCOPE_CALLER_MESSAGES_KEY,
+    ChannelStateCommitter, RunCancellationToken, RunServices, TOOL_SCOPE_CALLER_MESSAGES_KEY,
     TOOL_SCOPE_CALLER_STATE_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
