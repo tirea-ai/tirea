@@ -358,4 +358,222 @@ mod tests {
         let d3 = ctx.take_delta();
         assert!(d3.is_empty());
     }
+
+    // =========================================================================
+    // Category 1: Delta extraction incremental semantics
+    // =========================================================================
+
+    /// Initial messages passed to `new()` are NOT part of the delta.
+    /// Only run-added messages appear in `take_delta()`.
+    #[test]
+    fn initial_messages_excluded_from_delta() {
+        let initial = vec![
+            Arc::new(Message::user("pre-existing-1")),
+            Arc::new(Message::assistant("pre-existing-2")),
+        ];
+        let mut ctx = RunContext::new("t-1", json!({}), initial, RunConfig::default());
+
+        // No delta despite having 2 messages
+        assert!(!ctx.has_delta());
+        let delta = ctx.take_delta();
+        assert!(delta.messages.is_empty());
+        assert_eq!(ctx.messages().len(), 2);
+
+        // Now add a run message — only that one appears
+        ctx.add_message(Arc::new(Message::user("run-added")));
+        let delta = ctx.take_delta();
+        assert_eq!(delta.messages.len(), 1);
+        assert_eq!(delta.messages[0].content, "run-added");
+        // Total messages still include initial
+        assert_eq!(ctx.messages().len(), 3);
+    }
+
+    /// All patches are delta (cursor starts at 0) — every patch added during
+    /// a run is considered new.
+    #[test]
+    fn all_patches_are_delta() {
+        let mut ctx = RunContext::new("t-1", json!({"a": 0}), vec![], RunConfig::default());
+        ctx.add_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("a"), json!(1))),
+        ));
+        ctx.add_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("a"), json!(2))),
+        ));
+        let delta = ctx.take_delta();
+        assert_eq!(delta.patches.len(), 2, "all run patches should be in delta");
+    }
+
+    /// Multiple take_delta calls produce non-overlapping results.
+    #[test]
+    fn consecutive_take_delta_non_overlapping() {
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+
+        // Round 1: 1 message + 1 patch
+        ctx.add_message(Arc::new(Message::user("m1")));
+        ctx.add_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("x"), json!(1))),
+        ));
+        let d1 = ctx.take_delta();
+        assert_eq!(d1.messages.len(), 1);
+        assert_eq!(d1.patches.len(), 1);
+
+        // Round 2: 2 messages + 1 patch (no overlap with d1)
+        ctx.add_message(Arc::new(Message::user("m2")));
+        ctx.add_message(Arc::new(Message::user("m3")));
+        ctx.add_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("y"), json!(2))),
+        ));
+        let d2 = ctx.take_delta();
+        assert_eq!(d2.messages.len(), 2);
+        assert_eq!(d2.patches.len(), 1);
+
+        // Round 3: nothing added
+        let d3 = ctx.take_delta();
+        assert!(d3.is_empty());
+
+        // Total accumulated
+        assert_eq!(ctx.messages().len(), 3);
+        assert_eq!(ctx.patches().len(), 2);
+    }
+
+    // =========================================================================
+    // Category 4: Run overlay not leaking to delta
+    // =========================================================================
+
+    /// Overlay ops are visible in rebuild_state but NOT in take_delta.
+    #[test]
+    fn overlay_visible_in_state_not_in_delta() {
+        let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
+
+        // Add overlay op
+        ctx.run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(42)));
+
+        // Visible in rebuild_state
+        let state = ctx.rebuild_state().unwrap();
+        assert_eq!(state["counter"], 42);
+
+        // NOT in delta (overlay ops are ephemeral)
+        let delta = ctx.take_delta();
+        assert!(delta.patches.is_empty(), "overlay ops must not appear in delta");
+        assert!(delta.messages.is_empty());
+    }
+
+    /// Overlay ops don't appear in patches() either — they're separate.
+    #[test]
+    fn overlay_not_in_patches() {
+        let ctx = RunContext::new("t-1", json!({"x": 0}), vec![], RunConfig::default());
+        ctx.run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("x"), json!(99)));
+
+        assert!(ctx.patches().is_empty(), "overlay must not appear in patches()");
+        // But state reflects it
+        assert_eq!(ctx.rebuild_state().unwrap()["x"], 99);
+    }
+
+    /// Overlay + patches coexist: patches in delta, overlay not.
+    #[test]
+    fn overlay_and_patches_coexist_only_patches_in_delta() {
+        let mut ctx = RunContext::new("t-1", json!({"a": 0, "b": 0}), vec![], RunConfig::default());
+
+        // Durable patch on "a"
+        ctx.add_patch(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("a"), json!(10))),
+        ));
+        // Ephemeral overlay on "b"
+        ctx.run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("b"), json!(20)));
+
+        // State shows both
+        let state = ctx.rebuild_state().unwrap();
+        assert_eq!(state["a"], 10);
+        assert_eq!(state["b"], 20);
+
+        // Delta only has the durable patch
+        let delta = ctx.take_delta();
+        assert_eq!(delta.patches.len(), 1, "only durable patches in delta");
+    }
+
+    // =========================================================================
+    // Category 5: from_thread boundary conditions
+    // =========================================================================
+
+    #[test]
+    fn from_thread_rebuilds_existing_patches() {
+        use crate::state::Thread;
+
+        let mut thread = Thread::with_initial_state("t-1", json!({"counter": 0}));
+        thread.patches.push(TrackedPatch::new(
+            Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+        ));
+
+        let ctx = RunContext::from_thread(&thread).unwrap();
+        // State is pre-rebuilt (includes thread patches)
+        assert_eq!(ctx.state()["counter"], 5);
+        // No run patches yet
+        assert!(ctx.patches().is_empty());
+        // rebuild_state is consistent with state()
+        assert_eq!(ctx.rebuild_state().unwrap()["counter"], 5);
+    }
+
+    #[test]
+    fn from_thread_carries_version_metadata() {
+        use crate::state::Thread;
+
+        let mut thread = Thread::new("t-1");
+        thread.metadata.version = Some(42);
+        thread.metadata.version_timestamp = Some(1700000000);
+
+        let ctx = RunContext::from_thread(&thread).unwrap();
+        assert_eq!(ctx.version(), 42);
+        assert_eq!(ctx.version_timestamp(), Some(1700000000));
+    }
+
+    #[test]
+    fn from_thread_broken_patch_returns_error() {
+        use crate::state::Thread;
+
+        let mut thread = Thread::with_initial_state("t-1", json!({"x": 1}));
+        // Append to a non-array path — this will fail during rebuild_state
+        thread.patches.push(TrackedPatch::new(
+            Patch::with_ops(vec![carve_state::Op::Append {
+                path: path!("x"),
+                value: json!(999),
+            }]),
+        ));
+
+        let result = RunContext::from_thread(&thread);
+        assert!(result.is_err(), "broken patch should cause from_thread to fail");
+    }
+
+    // =========================================================================
+    // Version tracking
+    // =========================================================================
+
+    #[test]
+    fn version_defaults_to_zero() {
+        let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        assert_eq!(ctx.version(), 0);
+        assert_eq!(ctx.version_timestamp(), None);
+    }
+
+    #[test]
+    fn set_version_updates_correctly() {
+        let mut ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
+        ctx.set_version(5, Some(1700000000));
+        assert_eq!(ctx.version(), 5);
+        assert_eq!(ctx.version_timestamp(), Some(1700000000));
+
+        // Update again
+        ctx.set_version(6, None);
+        assert_eq!(ctx.version(), 6);
+        // Timestamp unchanged when None passed
+        assert_eq!(ctx.version_timestamp(), Some(1700000000));
+    }
 }

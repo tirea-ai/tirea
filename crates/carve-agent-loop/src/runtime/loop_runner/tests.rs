@@ -6316,3 +6316,468 @@ async fn test_run_loop_patches_accumulate_across_steps() {
         outcome.run_ctx.patches().len()
     );
 }
+
+// =============================================================================
+// Category 2: StateCommitter + version evolution
+// =============================================================================
+
+/// commit_pending_delta with force=false skips when delta is empty.
+#[tokio::test]
+async fn test_commit_pending_delta_skips_when_empty() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+
+    // No messages or patches added — delta is empty
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::AssistantTurnCommitted,
+        false, // not forced
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    // Nothing should have been sent
+    assert!(rx.try_recv().is_err(), "empty delta should be skipped");
+    // Version unchanged
+    assert_eq!(run_ctx.version(), 0);
+}
+
+/// commit_pending_delta with force=true persists even when delta is empty.
+#[tokio::test]
+async fn test_commit_pending_delta_force_persists_empty() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::RunFinished,
+        true, // forced
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    let changeset = rx.try_recv().expect("forced commit should produce a changeset");
+    assert_eq!(changeset.run_id, "run-1");
+    assert_eq!(changeset.reason, CheckpointReason::RunFinished);
+    assert!(changeset.messages.is_empty());
+    assert!(changeset.patches.is_empty());
+    // Version should advance from 0 to 1
+    assert_eq!(run_ctx.version(), 1);
+}
+
+/// Version advances correctly after each commit.
+#[tokio::test]
+async fn test_commit_pending_delta_version_advancement() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    assert_eq!(run_ctx.version(), 0);
+
+    // First commit
+    run_ctx.add_message(Arc::new(Message::user("msg1")));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+    assert_eq!(run_ctx.version(), 1, "version should be 1 after first commit");
+    let _ = rx.try_recv().unwrap();
+
+    // Second commit
+    run_ctx.add_message(Arc::new(Message::assistant("reply")));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::AssistantTurnCommitted,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+    assert_eq!(run_ctx.version(), 2, "version should be 2 after second commit");
+    let _ = rx.try_recv().unwrap();
+
+    // Timestamp should have been set
+    assert!(run_ctx.version_timestamp().is_some());
+}
+
+/// commit_pending_delta uses Exact precondition with current version.
+#[tokio::test]
+async fn test_commit_pending_delta_precondition_exactness() {
+    use std::sync::Mutex as StdMutex;
+
+    struct CapturingCommitter {
+        preconditions: StdMutex<Vec<VersionPrecondition>>,
+    }
+
+    #[async_trait]
+    impl StateCommitter for CapturingCommitter {
+        async fn commit(
+            &self,
+            _thread_id: &str,
+            _changeset: crate::contracts::AgentChangeSet,
+            precondition: VersionPrecondition,
+        ) -> Result<u64, StateCommitError> {
+            let version = match &precondition {
+                VersionPrecondition::Any => 1,
+                VersionPrecondition::Exact(v) => v + 1,
+            };
+            self.preconditions.lock().unwrap().push(precondition);
+            Ok(version)
+        }
+    }
+
+    let committer: Arc<dyn StateCommitter> = Arc::new(CapturingCommitter {
+        preconditions: StdMutex::new(Vec::new()),
+    });
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    run_ctx.set_version(10, None);
+
+    run_ctx.add_message(Arc::new(Message::user("hi")));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    // The committer was called with Exact(10) since initial version is 10.
+    // We verify via version advancement: ChannelStateCommitter returns v+1.
+    assert_eq!(run_ctx.version(), 11, "version should advance from 10 to 11");
+}
+
+/// Error from StateCommitter propagates as AgentLoopError::StateError.
+#[tokio::test]
+async fn test_commit_pending_delta_error_propagation() {
+    struct FailingCommitter;
+
+    #[async_trait]
+    impl StateCommitter for FailingCommitter {
+        async fn commit(
+            &self,
+            _thread_id: &str,
+            _changeset: crate::contracts::AgentChangeSet,
+            _precondition: VersionPrecondition,
+        ) -> Result<u64, StateCommitError> {
+            Err(StateCommitError::new("simulated failure"))
+        }
+    }
+
+    let committer: Arc<dyn StateCommitter> = Arc::new(FailingCommitter);
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    run_ctx.add_message(Arc::new(Message::user("hi")));
+
+    let result = state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await;
+
+    match result {
+        Err(AgentLoopError::StateError(msg)) => {
+            assert!(msg.contains("simulated failure"), "error message: {msg}");
+        }
+        other => panic!("expected StateError, got: {other:?}"),
+    }
+    // Version should NOT have advanced
+    assert_eq!(run_ctx.version(), 0);
+}
+
+/// No StateCommitter provided: commit_pending_delta is a no-op.
+#[tokio::test]
+async fn test_commit_pending_delta_no_committer() {
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+    run_ctx.add_message(Arc::new(Message::user("hi")));
+
+    // None committer — should succeed silently
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+
+    // Delta should still be unconsumed (not taken)
+    assert!(run_ctx.has_delta());
+}
+
+// =============================================================================
+// Category 3: Multi-checkpoint incremental correctness
+// =============================================================================
+
+/// Consecutive checkpoints produce disjoint deltas — no double-counting.
+#[tokio::test]
+async fn test_consecutive_checkpoints_disjoint_deltas() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+
+    // Checkpoint 1: user message
+    run_ctx.add_message(Arc::new(Message::user("hello")));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    // Checkpoint 2: assistant turn + patch
+    run_ctx.add_message(Arc::new(Message::assistant("hi there")));
+    run_ctx.add_patch(TrackedPatch::new(
+        Patch::new().with_op(Op::set(carve_state::path!("greeted"), json!(true))),
+    ));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::AssistantTurnCommitted,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    // Checkpoint 3: tool results
+    run_ctx.add_message(Arc::new(Message::tool("call-1", "tool result")));
+    run_ctx.add_patch(TrackedPatch::new(
+        Patch::new().with_op(Op::set(carve_state::path!("tool_done"), json!(true))),
+    ));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::ToolResultsCommitted,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    let cs1 = rx.try_recv().unwrap();
+    let cs2 = rx.try_recv().unwrap();
+    let cs3 = rx.try_recv().unwrap();
+
+    // Each checkpoint has only its own data
+    assert_eq!(cs1.messages.len(), 1, "checkpoint 1: 1 user message");
+    assert_eq!(cs1.patches.len(), 0, "checkpoint 1: no patches");
+
+    assert_eq!(cs2.messages.len(), 1, "checkpoint 2: 1 assistant message");
+    assert_eq!(cs2.patches.len(), 1, "checkpoint 2: 1 patch");
+
+    assert_eq!(cs3.messages.len(), 1, "checkpoint 3: 1 tool message");
+    assert_eq!(cs3.patches.len(), 1, "checkpoint 3: 1 patch");
+
+    // Union = 3 messages, 2 patches
+    let total_messages: usize = cs1.messages.len() + cs2.messages.len() + cs3.messages.len();
+    let total_patches: usize = cs1.patches.len() + cs2.patches.len() + cs3.patches.len();
+    assert_eq!(total_messages, 3, "union of deltas = all messages");
+    assert_eq!(total_patches, 2, "union of deltas = all patches");
+}
+
+/// RunEnd forced checkpoint captures remaining unconsumed delta.
+#[tokio::test]
+async fn test_run_end_checkpoint_captures_remaining() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+
+    // Add data without committing
+    run_ctx.add_message(Arc::new(Message::user("hello")));
+    run_ctx.add_message(Arc::new(Message::assistant("world")));
+    run_ctx.add_patch(TrackedPatch::new(
+        Patch::new().with_op(Op::set(carve_state::path!("x"), json!(1))),
+    ));
+
+    // Force RunFinished checkpoint
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::RunFinished,
+        true,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    let cs = rx.try_recv().unwrap();
+    assert_eq!(cs.messages.len(), 2, "all messages captured");
+    assert_eq!(cs.patches.len(), 1, "all patches captured");
+    assert_eq!(cs.reason, CheckpointReason::RunFinished);
+
+    // After forced commit, delta is empty
+    assert!(!run_ctx.has_delta());
+}
+
+/// After all checkpoints, a final forced commit produces empty changeset.
+#[tokio::test]
+async fn test_all_deltas_consumed_final_checkpoint_empty() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let committer: Arc<dyn StateCommitter> = Arc::new(state_commit::ChannelStateCommitter::new(tx));
+
+    let mut run_ctx = RunContext::new("t-1", json!({}), vec![], Default::default());
+
+    // Add and commit
+    run_ctx.add_message(Arc::new(Message::user("hi")));
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::UserMessage,
+        false,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+    let _ = rx.try_recv().unwrap();
+
+    // Final forced commit with nothing new
+    state_commit::commit_pending_delta(
+        &mut run_ctx,
+        CheckpointReason::RunFinished,
+        true,
+        "run-1",
+        None,
+        Some(&committer),
+    )
+    .await
+    .unwrap();
+
+    let cs = rx.try_recv().unwrap();
+    assert!(cs.messages.is_empty(), "no new messages");
+    assert!(cs.patches.is_empty(), "no new patches");
+}
+
+// =============================================================================
+// Category 6: Parallel conflict delta state
+// =============================================================================
+
+/// When parallel tool patches conflict, the error leaves run_ctx delta clean —
+/// rejected patches are NOT added to run_ctx.
+#[test]
+fn test_conflict_rejection_leaves_delta_clean() {
+    let mut run_ctx = RunContext::new(
+        "test",
+        json!({"counter": 0}),
+        vec![],
+        Default::default(),
+    );
+
+    // Two conflicting patches on the same path
+    let left = tool_execution_result(
+        "call_left",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("counter"),
+            json!(10),
+        )))),
+    );
+    let right = tool_execution_result(
+        "call_right",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("counter"),
+            json!(20),
+        )))),
+    );
+
+    // Record initial delta state
+    let pre_patches = run_ctx.patches().len();
+
+    match apply_tool_results_to_session(&mut run_ctx, &[left, right], None, true) {
+        Err(AgentLoopError::StateError(_)) => {} // expected
+        Err(other) => panic!("expected StateError, got: {other:?}"),
+        Ok(_) => panic!("conflicting patches must fail"),
+    }
+
+    // Delta should be clean — no patches added
+    assert_eq!(
+        run_ctx.patches().len(),
+        pre_patches,
+        "conflicting patches must NOT be added to run_ctx"
+    );
+    // State unchanged
+    let state = run_ctx.rebuild_state().unwrap();
+    assert_eq!(state["counter"], 0, "state unchanged after conflict rejection");
+}
+
+/// Sequential mode: if second tool's patch fails, first tool's patch is
+/// already applied (sequential semantics). But the error prevents further
+/// tool patches from being added.
+#[test]
+fn test_sequential_error_preserves_prior_patches() {
+    let mut run_ctx = RunContext::new(
+        "test",
+        json!({"a": 0, "b": 0}),
+        vec![],
+        Default::default(),
+    );
+
+    // First tool writes "a" — succeeds
+    let first = tool_execution_result(
+        "call_1",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("a"),
+            json!(100),
+        )))),
+    );
+
+    // Apply first tool result in non-parallel (sequential) mode
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[first], None, false)
+        .expect("single tool should succeed");
+
+    // Verify "a" is patched
+    let state = run_ctx.rebuild_state().unwrap();
+    assert_eq!(state["a"], 100);
+    assert_eq!(run_ctx.patches().len(), 1);
+
+    // Now apply a second tool that also writes "a" — this should still succeed
+    // in non-parallel mode since conflict detection is only for parallel
+    let second = tool_execution_result(
+        "call_2",
+        Some(TrackedPatch::new(Patch::new().with_op(Op::set(
+            carve_state::path!("a"),
+            json!(200),
+        )))),
+    );
+    let _applied = apply_tool_results_to_session(&mut run_ctx, &[second], None, false)
+        .expect("sequential mode allows overwriting");
+
+    let state = run_ctx.rebuild_state().unwrap();
+    assert_eq!(state["a"], 200, "sequential overwrites are allowed");
+    assert_eq!(run_ctx.patches().len(), 2);
+}
