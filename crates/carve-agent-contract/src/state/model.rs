@@ -3,7 +3,7 @@
 //! `AgentState` represents persisted agent state with message history and patches.
 
 use super::message::Message;
-use carve_state::{apply_patches, CarveError, CarveResult, Op, ScopeState, TrackedPatch};
+use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -28,6 +28,7 @@ pub(crate) struct TransientState {
     pub scope_attached: bool,
     pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
     pub ops: Arc<Mutex<Vec<Op>>>,
+    pub run_overlay: Arc<Mutex<Vec<Op>>>,
     pub activity_manager: Option<Arc<dyn crate::state::ActivityManager>>,
 }
 
@@ -40,6 +41,7 @@ impl Default for TransientState {
             scope_attached: false,
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             ops: Arc::new(Mutex::new(Vec::new())),
+            run_overlay: Arc::new(Mutex::new(Vec::new())),
             activity_manager: None,
         }
     }
@@ -57,6 +59,10 @@ impl std::fmt::Debug for TransientState {
                 &self.pending_messages.lock().unwrap().len(),
             )
             .field("ops_len", &self.ops.lock().unwrap().len())
+            .field(
+                "run_overlay_len",
+                &self.run_overlay.lock().unwrap().len(),
+            )
             .field(
                 "activity_manager",
                 &self.activity_manager.as_ref().map(|_| "<set>"),
@@ -229,14 +235,31 @@ impl AgentState {
         std::mem::take(&mut self.pending)
     }
 
-    /// Rebuild the current state by applying all patches to the base state.
+    /// Rebuild the current run-visible state (base + thread patches + run overlay).
     ///
-    /// This is a pure function - it doesn't modify the thread.
+    /// This is a pure function — it doesn't modify the thread.
+    /// The run overlay is applied on top so that override values shadow thread state.
     pub fn rebuild_state(&self) -> CarveResult<Value> {
+        let base = if self.patches.is_empty() {
+            self.state.clone()
+        } else {
+            apply_patches(&self.state, self.patches.iter().map(|p| p.patch()))?
+        };
+        let overlay_ops = self.transient.run_overlay.lock().unwrap();
+        if overlay_ops.is_empty() {
+            Ok(base)
+        } else {
+            apply_patch(&base, &Patch::with_ops(overlay_ops.clone()))
+        }
+    }
+
+    /// Rebuild state from base + thread patches only (no run overlay).
+    ///
+    /// Use for persistence (snapshot). Most callers should use `rebuild_state()`.
+    pub fn rebuild_thread_state(&self) -> CarveResult<Value> {
         if self.patches.is_empty() {
             return Ok(self.state.clone());
         }
-
         apply_patches(&self.state, self.patches.iter().map(|p| p.patch()))
     }
 
@@ -264,8 +287,9 @@ impl AgentState {
     /// Create a snapshot, collapsing patches into the base state.
     ///
     /// Returns a new AgentState with the current state as base and empty patches.
+    /// Uses `rebuild_thread_state()` to exclude run overlay from the snapshot.
     pub fn snapshot(self) -> CarveResult<Self> {
-        let current_state = self.rebuild_state()?;
+        let current_state = self.rebuild_thread_state()?;
         Ok(Self {
             id: self.id,
             resource_id: self.resource_id,
@@ -658,5 +682,110 @@ mod tests {
         assert!(err
             .to_string()
             .contains("replay index 0 out of bounds (history len: 0)"));
+    }
+
+    // --- Run overlay tests ---
+
+    #[test]
+    fn test_rebuild_state_with_empty_overlay() {
+        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            ));
+
+        // Empty overlay should not change the result
+        let rebuilt = thread.rebuild_state().unwrap();
+        assert_eq!(rebuilt, json!({"counter": 5}));
+    }
+
+    #[test]
+    fn test_rebuild_state_with_overlay() {
+        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0, "name": "alice"}))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            ));
+
+        // Add overlay ops
+        thread
+            .transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(99)));
+
+        let rebuilt = thread.rebuild_state().unwrap();
+        assert_eq!(rebuilt["counter"], 99, "overlay should shadow thread state");
+        assert_eq!(rebuilt["name"], "alice", "non-overlaid fields unchanged");
+    }
+
+    #[test]
+    fn test_rebuild_thread_state_ignores_overlay() {
+        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            ));
+
+        thread
+            .transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(99)));
+
+        let thread_state = thread.rebuild_thread_state().unwrap();
+        assert_eq!(
+            thread_state["counter"], 5,
+            "rebuild_thread_state must ignore overlay"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_excludes_overlay() {
+        let thread = AgentState::with_initial_state("t-1", json!({"counter": 0}))
+            .with_patch(TrackedPatch::new(
+                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
+            ));
+
+        thread
+            .transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(99)));
+
+        let snapshotted = thread.snapshot().unwrap();
+        assert_eq!(
+            snapshotted.state["counter"], 5,
+            "snapshot must not bake in overlay values"
+        );
+        assert!(snapshotted.patches.is_empty());
+    }
+
+    #[test]
+    fn test_take_patch_does_not_drain_overlay() {
+        let thread = AgentState::new_transient(&json!({"counter": 0}), "call-1", "test");
+
+        // Add ops to both thread ops and overlay
+        thread
+            .transient
+            .ops
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(1)));
+        thread
+            .transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(99)));
+
+        let patch = thread.take_patch();
+        assert_eq!(patch.patch().len(), 1, "take_patch drains thread ops");
+
+        assert_eq!(
+            thread.transient.run_overlay.lock().unwrap().len(),
+            1,
+            "overlay must survive take_patch"
+        );
     }
 }

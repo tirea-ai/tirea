@@ -80,6 +80,7 @@ impl<'a> PatchSink<'a> {
 pub struct StateContext<'a> {
     doc: &'a Value,
     ops: Mutex<Vec<Op>>,
+    run_overlay: Option<&'a Mutex<Vec<Op>>>,
 }
 
 impl<'a> StateContext<'a> {
@@ -88,6 +89,16 @@ impl<'a> StateContext<'a> {
         Self {
             doc,
             ops: Mutex::new(Vec::new()),
+            run_overlay: None,
+        }
+    }
+
+    /// Create a state context with a run overlay for override writes.
+    pub fn with_overlay(doc: &'a Value, overlay: &'a Mutex<Vec<Op>>) -> Self {
+        Self {
+            doc,
+            ops: Mutex::new(Vec::new()),
+            run_overlay: Some(overlay),
         }
     }
 
@@ -107,6 +118,27 @@ impl<'a> StateContext<'a> {
             "State type has no bound path; use state::<T>(path) instead"
         );
         self.state::<T>(T::PATH)
+    }
+
+    /// Typed state reference that writes to the run overlay (not persisted).
+    ///
+    /// Panics if this context was not created with `with_overlay()`.
+    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let overlay = self
+            .run_overlay
+            .expect("override_state called on StateContext without overlay");
+        T::state_ref(self.doc, parse_path(path), PatchSink::new(overlay))
+    }
+
+    /// Typed state reference at canonical path, writing to the run overlay.
+    ///
+    /// Panics if `T::PATH` is empty or if no overlay is set.
+    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use override_state::<T>(path) instead"
+        );
+        self.override_state::<T>(T::PATH)
     }
 
     /// Extract collected operations as a plain patch.

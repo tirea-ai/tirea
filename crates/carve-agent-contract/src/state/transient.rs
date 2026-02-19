@@ -77,6 +77,7 @@ impl AgentState {
         state.resource_id = thread.resource_id.clone();
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
+        state.transient.run_overlay = thread.transient.run_overlay.clone();
         state
     }
 
@@ -96,6 +97,7 @@ impl AgentState {
         state.resource_id = thread.resource_id.clone();
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
+        state.transient.run_overlay = thread.transient.run_overlay.clone();
         state
     }
 
@@ -206,6 +208,30 @@ impl AgentState {
         self.state::<T>(T::PATH)
     }
 
+    /// Typed state reference that writes to the run overlay (not persisted).
+    ///
+    /// Reads from the current doc; writes go to the run overlay instead of
+    /// thread ops. The overlay is discarded when the run ends.
+    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let base = parse_path(path);
+        T::state_ref(
+            &self.state,
+            base,
+            PatchSink::new(self.transient.run_overlay.as_ref()),
+        )
+    }
+
+    /// Typed state reference at canonical path, writing to the run overlay.
+    ///
+    /// Panics if `T::PATH` is empty.
+    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use override_state::<T>(path) instead"
+        );
+        self.override_state::<T>(T::PATH)
+    }
+
     /// Typed state reference for current call (`tool_calls.<call_id>`).
     pub fn call_state<T: State>(&self) -> T::Ref<'_> {
         let path = format!("tool_calls.{}", self.transient.call_id);
@@ -232,6 +258,7 @@ impl AgentState {
             stream_id,
             activity_type,
             self.transient.activity_manager.clone(),
+            Some(self.transient.run_overlay.clone()),
         )
     }
 
@@ -288,6 +315,7 @@ pub struct ActivityContext {
     activity_type: String,
     ops: Mutex<Vec<Op>>,
     manager: Option<Arc<dyn ActivityManager>>,
+    run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
 }
 
 impl ActivityContext {
@@ -296,6 +324,7 @@ impl ActivityContext {
         stream_id: String,
         activity_type: String,
         manager: Option<Arc<dyn ActivityManager>>,
+        run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
     ) -> Self {
         Self {
             doc,
@@ -303,6 +332,7 @@ impl ActivityContext {
             activity_type,
             ops: Mutex::new(Vec::new()),
             manager,
+            run_overlay,
         }
     }
 
@@ -333,5 +363,112 @@ impl ActivityContext {
         } else {
             T::state_ref(&self.doc, base, PatchSink::new(&self.ops))
         }
+    }
+
+    /// Typed state reference that writes to the run overlay (not persisted).
+    pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let overlay = self
+            .run_overlay
+            .as_ref()
+            .expect("override_state called without run overlay");
+        T::state_ref(&self.doc, parse_path(path), PatchSink::new(overlay.as_ref()))
+    }
+
+    /// Typed state reference at canonical path, writing to the run overlay.
+    pub fn override_state_of<T: State>(&self) -> T::Ref<'_> {
+        assert!(
+            !T::PATH.is_empty(),
+            "State type has no bound path; use override_state::<T>(path) instead"
+        );
+        self.override_state::<T>(T::PATH)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::control::LoopControlState;
+    use carve_state::{path, Op};
+    use serde_json::json;
+
+    #[test]
+    fn test_override_state_of_writes_to_overlay() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        // Write via override — should go to run_overlay, not ops
+        let ctrl = ctx.override_state_of::<LoopControlState>();
+        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "rate_limit".into(),
+            message: "too many requests".into(),
+        }));
+
+        assert!(
+            ctx.transient.ops.lock().unwrap().is_empty(),
+            "thread ops must remain empty after override write"
+        );
+        assert!(
+            !ctx.transient.run_overlay.lock().unwrap().is_empty(),
+            "overlay must contain the override op"
+        );
+    }
+
+    #[test]
+    fn test_from_thread_shares_overlay() {
+        let thread = AgentState::new("t-1");
+        // Pre-populate overlay on the thread
+        thread
+            .transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("counter"), json!(99)));
+
+        let doc = json!({"counter": 0});
+        let ctx = AgentState::from_thread(&thread, &doc, "call-1", "test", 1);
+
+        // The transient context should share the same Arc
+        assert!(
+            Arc::ptr_eq(&ctx.transient.run_overlay, &thread.transient.run_overlay),
+            "from_thread must share the overlay Arc"
+        );
+
+        // Writes through the ctx should be visible from thread's overlay
+        ctx.transient
+            .run_overlay
+            .lock()
+            .unwrap()
+            .push(Op::set(path!("name"), json!("bob")));
+        assert_eq!(
+            thread.transient.run_overlay.lock().unwrap().len(),
+            2,
+            "overlay writes must be visible across shared Arc"
+        );
+    }
+
+    #[test]
+    fn test_state_of_reads_see_overlay_via_rebuild() {
+        let initial = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let thread = AgentState::with_initial_state("t-1", initial);
+
+        // Write overlay ops directly
+        thread.transient.run_overlay.lock().unwrap().push(Op::set(
+            path!("loop_control", "inference_error"),
+            json!({"type": "timeout", "message": "timed out"}),
+        ));
+
+        // rebuild_state should include the overlay
+        let rebuilt = thread.rebuild_state().unwrap();
+        assert_eq!(
+            rebuilt["loop_control"]["inference_error"]["type"], "timeout",
+            "rebuild_state must include overlay values"
+        );
+
+        // rebuild_thread_state should NOT include it
+        let thread_state = thread.rebuild_thread_state().unwrap();
+        assert!(
+            thread_state["loop_control"]["inference_error"].is_null(),
+            "rebuild_thread_state must exclude overlay"
+        );
     }
 }
