@@ -1,14 +1,14 @@
 //! Tool execution utilities.
 
 pub use crate::contracts::runtime::ToolExecution;
+use crate::contracts::context::ToolCallContext;
 use crate::contracts::state::ToolCall;
 use crate::contracts::tool::{Tool, ToolResult};
-use crate::contracts::AgentState;
-use carve_state::{apply_patch, ScopeState, TrackedPatch};
+use carve_state::{apply_patch, DocCell, ScopeState, TrackedPatch};
 use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Execute a single tool call.
 ///
@@ -46,11 +46,25 @@ pub async fn execute_single_tool_with_scope(
     };
 
     // Create context for this tool call
-    let ctx = AgentState::new_transient(state, &call.id, format!("tool:{}", call.name))
-        .with_transient_scope(scope);
+    let doc = DocCell::new(state.clone());
+    let ops = Mutex::new(Vec::new());
+    let overlay = Arc::new(Mutex::new(Vec::new()));
+    let default_scope = ScopeState::default();
+    let scope = scope.unwrap_or(&default_scope);
+    let pending_messages = Mutex::new(Vec::new());
+    let ctx = ToolCallContext::new(
+        &doc,
+        &ops,
+        overlay,
+        &call.id,
+        format!("tool:{}", call.name),
+        scope,
+        &pending_messages,
+        None,
+    );
 
     // Execute the tool
-    let result = match tool.execute(call.arguments.clone(), &ctx.as_tool_call_context()).await {
+    let result = match tool.execute(call.arguments.clone(), &ctx).await {
         Ok(r) => r,
         Err(e) => ToolResult::error(&call.name, e.to_string()),
     };

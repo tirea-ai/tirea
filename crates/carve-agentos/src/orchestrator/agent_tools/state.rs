@@ -1,5 +1,7 @@
 use super::*;
-use carve_state::State;
+use carve_agent_contract::context::ToolCallContext;
+use carve_state::{DocCell, State};
+use std::sync::{Arc, Mutex};
 pub(super) fn parent_run_id_from_thread(
     thread: Option<&crate::contracts::state::AgentState>,
 ) -> Option<String> {
@@ -113,12 +115,26 @@ pub(super) fn parse_replay_tool_calls_from_state(state: &Value) -> Vec<ToolCall>
         .unwrap_or_default()
 }
 
+/// Create storage for a short-lived ToolCallContext used for state patch generation.
+fn patch_context_storage(
+    state: &Value,
+) -> (DocCell, Mutex<Vec<carve_state::Op>>, Arc<Mutex<Vec<carve_state::Op>>>, carve_state::ScopeState, Mutex<Vec<Arc<crate::contracts::state::Message>>>) {
+    (
+        DocCell::new(state.clone()),
+        Mutex::new(Vec::new()),
+        Arc::new(Mutex::new(Vec::new())),
+        carve_state::ScopeState::default(),
+        Mutex::new(Vec::new()),
+    )
+}
+
 pub(super) fn set_pending_interaction_patch(
     state: &Value,
     interaction: Interaction,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_transient(state, call_id, AGENT_RECOVERY_PLUGIN_ID);
+    let (doc, ops, overlay, scope, pending_msgs) = patch_context_storage(state);
+    let ctx = ToolCallContext::new(&doc, &ops, overlay, call_id, AGENT_RECOVERY_PLUGIN_ID, &scope, &pending_msgs, None);
     let lc = ctx.state_of::<crate::runtime::control::LoopControlState>();
     lc.set_pending_interaction(Some(interaction));
     let patch = ctx.take_patch();
@@ -191,7 +207,8 @@ pub(super) fn set_agent_runs_patch_from_state_doc(
     next_runs: HashMap<String, DelegationRecord>,
     call_id: &str,
 ) -> Option<carve_state::TrackedPatch> {
-    let ctx = AgentState::new_transient(state, call_id, AGENT_TOOLS_PLUGIN_ID);
+    let (doc, ops, overlay, scope, pending_msgs) = patch_context_storage(state);
+    let ctx = ToolCallContext::new(&doc, &ops, overlay, call_id, AGENT_TOOLS_PLUGIN_ID, &scope, &pending_msgs, None);
     let agent = ctx.state_of::<DelegationState>();
     agent.set_runs(next_runs);
     let patch = ctx.take_patch();
