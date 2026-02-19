@@ -3,7 +3,7 @@
 //! These tests verify the StateManager's ability to manage immutable state
 //! with patch history and replay capabilities.
 
-use carve_state::{path, Op, Patch, StateContext, StateManager, TrackedPatch};
+use carve_state::{path, DocCell, Op, Patch, StateContext, StateManager, TrackedPatch};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -352,7 +352,8 @@ async fn test_manager_with_context_workflow() {
     // Simulate tool execution workflow
     for i in 1..=3 {
         let snapshot = manager.snapshot().await;
-        let ctx = StateContext::new(&snapshot);
+        let doc_cell = DocCell::new(snapshot.clone());
+        let ctx = StateContext::new(&doc_cell);
 
         let counter = ctx.state::<CounterState>("counters.main");
         let current = counter.value().unwrap();

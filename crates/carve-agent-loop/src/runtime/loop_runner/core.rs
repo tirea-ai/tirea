@@ -5,7 +5,7 @@ use crate::contracts::state::AgentState;
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::runtime::control::{InferenceError, LoopControlExt, LoopControlState};
-use carve_state::{StateContext, TrackedPatch};
+use carve_state::{DocCell, StateContext, TrackedPatch};
 
 /// Skills state path — matches `SkillState::PATH` (avoids type dependency).
 const SKILLS_STATE_PATH: &str = "skills";
@@ -120,14 +120,16 @@ pub(super) fn set_agent_pending_interaction(
     state: &Value,
     interaction: Interaction,
 ) -> TrackedPatch {
-    let ctx = StateContext::new(state);
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.set_pending_interaction(Some(interaction));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
-    let ctx = StateContext::new(state);
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.pending_interaction_none();
     ctx.take_tracked_patch("agent_loop")
@@ -138,14 +140,16 @@ pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Int
 }
 
 pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
-    let ctx = StateContext::new(state);
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.set_inference_error(Some(error));
     ctx.take_tracked_patch("agent_loop")
 }
 
 pub(super) fn clear_agent_inference_error(state: &Value) -> TrackedPatch {
-    let ctx = StateContext::new(state);
+    let doc = DocCell::new(state.clone());
+    let ctx = StateContext::new(&doc);
     let lc = ctx.state_of::<LoopControlState>();
     lc.inference_error_none();
     ctx.take_tracked_patch("agent_loop")

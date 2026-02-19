@@ -1,7 +1,7 @@
 //! Integration tests for State derive macro.
 #![allow(missing_docs)]
 
-use carve_state::{apply_patch, path, CarveResult, PatchSink, Path, State as StateTrait, StateExt};
+use carve_state::{apply_patch, path, CarveResult, DocCell, PatchSink, Path, State as StateTrait, StateExt};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -13,9 +13,10 @@ fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -
 where
     F: FnOnce(T::Ref<'_>),
 {
+    let doc_cell = DocCell::new(doc.clone());
     let ops = Mutex::new(Vec::new());
     let sink = PatchSink::new(&ops);
-    let state_ref = T::state_ref(doc, path, sink);
+    let state_ref = T::state_ref(&doc_cell, path, sink);
     f(state_ref);
     carve_state::Patch::with_ops(ops.into_inner().unwrap())
 }
@@ -716,11 +717,11 @@ fn test_state_to_patch_with_nested() {
 
 #[test]
 fn test_state_ext_at_root_read() {
-    let doc = json!({
+    let doc = DocCell::new(json!({
         "name": "Alice",
         "age": 30,
         "active": true
-    });
+    }));
 
     let ops = Mutex::new(Vec::new());
     let sink = PatchSink::new(&ops);
@@ -735,11 +736,12 @@ fn test_state_ext_at_root_read() {
 
 #[test]
 fn test_state_ext_at_root_write() {
-    let doc = json!({
+    let doc_value = json!({
         "name": "Alice",
         "age": 30,
         "active": true
     });
+    let doc = DocCell::new(doc_value.clone());
 
     let ops = Mutex::new(Vec::new());
     let sink = PatchSink::new(&ops);
@@ -750,7 +752,7 @@ fn test_state_ext_at_root_write() {
 
     drop(state);
     let patch = carve_state::Patch::with_ops(ops.into_inner().unwrap());
-    let result = apply_patch(&doc, &patch).unwrap();
+    let result = apply_patch(&doc_value, &patch).unwrap();
 
     assert_eq!(result["name"], "Bob");
     assert_eq!(result["age"], 25);
@@ -759,11 +761,12 @@ fn test_state_ext_at_root_write() {
 
 #[test]
 fn test_state_ext_at_root_equivalent_to_state_ref_root() {
-    let doc = json!({
+    let doc_value = json!({
         "name": "Test",
         "age": 100,
         "active": false
     });
+    let doc = DocCell::new(doc_value.clone());
 
     // Using StateExt::at_root
     let ops1 = Mutex::new(Vec::new());
@@ -787,8 +790,8 @@ fn test_state_ext_at_root_equivalent_to_state_ref_root() {
     let patch1 = carve_state::Patch::with_ops(ops1.into_inner().unwrap());
     let patch2 = carve_state::Patch::with_ops(ops2.into_inner().unwrap());
 
-    let result1 = apply_patch(&doc, &patch1).unwrap();
-    let result2 = apply_patch(&doc, &patch2).unwrap();
+    let result1 = apply_patch(&doc_value, &patch1).unwrap();
+    let result2 = apply_patch(&doc_value, &patch2).unwrap();
 
     assert_eq!(result1, result2);
 }

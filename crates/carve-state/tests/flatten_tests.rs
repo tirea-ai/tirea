@@ -4,7 +4,7 @@
 //! rather than under a separate key in JSON.
 #![allow(missing_docs)]
 
-use carve_state::{apply_patch, PatchSink, Path, State as StateTrait};
+use carve_state::{apply_patch, DocCell, PatchSink, Path, State as StateTrait};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,9 +15,10 @@ fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -
 where
     F: FnOnce(T::Ref<'_>),
 {
+    let doc_cell = DocCell::new(doc.clone());
     let ops = Mutex::new(Vec::new());
     let sink = PatchSink::new(&ops);
-    let state_ref = T::state_ref(doc, path, sink);
+    let state_ref = T::state_ref(&doc_cell, path, sink);
     f(state_ref);
     carve_state::Patch::with_ops(ops.into_inner().unwrap())
 }

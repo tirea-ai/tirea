@@ -3,7 +3,7 @@
 //! These tests verify the core API design where developers use typed state references
 //! through StateContext, and all operations are automatically collected.
 
-use carve_state::{apply_patch, State as StateTrait, StateContext};
+use carve_state::{apply_patch, DocCell, State as StateTrait, StateContext};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -55,7 +55,8 @@ struct AccountState {
 #[test]
 fn test_context_creation() {
     let doc = json!({"value": 10, "label": "test"});
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     assert!(!ctx.has_changes());
     assert_eq!(ctx.ops_count(), 0);
@@ -71,7 +72,8 @@ fn test_context_state_read() {
             }
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counters.main");
     assert_eq!(counter.value().unwrap(), 42);
@@ -91,7 +93,8 @@ fn test_context_state_write() {
             }
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counters.main");
     counter.set_value(20);
@@ -118,7 +121,8 @@ fn test_context_state_increment() {
             "label": "Test"
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.increment_value(5);
@@ -136,7 +140,8 @@ fn test_context_state_decrement() {
             "label": "Test"
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.decrement_value(30);
@@ -154,7 +159,8 @@ fn test_context_state_delete() {
             "label": "Test"
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.delete_label();
@@ -168,7 +174,8 @@ fn test_context_state_delete() {
 #[test]
 fn test_context_take_patch_clears_ops() {
     let doc = json!({"counter": {"value": 10, "label": "X"}});
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.set_value(20);
@@ -198,7 +205,8 @@ fn test_context_call_state() {
             }
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let state = ctx.state::<CounterState>("tool_calls.call_123");
     assert_eq!(state.value().unwrap(), 5);
@@ -223,7 +231,8 @@ fn test_context_multiple_state_refs() {
             "bob": {"name": "Bob", "email": "bob@example.com", "age": 25, "tags": [], "metadata": {}}
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     // Get multiple state references
     let alice = ctx.state::<UserState>("users.alice");
@@ -246,7 +255,8 @@ fn test_context_multiple_state_refs() {
 #[test]
 fn test_context_state_ref_reuse() {
     let doc = json!({"counter": {"value": 0, "label": "X"}});
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     // Get state ref multiple times - all should share the same sink
     let counter1 = ctx.state::<CounterState>("counter");
@@ -275,7 +285,8 @@ fn test_context_vec_operations() {
             "count": 1
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let todos = ctx.state::<TodoState>("todos");
     todos.items_push("Task 2");
@@ -306,7 +317,8 @@ fn test_context_map_operations() {
             "metadata": {"key1": "value1"}
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
     user.metadata_insert("key2", "value2");
@@ -337,7 +349,8 @@ fn test_context_nested_state_read() {
             }
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let account = ctx.state::<AccountState>("account");
     assert_eq!(account.username().unwrap(), "alice");
@@ -361,7 +374,8 @@ fn test_context_nested_state_write() {
             }
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let account = ctx.state::<AccountState>("account");
     account.set_username("alice_updated");
@@ -396,7 +410,8 @@ fn test_context_option_field_some_to_none() {
             "metadata": {}
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
     user.email_none();
@@ -418,7 +433,8 @@ fn test_context_option_field_none_to_some() {
             "metadata": {}
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let user = ctx.state::<UserState>("user");
     user.set_email(Some("alice@example.com".to_string()));
@@ -439,7 +455,8 @@ fn test_context_root_state() {
         "value": 100,
         "label": "Root Counter"
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     // Empty path means root
     let counter = ctx.state::<CounterState>("");
@@ -477,7 +494,8 @@ fn test_context_complex_workflow() {
             "count": 0
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     // Read current state
     let call_state = ctx.state::<CounterState>("tool_calls.call_abc");
@@ -519,7 +537,8 @@ fn test_context_read_missing_field() {
             // label is missing
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     assert_eq!(counter.value().unwrap(), 10);
@@ -534,7 +553,8 @@ fn test_context_read_missing_path() {
     let doc = json!({
         "other": {}
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
 
@@ -555,7 +575,8 @@ fn test_context_original_doc_unchanged() {
             "label": "Original"
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<CounterState>("counter");
     counter.set_value(999);
@@ -605,4 +626,76 @@ fn test_state_to_value_via_context() {
     let value = counter.to_value();
     assert_eq!(value["value"], 100);
     assert_eq!(value["label"], "Created");
+}
+
+// ============================================================================
+// Write-through-read tests
+// ============================================================================
+
+#[test]
+fn test_state_context_write_through_read_same_ref() {
+    let doc = DocCell::new(json!({
+        "counter": {"value": 10, "label": "Original"}
+    }));
+    let ctx = StateContext::new(&doc);
+
+    let counter = ctx.state::<CounterState>("counter");
+    assert_eq!(counter.value().unwrap(), 10);
+
+    // Write then read from the same ref
+    counter.set_value(42);
+    assert_eq!(counter.value().unwrap(), 42, "same-ref read must see the write");
+    assert_eq!(counter.label().unwrap(), "Original", "untouched field unchanged");
+}
+
+#[test]
+fn test_state_context_write_through_read_cross_ref() {
+    let doc = DocCell::new(json!({
+        "counter": {"value": 0, "label": "Start"}
+    }));
+    let ctx = StateContext::new(&doc);
+
+    // Write via first state ref
+    let counter1 = ctx.state::<CounterState>("counter");
+    counter1.set_value(100);
+    counter1.set_label("Updated");
+
+    // Read via second state ref — must see the writes
+    let counter2 = ctx.state::<CounterState>("counter");
+    assert_eq!(counter2.value().unwrap(), 100, "cross-ref read must see the write");
+    assert_eq!(counter2.label().unwrap(), "Updated");
+}
+
+#[test]
+fn test_state_context_overlay_write_visible_to_state_read() {
+    let doc = DocCell::new(json!({
+        "counter": {"value": 0, "label": "Init"}
+    }));
+    let overlay = std::sync::Mutex::new(Vec::new());
+    let ctx = StateContext::with_overlay(&doc, &overlay);
+
+    // Write via override
+    let counter_override = ctx.override_state::<CounterState>("counter");
+    counter_override.set_value(999);
+
+    // Read via normal state — must see the override write
+    let counter = ctx.state::<CounterState>("counter");
+    assert_eq!(counter.value().unwrap(), 999, "state read must see override write");
+}
+
+#[test]
+fn test_state_context_state_write_visible_to_override_read() {
+    let doc = DocCell::new(json!({
+        "counter": {"value": 0, "label": "Init"}
+    }));
+    let overlay = std::sync::Mutex::new(Vec::new());
+    let ctx = StateContext::with_overlay(&doc, &overlay);
+
+    // Write via normal state
+    let counter = ctx.state::<CounterState>("counter");
+    counter.set_value(55);
+
+    // Read via override — must see the state write
+    let counter_override = ctx.override_state::<CounterState>("counter");
+    assert_eq!(counter_override.value().unwrap(), 55, "override read must see state write");
 }

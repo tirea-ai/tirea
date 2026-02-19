@@ -3,7 +3,7 @@
 //! The `State` trait provides a unified interface for typed access to JSON documents.
 //! It is typically implemented via the derive macro `#[derive(State)]`.
 
-use crate::{CarveResult, Op, Patch, Path, TrackedPatch};
+use crate::{CarveResult, DocCell, Op, Patch, Path, TrackedPatch};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
@@ -78,14 +78,14 @@ impl<'a> PatchSink<'a> {
 
 /// Pure state context with automatic patch collection.
 pub struct StateContext<'a> {
-    doc: &'a Value,
+    doc: &'a DocCell,
     ops: Mutex<Vec<Op>>,
     run_overlay: Option<&'a Mutex<Vec<Op>>>,
 }
 
 impl<'a> StateContext<'a> {
     /// Create a new pure state context.
-    pub fn new(doc: &'a Value) -> Self {
+    pub fn new(doc: &'a DocCell) -> Self {
         Self {
             doc,
             ops: Mutex::new(Vec::new()),
@@ -94,7 +94,7 @@ impl<'a> StateContext<'a> {
     }
 
     /// Create a state context with a run overlay for override writes.
-    pub fn with_overlay(doc: &'a Value, overlay: &'a Mutex<Vec<Op>>) -> Self {
+    pub fn with_overlay(doc: &'a DocCell, overlay: &'a Mutex<Vec<Op>>) -> Self {
         Self {
             doc,
             ops: Mutex::new(Vec::new()),
@@ -105,7 +105,14 @@ impl<'a> StateContext<'a> {
     /// Get a typed state reference at the specified path.
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
-        T::state_ref(self.doc, base, PatchSink::new(&self.ops))
+        let hook: CollectHook<'_> = Arc::new(|op: &Op| {
+            self.doc.apply(op);
+        });
+        T::state_ref(
+            self.doc,
+            base,
+            PatchSink::new_with_hook(&self.ops, hook),
+        )
     }
 
     /// Get a typed state reference at the type's canonical path.
@@ -127,7 +134,14 @@ impl<'a> StateContext<'a> {
         let overlay = self
             .run_overlay
             .expect("override_state called on StateContext without overlay");
-        T::state_ref(self.doc, parse_path(path), PatchSink::new(overlay))
+        let hook: CollectHook<'_> = Arc::new(|op: &Op| {
+            self.doc.apply(op);
+        });
+        T::state_ref(
+            self.doc,
+            parse_path(path),
+            PatchSink::new_with_hook(overlay, hook),
+        )
     }
 
     /// Typed state reference at canonical path, writing to the run overlay.
@@ -219,7 +233,7 @@ pub trait State: Sized {
     /// * `doc` - The JSON document to read from
     /// * `base` - The base path for this state
     /// * `sink` - The operation collector
-    fn state_ref<'a>(doc: &'a Value, base: Path, sink: PatchSink<'a>) -> Self::Ref<'a>;
+    fn state_ref<'a>(doc: &'a DocCell, base: Path, sink: PatchSink<'a>) -> Self::Ref<'a>;
 
     /// Deserialize this type from a JSON value.
     fn from_value(value: &Value) -> CarveResult<Self>;
@@ -236,7 +250,7 @@ pub trait State: Sized {
 /// Extension trait providing convenience methods for State types.
 pub trait StateExt: State {
     /// Create a state reference at the document root.
-    fn at_root<'a>(doc: &'a Value, sink: PatchSink<'a>) -> Self::Ref<'a> {
+    fn at_root<'a>(doc: &'a DocCell, sink: PatchSink<'a>) -> Self::Ref<'a> {
         Self::state_ref(doc, Path::root(), sink)
     }
 }
@@ -323,7 +337,7 @@ mod tests {
         impl State for Counter {
             type Ref<'a> = CounterRef<'a>;
 
-            fn state_ref<'a>(_: &'a Value, base: Path, sink: PatchSink<'a>) -> Self::Ref<'a> {
+            fn state_ref<'a>(_: &'a DocCell, base: Path, sink: PatchSink<'a>) -> Self::Ref<'a> {
                 CounterRef { base, sink }
             }
 
@@ -336,7 +350,7 @@ mod tests {
             }
         }
 
-        let doc = json!({"counter": {"value": 1}});
+        let doc = DocCell::new(json!({"counter": {"value": 1}}));
         let ctx = StateContext::new(&doc);
         let counter = ctx.state::<Counter>("counter");
         counter.set_value(2);

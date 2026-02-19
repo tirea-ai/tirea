@@ -6,7 +6,8 @@
 use crate::state::{AgentChangeSet, CheckpointReason};
 use crate::state::{AgentState, Message};
 use carve_state::{
-    parse_path, CarveError, CarveResult, Op, Patch, PatchSink, ScopeState, State, TrackedPatch,
+    parse_path, CarveError, CarveResult, DocCell, Op, Patch, PatchSink, ScopeState, State,
+    TrackedPatch,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,13 @@ pub trait ActivityManager: Send + Sync {
 }
 
 impl AgentState {
+    /// Get or lazily create the shared mutable document for write-through reads.
+    fn run_doc(&self) -> &DocCell {
+        self.transient
+            .run_doc
+            .get_or_init(|| DocCell::new(self.state.clone()))
+    }
+
     /// Create a new transient context object.
     pub fn new_transient(
         doc: &Value,
@@ -30,6 +38,7 @@ impl AgentState {
         source: impl Into<String>,
     ) -> Self {
         let mut state = Self::with_initial_state("", doc.clone());
+        let _ = state.transient.run_doc.set(DocCell::new(doc.clone()));
         state.transient.call_id = call_id.into();
         state.transient.source = source.into();
         state.transient.version = 0;
@@ -77,7 +86,14 @@ impl AgentState {
         state.resource_id = thread.resource_id.clone();
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
+        // Share the overlay Arc so writes are visible across references
         state.transient.run_overlay = thread.transient.run_overlay.clone();
+        // Apply any existing overlay ops to the run_doc so reads see them
+        if let Some(run_doc) = state.transient.run_doc.get() {
+            for op in thread.transient.run_overlay.lock().unwrap().iter() {
+                run_doc.apply(op);
+            }
+        }
         state
     }
 
@@ -98,6 +114,11 @@ impl AgentState {
         state.parent_thread_id = thread.parent_thread_id.clone();
         state.metadata = thread.metadata.clone();
         state.transient.run_overlay = thread.transient.run_overlay.clone();
+        if let Some(run_doc) = state.transient.run_doc.get() {
+            for op in thread.transient.run_overlay.lock().unwrap().iter() {
+                run_doc.apply(op);
+            }
+        }
         state
     }
 
@@ -189,11 +210,15 @@ impl AgentState {
 
     /// Typed state reference at path.
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let doc = self.run_doc();
         let base = parse_path(path);
+        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(|op: &Op| {
+            doc.apply(op);
+        });
         T::state_ref(
-            &self.state,
+            doc,
             base,
-            PatchSink::new(self.transient.ops.as_ref()),
+            PatchSink::new_with_hook(self.transient.ops.as_ref(), hook),
         )
     }
 
@@ -210,14 +235,18 @@ impl AgentState {
 
     /// Typed state reference that writes to the run overlay (not persisted).
     ///
-    /// Reads from the current doc; writes go to the run overlay instead of
-    /// thread ops. The overlay is discarded when the run ends.
+    /// Reads from the shared `run_doc`; writes go to the run overlay instead of
+    /// thread ops but still update `run_doc` for immediate read-back.
     pub fn override_state<T: State>(&self, path: &str) -> T::Ref<'_> {
+        let doc = self.run_doc();
         let base = parse_path(path);
+        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(|op: &Op| {
+            doc.apply(op);
+        });
         T::state_ref(
-            &self.state,
+            doc,
             base,
-            PatchSink::new(self.transient.run_overlay.as_ref()),
+            PatchSink::new_with_hook(self.transient.run_overlay.as_ref(), hook),
         )
     }
 
@@ -310,7 +339,7 @@ impl AgentState {
 
 /// Activity-scoped state context.
 pub struct ActivityContext {
-    doc: Value,
+    doc: DocCell,
     stream_id: String,
     activity_type: String,
     ops: Mutex<Vec<Op>>,
@@ -327,7 +356,7 @@ impl ActivityContext {
         run_overlay: Option<Arc<Mutex<Vec<Op>>>>,
     ) -> Self {
         Self {
-            doc,
+            doc: DocCell::new(doc),
             stream_id,
             activity_type,
             ops: Mutex::new(Vec::new()),
@@ -350,18 +379,25 @@ impl ActivityContext {
     /// Get a typed activity state reference at the specified path.
     ///
     /// All modifications are automatically collected and immediately reported
-    /// to the activity manager (if configured).
+    /// to the activity manager (if configured). Writes are applied to the
+    /// shared doc for immediate read-back.
     pub fn state<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
         if let Some(manager) = self.manager.clone() {
             let stream_id = self.stream_id.clone();
             let activity_type = self.activity_type.clone();
-            let hook = Arc::new(move |op: &Op| {
+            let doc = &self.doc;
+            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
+                doc.apply(op);
                 manager.on_activity_op(&stream_id, &activity_type, op);
             });
             T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         } else {
-            T::state_ref(&self.doc, base, PatchSink::new(&self.ops))
+            let doc = &self.doc;
+            let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
+                doc.apply(op);
+            });
+            T::state_ref(&self.doc, base, PatchSink::new_with_hook(&self.ops, hook))
         }
     }
 
@@ -371,7 +407,15 @@ impl ActivityContext {
             .run_overlay
             .as_ref()
             .expect("override_state called without run overlay");
-        T::state_ref(&self.doc, parse_path(path), PatchSink::new(overlay.as_ref()))
+        let doc = &self.doc;
+        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(move |op: &Op| {
+            doc.apply(op);
+        });
+        T::state_ref(
+            &self.doc,
+            parse_path(path),
+            PatchSink::new_with_hook(overlay.as_ref(), hook),
+        )
     }
 
     /// Typed state reference at canonical path, writing to the run overlay.
@@ -469,6 +513,114 @@ mod tests {
         assert!(
             thread_state["loop_control"]["inference_error"].is_null(),
             "rebuild_thread_state must exclude overlay"
+        );
+    }
+
+    // ================================================================
+    // Write-through-read tests
+    // ================================================================
+
+    #[test]
+    fn test_write_through_read_same_ref() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        let ctrl = ctx.state_of::<LoopControlState>();
+        // Initially null
+        assert!(ctrl.inference_error().unwrap().is_none());
+
+        // Write
+        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "rate_limit".into(),
+            message: "too many requests".into(),
+        }));
+
+        // Read back from the same ref — must see the written value
+        let err = ctrl.inference_error().unwrap();
+        assert!(err.is_some(), "same-ref read must see the write");
+        assert_eq!(err.unwrap().error_type, "rate_limit");
+    }
+
+    #[test]
+    fn test_write_through_read_cross_ref() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        // Write via first state_of call
+        let ctrl1 = ctx.state_of::<LoopControlState>();
+        ctrl1.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "timeout".into(),
+            message: "timed out".into(),
+        }));
+
+        // Read via second state_of call — must see the write
+        let ctrl2 = ctx.state_of::<LoopControlState>();
+        let err = ctrl2.inference_error().unwrap();
+        assert!(err.is_some(), "cross-ref read must see the write");
+        assert_eq!(err.unwrap().error_type, "timeout");
+    }
+
+    #[test]
+    fn test_override_write_visible_to_state_of_read() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        // Write via override_state_of (overlay)
+        let ctrl_override = ctx.override_state_of::<LoopControlState>();
+        ctrl_override.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "overridden".into(),
+            message: "from overlay".into(),
+        }));
+
+        // Read via state_of (thread ops path) — must see the override
+        let ctrl = ctx.state_of::<LoopControlState>();
+        let err = ctrl.inference_error().unwrap();
+        assert!(
+            err.is_some(),
+            "state_of read must see override_state_of write"
+        );
+        assert_eq!(err.unwrap().error_type, "overridden");
+    }
+
+    #[test]
+    fn test_state_of_write_visible_to_override_read() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        // Write via state_of (thread ops)
+        let ctrl = ctx.state_of::<LoopControlState>();
+        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "from_state_of".into(),
+            message: "via thread ops".into(),
+        }));
+
+        // Read via override_state_of — must see the write
+        let ctrl_override = ctx.override_state_of::<LoopControlState>();
+        let err = ctrl_override.inference_error().unwrap();
+        assert!(
+            err.is_some(),
+            "override_state_of read must see state_of write"
+        );
+        assert_eq!(err.unwrap().error_type, "from_state_of");
+    }
+
+    #[test]
+    fn test_rebuild_state_reflects_write_through() {
+        let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
+        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+
+        // Write via state_of
+        let ctrl = ctx.state_of::<LoopControlState>();
+        ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
+            error_type: "test_error".into(),
+            message: "test".into(),
+        }));
+
+        // rebuild_state should return the run_doc snapshot which includes the write
+        let rebuilt = ctx.rebuild_state().unwrap();
+        assert_eq!(
+            rebuilt["loop_control"]["inference_error"]["type"], "test_error",
+            "rebuild_state must reflect write-through updates"
         );
     }
 }

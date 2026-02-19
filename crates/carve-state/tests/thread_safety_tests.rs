@@ -3,7 +3,7 @@
 //! These tests verify that the API is thread-safe and works correctly
 //! in concurrent scenarios.
 
-use carve_state::{path, Op, Patch, PatchSink, StateContext, StateManager, TrackedPatch};
+use carve_state::{path, DocCell, Op, Patch, PatchSink, StateContext, StateManager, TrackedPatch};
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -113,7 +113,8 @@ fn test_context_concurrent_state_access() {
     });
 
     // Create context
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     // Access state from main thread
     let c1 = ctx.state::<CounterState>("counter1");
@@ -139,7 +140,8 @@ fn test_context_scoped_parallel_access() {
         }
     });
 
-    let ctx = Arc::new(StateContext::new(&doc));
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = Arc::new(StateContext::new(&doc_cell));
 
     // Use scoped threads to access context
     thread::scope(|s| {

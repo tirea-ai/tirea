@@ -94,6 +94,7 @@
 
 mod apply;
 mod conflict;
+mod doc_cell;
 mod error;
 mod manager;
 mod op;
@@ -105,6 +106,7 @@ mod writer;
 
 // Core types
 pub use apply::{apply_patch, apply_patches, get_at_path};
+pub use doc_cell::DocCell;
 pub use conflict::{compute_touched, detect_conflicts, Conflict, ConflictKind, PatchExt};
 pub use error::{value_type_name, CarveError, CarveResult};
 pub use op::{Number, Op};

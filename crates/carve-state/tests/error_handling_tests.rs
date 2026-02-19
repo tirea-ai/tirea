@@ -4,7 +4,7 @@
 //! when operations fail.
 
 use carve_state::{
-    apply_patch, path, CarveError, Op, Patch, PatchSink, Path, State as StateTrait, StateContext,
+    apply_patch, path, CarveError, DocCell, Op, Patch, PatchSink, Path, State as StateTrait, StateContext,
 };
 use carve_state_derive::State;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,10 @@ fn with_state_ref<T: StateTrait, F>(doc: &serde_json::Value, path: Path, f: F) -
 where
     F: FnOnce(T::Ref<'_>),
 {
+    let doc_cell = DocCell::new(doc.clone());
     let ops = Mutex::new(Vec::new());
     let sink = PatchSink::new(&ops);
-    let state_ref = T::state_ref(doc, path, sink);
+    let state_ref = T::state_ref(&doc_cell, path, sink);
     f(state_ref);
     carve_state::Patch::with_ops(ops.into_inner().unwrap())
 }
@@ -365,7 +366,8 @@ fn test_context_error_propagation() {
             // count is missing
         }
     });
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
 
     let counter = ctx.state::<SimpleState>("counter");
 
@@ -405,7 +407,8 @@ fn test_error_check_before_read() {
         }
     });
 
-    let ctx = StateContext::new(&doc);
+    let doc_cell = DocCell::new(doc.clone());
+    let ctx = StateContext::new(&doc_cell);
     let state = ctx.state::<SimpleState>("data");
 
     // Pattern: check if read succeeds before using

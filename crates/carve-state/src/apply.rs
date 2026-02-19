@@ -90,7 +90,7 @@ pub fn apply_patches<'a>(
 }
 
 /// Apply a single operation to a document (mutating).
-fn apply_op(doc: &mut Value, op: &Op) -> CarveResult<()> {
+pub(crate) fn apply_op(doc: &mut Value, op: &Op) -> CarveResult<()> {
     match op {
         Op::Set { path, value } => apply_set(doc, path, value.clone()),
         Op::Delete { path } => apply_delete(doc, path),

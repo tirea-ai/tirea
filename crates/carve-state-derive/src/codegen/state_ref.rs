@@ -33,7 +33,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
         ///
         /// All modifications are automatically collected by the associated `PatchSink`.
         #vis struct #ref_name<'a> {
-            doc: &'a ::serde_json::Value,
+            doc: &'a ::carve_state::DocCell,
             base: ::carve_state::Path,
             sink: ::carve_state::PatchSink<'a>,
         }
@@ -42,7 +42,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             /// Create a new state reference.
             #[doc(hidden)]
             pub fn new(
-                doc: &'a ::serde_json::Value,
+                doc: &'a ::carve_state::DocCell,
                 base: ::carve_state::Path,
                 sink: ::carve_state::PatchSink<'a>,
             ) -> Self {
@@ -64,7 +64,7 @@ pub fn generate(input: &ViewModelInput) -> syn::Result<TokenStream> {
             const PATH: &'static str = #path_value;
 
             fn state_ref<'a>(
-                doc: &'a ::serde_json::Value,
+                doc: &'a ::carve_state::DocCell,
                 base: ::carve_state::Path,
                 sink: ::carve_state::PatchSink<'a>,
             ) -> Self::Ref<'a> {
@@ -146,11 +146,11 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 /// Read the optional nested field value.
                 pub fn #get_name(&self) -> ::carve_state::CarveResult<Option<#inner_ty>> {
                     let path = self.base.clone().key(#json_key);
-                    match ::carve_state::get_at_path(self.doc, &path) {
+                    match { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() } {
                         None => Ok(None),
                         Some(value) if value.is_null() => Ok(None),
                         Some(value) => {
-                            let v: #inner_ty = ::serde_json::from_value(value.clone())
+                            let v: #inner_ty = ::serde_json::from_value(value)
                                 .map_err(::carve_state::CarveError::from)?;
                             Ok(Some(v))
                         }
@@ -163,11 +163,11 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                 /// Read the optional field value.
                 pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                     let path = self.base.clone().key(#json_key);
-                    match ::carve_state::get_at_path(self.doc, &path) {
+                    match { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() } {
                         None => Ok(None),
                         Some(value) if value.is_null() => Ok(None),
                         Some(value) => {
-                            ::serde_json::from_value(value.clone())
+                            ::serde_json::from_value(value)
                                 .map_err(::carve_state::CarveError::from)
                         }
                     }
@@ -183,10 +183,10 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                         let path = self.base.clone().key(#json_key);
-                        match ::carve_state::get_at_path(self.doc, &path) {
+                        match { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() } {
                             None => Ok(#expr),
                             Some(value) => {
-                                ::serde_json::from_value(value.clone())
+                                ::serde_json::from_value(value)
                                     .map_err(::carve_state::CarveError::from)
                             }
                         }
@@ -197,9 +197,9 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                         let path = self.base.clone().key(#json_key);
-                        let value = ::carve_state::get_at_path(self.doc, &path)
+                        let value = { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() }
                             .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
-                        ::serde_json::from_value(value.clone())
+                        ::serde_json::from_value(value)
                             .map_err(::carve_state::CarveError::from)
                     }
                 }
@@ -214,10 +214,10 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                         let path = self.base.clone().key(#json_key);
-                        match ::carve_state::get_at_path(self.doc, &path) {
+                        match { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() } {
                             None => Ok(#expr),
                             Some(value) => {
-                                ::serde_json::from_value(value.clone())
+                                ::serde_json::from_value(value)
                                     .map_err(::carve_state::CarveError::from)
                             }
                         }
@@ -228,9 +228,9 @@ fn generate_read_method(field: &FieldInput) -> syn::Result<TokenStream> {
                     /// Read the field value.
                     pub fn #field_name(&self) -> ::carve_state::CarveResult<#field_ty> {
                         let path = self.base.clone().key(#json_key);
-                        let value = ::carve_state::get_at_path(self.doc, &path)
+                        let value = { let __guard = self.doc.get(); ::carve_state::get_at_path(&__guard, &path).cloned() }
                             .ok_or_else(|| ::carve_state::CarveError::path_not_found(path.clone()))?;
-                        ::serde_json::from_value(value.clone())
+                        ::serde_json::from_value(value)
                             .map_err(::carve_state::CarveError::from)
                     }
                 }

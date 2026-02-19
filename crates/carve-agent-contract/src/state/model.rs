@@ -3,10 +3,10 @@
 //! `AgentState` represents persisted agent state with message history and patches.
 
 use super::message::Message;
-use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, ScopeState, TrackedPatch};
+use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, DocCell, Op, Patch, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Accumulated new messages and patches since the last `take_pending()`.
 ///
@@ -20,7 +20,6 @@ pub struct PendingDelta {
 }
 
 /// Ephemeral transient-only data used by tools/plugins during a run.
-#[derive(Clone)]
 pub(crate) struct TransientState {
     pub call_id: String,
     pub source: String,
@@ -29,6 +28,7 @@ pub(crate) struct TransientState {
     pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
     pub ops: Arc<Mutex<Vec<Op>>>,
     pub run_overlay: Arc<Mutex<Vec<Op>>>,
+    pub run_doc: OnceLock<DocCell>,
     pub activity_manager: Option<Arc<dyn crate::state::ActivityManager>>,
 }
 
@@ -42,7 +42,28 @@ impl Default for TransientState {
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             ops: Arc::new(Mutex::new(Vec::new())),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
+            run_doc: OnceLock::new(),
             activity_manager: None,
+        }
+    }
+}
+
+impl Clone for TransientState {
+    fn clone(&self) -> Self {
+        let run_doc = OnceLock::new();
+        if let Some(existing) = self.run_doc.get() {
+            let _ = run_doc.set(existing.clone());
+        }
+        Self {
+            call_id: self.call_id.clone(),
+            source: self.source.clone(),
+            version: self.version,
+            scope_attached: self.scope_attached,
+            pending_messages: self.pending_messages.clone(),
+            ops: self.ops.clone(),
+            run_overlay: self.run_overlay.clone(),
+            run_doc,
+            activity_manager: self.activity_manager.clone(),
         }
     }
 }
@@ -63,6 +84,7 @@ impl std::fmt::Debug for TransientState {
                 "run_overlay_len",
                 &self.run_overlay.lock().unwrap().len(),
             )
+            .field("run_doc", &self.run_doc.get().map(|_| "<set>"))
             .field(
                 "activity_manager",
                 &self.activity_manager.as_ref().map(|_| "<set>"),
@@ -237,9 +259,13 @@ impl AgentState {
 
     /// Rebuild the current run-visible state (base + thread patches + run overlay).
     ///
-    /// This is a pure function — it doesn't modify the thread.
-    /// The run overlay is applied on top so that override values shadow thread state.
+    /// When a `run_doc` is present (transient contexts), returns its snapshot
+    /// which already includes all write-through updates. Otherwise falls back
+    /// to computing base + patches + overlay.
     pub fn rebuild_state(&self) -> CarveResult<Value> {
+        if let Some(run_doc) = self.transient.run_doc.get() {
+            return Ok(run_doc.snapshot());
+        }
         let base = if self.patches.is_empty() {
             self.state.clone()
         } else {

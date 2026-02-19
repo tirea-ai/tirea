@@ -8,7 +8,7 @@
 //! `Serialize` is intentionally **not** implemented to prevent accidental persistence.
 
 use crate::state::{PatchSink, State};
-use crate::{get_at_path, parse_path, Path};
+use crate::{get_at_path, parse_path, DocCell, Path};
 use serde_json::Value;
 use std::collections::HashSet;
 use thiserror::Error;
@@ -44,14 +44,17 @@ pub enum ScopeStateError {
 #[derive(Clone)]
 pub struct ScopeState {
     doc: Value,
+    doc_cell: DocCell,
     sensitive_keys: HashSet<String>,
 }
 
 impl ScopeState {
     /// Create an empty scope state.
     pub fn new() -> Self {
+        let doc = Value::Object(Default::default());
         Self {
-            doc: Value::Object(Default::default()),
+            doc_cell: DocCell::new(doc.clone()),
+            doc,
             sensitive_keys: HashSet::new(),
         }
     }
@@ -70,6 +73,8 @@ impl ScopeState {
         let v = serde_json::to_value(value)
             .map_err(|e| ScopeStateError::SerializationError(e.to_string()))?;
         obj.insert(key, v);
+        // Keep doc_cell in sync for State trait reads
+        *self.doc_cell.get() = self.doc.clone();
         Ok(())
     }
 
@@ -107,13 +112,13 @@ impl ScopeState {
     /// Returns a read-only `StateRef` backed by the scope document.
     /// Any write through this ref will panic (read-only sink).
     pub fn get<T: State>(&self) -> T::Ref<'_> {
-        T::state_ref(&self.doc, Path::root(), PatchSink::read_only())
+        T::state_ref(&self.doc_cell, Path::root(), PatchSink::read_only())
     }
 
     /// Get a typed state reference at a dot-separated path.
     pub fn get_at<T: State>(&self, path: &str) -> T::Ref<'_> {
         let base = parse_path(path);
-        T::state_ref(&self.doc, base, PatchSink::read_only())
+        T::state_ref(&self.doc_cell, base, PatchSink::read_only())
     }
 
     /// Get a raw JSON value by key.
