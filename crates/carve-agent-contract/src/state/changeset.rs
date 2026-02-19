@@ -20,7 +20,7 @@ pub enum CheckpointReason {
 
 /// An incremental change to a thread produced by a single step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentChangeSet {
+pub struct ThreadChangeSet {
     /// Which run produced this delta.
     pub run_id: String,
     /// Parent run (for sub-agent deltas).
@@ -37,8 +37,8 @@ pub struct AgentChangeSet {
     pub snapshot: Option<Value>,
 }
 
-impl AgentChangeSet {
-    /// Build an `AgentChangeSet` from explicit delta components.
+impl ThreadChangeSet {
+    /// Build a `ThreadChangeSet` from explicit delta components.
     pub fn from_parts(
         run_id: impl Into<String>,
         parent_run_id: Option<String>,

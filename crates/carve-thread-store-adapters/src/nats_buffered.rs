@@ -29,7 +29,7 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, Thread, CheckpointReason};
+use carve_agent_contract::{ThreadChangeSet, Thread, CheckpointReason};
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -107,7 +107,7 @@ impl NatsBufferedThreadWriter {
             .await
             .map_err(|e| NatsBufferedThreadWriterError::JetStream(e.to_string()))?;
 
-        let mut pending: HashMap<String, Vec<(AgentChangeSet, jetstream::Message)>> =
+        let mut pending: HashMap<String, Vec<(ThreadChangeSet, jetstream::Message)>> =
             HashMap::new();
         let mut messages = consumer
             .messages()
@@ -124,7 +124,7 @@ impl NatsBufferedThreadWriter {
                         continue;
                     }
                     let thread_id = parts[1].to_string();
-                    match serde_json::from_slice::<AgentChangeSet>(&msg.payload) {
+                    match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
                         Ok(delta) => pending.entry(thread_id).or_default().push((delta, msg)),
                         Err(_) => {
                             let _ = msg.double_ack().await;
@@ -166,7 +166,7 @@ impl NatsBufferedThreadWriter {
     async fn materialize_and_save_thread(
         &self,
         thread_id: &str,
-        deltas_with_msgs: Vec<(AgentChangeSet, jetstream::Message)>,
+        deltas_with_msgs: Vec<(ThreadChangeSet, jetstream::Message)>,
     ) -> Result<usize, NatsBufferedThreadWriterError> {
         if deltas_with_msgs.is_empty() {
             return Ok(0);
@@ -216,7 +216,7 @@ impl NatsBufferedThreadWriter {
 
         loop {
             match tokio::time::timeout(DRAIN_TIMEOUT, messages.next()).await {
-                Ok(Some(Ok(msg))) => match serde_json::from_slice::<AgentChangeSet>(&msg.payload) {
+                Ok(Some(Ok(msg))) => match serde_json::from_slice::<ThreadChangeSet>(&msg.payload) {
                     Ok(delta) => deltas_with_msgs.push((delta, msg)),
                     Err(_) => {
                         let _ = msg.double_ack().await;
@@ -248,7 +248,7 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let payload = serde_json::to_vec(delta)
@@ -318,7 +318,7 @@ impl AgentStateReader for NatsBufferedThreadWriter {
 
 /// Apply a delta to a thread in-place (same logic as agent_state_store::apply_delta but
 /// accessible here without depending on the private function).
-fn apply_delta(thread: &mut Thread, delta: &AgentChangeSet) {
+fn apply_delta(thread: &mut Thread, delta: &ThreadChangeSet) {
     let mut existing_message_ids: HashSet<String> = thread
         .messages
         .iter()

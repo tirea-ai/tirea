@@ -1,4 +1,4 @@
-use crate::state::AgentChangeSet;
+use crate::state::ThreadChangeSet;
 use crate::state::Thread;
 use crate::state::Version;
 use async_trait::async_trait;
@@ -76,11 +76,11 @@ pub trait AgentStateWriter: AgentStateReader {
     /// Create a new Thread.
     async fn create(&self, agent_state: &Thread) -> Result<Committed, AgentStateStoreError>;
 
-    /// Append an AgentChangeSet to an existing Thread.
+    /// Append an ThreadChangeSet to an existing Thread.
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError>;
 
@@ -100,7 +100,7 @@ pub trait AgentStateSync: AgentStateWriter {
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<AgentChangeSet>, AgentStateStoreError>;
+    ) -> Result<Vec<ThreadChangeSet>, AgentStateStoreError>;
 }
 
 /// Full storage trait.

@@ -1,4 +1,4 @@
-use crate::contracts::state::AgentChangeSet;
+use crate::contracts::state::ThreadChangeSet;
 use crate::contracts::storage::VersionPrecondition;
 use async_trait::async_trait;
 use thiserror::Error;
@@ -30,7 +30,7 @@ pub trait StateCommitter: Send + Sync {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: AgentChangeSet,
+        changeset: ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError>;
 }

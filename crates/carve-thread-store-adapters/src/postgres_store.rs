@@ -4,7 +4,7 @@ use carve_agent_contract::storage::{
     AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
     MessageWithCursor, SortOrder, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, Thread, Message, Visibility};
+use carve_agent_contract::{ThreadChangeSet, Thread, Message, Visibility};
 use std::collections::HashSet;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
@@ -142,7 +142,7 @@ impl AgentStateWriter for PostgresStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut tx = self.pool.begin().await.map_err(Self::sql_err)?;

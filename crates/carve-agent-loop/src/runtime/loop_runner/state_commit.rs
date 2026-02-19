@@ -1,18 +1,18 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::VersionPrecondition;
-use crate::contracts::AgentChangeSet;
+use crate::contracts::ThreadChangeSet;
 use crate::contracts::RunContext;
 use async_trait::async_trait;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct ChannelStateCommitter {
-    tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>,
+    tx: tokio::sync::mpsc::UnboundedSender<ThreadChangeSet>,
 }
 
 impl ChannelStateCommitter {
-    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<AgentChangeSet>) -> Self {
+    pub fn new(tx: tokio::sync::mpsc::UnboundedSender<ThreadChangeSet>) -> Self {
         Self { tx }
     }
 }
@@ -22,7 +22,7 @@ impl StateCommitter for ChannelStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: AgentChangeSet,
+        changeset: ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
         let next_version = match precondition {
@@ -53,7 +53,7 @@ pub(super) async fn commit_pending_delta(
         return Ok(());
     }
 
-    let changeset = AgentChangeSet::from_parts(
+    let changeset = ThreadChangeSet::from_parts(
         run_id.to_string(),
         parent_run_id.map(str::to_string),
         reason,

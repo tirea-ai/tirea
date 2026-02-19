@@ -96,7 +96,7 @@ impl AgentOs {
         // 5. Persist pending changes (user messages + frontend state snapshot)
         let pending = thread.take_pending();
         if !pending.is_empty() || state_snapshot_for_delta.is_some() {
-            let changeset = crate::contracts::AgentChangeSet::from_parts(
+            let changeset = crate::contracts::ThreadChangeSet::from_parts(
                 run_id.clone(),
                 parent_run_id.clone(),
                 CheckpointReason::UserMessage,

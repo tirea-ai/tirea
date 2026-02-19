@@ -11,7 +11,7 @@ use carve_agentos::contracts::storage::{
 };
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::ToolCallContext;
-use carve_agentos::contracts::AgentChangeSet;
+use carve_agentos::contracts::ThreadChangeSet;
 use carve_agentos::orchestrator::AgentDefinition;
 use carve_agentos::orchestrator::{AgentOs, AgentOsBuilder};
 use carve_agentos_server::http::{router, AppState};
@@ -131,7 +131,7 @@ impl AgentStateWriter for RecordingStorage {
     async fn append(
         &self,
         id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut threads = self.threads.write().await;
@@ -888,7 +888,7 @@ impl AgentStateWriter for FailingStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agentos::contracts::AgentChangeSet,
+        _delta: &carve_agentos::contracts::ThreadChangeSet,
         _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
@@ -1009,7 +1009,7 @@ impl AgentStateWriter for SaveFailStorage {
     async fn append(
         &self,
         _id: &str,
-        _delta: &carve_agentos::contracts::AgentChangeSet,
+        _delta: &carve_agentos::contracts::ThreadChangeSet,
         _precondition: carve_agentos::contracts::storage::VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(

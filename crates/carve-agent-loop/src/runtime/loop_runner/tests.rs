@@ -3993,7 +3993,7 @@ impl StateCommitter for RecordingStateCommitter {
     async fn commit(
         &self,
         _thread_id: &str,
-        changeset: crate::contracts::AgentChangeSet,
+        changeset: crate::contracts::ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
         self.reasons
@@ -6432,7 +6432,7 @@ async fn test_commit_pending_delta_precondition_exactness() {
         async fn commit(
             &self,
             _thread_id: &str,
-            _changeset: crate::contracts::AgentChangeSet,
+            _changeset: crate::contracts::ThreadChangeSet,
             precondition: VersionPrecondition,
         ) -> Result<u64, StateCommitError> {
             let version = match &precondition {
@@ -6478,7 +6478,7 @@ async fn test_commit_pending_delta_error_propagation() {
         async fn commit(
             &self,
             _thread_id: &str,
-            _changeset: crate::contracts::AgentChangeSet,
+            _changeset: crate::contracts::ThreadChangeSet,
             _precondition: VersionPrecondition,
         ) -> Result<u64, StateCommitError> {
             Err(StateCommitError::new("simulated failure"))

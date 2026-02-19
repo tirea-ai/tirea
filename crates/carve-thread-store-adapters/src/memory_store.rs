@@ -3,12 +3,12 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateSync, AgentStateWriter, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, Thread, Committed, Version};
+use carve_agent_contract::{ThreadChangeSet, Thread, Committed, Version};
 
 struct MemoryEntry {
     agent_state: Thread,
     version: Version,
-    deltas: Vec<AgentChangeSet>,
+    deltas: Vec<ThreadChangeSet>,
 }
 
 /// In-memory storage for testing and local development.
@@ -45,7 +45,7 @@ impl AgentStateWriter for MemoryStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let mut entries = self.entries.write().await;
@@ -146,7 +146,7 @@ impl AgentStateSync for MemoryStore {
         &self,
         thread_id: &str,
         after_version: Version,
-    ) -> Result<Vec<AgentChangeSet>, AgentStateStoreError> {
+    ) -> Result<Vec<ThreadChangeSet>, AgentStateStoreError> {
         let entries = self.entries.read().await;
         let entry = entries
             .get(thread_id)

@@ -162,7 +162,7 @@ impl AgentStateWriter for FlakySaveStore {
     async fn append(
         &self,
         id: &str,
-        delta: &carve_agentos::contracts::AgentChangeSet,
+        delta: &carve_agentos::contracts::ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<
         carve_agentos::contracts::storage::Committed,
@@ -315,7 +315,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("create should succeed");
 
-    let delta1 = carve_agentos::contracts::AgentChangeSet {
+    let delta1 = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
         reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
@@ -330,7 +330,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("append should succeed");
 
-    let delta2 = carve_agentos::contracts::AgentChangeSet {
+    let delta2 = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-run-r".to_string(),
         parent_run_id: None,
         reason: carve_agentos::contracts::state::CheckpointReason::ToolResultsCommitted,
@@ -519,7 +519,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         carve_agentos::contracts::state::Message::assistant("dup-mid")
             .with_id("fixed-dup-message-id".to_string()),
     );
-    let duplicate_delta = carve_agentos::contracts::AgentChangeSet {
+    let duplicate_delta = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-dedup-run".to_string(),
         parent_run_id: None,
         reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
@@ -589,7 +589,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("create should succeed");
 
-    let mid = carve_agentos::contracts::AgentChangeSet {
+    let mid = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
         reason: carve_agentos::contracts::state::CheckpointReason::AssistantTurnCommitted,
@@ -604,7 +604,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("buffer append should succeed");
 
-    let run_finished = carve_agentos::contracts::AgentChangeSet {
+    let run_finished = carve_agentos::contracts::ThreadChangeSet {
         run_id: "np-flaky-run".to_string(),
         parent_run_id: None,
         reason: carve_agentos::contracts::state::CheckpointReason::RunFinished,

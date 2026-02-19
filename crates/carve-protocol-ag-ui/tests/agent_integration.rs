@@ -1226,7 +1226,7 @@ async fn test_incremental_checkpoints_via_append() {
     use carve_agentos::contracts::storage::{
         AgentStateSync, AgentStateWriter, VersionPrecondition,
     };
-    use carve_agentos::contracts::{AgentChangeSet, CheckpointReason};
+    use carve_agentos::contracts::{ThreadChangeSet, CheckpointReason};
 
     let storage = MemoryStore::new();
 
@@ -1247,7 +1247,7 @@ async fn test_incremental_checkpoints_via_append() {
         ));
 
         let pending = thread.take_pending();
-        let delta = AgentChangeSet {
+        let delta = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: if checkpoint == 5 {

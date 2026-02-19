@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// This buffer is populated automatically by `with_message`, `with_messages`,
 /// `with_patch`, and `with_patches`. Consumers call `take_pending()` to
-/// drain the buffer and build a `AgentChangeSet` for storage.
+/// drain the buffer and build a `ThreadChangeSet` for storage.
 #[derive(Debug, Clone, Default)]
 pub struct PendingDelta {
     pub messages: Vec<Arc<Message>>,
@@ -78,10 +78,6 @@ impl Thread {
     }
 }
 
-/// Deprecated alias for `Thread`.
-#[deprecated(note = "renamed to `Thread`")]
-pub type AgentState = Thread;
-
 /// Thread metadata.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadMetadata {
@@ -101,10 +97,6 @@ pub struct ThreadMetadata {
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
-
-/// Deprecated alias for `ThreadMetadata`.
-#[deprecated(note = "renamed to `ThreadMetadata`")]
-pub type AgentStateMetadata = ThreadMetadata;
 
 impl Thread {
     /// Create a new thread with the given ID.
@@ -753,14 +745,4 @@ mod tests {
         );
     }
 
-    // --- Backward compatibility with type alias ---
-
-    #[test]
-    fn test_type_alias_backward_compat() {
-        // Verify the deprecated type aliases still work.
-        #[allow(deprecated)]
-        let _thread: AgentState = Thread::new("alias-test");
-        #[allow(deprecated)]
-        let _meta: AgentStateMetadata = ThreadMetadata::default();
-    }
 }

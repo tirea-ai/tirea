@@ -3,7 +3,7 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, Thread, Version};
+use carve_agent_contract::{ThreadChangeSet, Thread, Version};
 use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
@@ -70,7 +70,7 @@ impl AgentStateWriter for FileStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         let head = self
@@ -359,7 +359,7 @@ mod tests {
         let store = FileStore::new(temp_dir.path());
         store.create(&Thread::new("t1")).await.unwrap();
 
-        let d1 = AgentChangeSet {
+        let d1 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::UserMessage,
@@ -373,7 +373,7 @@ mod tests {
             .unwrap();
         assert_eq!(c1.version, 1);
 
-        let d2 = AgentChangeSet {
+        let d2 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -389,7 +389,7 @@ mod tests {
             .unwrap();
         assert_eq!(c2.version, 2);
 
-        let d3 = AgentChangeSet {
+        let d3 = ThreadChangeSet {
             run_id: "run-1".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::RunFinished,

@@ -71,7 +71,7 @@ impl StateCommitter for AgentStateStoreStateCommitter {
     async fn commit(
         &self,
         thread_id: &str,
-        changeset: crate::contracts::AgentChangeSet,
+        changeset: crate::contracts::ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<u64, StateCommitError> {
         self.agent_state_store
@@ -297,7 +297,7 @@ impl RunScope {
 /// consume the event stream and use the IDs for protocol encoding.
 ///
 /// The final thread is **not** exposed here; storage is updated incrementally
-/// via `AgentChangeSet` appends.
+/// via `ThreadChangeSet` appends.
 pub struct RunStream {
     /// Resolved thread ID (may have been auto-generated).
     pub thread_id: String,

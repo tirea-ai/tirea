@@ -7,7 +7,7 @@
 
 #![cfg(feature = "nats")]
 
-use carve_agent_contract::state::AgentChangeSet;
+use carve_agent_contract::state::ThreadChangeSet;
 use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
     Thread, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
@@ -103,7 +103,7 @@ impl AgentStateWriter for CountingDelayStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         self.append_calls.fetch_add(1, Ordering::Relaxed);
@@ -173,7 +173,7 @@ impl AgentStateWriter for FailFirstSaveStore {
     async fn append(
         &self,
         thread_id: &str,
-        delta: &AgentChangeSet,
+        delta: &ThreadChangeSet,
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError> {
         self.inner.append(thread_id, delta, precondition).await
@@ -219,7 +219,7 @@ async fn test_append_does_not_write_to_inner() {
     let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta = AgentChangeSet {
+    let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -250,7 +250,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta = AgentChangeSet {
+    let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -320,7 +320,7 @@ async fn test_recover_replays_unacked_deltas() {
     inner.create(&thread).await.unwrap();
 
     // Publish deltas via append (these go to NATS)
-    let delta1 = AgentChangeSet {
+    let delta1 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -328,7 +328,7 @@ async fn test_recover_replays_unacked_deltas() {
         patches: vec![],
         snapshot: None,
     };
-    let delta2 = AgentChangeSet {
+    let delta2 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::ToolResultsCommitted,
@@ -376,7 +376,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     inner.create(&thread).await.unwrap();
 
     // Second run starts — new deltas go to NATS only.
-    let delta = AgentChangeSet {
+    let delta = ThreadChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -416,7 +416,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
 
     // Buffer 2 new deltas via NATS.
     for i in 2..4 {
-        let delta = AgentChangeSet {
+        let delta = ThreadChangeSet {
             run_id: "r2".to_string(),
             parent_run_id: None,
             reason: CheckpointReason::AssistantTurnCommitted,
@@ -454,7 +454,7 @@ async fn test_query_accurate_after_run_end_flush() {
     inner.create(&thread).await.unwrap();
 
     // Run produces deltas buffered in NATS.
-    let delta = AgentChangeSet {
+    let delta = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -502,7 +502,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     let thread = Thread::new("t1").with_message(Message::user("q1"));
     inner.create(&thread).await.unwrap();
 
-    let delta1 = AgentChangeSet {
+    let delta1 = ThreadChangeSet {
         run_id: "r1".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -522,7 +522,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     storage.save(&run1_thread).await.unwrap();
 
     // === Run 2 (in progress) ===
-    let delta2 = AgentChangeSet {
+    let delta2 = ThreadChangeSet {
         run_id: "r2".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -567,7 +567,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
     let thread = Thread::new("t-auto").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta1 = AgentChangeSet {
+    let delta1 = ThreadChangeSet {
         run_id: "r-auto".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -583,7 +583,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
     let pre = inner.load("t-auto").await.unwrap().unwrap();
     assert_eq!(pre.agent_state.messages.len(), 1);
 
-    let delta2 = AgentChangeSet {
+    let delta2 = ThreadChangeSet {
         run_id: "r-auto".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -624,7 +624,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
         } else {
             CheckpointReason::AssistantTurnCommitted
         };
-        let delta = AgentChangeSet {
+        let delta = ThreadChangeSet {
             run_id: "r-compare".to_string(),
             parent_run_id: None,
             reason,
@@ -657,7 +657,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
         } else {
             CheckpointReason::AssistantTurnCommitted
         };
-        let delta = AgentChangeSet {
+        let delta = ThreadChangeSet {
             run_id: "r-compare".to_string(),
             parent_run_id: None,
             reason,
@@ -709,7 +709,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
     let thread = Thread::new("t-fail").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let delta1 = AgentChangeSet {
+    let delta1 = ThreadChangeSet {
         run_id: "r-fail".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::AssistantTurnCommitted,
@@ -722,7 +722,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
         .await
         .unwrap();
 
-    let delta2 = AgentChangeSet {
+    let delta2 = ThreadChangeSet {
         run_id: "r-fail".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -766,7 +766,7 @@ async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
     let thread = Thread::new("t-idempotent").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
-    let run_finished = AgentChangeSet {
+    let run_finished = ThreadChangeSet {
         run_id: "r-idempotent".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
@@ -810,7 +810,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
     for i in 0..rounds {
         let storage = Arc::clone(&storage);
         handles.push(tokio::spawn(async move {
-            let delta = AgentChangeSet {
+            let delta = ThreadChangeSet {
                 run_id: "r-concurrent".to_string(),
                 parent_run_id: None,
                 reason: CheckpointReason::AssistantTurnCommitted,
@@ -830,7 +830,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
         handle.await.unwrap();
     }
 
-    let finish = AgentChangeSet {
+    let finish = ThreadChangeSet {
         run_id: "r-concurrent".to_string(),
         parent_run_id: None,
         reason: CheckpointReason::RunFinished,
