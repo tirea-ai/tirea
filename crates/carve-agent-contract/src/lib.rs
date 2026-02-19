@@ -113,6 +113,8 @@ pub mod testing;
 pub mod context;
 pub mod plugin;
 pub mod protocol;
+pub mod run_context;
+pub mod run_delta;
 pub mod runtime;
 pub mod state;
 pub mod storage;
@@ -142,6 +144,8 @@ pub use storage::{
     AgentStateStore, AgentStateStoreError, AgentStateSync, AgentStateWriter, Committed,
     MessagePage, MessageQuery, MessageWithCursor, SortOrder, VersionPrecondition,
 };
+pub use run_context::RunContext;
+pub use run_delta::RunDelta;
 pub use tool::{Tool, ToolDescriptor, ToolError, ToolResult, ToolStatus};
 pub use protocol::{ProtocolHistoryEncoder, ProtocolInputAdapter, ProtocolOutputEncoder};
 pub use tool_registry::{ToolRegistry, ToolRegistryError};
