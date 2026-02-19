@@ -1,7 +1,7 @@
 //! ContextProvider trait for injecting dynamic context messages.
 
 use async_trait::async_trait;
-use carve_agent_contract::AgentState;
+use carve_agent_contract::context::ToolCallContext;
 use serde::{Deserialize, Serialize};
 
 /// Category determines when context is injected.
@@ -29,5 +29,5 @@ pub trait ContextProvider: Send + Sync {
     fn priority(&self) -> u32;
 
     /// Provide context messages.
-    async fn provide(&self, ctx: &AgentState) -> Vec<String>;
+    async fn provide(&self, ctx: &ToolCallContext<'_>) -> Vec<String>;
 }

@@ -35,40 +35,21 @@ pub struct LoopControlState {
 
 /// Helpers for accessing loop control state from `AgentState`.
 pub trait LoopControlExt {
-    /// Typed accessor for durable loop control substate at `state["loop_control"]`.
-    fn loop_control(&self) -> <LoopControlState as carve_state::State>::Ref<'_>;
-
     /// Read pending interaction from durable control state.
     fn pending_interaction(&self) -> Option<Interaction>;
-
-    /// Write pending interaction into durable control state.
-    fn set_pending_interaction(&self, interaction: Option<Interaction>);
 }
 
 impl LoopControlExt for AgentState {
-    fn loop_control(&self) -> <LoopControlState as carve_state::State>::Ref<'_> {
-        self.state_of::<LoopControlState>()
-    }
-
     fn pending_interaction(&self) -> Option<Interaction> {
-        if self.patches.is_empty() {
-            return self.loop_control().pending_interaction().ok().flatten();
-        }
-
         self.rebuild_state()
             .ok()
             .and_then(|state| {
                 state
                     .get(LoopControlState::PATH)
-                    .and_then(|rt| rt.get("pending_interaction"))
+                    .and_then(|lc| lc.get("pending_interaction"))
                     .cloned()
             })
             .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
-            .or_else(|| self.loop_control().pending_interaction().ok().flatten())
-    }
-
-    fn set_pending_interaction(&self, interaction: Option<Interaction>) {
-        self.loop_control().set_pending_interaction(interaction);
     }
 }
 

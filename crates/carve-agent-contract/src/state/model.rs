@@ -3,10 +3,10 @@
 //! `AgentState` represents persisted agent state with message history and patches.
 
 use super::message::Message;
-use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, DocCell, Op, Patch, ScopeState, TrackedPatch};
+use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, ScopeState, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Accumulated new messages and patches since the last `take_pending()`.
 ///
@@ -17,73 +17,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct PendingDelta {
     pub messages: Vec<Arc<Message>>,
     pub patches: Vec<TrackedPatch>,
-}
-
-/// Ephemeral transient-only data used by tools/plugins during a run.
-pub(crate) struct TransientState {
-    pub call_id: String,
-    pub source: String,
-    pub version: u64,
-    pub scope_attached: bool,
-    pub pending_messages: Arc<Mutex<Vec<Arc<Message>>>>,
-    pub ops: Arc<Mutex<Vec<Op>>>,
-    pub run_doc: OnceLock<DocCell>,
-    pub activity_manager: Option<Arc<dyn crate::state::ActivityManager>>,
-}
-
-impl Default for TransientState {
-    fn default() -> Self {
-        Self {
-            call_id: String::new(),
-            source: String::new(),
-            version: 0,
-            scope_attached: false,
-            pending_messages: Arc::new(Mutex::new(Vec::new())),
-            ops: Arc::new(Mutex::new(Vec::new())),
-            run_doc: OnceLock::new(),
-            activity_manager: None,
-        }
-    }
-}
-
-impl Clone for TransientState {
-    fn clone(&self) -> Self {
-        let run_doc = OnceLock::new();
-        if let Some(existing) = self.run_doc.get() {
-            let _ = run_doc.set(existing.clone());
-        }
-        Self {
-            call_id: self.call_id.clone(),
-            source: self.source.clone(),
-            version: self.version,
-            scope_attached: self.scope_attached,
-            pending_messages: self.pending_messages.clone(),
-            ops: self.ops.clone(),
-            run_doc,
-            activity_manager: self.activity_manager.clone(),
-        }
-    }
-}
-
-impl std::fmt::Debug for TransientState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TransientState")
-            .field("call_id", &self.call_id)
-            .field("source", &self.source)
-            .field("version", &self.version)
-            .field("scope_attached", &self.scope_attached)
-            .field(
-                "pending_messages_len",
-                &self.pending_messages.lock().unwrap().len(),
-            )
-            .field("ops_len", &self.ops.lock().unwrap().len())
-            .field("run_doc", &self.run_doc.get().map(|_| "<set>"))
-            .field(
-                "activity_manager",
-                &self.activity_manager.as_ref().map(|_| "<set>"),
-            )
-            .finish()
-    }
 }
 
 impl PendingDelta {
@@ -129,10 +62,6 @@ pub struct AgentState {
     /// Run-scoped overlay ops shared across tool calls within a single run (not persisted).
     #[serde(skip)]
     pub(crate) run_overlay: Arc<Mutex<Vec<Op>>>,
-    /// Transient execution context (not persisted).
-    /// TODO: Remove once all test code is migrated to ToolCallContext/TestFixture.
-    #[serde(skip)]
-    pub(crate) transient: TransientState,
 }
 
 impl AgentState {
@@ -178,7 +107,6 @@ impl AgentState {
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
-            transient: TransientState::default(),
         }
     }
 
@@ -195,7 +123,6 @@ impl AgentState {
             scope: ScopeState::default(),
             pending: PendingDelta::default(),
             run_overlay: Arc::new(Mutex::new(Vec::new())),
-            transient: TransientState::default(),
         }
     }
 
@@ -271,9 +198,6 @@ impl AgentState {
     /// which already includes all write-through updates. Otherwise falls back
     /// to computing base + patches + overlay.
     pub fn rebuild_state(&self) -> CarveResult<Value> {
-        if let Some(run_doc) = self.transient.run_doc.get() {
-            return Ok(run_doc.snapshot());
-        }
         let base = if self.patches.is_empty() {
             self.state.clone()
         } else {
@@ -335,7 +259,6 @@ impl AgentState {
             scope: self.scope,
             pending: self.pending,
             run_overlay: self.run_overlay,
-            transient: self.transient,
         })
     }
 

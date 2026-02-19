@@ -162,7 +162,7 @@ impl ContextProvider for CounterContextProvider {
         100
     }
 
-    async fn provide(&self, ctx: &carve_agentos::contracts::AgentState) -> Vec<String> {
+    async fn provide(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
         let counter = ctx.state::<CounterState>("counter");
 
         // Provider can also modify state
@@ -192,7 +192,7 @@ impl SystemReminder for TaskReminder {
         "task_reminder"
     }
 
-    async fn remind(&self, ctx: &carve_agentos::contracts::AgentState) -> Option<String> {
+    async fn remind(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Option<String> {
         let tasks = ctx.state::<TaskState>("tasks");
 
         let count = tasks.count().unwrap_or(0);
@@ -335,13 +335,13 @@ async fn test_context_provider_basic() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let messages = provider.provide(&ctx).await;
+    let messages = provider.provide(&fix.ctx()).await;
     assert!(messages.is_empty()); // value <= 10
 
     // Provider modifies state
-    let patch = ctx.take_patch();
+    let patch = fix.ctx().take_patch();
     manager.commit(patch).await.unwrap();
 
     let new_state = manager.snapshot().await;
@@ -357,9 +357,9 @@ async fn test_context_provider_with_high_value() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let messages = provider.provide(&ctx).await;
+    let messages = provider.provide(&fix.ctx()).await;
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("high"));
     assert!(messages[0].contains("15"));
@@ -387,9 +387,9 @@ async fn test_system_reminder_with_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let message = reminder.remind(&ctx).await;
+    let message = reminder.remind(&fix.ctx()).await;
     assert!(message.is_some());
     assert!(message.unwrap().contains("2"));
 }
@@ -403,9 +403,9 @@ async fn test_system_reminder_no_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let message = reminder.remind(&ctx).await;
+    let message = reminder.remind(&fix.ctx()).await;
     assert!(message.is_none());
 }
 
@@ -580,17 +580,17 @@ async fn test_tool_provider_reminder_integration() {
     // Run context provider
     {
         let snapshot = manager.snapshot().await;
-        let ctx = ConversationAgentState::with_initial_state("", snapshot);
-        let messages = provider.provide(&ctx).await;
+        let fix = TestFixture::new_with_state(snapshot);
+        let messages = provider.provide(&fix.ctx()).await;
         assert!(messages.is_empty()); // value is only 1
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     // Run system reminder
     {
         let snapshot = manager.snapshot().await;
-        let ctx = ConversationAgentState::with_initial_state("", snapshot);
-        let message = reminder.remind(&ctx).await;
+        let fix = TestFixture::new_with_state(snapshot);
+        let message = reminder.remind(&fix.ctx()).await;
         assert!(message.is_some());
         assert!(message.unwrap().contains("1")); // 1 pending task
     }
@@ -3531,16 +3531,16 @@ async fn test_e2e_context_provider_integration() {
 
     // 1. Provider runs and may modify state
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let messages = provider.provide(&ctx).await;
+    let messages = provider.provide(&fix.ctx()).await;
 
     // Provider should return message for high counter (>10)
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("high"));
 
     // Provider also modifies state
-    manager.commit(ctx.take_patch()).await.unwrap();
+    manager.commit(fix.ctx().take_patch()).await.unwrap();
 
     // 2. Verify state was modified by provider
     let new_snapshot = manager.snapshot().await;
@@ -3570,9 +3570,9 @@ async fn test_e2e_system_reminder_integration() {
 
     // Reminder checks state and returns message
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let message = reminder.remind(&ctx).await;
+    let message = reminder.remind(&fix.ctx()).await;
 
     // Should return reminder about pending tasks
     assert!(message.is_some());
@@ -3599,7 +3599,7 @@ async fn test_e2e_multiple_providers_priority() {
             100
         } // Higher priority
 
-        async fn provide(&self, _ctx: &carve_agentos::contracts::AgentState) -> Vec<String> {
+        async fn provide(&self, _ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
             vec!["High priority context".to_string()]
         }
     }
@@ -3616,7 +3616,7 @@ async fn test_e2e_multiple_providers_priority() {
             10
         } // Lower priority
 
-        async fn provide(&self, _ctx: &carve_agentos::contracts::AgentState) -> Vec<String> {
+        async fn provide(&self, _ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
             vec!["Low priority context".to_string()]
         }
     }
@@ -3630,10 +3630,10 @@ async fn test_e2e_multiple_providers_priority() {
     // Both providers can run and produce context
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let high_msgs = high.provide(&ctx).await;
-    let low_msgs = low.provide(&ctx).await;
+    let high_msgs = high.provide(&fix.ctx()).await;
+    let low_msgs = low.provide(&fix.ctx()).await;
 
     assert_eq!(high_msgs.len(), 1);
     assert_eq!(low_msgs.len(), 1);
@@ -3656,7 +3656,7 @@ async fn test_e2e_conditional_context_provider() {
             50
         }
 
-        async fn provide(&self, ctx: &carve_agentos::contracts::AgentState) -> Vec<String> {
+        async fn provide(&self, ctx: &carve_agent_contract::context::ToolCallContext<'_>) -> Vec<String> {
             let counter = ctx.state::<CounterState>("counter");
             let value = counter.value().unwrap_or(0);
 
@@ -3677,14 +3677,14 @@ async fn test_e2e_conditional_context_provider() {
     // Test with negative value
     let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
     let snapshot = manager.snapshot().await;
-    let ctx = ConversationAgentState::with_initial_state("", snapshot);
+    let fix = TestFixture::new_with_state(snapshot);
 
-    let messages = provider.provide(&ctx).await;
+    let messages = provider.provide(&fix.ctx()).await;
     assert_eq!(messages.len(), 1);
     assert!(messages[0].contains("negative"));
 
     // Apply the fix
-    manager.commit(ctx.take_patch()).await.unwrap();
+    manager.commit(fix.ctx().take_patch()).await.unwrap();
     let fixed_state = manager.snapshot().await;
     assert_eq!(fixed_state["counter"]["value"], 0);
 }

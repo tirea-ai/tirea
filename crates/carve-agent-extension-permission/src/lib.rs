@@ -25,7 +25,6 @@ use async_trait::async_trait;
 use carve_agent_contract::plugin::AgentPlugin;
 use carve_agent_contract::runtime::Interaction;
 use carve_agent_contract::context::ToolCallContext;
-use carve_agent_contract::AgentState as ContextAgentState;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -76,43 +75,6 @@ pub trait PermissionContextExt {
 
     /// Get the default permission behavior.
     fn get_default_permission(&self) -> ToolPermissionBehavior;
-}
-
-impl PermissionContextExt for ContextAgentState {
-    fn allow_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Allow);
-    }
-
-    fn deny_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Deny);
-    }
-
-    fn ask_tool(&self, tool_id: impl Into<String>) {
-        let state = self.state_of::<PermissionState>();
-        state.tools_insert(tool_id.into(), ToolPermissionBehavior::Ask);
-    }
-
-    fn get_permission(&self, tool_id: &str) -> ToolPermissionBehavior {
-        let state = self.state_of::<PermissionState>();
-        if let Ok(tools) = state.tools() {
-            if let Some(permission) = tools.get(tool_id) {
-                return *permission;
-            }
-        }
-        state.default_behavior().ok().unwrap_or_default()
-    }
-
-    fn set_default_permission(&self, behavior: ToolPermissionBehavior) {
-        let state = self.state_of::<PermissionState>();
-        state.set_default_behavior(behavior);
-    }
-
-    fn get_default_permission(&self) -> ToolPermissionBehavior {
-        let state = self.state_of::<PermissionState>();
-        state.default_behavior().ok().unwrap_or_default()
-    }
 }
 
 impl PermissionContextExt for ToolCallContext<'_> {

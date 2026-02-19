@@ -20,8 +20,8 @@
 //! ```
 
 use async_trait::async_trait;
+use carve_agent_contract::context::ToolCallContext;
 use carve_agent_contract::plugin::AgentPlugin;
-use carve_agent_contract::AgentState as ContextAgentState;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 
@@ -55,7 +55,7 @@ pub trait ReminderContextExt {
     fn remove_reminder(&self, text: &str);
 }
 
-impl ReminderContextExt for ContextAgentState {
+impl ReminderContextExt for ToolCallContext<'_> {
     fn add_reminder(&self, text: impl Into<String>) {
         let state = self.state_of::<ReminderState>();
         state.items_push(text.into());
