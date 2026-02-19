@@ -11,7 +11,7 @@ use carve_state::{
     TrackedPatch,
 };
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Manager for activity state updates.
 ///
@@ -383,37 +383,6 @@ mod tests {
         assert!(
             !fix.overlay.lock().unwrap().is_empty(),
             "overlay must contain the override op"
-        );
-    }
-
-    #[test]
-    fn test_from_thread_shares_overlay() {
-        let thread = AgentState::new("t-1");
-        // Pre-populate overlay on the thread
-        thread
-            .run_overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-
-        let doc = json!({"counter": 0});
-        let ctx = AgentState::from_thread(&thread, &doc, "call-1", "test", 1);
-
-        // The transient context should share the same Arc
-        assert!(
-            Arc::ptr_eq(&ctx.run_overlay, &thread.run_overlay),
-            "from_thread must share the overlay Arc"
-        );
-
-        // Writes through the ctx should be visible from thread's overlay
-        ctx.run_overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("name"), json!("bob")));
-        assert_eq!(
-            thread.run_overlay.lock().unwrap().len(),
-            2,
-            "overlay writes must be visible across shared Arc"
         );
     }
 

@@ -335,11 +335,7 @@ async fn test_context_provider_basic() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "call_001",
-        "provider:counter",
-    );
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let messages = provider.provide(&ctx).await;
     assert!(messages.is_empty()); // value <= 10
@@ -361,11 +357,7 @@ async fn test_context_provider_with_high_value() {
     let provider = CounterContextProvider;
 
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "call_001",
-        "provider:counter",
-    );
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -395,8 +387,7 @@ async fn test_system_reminder_with_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_001", "reminder:task");
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let message = reminder.remind(&ctx).await;
     assert!(message.is_some());
@@ -412,8 +403,7 @@ async fn test_system_reminder_no_tasks() {
     let reminder = TaskReminder;
 
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_001", "reminder:task");
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let message = reminder.remind(&ctx).await;
     assert!(message.is_none());
@@ -590,11 +580,7 @@ async fn test_tool_provider_reminder_integration() {
     // Run context provider
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_3",
-            "provider:counter",
-        );
+        let ctx = ConversationAgentState::with_initial_state("", snapshot);
         let messages = provider.provide(&ctx).await;
         assert!(messages.is_empty()); // value is only 1
         manager.commit(ctx.take_patch()).await.unwrap();
@@ -603,11 +589,7 @@ async fn test_tool_provider_reminder_integration() {
     // Run system reminder
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_4",
-            "reminder:task",
-        );
+        let ctx = ConversationAgentState::with_initial_state("", snapshot);
         let message = reminder.remind(&ctx).await;
         assert!(message.is_some());
         assert!(message.unwrap().contains("1")); // 1 pending task
@@ -2260,12 +2242,10 @@ async fn test_activity_context_emits_snapshot_on_update() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let hub = Arc::new(ActivityHub::new(tx));
-    let snapshot = json!({});
-
-    let ctx = carve_agentos::contracts::AgentState::new_transient_with_activity_manager(
-        &snapshot,
-        "call_1",
-        "tool:test",
+    let fix = TestFixture::new();
+    let ctx = ToolCallContext::new(
+        &fix.doc, &fix.ops, fix.overlay.clone(),
+        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
         Some(hub),
     );
     let activity = ctx.activity("stream_1", "progress");
@@ -2309,22 +2289,20 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
 
     let (tx, _rx) = mpsc::unbounded_channel();
     let hub = Arc::new(ActivityHub::new(tx));
-    let snapshot = json!({});
+    let fix = TestFixture::new();
 
-    let ctx = carve_agentos::contracts::AgentState::new_transient_with_activity_manager(
-        &snapshot,
-        "call_1",
-        "tool:test",
+    let ctx = ToolCallContext::new(
+        &fix.doc, &fix.ops, fix.overlay.clone(),
+        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
         Some(hub.clone()),
     );
     let activity = ctx.activity("stream_2", "progress");
     let progress = activity.state::<ProgressState>("");
     progress.set_progress(0.9);
 
-    let ctx2 = carve_agentos::contracts::AgentState::new_transient_with_activity_manager(
-        &snapshot,
-        "call_2",
-        "tool:test",
+    let ctx2 = ToolCallContext::new(
+        &fix.doc, &fix.ops, fix.overlay.clone(),
+        "call_2", "tool:test", &fix.scope, &fix.pending_messages,
         Some(hub),
     );
     let activity2 = ctx2.activity("stream_2", "progress");
@@ -2340,12 +2318,11 @@ async fn test_activity_context_multiple_streams_emit_separately() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let hub = Arc::new(ActivityHub::new(tx));
-    let snapshot = json!({});
+    let fix = TestFixture::new();
 
-    let ctx = carve_agentos::contracts::AgentState::new_transient_with_activity_manager(
-        &snapshot,
-        "call_1",
-        "tool:test",
+    let ctx = ToolCallContext::new(
+        &fix.doc, &fix.ops, fix.overlay.clone(),
+        "call_1", "tool:test", &fix.scope, &fix.pending_messages,
         Some(hub),
     );
     let activity_a = ctx.activity("stream_a", "progress");
@@ -3554,11 +3531,7 @@ async fn test_e2e_context_provider_integration() {
 
     // 1. Provider runs and may modify state
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "provider_call",
-        "provider:counter",
-    );
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let messages = provider.provide(&ctx).await;
 
@@ -3597,11 +3570,7 @@ async fn test_e2e_system_reminder_integration() {
 
     // Reminder checks state and returns message
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "reminder_call",
-        "reminder:task",
-    );
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let message = reminder.remind(&ctx).await;
 
@@ -3661,7 +3630,7 @@ async fn test_e2e_multiple_providers_priority() {
     // Both providers can run and produce context
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&snapshot, "test", "test");
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let high_msgs = high.provide(&ctx).await;
     let low_msgs = low.provide(&ctx).await;
@@ -3708,11 +3677,7 @@ async fn test_e2e_conditional_context_provider() {
     // Test with negative value
     let manager = StateManager::new(json!({"counter": {"value": -5, "label": ""}}));
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "test",
-        "provider:conditional",
-    );
+    let ctx = ConversationAgentState::with_initial_state("", snapshot);
 
     let messages = provider.provide(&ctx).await;
     assert_eq!(messages.len(), 1);
@@ -4920,7 +4885,8 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 
     // 3. Simulate agent calling a frontend tool
     let thread = ConversationAgentState::new("session_1");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new(
@@ -5002,7 +4968,8 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
     ];
 
     for (call_id, tool_name, args) in tool_calls {
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new(call_id, tool_name, args.clone());
         step.tool = Some(ToolContext::new(&tool_call));
@@ -5034,7 +5001,8 @@ async fn test_scenario_frontend_tool_complex_args() {
     let plugin = TestFrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     // Complex nested arguments
@@ -5100,7 +5068,8 @@ async fn test_scenario_frontend_tool_empty_args() {
 
     // Test with empty object
     {
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_empty", "getClipboard", json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
@@ -5122,7 +5091,8 @@ async fn test_scenario_frontend_tool_empty_args() {
 
     // Test with null
     {
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_null", "getClipboard", Value::Null);
         step.tool = Some(ToolContext::new(&tool_call));
@@ -5162,7 +5132,8 @@ async fn test_scenario_frontend_tool_special_names() {
         let plugin = TestFrontendToolPlugin::new([tool_name.to_string()].into_iter().collect());
 
         let thread = ConversationAgentState::new("test");
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
@@ -5213,7 +5184,8 @@ async fn test_scenario_frontend_tool_case_sensitivity() {
     ];
 
     for (tool_name, should_be_pending) in test_cases {
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let tool_call = ToolCall::new("call_1", tool_name, json!({}));
         step.tool = Some(ToolContext::new(&tool_call));
@@ -5287,7 +5259,8 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
     let plugin = TestFrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new(
@@ -5327,12 +5300,11 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 /// Test scenario: Backend tool should not be affected by InteractionPlugin
 #[tokio::test]
 async fn test_scenario_backend_tool_passthrough() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
+    let fix = TestFixture::new();
     let plugin = TestFrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     // Backend tool call
@@ -5403,11 +5375,10 @@ use carve_protocol_ag_ui::AGUIMessage;
 /// Agent → Pending → AG-UI Events → Client Approves → Resume
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     // Set up ask permission
@@ -5466,11 +5437,10 @@ async fn test_scenario_permission_approved_complete_flow() {
 /// Test scenario: Complete permission denial flow
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new(
@@ -5519,8 +5489,6 @@ async fn test_scenario_permission_denied_complete_flow() {
 /// Test scenario: Frontend tool execution complete flow
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent calls frontend tool
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -5533,7 +5501,8 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
     let plugin = frontend_plugin_from_request(&request);
 
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "Hello!"}));
@@ -5580,13 +5549,12 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 /// Test scenario: Multiple interactions in sequence
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
     let thread = ConversationAgentState::new("test");
     let plugin = PermissionPlugin;
 
     // First tool: write_file
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_1", "write_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
@@ -5603,7 +5571,8 @@ async fn test_scenario_multiple_interactions_sequence() {
         .unwrap();
 
     // Second tool: read_file
-    let ctx_step2 = thread.as_tool_call_context();
+    let fix2 = TestFixture::new();
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call2 = ToolCall::new("call_2", "read_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -5777,9 +5746,6 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 /// Test scenario: InteractionPlugin blocks denied tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // AgentState must have a persisted pending interaction matching the denied ID.
     let thread = AgentState::with_initial_state(
         "test",
@@ -5793,7 +5759,8 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
     );
 
     // Simulate tool call with matching interaction ID format
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(
         "permission_write_file",
@@ -5821,9 +5788,6 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 /// Test scenario: InteractionPlugin allows approved tool in execution flow
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_allows_approved() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // AgentState must have a persisted pending interaction matching the approved ID.
     let thread = AgentState::with_initial_state(
         "test",
@@ -5837,7 +5801,8 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
     );
 
     // Simulate tool call
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(
         "permission_read_file",
@@ -5858,14 +5823,12 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 /// Test scenario: Complete end-to-end flow with PermissionPlugin → InteractionPlugin
 #[tokio::test]
 async fn test_scenario_e2e_permission_to_response_flow() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let thread = ConversationAgentState::new("test");
 
     // Step 1: First run - PermissionPlugin creates pending interaction
     let permission_plugin = PermissionPlugin;
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_exec", "execute_command", json!({"cmd": "ls"}));
     step1.tool = Some(ToolContext::new(&call));
@@ -5902,7 +5865,8 @@ async fn test_scenario_e2e_permission_to_response_flow() {
         json!({ "loop_control": { "pending_interaction": { "id": interaction.id, "action": "confirm" } } }),
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
-    let ctx_step2 = session2.as_tool_call_context();
+    let fix2 = TestFixture::new_with_state(session2.state.clone());
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new(&interaction.id, "execute_command", json!({"cmd": "ls"}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -5934,9 +5898,6 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 /// Test scenario: combined AG-UI plugin coordinates frontend and response handling
 #[tokio::test]
 async fn test_scenario_frontend_tool_with_response_plugin() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let thread = ConversationAgentState::new("test");
 
     // Setup: Frontend tool request
@@ -5947,7 +5908,8 @@ async fn test_scenario_frontend_tool_with_response_plugin() {
 
     // Step 1: InteractionPlugin creates pending for frontend tool
     let frontend_plugin = frontend_plugin_from_request(&request);
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_dialog_1", "showDialog", json!({"title": "Confirm"}));
     step1.tool = Some(ToolContext::new(&call));
@@ -6258,12 +6220,10 @@ fn test_agui_sse_multiple_events() {
 /// Ask → Pending → Client Approves → Tool Executes
 #[tokio::test]
 async fn test_permission_flow_approval_e2e() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_write", "write_file", json!({"path": "/etc/config"}));
@@ -6306,7 +6266,8 @@ async fn test_permission_flow_approval_e2e() {
     assert!(response_plugin.has_responses());
 
     // Phase 5: On resume, tool should NOT be blocked
-    let ctx_step2 = thread.as_tool_call_context();
+    let fix2 = TestFixture::new();
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     // Use the interaction ID as the tool call ID (as happens in resume)
     let tool_call2 = ToolCall::new(
@@ -6326,12 +6287,10 @@ async fn test_permission_flow_approval_e2e() {
 /// Ask → Pending → Client Denies → Tool Blocked
 #[tokio::test]
 async fn test_permission_flow_denial_e2e() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let tool_call = ToolCall::new("call_delete", "delete_all", json!({}));
@@ -6368,7 +6327,8 @@ async fn test_permission_flow_denial_e2e() {
     );
     let response_plugin = interaction_plugin_from_request(&response_request);
 
-    let ctx_step2 = session2.as_tool_call_context();
+    let fix2 = TestFixture::new_with_state(session2.state.clone());
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let tool_call2 = ToolCall::new(&interaction.id, "delete_all", json!({}));
     step2.tool = Some(ToolContext::new(&tool_call2));
@@ -6388,13 +6348,11 @@ async fn test_permission_flow_denial_e2e() {
 /// Test: Multiple tools with mixed permissions
 #[tokio::test]
 async fn test_permission_flow_multiple_tools_mixed() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let thread = ConversationAgentState::new("test");
 
     // Tool 1: Will be approved
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_1", "read_file", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
@@ -6412,7 +6370,8 @@ async fn test_permission_flow_multiple_tools_mixed() {
         .unwrap();
 
     // Tool 2: Will be denied
-    let ctx_step2 = thread.as_tool_call_context();
+    let fix2 = TestFixture::new();
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call2 = ToolCall::new("call_2", "write_file", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -6439,7 +6398,8 @@ async fn test_permission_flow_multiple_tools_mixed() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": int1.id, "action": "confirm" } } }),
     );
-    let ctx_resume1 = session_r1.as_tool_call_context();
+    let fix_r1 = TestFixture::new_with_state(session_r1.state.clone());
+    let ctx_resume1 = fix_r1.ctx();
     let mut resume1 = StepContext::new(ctx_resume1, &session_r1.id, &session_r1.messages, vec![]);
     let resume_call1 = ToolCall::new(&int1.id, "read_file", json!({}));
     resume1.tool = Some(ToolContext::new(&resume_call1));
@@ -6453,7 +6413,8 @@ async fn test_permission_flow_multiple_tools_mixed() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": int2.id, "action": "confirm" } } }),
     );
-    let ctx_resume2 = session_r2.as_tool_call_context();
+    let fix_r2 = TestFixture::new_with_state(session_r2.state.clone());
+    let ctx_resume2 = fix_r2.ctx();
     let mut resume2 = StepContext::new(ctx_resume2, &session_r2.id, &session_r2.messages, vec![]);
     let resume_call2 = ToolCall::new(&int2.id, "write_file", json!({}));
     resume2.tool = Some(ToolContext::new(&resume_call2));
@@ -6736,9 +6697,6 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 /// Test: Frontend tool creates pending interaction
 #[tokio::test]
 async fn test_frontend_tool_flow_creates_pending() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
             "copyToClipboard",
@@ -6750,7 +6708,8 @@ async fn test_frontend_tool_flow_creates_pending() {
     let plugin = frontend_plugin_from_request(&request);
     let thread = ConversationAgentState::new("test");
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(
         "call_copy",
@@ -6796,9 +6755,6 @@ fn test_frontend_tool_flow_result_from_client() {
 /// Test: Mixed frontend and backend tools
 #[tokio::test]
 async fn test_frontend_tool_flow_mixed_with_backend() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let request = RunAgentRequest {
         tools: vec![
             AGUIToolDef::frontend("showDialog", "Show dialog"),
@@ -6811,7 +6767,8 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     let thread = ConversationAgentState::new("test");
 
     // Backend tool - should NOT be pending
-    let ctx_step_backend = thread.as_tool_call_context();
+    let fix_backend = TestFixture::new();
+    let ctx_step_backend = fix_backend.ctx();
     let mut step_backend = StepContext::new(ctx_step_backend, &thread.id, &thread.messages, vec![]);
     let call_backend = ToolCall::new("call_search", "search", json!({"query": "test"}));
     step_backend.tool = Some(ToolContext::new(&call_backend));
@@ -6824,7 +6781,8 @@ async fn test_frontend_tool_flow_mixed_with_backend() {
     );
 
     // Frontend tool - should be pending
-    let ctx_step_frontend = thread.as_tool_call_context();
+    let fix_frontend = TestFixture::new();
+    let ctx_step_frontend = fix_frontend.ctx();
     let mut step_frontend = StepContext::new(ctx_step_frontend, &thread.id, &thread.messages, vec![]);
     let call_frontend = ToolCall::new("call_dialog", "showDialog", json!({"title": "Confirm"}));
     step_frontend.tool = Some(ToolContext::new(&call_frontend));
@@ -7033,9 +6991,6 @@ fn test_error_flow_run_finish_cancelled() {
 /// Test: Resume with approval continues execution
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Simulate: Previous run ended with pending permission
     let interaction_id = "permission_tool_x";
 
@@ -7049,7 +7004,8 @@ async fn test_resume_flow_with_approval() {
 
     // Tool execution should not be blocked
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(interaction_id, "tool_x", json!({}));
     step.tool = Some(ToolContext::new(&call));
@@ -7063,9 +7019,6 @@ async fn test_resume_flow_with_approval() {
 /// Test: Resume with denial blocks execution
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     let interaction_id = "permission_dangerous_tool";
 
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7079,7 +7032,8 @@ async fn test_resume_flow_with_denial() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": interaction_id, "action": "confirm" } } }),
     );
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(interaction_id, "dangerous_tool", json!({}));
     step.tool = Some(ToolContext::new(&call));
@@ -7093,9 +7047,6 @@ async fn test_resume_flow_with_denial() {
 /// Test: Resume with multiple pending responses
 #[tokio::test]
 async fn test_resume_flow_multiple_responses() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Previous run had 3 pending interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("true", "perm_1"))
@@ -7114,7 +7065,8 @@ async fn test_resume_flow_multiple_responses() {
             "test",
             json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new_with_state(thread.state.clone());
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let call = ToolCall::new(id, "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -7133,9 +7085,6 @@ async fn test_resume_flow_multiple_responses() {
 /// Test: Resume with partial responses (some missing)
 #[tokio::test]
 async fn test_resume_flow_partial_responses() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
         .with_message(AGUIMessage::tool("true", "perm_1"));
@@ -7152,7 +7101,8 @@ async fn test_resume_flow_partial_responses() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": "perm_1", "action": "confirm" } } }),
     );
-    let ctx_step1 = session1.as_tool_call_context();
+    let fix1 = TestFixture::new_with_state(session1.state.clone());
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &session1.id, &session1.messages, vec![]);
     let call1 = ToolCall::new("perm_1", "tool_1", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
@@ -7163,7 +7113,8 @@ async fn test_resume_flow_partial_responses() {
 
     // Non-responded tool - plugin doesn't affect it (no matching approved/denied ID).
     let session2 = ConversationAgentState::new("test");
-    let ctx_step2 = session2.as_tool_call_context();
+    let fix2 = TestFixture::new();
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new("perm_2", "tool_2", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -7180,9 +7131,6 @@ async fn test_resume_flow_partial_responses() {
 /// Test: combined AG-UI plugin handles both frontend and interaction responses
 #[tokio::test]
 async fn test_plugin_interaction_frontend_and_response() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -7199,7 +7147,8 @@ async fn test_plugin_interaction_frontend_and_response() {
     let thread = ConversationAgentState::new("test");
 
     // Test 1: Frontend tool should be pending (not affected by response plugin)
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call1 = ToolCall::new("call_new", "showNotification", json!({}));
     step1.tool = Some(ToolContext::new(&call1));
@@ -7220,7 +7169,8 @@ async fn test_plugin_interaction_frontend_and_response() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": "call_prev", "action": "confirm" } } }),
     );
-    let ctx_step2 = session2.as_tool_call_context();
+    let fix2 = TestFixture::new_with_state(session2.state.clone());
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &session2.id, &session2.messages, vec![]);
     let call2 = ToolCall::new("call_prev", "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call2));
@@ -7238,9 +7188,6 @@ async fn test_plugin_interaction_frontend_and_response() {
 /// Test: Plugin execution order matters
 #[tokio::test]
 async fn test_plugin_interaction_execution_order() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Setup: Frontend tool that was previously denied
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend("dangerousAction", "Dangerous")],
@@ -7256,7 +7203,8 @@ async fn test_plugin_interaction_execution_order() {
         "test",
         json!({ "loop_control": { "pending_interaction": { "id": "call_danger", "action": "confirm" } } }),
     );
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_danger", "dangerousAction", json!({}));
     step.tool = Some(ToolContext::new(&call));
@@ -7278,9 +7226,6 @@ async fn test_plugin_interaction_execution_order() {
 /// Test: Permission plugin with frontend tool
 #[tokio::test]
 async fn test_plugin_interaction_permission_and_frontend() {
-    let doc = json!({});
-    let _fix = TestFixture::new_with_state(doc);
-
     // Frontend tool with permission set to Ask
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend("modifySettings", "Modify settings")],
@@ -7291,7 +7236,8 @@ async fn test_plugin_interaction_permission_and_frontend() {
     let permission_plugin = PermissionPlugin;
 
     let thread = ConversationAgentState::new("test");
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new();
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     let call = ToolCall::new("call_modify", "modifySettings", json!({}));
@@ -7780,7 +7726,8 @@ async fn test_multiple_interaction_responses() {
             "test",
             json!({ "loop_control": { "pending_interaction": { "id": id, "action": "confirm" } } }),
         );
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new_with_state(thread.state.clone());
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
         let call = ToolCall::new(id, "some_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
@@ -12430,7 +12377,8 @@ mod llmmetry_tracing {
             .with_provider("test-provider");
 
         let thread = ConversationAgentState::new("test");
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
         plugin
@@ -12478,7 +12426,8 @@ mod llmmetry_tracing {
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = ConversationAgentState::new("test");
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
         let call = ToolCall::new("tc1", "search", json!({}));
@@ -12524,7 +12473,8 @@ mod llmmetry_tracing {
             .with_provider("openai");
 
         let thread = ConversationAgentState::new("test");
-        let ctx_step = thread.as_tool_call_context();
+        let fix = TestFixture::new();
+        let ctx_step = fix.ctx();
         let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
         // AgentState start
@@ -12583,22 +12533,7 @@ mod llmmetry_tracing {
 // InteractionPlugin RunStart / replay_tool_calls state tests
 // ============================================================================
 
-fn replay_calls_after_ctx_changes(
-    thread: &ConversationAgentState,
-    ctx: &carve_agentos::contracts::AgentState,
-) -> Vec<ToolCall> {
-    let state: Value = if ctx.has_changes() {
-        thread
-            .clone()
-            .with_patch(ctx.take_patch())
-            .rebuild_state()
-            .expect("state rebuild should succeed after ctx patch")
-    } else {
-        thread
-            .rebuild_state()
-            .expect("state rebuild should succeed")
-    };
-
+fn replay_calls_from_state(state: &Value) -> Vec<ToolCall> {
     state
         .get("interaction_outbox")
         .and_then(|agent| agent.get("replay_tool_calls"))
@@ -12610,9 +12545,6 @@ fn replay_calls_after_ctx_changes(
 /// Test: on_run_start sets replay_tool_calls when pending_interaction is approved
 #[tokio::test]
 async fn test_interaction_response_run_start_sets_replay_on_approval() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
-
     let pending_id = "permission_add_trips";
 
     // Build a session with:
@@ -12644,14 +12576,15 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
         vec![],                       // no denied
     );
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
 
     // Run RunStart phase
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
     // Should have set replay_tool_calls state
-    let calls = replay_calls_after_ctx_changes(&thread, &ctx);
+    let calls = replay_calls_from_state(&fix.updated_state());
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "add_trips");
     assert_eq!(calls[0].id, pending_id);
@@ -12660,8 +12593,6 @@ async fn test_interaction_response_run_start_sets_replay_on_approval() {
 /// Test: on_run_start does NOT set replay_tool_calls when interaction is denied
 #[tokio::test]
 async fn test_interaction_response_run_start_no_replay_on_denial() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
 
     let pending_id = "permission_add_trips";
 
@@ -12682,11 +12613,12 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
         vec![pending_id.to_string()], // denied
     );
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let replay = replay_calls_after_ctx_changes(&thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
         "replay_tool_calls should NOT be set on denial"
@@ -12696,18 +12628,16 @@ async fn test_interaction_response_run_start_no_replay_on_denial() {
 /// Test: on_run_start does nothing when no pending_interaction exists
 #[tokio::test]
 async fn test_interaction_response_run_start_no_pending() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
-
     let thread = AgentState::with_initial_state("test", json!({ "loop_control": {} }));
 
     let plugin = InteractionPlugin::with_responses(vec!["some_id".to_string()], vec![]);
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let replay = replay_calls_after_ctx_changes(&thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
         "replay_tool_calls should not be set when no pending interaction"
@@ -12717,8 +12647,6 @@ async fn test_interaction_response_run_start_no_pending() {
 /// Test: on_run_start does nothing when approved ID doesn't match pending
 #[tokio::test]
 async fn test_interaction_response_run_start_mismatched_id() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
 
     let thread = AgentState::with_initial_state(
         "test",
@@ -12732,11 +12660,12 @@ async fn test_interaction_response_run_start_mismatched_id() {
     // Approved a different ID
     let plugin = InteractionPlugin::with_responses(vec!["permission_y".to_string()], vec![]);
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let replay = replay_calls_after_ctx_changes(&thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
         "replay_tool_calls should not be set when IDs don't match"
@@ -12746,8 +12675,6 @@ async fn test_interaction_response_run_start_mismatched_id() {
 /// Test: on_run_start does nothing when no assistant message with tool_calls
 #[tokio::test]
 async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
 
     let pending_id = "permission_add_trips";
 
@@ -12762,11 +12689,12 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 
     let plugin = InteractionPlugin::with_responses(vec![pending_id.to_string()], vec![]);
 
-    let ctx_step = thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &thread.id, &thread.messages, vec![]);
     plugin.on_phase(Phase::RunStart, &mut step).await;
 
-    let replay = replay_calls_after_ctx_changes(&thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert!(
         replay.is_empty(),
         "replay_tool_calls should not be set without tool calls"
@@ -12782,13 +12710,11 @@ async fn test_interaction_response_run_start_no_tool_calls_in_messages() {
 /// schedules replay_tool_calls with correct tool call data
 #[tokio::test]
 async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
-
     // Phase 1: PermissionPlugin creates pending interaction
     let thread = ConversationAgentState::new("test");
     let permission_plugin = PermissionPlugin;
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new();
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new("call_add", "add_trips", json!({"destination": "Beijing"}));
     step1.tool = Some(ToolContext::new(&call));
@@ -12846,14 +12772,15 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 
     // Phase 4: InteractionPlugin processes approval in RunStart
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let ctx_step2 = persisted_thread.as_tool_call_context();
+    let fix2 = TestFixture::new_with_state(persisted_thread.state.clone());
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &persisted_thread.id, &persisted_thread.messages, vec![]);
     response_plugin
         .on_phase(Phase::RunStart, &mut step2)
         .await;
 
     // Verify: replay_tool_calls is set with correct tool call
-    let replay = replay_calls_after_ctx_changes(&persisted_thread, &ctx);
+    let replay = replay_calls_from_state(&fix2.updated_state());
     assert_eq!(replay.len(), 1, "Should schedule exactly one tool call");
     assert_eq!(replay[0].name, "add_trips");
     assert_eq!(replay[0].id, interaction.id);
@@ -12863,9 +12790,6 @@ async fn test_hitl_replay_full_flow_suspend_approve_schedule() {
 /// Test: HITL replay — denial path does NOT schedule replay
 #[tokio::test]
 async fn test_hitl_replay_denial_does_not_schedule() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
-
     let pending_id = "permission_call_add";
 
     let persisted_thread = AgentState::with_initial_state(
@@ -12895,22 +12819,20 @@ async fn test_hitl_replay_denial_does_not_schedule() {
         .any(|id| id == pending_id));
 
     let response_plugin = interaction_plugin_from_request(&deny_request);
-    let ctx_step = persisted_thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(persisted_thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &persisted_thread.id, &persisted_thread.messages, vec![]);
     response_plugin
         .on_phase(Phase::RunStart, &mut step)
         .await;
 
-    let replay = replay_calls_after_ctx_changes(&persisted_thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert!(replay.is_empty(), "Denial should NOT schedule tool replay");
 }
 
 /// Test: HITL replay — multiple tool calls, only first is scheduled
 #[tokio::test]
 async fn test_hitl_replay_picks_first_tool_call() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
-
     let pending_id = "permission_multi";
 
     let persisted_thread = AgentState::with_initial_state(
@@ -12938,13 +12860,14 @@ async fn test_hitl_replay_picks_first_tool_call() {
         .with_message(AGUIMessage::tool("true", pending_id));
 
     let response_plugin = interaction_plugin_from_request(&approve_request);
-    let ctx_step = persisted_thread.as_tool_call_context();
+    let fix = TestFixture::new_with_state(persisted_thread.state.clone());
+    let ctx_step = fix.ctx();
     let mut step = StepContext::new(ctx_step, &persisted_thread.id, &persisted_thread.messages, vec![]);
     response_plugin
         .on_phase(Phase::RunStart, &mut step)
         .await;
 
-    let replay = replay_calls_after_ctx_changes(&persisted_thread, &ctx);
+    let replay = replay_calls_from_state(&fix.updated_state());
     assert_eq!(replay.len(), 1, "Should only schedule the first tool call");
     assert_eq!(replay[0].name, "tool_a");
 }
@@ -12952,8 +12875,6 @@ async fn test_hitl_replay_picks_first_tool_call() {
 /// Test: HITL replay — RunStart + BeforeToolExecute phases are independent
 #[tokio::test]
 async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
-    let doc = json!({});
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
 
     let pending_id = "permission_phase_test";
 
@@ -12980,16 +12901,18 @@ async fn test_hitl_replay_run_start_does_not_affect_before_tool_execute() {
     let response_plugin = interaction_plugin_from_request(&approve_request);
 
     // RunStart sets replay_tool_calls
-    let ctx_step1 = thread.as_tool_call_context();
+    let fix1 = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step1 = fix1.ctx();
     let mut step1 = StepContext::new(ctx_step1, &thread.id, &thread.messages, vec![]);
     response_plugin
         .on_phase(Phase::RunStart, &mut step1)
         .await;
-    let replay = replay_calls_after_ctx_changes(&thread, &ctx);
+    let replay = replay_calls_from_state(&fix1.updated_state());
     assert!(!replay.is_empty());
 
     // BeforeToolExecute on different step context (independent)
-    let ctx_step2 = thread.as_tool_call_context();
+    let fix2 = TestFixture::new_with_state(thread.state.clone());
+    let ctx_step2 = fix2.ctx();
     let mut step2 = StepContext::new(ctx_step2, &thread.id, &thread.messages, vec![]);
     let call = ToolCall::new(pending_id, "some_tool", json!({}));
     step2.tool = Some(ToolContext::new(&call));

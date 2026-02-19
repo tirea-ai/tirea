@@ -133,7 +133,7 @@ mod tests {
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::state::{Message, ToolCall};
     use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
-    use carve_agent_contract::AgentState as ContextAgentState;
+    use carve_agent_contract::testing::TestFixture;
     use carve_state::TrackedPatch;
     use serde_json::json;
     use serde_json::Value;
@@ -158,12 +158,13 @@ mod tests {
             };
         };
 
-        let ctx = ContextAgentState::new_transient(state, &call.id, format!("tool:{}", call.name));
-        let result = match tool.execute(call.arguments.clone(), &ctx.as_tool_call_context()).await {
+        let fix = TestFixture::new_with_state(state.clone());
+        let tool_ctx = fix.ctx_with(&call.id, format!("tool:{}", call.name));
+        let result = match tool.execute(call.arguments.clone(), &tool_ctx).await {
             Ok(r) => r,
             Err(e) => ToolResult::error(&call.name, e.to_string()),
         };
-        let patch = ctx.take_patch();
+        let patch = tool_ctx.take_patch();
         let patch = if patch.patch().is_empty() {
             None
         } else {
