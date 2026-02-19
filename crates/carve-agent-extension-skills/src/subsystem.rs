@@ -306,9 +306,9 @@ mod tests {
         // Run the subsystem plugin and verify discovery catalog is injected.
         let plugin = sys.plugin();
         let state = thread.rebuild_state().unwrap();
-        let transient_ctx = ContextAgentState::new_transient(&state, "test", "test");
+        let fix = carve_agent_contract::testing::TestFixture::new_with_state(state);
         let mut step = StepContext::new(
-            transient_ctx.as_tool_call_context(),
+            fix.ctx(),
             &thread.id,
             &thread.messages,
             vec![ToolDescriptor::new("t", "t", "t")],

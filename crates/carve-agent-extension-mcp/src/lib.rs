@@ -607,12 +607,8 @@ mod tests {
         assert!(desc.metadata.contains_key("mcp.server"));
         assert!(desc.metadata.contains_key("mcp.tool"));
 
-        let state = carve_agent_contract::AgentState::new_transient(
-            &serde_json::json!({}),
-            "call",
-            "test",
-        );
-        let ctx = state.as_tool_call_context();
+        let fix = carve_agent_contract::testing::TestFixture::new();
+        let ctx = fix.ctx_with("call", "test");
         let res = tool
             .execute(serde_json::json!({"a": 1}), &ctx)
             .await

@@ -153,7 +153,7 @@ mod tests {
     use crate::FsSkill;
     use carve_agent_contract::state::AgentState;
     use carve_agent_contract::tool::ToolDescriptor;
-    use carve_agent_contract::AgentState as ContextAgentState;
+    use carve_agent_contract::testing::TestFixture;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
@@ -180,12 +180,11 @@ mod tests {
 
     #[tokio::test]
     async fn injects_catalog_with_usage() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 8 * 1024);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];
@@ -198,8 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn marks_active_skills() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state(
@@ -213,7 +211,7 @@ mod tests {
                 }
             }),
         );
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<name>a-skill</name>"));
@@ -221,19 +219,17 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_inject_when_skills_empty() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let p = SkillDiscoveryPlugin::new(vec![]);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
     async fn does_not_inject_when_all_skills_invalid() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("BadSkill")).unwrap();
@@ -249,15 +245,14 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
     }
 
     #[tokio::test]
     async fn injects_only_valid_skills_and_never_warnings() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("good-skill")).unwrap();
@@ -277,7 +272,7 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert_eq!(step.system_context.len(), 1);
@@ -290,8 +285,7 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_entry_limit_and_emits_note() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         for i in 0..5 {
@@ -307,7 +301,7 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills).with_limits(2, 8 * 1024);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.contains("<available_skills>"));
@@ -317,8 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn truncates_by_char_limit() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s")).unwrap();
@@ -331,7 +324,7 @@ mod tests {
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 256);
         let thread = AgentState::with_initial_state("s", json!({}));
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
         assert!(s.len() <= 256);
@@ -339,15 +332,14 @@ mod tests {
 
     #[tokio::test]
     async fn filters_catalog_by_runtime_skill_policy() {
-        let doc = json!({});
-        let mut ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let mut fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills);
         let thread = AgentState::with_initial_state("s", json!({}));
-        ctx.scope
+        fix.scope
             .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
+        let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
         let s = &step.system_context[0];

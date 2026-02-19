@@ -5,7 +5,6 @@ use crate::contracts::state::ActivityManager;
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::tool::{ToolDescriptor, ToolError, ToolResult};
-use crate::contracts::AgentState as ContextAgentState;
 use crate::contracts::ToolCallContext;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
@@ -180,8 +179,8 @@ fn skill_activation_result(
     instruction: Option<&str>,
 ) -> ToolExecutionResult {
     let patch = instruction.map(|text| {
-        let base = json!({});
-        let ctx = ContextAgentState::new_transient(&base, call_id, "skill_test");
+        let fix = TestFixture::new();
+        let ctx = fix.ctx_with(call_id, "skill_test");
         let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
         skill_state.append_user_messages_insert(call_id.to_string(), vec![text.to_string()]);
         ctx.take_patch()
@@ -1589,8 +1588,8 @@ fn test_apply_tool_results_skill_without_instruction_does_not_append_user_messag
 #[test]
 fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
     let thread = AgentState::with_initial_state("test", json!({}));
-    let state = json!({});
-    let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
+    let fix = TestFixture::new();
+    let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
     skill_state.append_user_messages_insert(
         "call_1".to_string(),
@@ -1631,8 +1630,8 @@ fn test_apply_tool_results_appends_user_messages_from_agent_state_outbox() {
 #[test]
 fn test_apply_tool_results_ignores_blank_agent_state_outbox_messages() {
     let thread = AgentState::with_initial_state("test", json!({}));
-    let state = json!({});
-    let ctx = ContextAgentState::new_transient(&state, "call_1", "test");
+    let fix = TestFixture::new();
+    let ctx = fix.ctx_with("call_1", "test");
     let skill_state = ctx.state_of::<carve_agent_extension_skills::SkillState>();
     skill_state.append_user_messages_insert(
         "call_1".to_string(),

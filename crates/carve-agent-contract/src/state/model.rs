@@ -795,26 +795,25 @@ mod tests {
 
     #[test]
     fn test_take_patch_does_not_drain_overlay() {
-        let thread = AgentState::new_transient(&json!({"counter": 0}), "call-1", "test");
+        use crate::testing::TestFixture;
+
+        let fix = TestFixture::new_with_state(json!({"counter": 0}));
 
         // Add ops to both thread ops and overlay
-        thread
-            .transient
-            .ops
+        fix.ops
             .lock()
             .unwrap()
             .push(Op::set(path!("counter"), json!(1)));
-        thread
-            .run_overlay
+        fix.overlay
             .lock()
             .unwrap()
             .push(Op::set(path!("counter"), json!(99)));
 
-        let patch = thread.take_patch();
+        let patch = fix.ctx_with("call-1", "test").take_patch();
         assert_eq!(patch.patch().len(), 1, "take_patch drains thread ops");
 
         assert_eq!(
-            thread.run_overlay.lock().unwrap().len(),
+            fix.overlay.lock().unwrap().len(),
             1,
             "overlay must survive take_patch"
         );

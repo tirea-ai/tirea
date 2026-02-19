@@ -237,7 +237,6 @@ mod tests {
     use carve_agent_contract::runtime::phase::{Phase, ToolContext};
     use carve_agent_contract::state::ToolCall;
     use carve_agent_contract::testing::TestFixture;
-    use carve_agent_contract::AgentState as ContextAgentState;
     use serde_json::json;
 
     fn apply_interaction_intents(
@@ -271,15 +270,15 @@ mod tests {
 
     #[test]
     fn test_get_permission_prefers_tool_override() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {
                     "recover_agent_run": "allow"
                 }
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
         assert_eq!(
             ctx.get_permission("recover_agent_run"),
             ToolPermissionBehavior::Allow
@@ -288,13 +287,13 @@ mod tests {
 
     #[test]
     fn test_get_permission_falls_back_to_default() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
         assert_eq!(
             ctx.get_permission("unknown_tool"),
             ToolPermissionBehavior::Deny
@@ -303,8 +302,8 @@ mod tests {
 
     #[test]
     fn test_get_permission_missing_state_falls_back_to_ask() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        let fix = TestFixture::new();
+        let ctx = fix.ctx();
         assert_eq!(
             ctx.get_permission("recover_agent_run"),
             ToolPermissionBehavior::Ask
@@ -313,61 +312,61 @@ mod tests {
 
     #[test]
     fn test_allow_tool() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         ctx.allow_tool("read_file");
         // Note: We can't verify get_permission() returns Allow because
         // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(fix.has_changes());
     }
 
     #[test]
     fn test_deny_tool() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         ctx.deny_tool("delete_file");
         // Note: We can't verify get_permission() returns Deny because
         // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(fix.has_changes());
     }
 
     #[test]
     fn test_ask_tool() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "allow",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         ctx.ask_tool("write_file");
         // Note: We can't verify get_permission() returns Ask because
         // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(fix.has_changes());
     }
 
     #[test]
     fn test_get_permission_default() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         // Tool not in tools map should return default
         assert_eq!(
@@ -378,13 +377,13 @@ mod tests {
 
     #[test]
     fn test_get_permission_override() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": { "special_tool": "allow" }
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         assert_eq!(
             ctx.get_permission("special_tool"),
@@ -398,18 +397,18 @@ mod tests {
 
     #[test]
     fn test_set_default_permission() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "ask",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         ctx.set_default_permission(ToolPermissionBehavior::Allow);
         // Note: We can't verify get_default_permission() returns Allow because
         // Context collects ops that need to be applied to see the result.
-        assert!(ctx.has_changes());
+        assert!(fix.has_changes());
     }
 
     #[test]
@@ -487,13 +486,13 @@ mod tests {
 
     #[test]
     fn test_get_default_permission() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "allow",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         // Should read default_behavior from state
         let default = ctx.get_default_permission();
@@ -502,13 +501,13 @@ mod tests {
 
     #[test]
     fn test_get_default_permission_deny() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "permissions": {
                 "default_behavior": "deny",
                 "tools": {}
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fix.ctx();
 
         let default = ctx.get_default_permission();
         assert_eq!(default, ToolPermissionBehavior::Deny);
@@ -517,8 +516,8 @@ mod tests {
     #[test]
     fn test_get_default_permission_fallback() {
         // When state is missing, should return default (Ask)
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        let fix = TestFixture::new();
+        let ctx = fix.ctx();
 
         let default = ctx.get_default_permission();
         assert_eq!(default, ToolPermissionBehavior::Ask);

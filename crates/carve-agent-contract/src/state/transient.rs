@@ -359,15 +359,17 @@ impl AgentState {
 mod tests {
     use super::*;
     use crate::runtime::control::LoopControlState;
+    use crate::testing::TestFixture;
     use carve_state::{path, Op};
     use serde_json::json;
 
     #[test]
     fn test_override_state_of_writes_to_overlay() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
 
         // Write via override — should go to run_overlay, not ops
+        let ctx = fix.ctx_with("call-1", "test");
         let ctrl = ctx.override_state_of::<LoopControlState>();
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {
             error_type: "rate_limit".into(),
@@ -375,11 +377,11 @@ mod tests {
         }));
 
         assert!(
-            ctx.transient.ops.lock().unwrap().is_empty(),
+            fix.ops.lock().unwrap().is_empty(),
             "thread ops must remain empty after override write"
         );
         assert!(
-            !ctx.run_overlay.lock().unwrap().is_empty(),
+            !fix.overlay.lock().unwrap().is_empty(),
             "overlay must contain the override op"
         );
     }
@@ -448,7 +450,8 @@ mod tests {
     #[test]
     fn test_write_through_read_same_ref() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
+        let ctx = fix.ctx_with("call-1", "test");
 
         let ctrl = ctx.state_of::<LoopControlState>();
         // Initially null
@@ -469,7 +472,8 @@ mod tests {
     #[test]
     fn test_write_through_read_cross_ref() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
+        let ctx = fix.ctx_with("call-1", "test");
 
         // Write via first state_of call
         let ctrl1 = ctx.state_of::<LoopControlState>();
@@ -488,7 +492,8 @@ mod tests {
     #[test]
     fn test_override_write_visible_to_state_of_read() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
+        let ctx = fix.ctx_with("call-1", "test");
 
         // Write via override_state_of (overlay)
         let ctrl_override = ctx.override_state_of::<LoopControlState>();
@@ -510,7 +515,8 @@ mod tests {
     #[test]
     fn test_state_of_write_visible_to_override_read() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
+        let ctx = fix.ctx_with("call-1", "test");
 
         // Write via state_of (thread ops)
         let ctrl = ctx.state_of::<LoopControlState>();
@@ -532,7 +538,8 @@ mod tests {
     #[test]
     fn test_rebuild_state_reflects_write_through() {
         let doc = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let ctx = AgentState::new_transient(&doc, "call-1", "test");
+        let fix = TestFixture::new_with_state(doc);
+        let ctx = fix.ctx_with("call-1", "test");
 
         // Write via state_of
         let ctrl = ctx.state_of::<LoopControlState>();
@@ -541,11 +548,11 @@ mod tests {
             message: "test".into(),
         }));
 
-        // rebuild_state should return the run_doc snapshot which includes the write
-        let rebuilt = ctx.rebuild_state().unwrap();
+        // updated_state should return the run_doc snapshot which includes the write
+        let rebuilt = fix.updated_state();
         assert_eq!(
             rebuilt["loop_control"]["inference_error"]["type"], "test_error",
-            "rebuild_state must reflect write-through updates"
+            "updated_state must reflect write-through updates"
         );
     }
 }

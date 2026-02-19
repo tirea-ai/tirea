@@ -653,18 +653,13 @@ mod tests {
     use super::*;
     use carve_agent_contract::runtime::phase::ToolContext as PhaseToolContext;
     use carve_agent_contract::runtime::StreamResult;
-    use carve_agent_contract::state::AgentState;
     use carve_agent_contract::state::ToolCall;
+    use carve_agent_contract::testing::TestFixture;
     use carve_agent_contract::tool::ToolResult;
-    use carve_agent_contract::AgentState as ContextAgentState;
     use futures::future::join_all;
     use genai::chat::PromptTokensDetails;
     use serde_json::json;
     use std::sync::Arc;
-
-    fn mock_thread() -> AgentState {
-        AgentState::new("test")
-    }
 
     fn usage(prompt: i32, completion: i32, total: i32) -> Usage {
         Usage {
@@ -807,15 +802,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
             .with_provider("openai");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin
             .on_phase(Phase::BeforeInference, &mut step)
@@ -843,15 +836,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_with_cache() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
             .with_provider("openai");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin
             .on_phase(Phase::BeforeInference, &mut step)
@@ -875,13 +866,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_tool() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
@@ -908,13 +897,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_tool_failure() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
@@ -936,13 +923,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_session_lifecycle() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin.on_phase(Phase::RunStart, &mut step).await;
 
@@ -956,13 +941,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_no_usage() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin
             .on_phase(Phase::BeforeInference, &mut step)
@@ -984,13 +967,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_multiple_rounds() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         for i in 0..3 {
             plugin
@@ -1014,22 +995,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_captures_inference_error() {
-        let doc = json!({
+        let fix = TestFixture::new_with_state(json!({
             "loop_control": {
                 "inference_error": {
                     "type": "rate_limited",
                     "message": "429"
                 }
             }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        }));
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone())
             .with_model("gpt-4")
             .with_provider("openai");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin
             .on_phase(Phase::BeforeInference, &mut step)
@@ -1045,8 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_plugin_parallel_tool_spans_are_isolated_by_call_id() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         use std::time::Duration;
 
         let sink = InMemorySink::new();
@@ -1058,12 +1036,11 @@ mod tests {
             ToolCall::new("c3", "read", json!({"path": "y"})),
         ];
 
-        let ctx = &ctx;
+        let fix = &fix;
         let tasks = calls.into_iter().enumerate().map(|(i, call)| {
             let plugin = plugin.clone();
             async move {
-                let thread = AgentState::new("test");
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
                     .on_phase(Phase::BeforeToolExecute, &mut step)
@@ -1383,8 +1360,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tracing_span_inference() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1397,8 +1373,7 @@ mod tests {
             .with_model("test-model")
             .with_provider("test-provider");
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         plugin
             .on_phase(Phase::BeforeInference, &mut step)
@@ -1420,8 +1395,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tracing_span_tool() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fix = TestFixture::new();
         let captured = Arc::new(Mutex::new(Vec::<CapturedSpan>::new()));
         let layer = SpanCaptureLayer {
             captured: captured.clone(),
@@ -1432,8 +1406,7 @@ mod tests {
         let sink = InMemorySink::new();
         let plugin = LLMMetryPlugin::new(sink.clone());
 
-        let thread = mock_thread();
-        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+        let mut step = fix.step(vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
@@ -1494,8 +1467,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_span() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1503,8 +1475,7 @@ mod tests {
                 .with_model("test-model")
                 .with_provider("test-provider");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -1560,15 +1531,14 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_error_sets_status_and_error_type() {
-            let doc = json!({
+            let fix = TestFixture::new_with_state(json!({
                 "loop_control": {
                     "inference_error": {
                         "type": "rate_limited",
                         "message": "429"
                     }
                 }
-            });
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            }));
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -1578,8 +1548,7 @@ mod tests {
                 .with_model("test-model")
                 .with_provider("test-provider");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -1608,8 +1577,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_parent_child_propagation() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1621,8 +1589,7 @@ mod tests {
             let parent = tracing::info_span!("parent_operation");
             let _parent_guard = parent.enter();
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -1668,8 +1635,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tool_parent_child_propagation() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1678,8 +1644,7 @@ mod tests {
             let parent = tracing::info_span!("parent_tool_op");
             let _parent_guard = parent.enter();
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -1723,16 +1688,14 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_no_parent_context() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             // No parent span entered — should be a root span
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -1764,18 +1727,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_spans_closed_after_phases() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
-            let thread = mock_thread();
-
             // Inference span should be closed (exported) after AfterInference
             {
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 plugin
                     .on_phase(Phase::BeforeInference, &mut step)
                     .await;
@@ -1791,7 +1751,7 @@ mod tests {
 
             // Tool span should be closed (exported) after AfterToolExecute
             {
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
@@ -1817,8 +1777,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_inference_and_tool_are_siblings() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1827,11 +1786,9 @@ mod tests {
             let parent = tracing::info_span!("agent_step");
             let _parent_guard = parent.enter();
 
-            let thread = mock_thread();
-
             // Inference phase
             {
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 plugin
                     .on_phase(Phase::BeforeInference, &mut step)
                     .await;
@@ -1847,7 +1804,7 @@ mod tests {
 
             // Tool phase
             {
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
@@ -1910,15 +1867,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tool_span() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink);
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -1963,8 +1918,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_inference_span_name_format() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -1972,8 +1926,7 @@ mod tests {
                 .with_model("gpt-4o")
                 .with_provider("openai");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2004,15 +1957,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_name_format() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_provider("openai");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -2042,8 +1993,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_inference_span_kind_client() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2051,8 +2001,7 @@ mod tests {
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2083,8 +2032,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_kind_internal() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             use opentelemetry::trace::SpanKind;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2092,8 +2040,7 @@ mod tests {
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -2123,15 +2070,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_tool_span_has_provider() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_provider("anthropic");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -2163,8 +2108,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_error_sets_status_code() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2172,8 +2116,7 @@ mod tests {
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
@@ -2210,8 +2153,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_success_no_error_status() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             use opentelemetry::trace::Status;
 
             let (_guard, exporter, provider) = setup_otel_test();
@@ -2219,8 +2161,7 @@ mod tests {
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2254,8 +2195,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_required_attributes_present() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
@@ -2263,8 +2203,7 @@ mod tests {
                 .with_model("claude-3")
                 .with_provider("anthropic");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2320,15 +2259,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_no_usage_omits_token_attributes() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2363,18 +2300,15 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_semconv_cache_tokens_only_when_present() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
-            let thread = mock_thread();
-
             // Test with cache tokens present
             {
-                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+                let mut step = fix.step(vec![]);
                 plugin
                     .on_phase(Phase::BeforeInference, &mut step)
                     .await;
@@ -2413,8 +2347,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_plugin_captures_request_params() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let sink = InMemorySink::new();
 
             let opts = ChatOptions::default()
@@ -2427,8 +2360,7 @@ mod tests {
                 .with_provider("p")
                 .with_chat_options(&opts);
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2452,8 +2384,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_request_params() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let opts = ChatOptions::default()
@@ -2466,8 +2397,7 @@ mod tests {
                 .with_provider("p")
                 .with_chat_options(&opts);
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2505,16 +2435,14 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_request_params_omitted_when_none() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
             // No with_chat_options → all request params are None
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             plugin
                 .on_phase(Phase::BeforeInference, &mut step)
@@ -2543,15 +2471,13 @@ mod tests {
 
         #[tokio::test]
         async fn test_otel_export_tool_type_function() {
-            let doc = json!({});
-            let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+            let fix = TestFixture::new();
             let (_guard, exporter, provider) = setup_otel_test();
 
             let sink = InMemorySink::new();
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
-            let thread = mock_thread();
-            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
+            let mut step = fix.step(vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));

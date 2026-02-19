@@ -5,7 +5,6 @@ use crate::contracts::state::AgentState;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
-use crate::contracts::AgentState as ContextAgentState;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
@@ -669,9 +668,8 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
             .expect("set caller agent id");
         scope
     };
-    let doc = json!({});
-    let ctx_first = ContextAgentState::new_transient(&doc, "call-1", "tool:agent_run")
-        .with_transient_scope(Some(&scope));
+    let mut fix_first = TestFixture::new();
+    fix_first.scope = scope.clone();
     let first_result = run_tool_first
         .execute(
             json!({
@@ -679,7 +677,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
                 "prompt": "hi",
                 "background": true
             }),
-            &ctx_first.as_tool_call_context(),
+            &fix_first.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .expect("execute first run tool");
@@ -695,8 +693,8 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .get("agent_run")
         .cloned()
         .expect("agent_run tool should exist");
-    let ctx_second = ContextAgentState::new_transient(&doc, "call-2", "tool:agent_run")
-        .with_transient_scope(Some(&scope));
+    let mut fix_second = TestFixture::new();
+    fix_second.scope = scope.clone();
     let second_result = run_tool_second
         .execute(
             json!({
@@ -704,7 +702,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
                 "prompt": "hi",
                 "background": false
             }),
-            &ctx_second.as_tool_call_context(),
+            &fix_second.ctx_with("call-2", "tool:agent_run"),
         )
         .await
         .expect("execute second run tool");
@@ -822,7 +820,6 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let doc = json!({});
     let thread1 = AgentState::with_initial_state("freeze-skill-1", json!({}));
     let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
     let activate_first = tools_first_run
@@ -832,9 +829,9 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
 
     dynamic_skills.replace_ids(&["s2"]);
 
-    let ctx_first = ContextAgentState::new_transient(&doc, "call-skill-1", "tool:skill");
+    let fix_first = TestFixture::new();
     let first_result = activate_first
-        .execute(json!({"skill": "s1"}), &ctx_first.as_tool_call_context())
+        .execute(json!({"skill": "s1"}), &fix_first.ctx_with("call-skill-1", "tool:skill"))
         .await
         .expect("execute first skill tool");
     assert!(
@@ -848,9 +845,9 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .get("skill")
         .cloned()
         .expect("skill activate tool should exist");
-    let ctx_second = ContextAgentState::new_transient(&doc, "call-skill-2", "tool:skill");
+    let fix_second = TestFixture::new();
     let second_result = activate_second
-        .execute(json!({"skill": "s1"}), &ctx_second.as_tool_call_context())
+        .execute(json!({"skill": "s1"}), &fix_second.ctx_with("call-skill-2", "tool:skill"))
         .await
         .expect("execute second skill tool");
     assert!(

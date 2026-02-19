@@ -156,12 +156,11 @@ async fn agent_run_tool_requires_scope_context() {
         .build()
         .unwrap();
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
-    let doc = json!({});
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-1", "tool:agent_run");
+    let fix = TestFixture::new();
     let result = tool
         .execute(
             json!({"agent_id":"worker","prompt":"hi","background":false}),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -186,15 +185,13 @@ async fn agent_run_tool_rejects_disallowed_target_agent() {
         .build()
         .unwrap();
     let tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
-    let doc = json!({});
-    let mut rt = caller_scope();
-    rt.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-1", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new();
+    fix.scope = caller_scope();
+    fix.scope.set(SCOPE_ALLOWED_AGENTS_KEY, vec!["worker"]).unwrap();
     let result = tool
         .execute(
             json!({"agent_id":"reviewer","prompt":"hi","background":false}),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-1", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -262,10 +259,8 @@ async fn background_stop_then_resume_completes() {
     let run_tool = AgentRunTool::new(os, manager.clone());
     let stop_tool = AgentStopTool::new(manager);
 
-    let doc = json!({});
-    let rt = caller_scope();
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new();
+    fix.scope = caller_scope();
     let started = run_tool
         .execute(
             json!({
@@ -273,7 +268,7 @@ async fn background_stop_then_resume_completes() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -284,11 +279,10 @@ async fn background_stop_then_resume_completes() {
         .expect("run_id should exist")
         .to_string();
 
-    let stop_ctx =
-        crate::contracts::AgentState::new_transient(&doc, "call-stop", "tool:agent_stop")
-            .with_transient_scope(Some(&rt));
+    let mut stop_fix = TestFixture::new();
+    stop_fix.scope = caller_scope();
     let stopped = stop_tool
-        .execute(json!({ "run_id": run_id.clone() }), &stop_ctx.as_tool_call_context())
+        .execute(json!({ "run_id": run_id.clone() }), &stop_fix.ctx_with("call-stop", "tool:agent_stop"))
         .await
         .unwrap();
     assert_eq!(stopped.status, ToolStatus::Success);
@@ -304,7 +298,7 @@ async fn background_stop_then_resume_completes() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -399,10 +393,8 @@ async fn agent_run_tool_persists_run_state_patch() {
         .unwrap();
     let run_tool = AgentRunTool::new(os, Arc::new(AgentRunManager::new()));
 
-    let doc = json!({});
-    let rt = caller_scope();
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new();
+    fix.scope = caller_scope();
     let started = run_tool
         .execute(
             json!({
@@ -410,7 +402,7 @@ async fn agent_run_tool_persists_run_state_patch() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -420,12 +412,13 @@ async fn agent_run_tool_persists_run_state_patch() {
         .expect("run_id should exist")
         .to_string();
 
-    let patch = ctx.take_patch();
+    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     assert!(
         !patch.patch().is_empty(),
         "expected tool to persist run snapshot into state"
     );
-    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    let base = json!({});
+    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
         updated["agent_runs"]["runs"][&run_id]["status"],
         json!("running")
@@ -445,10 +438,8 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
     let manager = Arc::new(AgentRunManager::new());
     let run_tool = AgentRunTool::new(os, manager.clone());
 
-    let doc = json!({});
-    let rt = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new();
+    fix.scope = caller_scope_with_state_and_run(json!({"forked": true}), "parent-run-42");
     let started = run_tool
         .execute(
             json!({
@@ -456,7 +447,7 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
                 "prompt":"start",
                 "background": true
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -485,8 +476,9 @@ async fn agent_run_tool_binds_scope_run_id_and_parent_lineage() {
         Some("parent-run-42")
     );
 
-    let patch = ctx.take_patch();
-    let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
+    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
+    let base = json!({});
+    let updated = apply_patches(&base, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
         updated["agent_runs"]["runs"][&run_id]["parent_run_id"],
         json!("parent-run-42")
@@ -519,9 +511,8 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
             }
         }
     });
-    let rt = caller_scope_with_state(doc.clone());
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.scope = caller_scope_with_state(doc);
     let resumed = run_tool
         .execute(
             json!({
@@ -529,7 +520,7 @@ async fn agent_run_tool_resumes_from_persisted_state_without_live_record() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -565,9 +556,8 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
             }
         }
     });
-    let rt = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.scope = caller_scope_with_state_and_run(doc.clone(), "new-parent-run");
     let resumed = run_tool
         .execute(
             json!({
@@ -575,7 +565,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
                 "prompt":"resume",
                 "background": false
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -600,7 +590,7 @@ async fn agent_run_tool_resume_updates_parent_run_lineage() {
         Some("new-parent-run")
     );
 
-    let patch = ctx.take_patch();
+    let patch = fix.ctx_with("call-run", "tool:agent_run").take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
         updated["agent_runs"]["runs"]["run-1"]["parent_run_id"],
@@ -634,16 +624,15 @@ async fn agent_run_tool_marks_orphan_running_as_stopped_before_resume() {
             }
         }
     });
-    let rt = caller_scope_with_state(doc.clone());
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-run", "tool:agent_run")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.scope = caller_scope_with_state(doc);
     let summary = run_tool
         .execute(
             json!({
                 "run_id":"run-1",
                 "background": false
             }),
-            &ctx.as_tool_call_context(),
+            &fix.ctx_with("call-run", "tool:agent_run"),
         )
         .await
         .unwrap();
@@ -722,13 +711,15 @@ async fn agent_stop_tool_stops_descendant_runs() {
         }
     });
 
-    let mut rt = carve_state::ScopeState::new();
-    rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, os_thread.id.clone())
-        .unwrap();
-    let ctx = crate::contracts::AgentState::new_transient(&doc, "call-stop", "tool:agent_stop")
-        .with_transient_scope(Some(&rt));
+    let mut fix = TestFixture::new_with_state(doc.clone());
+    fix.scope = {
+        let mut rt = carve_state::ScopeState::new();
+        rt.set(TOOL_SCOPE_CALLER_THREAD_ID_KEY, os_thread.id.clone())
+            .unwrap();
+        rt
+    };
     let result = stop_tool
-        .execute(json!({ "run_id": parent_run_id }), &ctx.as_tool_call_context())
+        .execute(json!({ "run_id": parent_run_id }), &fix.ctx_with("call-stop", "tool:agent_stop"))
         .await
         .unwrap();
     assert_eq!(result.status, ToolStatus::Success);
@@ -750,7 +741,7 @@ async fn agent_stop_tool_stops_descendant_runs() {
         .expect("grandchild run should exist");
     assert_eq!(grandchild.status, DelegationStatus::Stopped);
 
-    let patch = ctx.take_patch();
+    let patch = fix.ctx_with("call-stop", "tool:agent_stop").take_patch();
     let updated = apply_patches(&doc, std::iter::once(patch.patch())).unwrap();
     assert_eq!(
         updated["agent_runs"]["runs"][parent_run_id]["status"],

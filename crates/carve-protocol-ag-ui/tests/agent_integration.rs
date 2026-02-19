@@ -8,6 +8,7 @@ use carve_agentos::contracts::runtime::InteractionResponse;
 use carve_agentos::contracts::state::AgentState as ConversationAgentState;
 use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agentos::contracts::ToolCallContext;
+use carve_agent_contract::testing::TestFixture;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::extensions::interaction::{ContextCategory, ContextProvider};
 use carve_agentos::extensions::reminder::SystemReminder;
@@ -215,14 +216,10 @@ async fn test_tool_basic_execution() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "call_001",
-        "tool:increment",
-    );
+    let fix = TestFixture::new_with_state(snapshot);
 
     let result = tool
-        .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
+        .execute(json!({"path": "counter"}), &fix.ctx_with("call_001", "tool:increment"))
         .await
         .unwrap();
 
@@ -230,7 +227,7 @@ async fn test_tool_basic_execution() {
     assert_eq!(result.data["new_value"], 1);
 
     // Apply patch
-    let patch = ctx.take_patch();
+    let patch = fix.ctx().take_patch();
     manager.commit(patch).await.unwrap();
 
     let new_state = manager.snapshot().await;
@@ -247,21 +244,17 @@ async fn test_tool_multiple_executions() {
 
     for i in 1..=5 {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            format!("call_{}", i),
-            "tool:increment",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
 
         let result = tool
-            .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
+            .execute(json!({"path": "counter"}), &fix.ctx_with(format!("call_{}", i), "tool:increment"))
             .await
             .unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["new_value"], i);
 
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     let final_state = manager.snapshot().await;
@@ -281,35 +274,27 @@ async fn test_tool_with_call_state() {
     // First execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_abc",
-            "tool:update_call",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({"label": "step1"}), &ctx.as_tool_call_context()).await.unwrap();
+        let result = tool.execute(json!({"label": "step1"}), &fix.ctx_with("call_abc", "tool:update_call")).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 1);
 
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     // Second execution
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_abc",
-            "tool:update_call",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({"label": "step2"}), &ctx.as_tool_call_context()).await.unwrap();
+        let result = tool.execute(json!({"label": "step2"}), &fix.ctx_with("call_abc", "tool:update_call")).await.unwrap();
 
         assert!(result.is_success());
         assert_eq!(result.data["step"], 2);
 
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     let final_state = manager.snapshot().await;
@@ -323,14 +308,10 @@ async fn test_tool_error_handling() {
 
     let tool = IncrementTool;
     let snapshot = manager.snapshot().await;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &snapshot,
-        "call_001",
-        "tool:increment",
-    );
+    let fix = TestFixture::new_with_state(snapshot);
 
     // Missing required argument
-    let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
+    let result = tool.execute(json!({}), &fix.ctx_with("call_001", "tool:increment")).await;
     assert!(result.is_err());
 
     match result {
@@ -541,14 +522,10 @@ async fn test_full_tool_workflow() {
     for i in 1..=3 {
         let call_id = format!("call_{}", i);
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            &call_id,
-            "tool:add_task",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
 
         let result = tool
-            .execute(json!({"item": format!("Task {}", i)}), &ctx.as_tool_call_context())
+            .execute(json!({"item": format!("Task {}", i)}), &fix.ctx_with(&call_id, "tool:add_task"))
             .await
             .unwrap();
 
@@ -556,7 +533,7 @@ async fn test_full_tool_workflow() {
         assert_eq!(result.data["count"], i);
 
         // Apply changes
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     // Verify final state
@@ -591,31 +568,23 @@ async fn test_tool_provider_reminder_integration() {
     // Execute increment tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_1",
-            "tool:increment",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
         let _ = increment_tool
-            .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
+            .execute(json!({"path": "counter"}), &fix.ctx_with("call_1", "tool:increment"))
             .await
             .unwrap();
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     // Execute add task tool
     {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            "call_2",
-            "tool:add_task",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
         let _ = task_tool
-            .execute(json!({"item": "New task"}), &ctx.as_tool_call_context())
+            .execute(json!({"item": "New task"}), &fix.ctx_with("call_2", "tool:add_task"))
             .await
             .unwrap();
-        manager.commit(ctx.take_patch()).await.unwrap();
+        manager.commit(fix.ctx().take_patch()).await.unwrap();
     }
 
     // Run context provider
@@ -990,11 +959,8 @@ async fn test_concurrent_tool_execution_stress() {
         let manager = manager.clone();
         let handle = tokio::spawn(async move {
             let snapshot = manager.snapshot().await;
-            let ctx = carve_agentos::contracts::AgentState::new_transient(
-                &snapshot,
-                format!("call_{}", i),
-                "tool:increment",
-            );
+            let fix = TestFixture::new_with_state(snapshot);
+            let ctx = fix.ctx_with(format!("call_{}", i), "tool:increment");
 
             // Create counter path for this task
             let path = format!("counters.c{}", i % 10);
@@ -1399,8 +1365,10 @@ async fn test_patch_conflict_same_field() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = carve_agentos::contracts::AgentState::new_transient(&snapshot1, "call_1", "test");
-    let ctx2 = carve_agentos::contracts::AgentState::new_transient(&snapshot2, "call_2", "test");
+    let fix1 = TestFixture::new_with_state(snapshot1);
+    let ctx1 = fix1.ctx_with("call_1", "test");
+    let fix2 = TestFixture::new_with_state(snapshot2);
+    let ctx2 = fix2.ctx_with("call_2", "test");
 
     // Both read same value
     let counter1 = ctx1.state::<CounterState>("");
@@ -1434,8 +1402,10 @@ async fn test_patch_conflict_different_fields() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = carve_agentos::contracts::AgentState::new_transient(&snapshot1, "call_1", "test");
-    let ctx2 = carve_agentos::contracts::AgentState::new_transient(&snapshot2, "call_2", "test");
+    let fix1 = TestFixture::new_with_state(snapshot1);
+    let ctx1 = fix1.ctx_with("call_1", "test");
+    let fix2 = TestFixture::new_with_state(snapshot2);
+    let ctx2 = fix2.ctx_with("call_2", "test");
 
     // Modify different fields
     {
@@ -1467,8 +1437,10 @@ async fn test_patch_conflict_array_operations() {
     let snapshot1 = manager.snapshot().await;
     let snapshot2 = manager.snapshot().await;
 
-    let ctx1 = carve_agentos::contracts::AgentState::new_transient(&snapshot1, "call_1", "test");
-    let ctx2 = carve_agentos::contracts::AgentState::new_transient(&snapshot2, "call_2", "test");
+    let fix1 = TestFixture::new_with_state(snapshot1);
+    let ctx1 = fix1.ctx_with("call_1", "test");
+    let fix2 = TestFixture::new_with_state(snapshot2);
+    let ctx2 = fix2.ctx_with("call_2", "test");
 
     let tasks1 = ctx1.state::<TaskState>("tasks");
     let tasks2 = ctx2.state::<TaskState>("tasks");
@@ -1550,13 +1522,12 @@ async fn test_tool_execution_with_timeout() {
     let tool = SlowTool { delay_ms: 50 };
 
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_slow", "tool:slow");
+    let fix = TestFixture::new_with_state(snapshot);
 
     // Execute with timeout
     let result = tokio::time::timeout(
         tokio::time::Duration::from_millis(100),
-        tool.execute(json!({}), &ctx.as_tool_call_context()),
+        tool.execute(json!({}), &fix.ctx_with("call_slow", "tool:slow")),
     )
     .await;
 
@@ -1573,13 +1544,12 @@ async fn test_tool_timeout_exceeded() {
     let tool = SlowTool { delay_ms: 200 };
 
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_slow", "tool:slow");
+    let fix = TestFixture::new_with_state(snapshot);
 
     // Execute with short timeout
     let result = tokio::time::timeout(
         tokio::time::Duration::from_millis(50),
-        tool.execute(json!({}), &ctx.as_tool_call_context()),
+        tool.execute(json!({}), &fix.ctx_with("call_slow", "tool:slow")),
     )
     .await;
 
@@ -1587,7 +1557,7 @@ async fn test_tool_timeout_exceeded() {
     assert!(result.is_err());
 
     // State should not be modified (tool didn't complete)
-    let patch = ctx.take_patch();
+    let patch = fix.ctx().take_patch();
     assert!(patch.patch().is_empty());
 }
 
@@ -1607,19 +1577,18 @@ async fn test_multiple_tools_with_varying_timeouts() {
     let snapshot = manager.snapshot().await;
 
     // Fast - should complete
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&snapshot, "fast", "tool:fast");
-    let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
+    let fix = TestFixture::new_with_state(snapshot.clone());
+    let fast_result = tokio::time::timeout(timeout, fast_tool.execute(json!({}), &fix.ctx_with("fast", "tool:fast"))).await;
     assert!(fast_result.is_ok());
 
     // Medium - should complete
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "medium", "tool:medium");
-    let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
+    let fix = TestFixture::new_with_state(snapshot.clone());
+    let medium_result = tokio::time::timeout(timeout, medium_tool.execute(json!({}), &fix.ctx_with("medium", "tool:medium"))).await;
     assert!(medium_result.is_ok());
 
     // Slow - should timeout
-    let ctx = carve_agentos::contracts::AgentState::new_transient(&snapshot, "slow", "tool:slow");
-    let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &ctx.as_tool_call_context())).await;
+    let fix = TestFixture::new_with_state(snapshot);
+    let slow_result = tokio::time::timeout(timeout, slow_tool.execute(json!({}), &fix.ctx_with("slow", "tool:slow"))).await;
     assert!(slow_result.is_err());
 }
 
@@ -1804,27 +1773,24 @@ async fn test_tool_network_error_retry() {
 
     // Attempt 1 - fails
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_1", "tool:network");
-    let result1 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
+    let fix = TestFixture::new_with_state(snapshot);
+    let result1 = tool.execute(json!({}), &fix.ctx_with("call_1", "tool:network")).await;
     assert!(result1.is_err());
 
     // Attempt 2 - fails
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_2", "tool:network");
-    let result2 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
+    let fix = TestFixture::new_with_state(snapshot);
+    let result2 = tool.execute(json!({}), &fix.ctx_with("call_2", "tool:network")).await;
     assert!(result2.is_err());
 
     // Attempt 3 - succeeds
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_3", "tool:network");
-    let result3 = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
+    let fix = TestFixture::new_with_state(snapshot);
+    let result3 = tool.execute(json!({}), &fix.ctx_with("call_3", "tool:network")).await;
     assert!(result3.is_ok());
 
     // Apply successful patch
-    manager.commit(ctx.take_patch()).await.unwrap();
+    manager.commit(fix.ctx().take_patch()).await.unwrap();
 
     let final_state = manager.snapshot().await;
     assert_eq!(final_state["counter"]["value"], 1);
@@ -1839,17 +1805,13 @@ async fn test_tool_error_does_not_corrupt_state() {
 
     for i in 0..5 {
         let snapshot = manager.snapshot().await;
-        let ctx = carve_agentos::contracts::AgentState::new_transient(
-            &snapshot,
-            format!("call_{}", i),
-            "tool:network",
-        );
+        let fix = TestFixture::new_with_state(snapshot);
 
-        let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await;
+        let result = tool.execute(json!({}), &fix.ctx_with(format!("call_{}", i), "tool:network")).await;
         assert!(result.is_err());
 
         // Don't apply patch from failed execution
-        let patch = ctx.take_patch();
+        let patch = fix.ctx().take_patch();
         // In real code, we wouldn't commit on failure
         // But even if we do, patch should be empty for failed tool
         if !patch.patch().is_empty() {
@@ -3613,13 +3575,9 @@ async fn test_e2e_context_provider_integration() {
 
     // 3. Now a tool runs and sees the provider's changes
     let tool = IncrementTool;
-    let ctx = carve_agentos::contracts::AgentState::new_transient(
-        &new_snapshot,
-        "tool_call",
-        "tool:increment",
-    );
+    let fix = TestFixture::new_with_state(new_snapshot);
     let result = tool
-        .execute(json!({"path": "counter"}), &ctx.as_tool_call_context())
+        .execute(json!({"path": "counter"}), &fix.ctx_with("tool_call", "tool:increment"))
         .await
         .unwrap();
 
@@ -3849,11 +3807,10 @@ async fn test_e2e_tool_pending_status() {
     let tool = ConfirmationTool;
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_1", "tool:dangerous");
+    let fix = TestFixture::new_with_state(snapshot);
 
     // First call without confirmation
-    let result = tool.execute(json!({}), &ctx.as_tool_call_context()).await.unwrap();
+    let result = tool.execute(json!({}), &fix.ctx_with("call_1", "tool:dangerous")).await.unwrap();
 
     assert!(result.is_pending());
     assert!(!result.is_success());
@@ -3862,7 +3819,7 @@ async fn test_e2e_tool_pending_status() {
 
     // Second call with confirmation
     let result = tool
-        .execute(json!({"confirmed": true}), &ctx.as_tool_call_context())
+        .execute(json!({"confirmed": true}), &fix.ctx_with("call_1", "tool:dangerous"))
         .await
         .unwrap();
 
@@ -3875,12 +3832,11 @@ async fn test_e2e_tool_warning_status() {
     let tool = PartialSuccessTool;
     let manager = StateManager::new(json!({}));
     let snapshot = manager.snapshot().await;
-    let ctx =
-        carve_agentos::contracts::AgentState::new_transient(&snapshot, "call_1", "tool:batch");
+    let fix = TestFixture::new_with_state(snapshot);
 
     // Process 10 items (80% success = 8 success, 2 failed)
     let result = tool
-        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &ctx.as_tool_call_context())
+        .execute(json!({"items": [1,2,3,4,5,6,7,8,9,10]}), &fix.ctx_with("call_1", "tool:batch"))
         .await
         .unwrap();
 
@@ -4947,7 +4903,7 @@ fn frontend_plugin_from_request(request: &RunAgentRequest) -> TestFrontendToolPl
 #[tokio::test]
 async fn test_scenario_frontend_tool_request_to_agui() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // 1. Client sends request with mixed frontend/backend tools
     let request = RunAgentRequest {
         tools: vec![
@@ -5025,7 +4981,7 @@ async fn test_scenario_frontend_tool_request_to_agui() {
 #[tokio::test]
 async fn test_scenario_multiple_frontend_tools_sequence() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let request = RunAgentRequest {
         tools: vec![
             AGUIToolDef::frontend("copyToClipboard", "Copy"),
@@ -5074,7 +5030,7 @@ async fn test_scenario_multiple_frontend_tools_sequence() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_complex_args() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let plugin = TestFrontendToolPlugin::new(["fileDialog".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
@@ -5137,7 +5093,7 @@ async fn test_scenario_frontend_tool_complex_args() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_empty_args() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let plugin = TestFrontendToolPlugin::new(["getClipboard".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
@@ -5191,7 +5147,7 @@ async fn test_scenario_frontend_tool_empty_args() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_special_names() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // Various tool name formats that might appear
     let tool_names = vec![
         "copy_to_clipboard",       // snake_case
@@ -5242,7 +5198,7 @@ async fn test_scenario_frontend_tool_special_names() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_case_sensitivity() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // Only "CopyToClipboard" is registered as frontend
     let plugin = TestFrontendToolPlugin::new(["CopyToClipboard".to_string()].into_iter().collect());
 
@@ -5327,7 +5283,7 @@ fn test_scenario_frontend_tool_wire_format() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_full_event_pipeline() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let plugin = TestFrontendToolPlugin::new(["showModal".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
@@ -5372,7 +5328,7 @@ async fn test_scenario_frontend_tool_full_event_pipeline() {
 #[tokio::test]
 async fn test_scenario_backend_tool_passthrough() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let plugin = TestFrontendToolPlugin::new(["frontendOnly".to_string()].into_iter().collect());
 
     let thread = ConversationAgentState::new("test");
@@ -5448,7 +5404,7 @@ use carve_protocol_ag_ui::AGUIMessage;
 #[tokio::test]
 async fn test_scenario_permission_approved_complete_flow() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
     let ctx_step = thread.as_tool_call_context();
@@ -5511,7 +5467,7 @@ async fn test_scenario_permission_approved_complete_flow() {
 #[tokio::test]
 async fn test_scenario_permission_denied_complete_flow() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
     let ctx_step = thread.as_tool_call_context();
@@ -5564,7 +5520,7 @@ async fn test_scenario_permission_denied_complete_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_execution_complete_flow() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     // Phase 1: Agent calls frontend tool
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -5625,7 +5581,7 @@ async fn test_scenario_frontend_tool_execution_complete_flow() {
 #[tokio::test]
 async fn test_scenario_multiple_interactions_sequence() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
     let thread = ConversationAgentState::new("test");
     let plugin = PermissionPlugin;
 
@@ -5822,7 +5778,7 @@ fn test_scenario_mixed_messages_with_interaction_response() {
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_blocks_denied() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // AgentState must have a persisted pending interaction matching the denied ID.
     let thread = AgentState::with_initial_state(
@@ -5866,7 +5822,7 @@ async fn test_scenario_interaction_response_plugin_blocks_denied() {
 #[tokio::test]
 async fn test_scenario_interaction_response_plugin_allows_approved() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // AgentState must have a persisted pending interaction matching the approved ID.
     let thread = AgentState::with_initial_state(
@@ -5903,7 +5859,7 @@ async fn test_scenario_interaction_response_plugin_allows_approved() {
 #[tokio::test]
 async fn test_scenario_e2e_permission_to_response_flow() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let thread = ConversationAgentState::new("test");
 
@@ -5979,7 +5935,7 @@ async fn test_scenario_e2e_permission_to_response_flow() {
 #[tokio::test]
 async fn test_scenario_frontend_tool_with_response_plugin() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let thread = ConversationAgentState::new("test");
 
@@ -6303,7 +6259,7 @@ fn test_agui_sse_multiple_events() {
 #[tokio::test]
 async fn test_permission_flow_approval_e2e() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Phase 1: Agent requests permission (simulated by PermissionPlugin)
     let thread = ConversationAgentState::new("test");
@@ -6371,7 +6327,7 @@ async fn test_permission_flow_approval_e2e() {
 #[tokio::test]
 async fn test_permission_flow_denial_e2e() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Phase 1: Agent requests permission
     let thread = ConversationAgentState::new("test");
@@ -6433,7 +6389,7 @@ async fn test_permission_flow_denial_e2e() {
 #[tokio::test]
 async fn test_permission_flow_multiple_tools_mixed() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let thread = ConversationAgentState::new("test");
 
@@ -6781,7 +6737,7 @@ async fn test_e2e_permission_approve_executes_via_execute_tools() {
 #[tokio::test]
 async fn test_frontend_tool_flow_creates_pending() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let request = RunAgentRequest {
         tools: vec![AGUIToolDef::frontend(
@@ -6841,7 +6797,7 @@ fn test_frontend_tool_flow_result_from_client() {
 #[tokio::test]
 async fn test_frontend_tool_flow_mixed_with_backend() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let request = RunAgentRequest {
         tools: vec![
@@ -7078,7 +7034,7 @@ fn test_error_flow_run_finish_cancelled() {
 #[tokio::test]
 async fn test_resume_flow_with_approval() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Simulate: Previous run ended with pending permission
     let interaction_id = "permission_tool_x";
@@ -7108,7 +7064,7 @@ async fn test_resume_flow_with_approval() {
 #[tokio::test]
 async fn test_resume_flow_with_denial() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     let interaction_id = "permission_dangerous_tool";
 
@@ -7138,7 +7094,7 @@ async fn test_resume_flow_with_denial() {
 #[tokio::test]
 async fn test_resume_flow_multiple_responses() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Previous run had 3 pending interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7178,7 +7134,7 @@ async fn test_resume_flow_multiple_responses() {
 #[tokio::test]
 async fn test_resume_flow_partial_responses() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Only respond to some interactions
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -7225,7 +7181,7 @@ async fn test_resume_flow_partial_responses() {
 #[tokio::test]
 async fn test_plugin_interaction_frontend_and_response() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Request has both frontend tools and interaction responses
     let request = RunAgentRequest {
@@ -7283,7 +7239,7 @@ async fn test_plugin_interaction_frontend_and_response() {
 #[tokio::test]
 async fn test_plugin_interaction_execution_order() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Setup: Frontend tool that was previously denied
     let request = RunAgentRequest {
@@ -7323,7 +7279,7 @@ async fn test_plugin_interaction_execution_order() {
 #[tokio::test]
 async fn test_plugin_interaction_permission_and_frontend() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Frontend tool with permission set to Ask
     let request = RunAgentRequest {
@@ -7798,7 +7754,7 @@ async fn test_multiple_pending_interactions_flow() {
 #[tokio::test]
 async fn test_multiple_interaction_responses() {
     let doc = json!({});
-    let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+    let _fix = TestFixture::new_with_state(doc);
 
     // Client responds to all 3 interactions: approve, deny, approve
     let request = RunAgentRequest::new("t1".to_string(), "r2".to_string())
@@ -12386,6 +12342,7 @@ fn test_interaction_to_ag_ui_events() {
 // ============================================================================
 
 mod llmmetry_tracing {
+    use carve_agent_contract::testing::TestFixture;
     use carve_agentos::contracts::plugin::AgentPlugin;
     use carve_agentos::contracts::runtime::phase::{Phase, StepContext, ToolContext};
     use carve_agentos::contracts::runtime::StreamResult;
@@ -12463,7 +12420,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_inference_tracing_span_lifecycle() {
         let doc = json!({});
-        let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+        let _fix = TestFixture::new_with_state(doc);
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -12513,7 +12470,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_tool_tracing_span_lifecycle() {
         let doc = json!({});
-        let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+        let _fix = TestFixture::new_with_state(doc);
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
@@ -12557,7 +12514,7 @@ mod llmmetry_tracing {
     #[tokio::test(flavor = "current_thread")]
     async fn test_full_session_with_tracing_spans() {
         let doc = json!({});
-        let _ctx = carve_agentos::contracts::AgentState::new_transient(&doc, "test", "test");
+        let _fix = TestFixture::new_with_state(doc);
         let (_guard, captured) = setup_tracing();
         let baseline = { captured.lock().unwrap().len() };
 
