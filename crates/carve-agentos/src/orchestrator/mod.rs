@@ -21,8 +21,8 @@ use crate::extensions::skills::{
     SkillSubsystem, SkillSubsystemError,
 };
 use crate::runtime::loop_runner::{
-    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput, RunServices,
-    StateCommitError, StateCommitter,
+    run_loop_stream_with_input, AgentConfig, AgentLoopError, LoopRunInput,
+    RunCancellationToken, StateCommitError, StateCommitter,
 };
 
 mod agent_definition;
@@ -317,7 +317,8 @@ pub struct PreparedRun {
     pub run_id: String,
     config: AgentConfig,
     thread: Thread,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 }
 
 impl PreparedRun {
@@ -326,11 +327,8 @@ impl PreparedRun {
     /// This keeps loop cancellation wiring outside protocol/UI layers:
     /// transport code can own token lifecycle and inject it before execution.
     #[must_use]
-    pub fn with_cancellation_token(
-        mut self,
-        token: crate::runtime::loop_runner::RunCancellationToken,
-    ) -> Self {
-        self.run_ctx.cancellation_token = Some(token);
+    pub fn with_cancellation_token(mut self, token: RunCancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 }

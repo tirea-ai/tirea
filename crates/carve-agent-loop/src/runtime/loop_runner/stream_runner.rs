@@ -248,15 +248,15 @@ pub(super) fn run_loop_stream_impl_with_provider(
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     Box::pin(stream! {
     let mut thread = thread;
     let mut run_state = RunState::new();
     let mut last_text = String::new();
     let stop_conditions = effective_stop_conditions(&config);
-    let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
-    let state_committer = run_ctx.state_committer().cloned();
+    let run_cancellation_token = cancellation_token;
     let step_tool_provider = step_tool_provider_for_run(&config, &tools);
         let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel();
         let activity_manager: Arc<dyn ActivityManager> = Arc::new(ActivityHub::new(activity_tx));

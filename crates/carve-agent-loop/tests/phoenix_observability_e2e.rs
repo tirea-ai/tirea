@@ -266,7 +266,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
-    let events: Vec<_> = run_loop_stream(client, config, state, tools, Default::default())
+    let events: Vec<_> = run_loop_stream(client, config, state, tools, None, None)
         .collect()
         .await;
     assert!(

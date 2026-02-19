@@ -1,7 +1,6 @@
 use crate::contracts::state::AgentChangeSet;
 use crate::contracts::storage::VersionPrecondition;
 use async_trait::async_trait;
-use std::sync::Arc;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -36,58 +35,11 @@ pub trait StateCommitter: Send + Sync {
     ) -> Result<u64, StateCommitError>;
 }
 
-/// Infrastructure services for a streaming agent run.
-///
-/// Carries cooperative runtime controls (cancellation, state commit sink)
-/// that are orthogonal to business data in `RunContext`.
-#[derive(Clone, Default)]
-pub struct RunServices {
-    /// Cancellation token for cooperative loop termination.
-    ///
-    /// When cancelled, this is the **run cancellation signal**:
-    /// the loop stops at the next check point and emits `RunFinish` with
-    /// `TerminationReason::Cancelled`.
-    pub cancellation_token: Option<RunCancellationToken>,
-    /// Optional state committer for durable state change sets.
-    ///
-    /// When configured, the loop emits committed `AgentChangeSet` records in
-    /// order and waits for `commit()` success before continuing.
-    pub state_committer: Option<Arc<dyn StateCommitter>>,
-}
-
-impl std::fmt::Debug for RunServices {
+impl std::fmt::Debug for dyn StateCommitter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RunServices")
-            .field(
-                "cancellation_token",
-                &self.cancellation_token.as_ref().map(|_| "<set>"),
-            )
-            .field(
-                "state_committer",
-                &self.state_committer.as_ref().map(|_| "<set>"),
-            )
-            .finish()
+        f.write_str("<StateCommitter>")
     }
 }
-
-impl RunServices {
-    pub fn run_cancellation_token(&self) -> Option<&RunCancellationToken> {
-        self.cancellation_token.as_ref()
-    }
-
-    pub fn state_committer(&self) -> Option<&Arc<dyn StateCommitter>> {
-        self.state_committer.as_ref()
-    }
-
-    pub fn with_state_committer(mut self, committer: Arc<dyn StateCommitter>) -> Self {
-        self.state_committer = Some(committer);
-        self
-    }
-}
-
-/// Deprecated alias for `RunServices`.
-#[deprecated(note = "renamed to `RunServices`")]
-pub type RunContext = RunServices;
 
 /// Scope key: caller session id visible to tools.
 pub const TOOL_SCOPE_CALLER_THREAD_ID_KEY: &str = "__agent_tool_caller_thread_id";

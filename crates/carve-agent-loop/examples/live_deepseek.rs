@@ -14,7 +14,7 @@ use carve_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
-    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError, RunServices,
+    run_loop, run_loop_stream, tool_map_from_arc, AgentConfig, AgentLoopError,
 };
 use carve_state::State;
 use carve_thread_store_adapters::{FileStore, MemoryStore};
@@ -435,7 +435,7 @@ async fn test_streaming(client: &Client) -> Result<(), Box<dyn std::error::Error
     println!("User: Count from 1 to 5, one number per line.");
     print!("Assistant: ");
 
-    let mut stream = run_loop_stream(client.clone(), config, thread, tools, RunServices::default());
+    let mut stream = run_loop_stream(client.clone(), config, thread, tools, None, None);
 
     while let Some(event) = stream.next().await {
         match event {

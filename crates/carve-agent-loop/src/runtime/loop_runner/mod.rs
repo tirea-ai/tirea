@@ -78,9 +78,8 @@ use uuid::Uuid;
 use crate::contracts::plugin::AgentPlugin;
 #[cfg(test)]
 use crate::contracts::runtime::phase::StepContext;
-#[allow(deprecated)]
 pub use crate::runtime::run_context::{
-    RunCancellationToken, RunContext, RunServices, StateCommitError, StateCommitter,
+    RunCancellationToken, StateCommitError, StateCommitter,
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
@@ -125,14 +124,17 @@ pub use tool_exec::{
 /// Canonical loop invocation input.
 ///
 /// `run_ctx` carries the run-scoped workspace (state, messages, patches, config),
-/// while `run_services` carries infrastructure (cancellation, state commit sink).
+/// while `cancellation_token` and `state_committer` carry infrastructure controls.
 ///
 /// Internally, `thread` bridges to the legacy `Thread`-based loop functions.
 /// It will be removed once loop internals are fully migrated to `RunContext`.
 #[derive(Debug)]
 pub struct LoopRunInput {
     pub run_ctx: crate::contracts::RunContext,
-    pub run_services: RunServices,
+    /// Cancellation token for cooperative loop termination.
+    pub cancellation_token: Option<RunCancellationToken>,
+    /// Optional state committer for durable state change sets.
+    pub state_committer: Option<Arc<dyn StateCommitter>>,
     /// Legacy bridge — the original thread for internal loop consumption.
     pub(super) thread: Thread,
 }
@@ -152,22 +154,23 @@ impl LoopRunInput {
                 thread.messages.clone(),
                 thread.run_config.clone(),
             ),
-            run_services: RunServices::default(),
+            cancellation_token: None,
+            state_committer: None,
             thread,
         })
     }
 
-    /// Attach run services (builder-style, backward-compatible name).
+    /// Attach a cancellation token (builder-style).
     #[must_use]
-    pub fn with_run_context(mut self, run_services: RunServices) -> Self {
-        self.run_services = run_services;
+    pub fn with_cancellation_token(mut self, token: RunCancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 
-    /// Attach run services (builder-style).
+    /// Attach a state committer (builder-style).
     #[must_use]
-    pub fn with_run_services(mut self, run_services: RunServices) -> Self {
-        self.run_services = run_services;
+    pub fn with_state_committer(mut self, committer: Arc<dyn StateCommitter>) -> Self {
+        self.state_committer = Some(committer);
         self
     }
 }
@@ -795,7 +798,7 @@ pub async fn run_loop(
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<(Thread, String), AgentLoopError> {
-    run_loop_with_context(client, config, state, tools, RunServices::default()).await
+    run_loop_with_context(client, config, state, tools, None, None).await
 }
 
 /// Run the full agent loop using executors and providers declared in [`AgentConfig`].
@@ -816,23 +819,25 @@ pub async fn run_loop_with_input(
         config,
         input.thread,
         &no_static_tools,
-        input.run_services,
+        input.cancellation_token,
+        input.state_committer,
     )
     .await
 }
 
-/// Run the full agent loop with explicit run context.
+/// Run the full agent loop with explicit cancellation/commit controls.
 ///
-/// This is the non-streaming counterpart of `run_loop_stream(..., run_ctx)`,
-/// allowing cooperative cancellation via `run_ctx.cancellation_token`.
+/// This is the non-streaming counterpart of `run_loop_stream(...)`,
+/// allowing cooperative cancellation via `cancellation_token`.
 pub async fn run_loop_with_context(
     client: &Client,
     config: &AgentConfig,
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Result<(Thread, String), AgentLoopError> {
-    run_loop_with_context_provider(client, config, state, tools, run_ctx).await
+    run_loop_with_context_provider(client, config, state, tools, cancellation_token, state_committer).await
 }
 
 fn legacy_result_from_outcome(
@@ -884,10 +889,11 @@ async fn run_loop_with_context_provider(
     config: &AgentConfig,
     state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Result<(Thread, String), AgentLoopError> {
     let outcome =
-        run_loop_outcome_with_context_provider(provider, config, state, tools, run_ctx).await;
+        run_loop_outcome_with_context_provider(provider, config, state, tools, cancellation_token, state_committer).await;
     legacy_result_from_outcome(outcome)
 }
 
@@ -896,11 +902,12 @@ async fn run_loop_outcome_with_context_provider(
     config: &AgentConfig,
     mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    _state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> LoopOutcome {
     let mut run_state = RunState::new();
     let stop_conditions = effective_stop_conditions(config);
-    let run_cancellation_token = run_ctx.run_cancellation_token().cloned();
+    let run_cancellation_token = cancellation_token;
     let mut last_text = String::new();
     let step_tool_provider = step_tool_provider_for_run(config, tools);
     let run_id = stream_core::resolve_stream_run_identity(&mut thread).run_id;
@@ -1174,14 +1181,16 @@ pub fn run_loop_stream(
     config: AgentConfig,
     thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
-    run_ctx: RunServices,
+    cancellation_token: Option<RunCancellationToken>,
+    state_committer: Option<Arc<dyn StateCommitter>>,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
     stream_runner::run_loop_stream_impl_with_provider(
         Arc::new(client),
         config,
         thread,
         tools,
-        run_ctx,
+        cancellation_token,
+        state_committer,
     )
 }
 
@@ -1200,7 +1209,8 @@ pub fn run_loop_stream_with_input(
         config,
         input.thread,
         HashMap::new(),
-        input.run_services,
+        input.cancellation_token,
+        input.state_committer,
     )
 }
 

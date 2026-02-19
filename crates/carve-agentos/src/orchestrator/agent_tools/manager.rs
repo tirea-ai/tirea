@@ -270,12 +270,9 @@ pub(super) async fn execute_target_agent(
     cancellation_token: Option<RunCancellationToken>,
 ) -> AgentRunCompletion {
     let (checkpoint_tx, mut checkpoints) = tokio::sync::mpsc::unbounded_channel();
-    let run_ctx = RunServices {
-        cancellation_token,
-        ..RunServices::default()
-    }
-    .with_state_committer(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
-    let mut events = match os.run_stream_with_context(&target_agent_id, thread.clone(), run_ctx) {
+    let state_committer: Option<Arc<dyn crate::runtime::loop_runner::StateCommitter>> =
+        Some(Arc::new(ChannelStateCommitter::new(checkpoint_tx)));
+    let mut events = match os.run_stream_with_context(&target_agent_id, thread.clone(), cancellation_token, state_committer) {
         Ok(stream) => stream,
         Err(e) => {
             return AgentRunCompletion {
