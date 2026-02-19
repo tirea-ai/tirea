@@ -8,12 +8,12 @@ use serde_json::{json, Value};
 pub enum StepResult {
     /// LLM responded with text, no tools needed.
     Done {
-        state: AgentState,
+        state: Thread,
         response: String,
     },
     /// LLM requested tool calls, tools have been executed.
     ToolsExecuted {
-        state: AgentState,
+        state: Thread,
         text: String,
         tool_calls: Vec<crate::contracts::state::ToolCall>,
     },
@@ -47,7 +47,7 @@ pub(super) enum LoopFailure {
 /// Unified terminal state for loop execution.
 #[derive(Debug, Clone)]
 pub struct LoopOutcome {
-    pub state: AgentState,
+    pub state: Thread,
     pub termination: TerminationReason,
     pub response: Option<String>,
     pub usage: LoopUsage,
@@ -84,7 +84,7 @@ impl LoopOutcome {
 pub async fn run_step_cycle(
     client: &Client,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
 ) -> Result<StepResult, AgentLoopError> {
     // Run one step
@@ -120,7 +120,7 @@ pub enum AgentLoopError {
     /// is included so callers can inspect final state.
     #[error("Agent stopped: {reason:?}")]
     Stopped {
-        state: Box<AgentState>,
+        state: Box<Thread>,
         reason: StopReason,
     },
     /// Pending user interaction; execution should pause until the client responds.
@@ -129,12 +129,12 @@ pub enum AgentLoopError {
     /// interaction was requested (including persisting the pending interaction).
     #[error("Pending interaction: {id} ({action})", id = interaction.id, action = interaction.action)]
     PendingInteraction {
-        state: Box<AgentState>,
+        state: Box<Thread>,
         interaction: Box<Interaction>,
     },
     /// External cancellation signal requested run termination.
     #[error("Run cancelled")]
-    Cancelled { state: Box<AgentState> },
+    Cancelled { state: Box<Thread> },
 }
 
 impl AgentLoopError {
@@ -154,7 +154,7 @@ impl From<crate::contracts::runtime::ToolExecutorError> for AgentLoopError {
         match value {
             crate::contracts::runtime::ToolExecutorError::Cancelled { thread_id } => {
                 Self::Cancelled {
-                    state: Box::new(AgentState::new(thread_id)),
+                    state: Box::new(Thread::new(thread_id)),
                 }
             }
             crate::contracts::runtime::ToolExecutorError::Failed { message } => {

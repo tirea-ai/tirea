@@ -1,6 +1,6 @@
 //! Tool trait for agent actions.
 //!
-//! Tools execute actions and can modify state through `AgentState`.
+//! Tools execute actions and can modify state through `Thread`.
 
 use crate::context::ToolCallContext;
 use async_trait::async_trait;

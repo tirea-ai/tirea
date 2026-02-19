@@ -517,7 +517,7 @@ impl AgentOs {
     pub fn resolve(
         &self,
         agent_id: &str,
-        mut thread: AgentState,
+        mut thread: Thread,
     ) -> Result<ResolvedAgentWiring, AgentOsResolveError> {
         let definition = self
             .agents

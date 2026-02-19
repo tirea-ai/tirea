@@ -1,5 +1,5 @@
 use crate::runtime::termination::StopReason;
-use crate::state::{AgentState, ToolCall};
+use crate::state::{Thread, ToolCall};
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ pub struct StopPolicyStats<'a> {
 /// Canonical stop-policy input: persisted state + runtime stats.
 pub struct StopPolicyInput<'a> {
     /// Current agent state snapshot.
-    pub agent_state: &'a AgentState,
+    pub agent_state: &'a Thread,
     /// Runtime run stats.
     pub stats: StopPolicyStats<'a>,
 }

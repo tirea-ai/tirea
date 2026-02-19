@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use carve_agent_extension_skills::{FsSkill, SkillSubsystem};
 use carve_agent_loop::contracts::runtime::AgentEvent;
-use carve_agent_loop::contracts::state::AgentState as ConversationAgentState;
+use carve_agent_loop::contracts::state::Thread as ConversationAgentState;
 use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;

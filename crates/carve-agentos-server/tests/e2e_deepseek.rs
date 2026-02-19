@@ -337,7 +337,7 @@ async fn e2e_ai_sdk_tool_call_with_deepseek() {
         "LLM did not answer '51' for 17*3. Got: {answer}"
     );
 
-    // AgentState should be persisted with tool call history.
+    // Thread should be persisted with tool call history.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load_agent_state("e2e-sdk-tool").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");

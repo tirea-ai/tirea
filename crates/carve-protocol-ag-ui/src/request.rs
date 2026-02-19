@@ -137,7 +137,7 @@ impl AGUIToolDef {
 /// Request to run an AG-UI agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunAgentRequest {
-    /// AgentState identifier.
+    /// Thread identifier.
     #[serde(rename = "threadId")]
     pub thread_id: String,
     /// Run identifier.

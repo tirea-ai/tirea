@@ -151,7 +151,7 @@ impl AgentPlugin for SkillDiscoveryPlugin {
 mod tests {
     use super::*;
     use crate::FsSkill;
-    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::state::Thread;
     use carve_agent_contract::tool::ToolDescriptor;
     use carve_agent_contract::testing::TestFixture;
     use serde_json::json;
@@ -183,7 +183,7 @@ mod tests {
         let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 8 * 1024);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert_eq!(step.system_context.len(), 1);
@@ -200,7 +200,7 @@ mod tests {
         let fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills);
-        let thread = AgentState::with_initial_state(
+        let thread = Thread::with_initial_state(
             "s",
             json!({
                 "skills": {
@@ -221,7 +221,7 @@ mod tests {
     async fn does_not_inject_when_skills_empty() {
         let fix = TestFixture::new();
         let p = SkillDiscoveryPlugin::new(vec![]);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
@@ -244,7 +244,7 @@ mod tests {
 
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         assert!(step.system_context.is_empty());
@@ -271,7 +271,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
 
@@ -300,7 +300,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills).with_limits(2, 8 * 1024);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
@@ -323,7 +323,7 @@ mod tests {
         let result = FsSkill::discover(root).unwrap();
         let skills = FsSkill::into_arc_skills(result.skills);
         let p = SkillDiscoveryPlugin::new(skills).with_limits(10, 256);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         let mut step = StepContext::new(fix.ctx(), &thread.id, &thread.messages, vec![ToolDescriptor::new("t", "t", "t")]);
         p.on_phase(Phase::BeforeInference, &mut step).await;
         let s = &step.system_context[0];
@@ -335,7 +335,7 @@ mod tests {
         let mut fix = TestFixture::new();
         let (_td, skills) = make_skills();
         let p = SkillDiscoveryPlugin::new(skills);
-        let thread = AgentState::with_initial_state("s", json!({}));
+        let thread = Thread::with_initial_state("s", json!({}));
         fix.run_config
             .set(SCOPE_ALLOWED_SKILLS_KEY, vec!["a-skill"])
             .unwrap();

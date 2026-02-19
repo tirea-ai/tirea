@@ -3,7 +3,7 @@
 use carve_agent_extension_observability::{InMemorySink, LLMMetryPlugin};
 use carve_agent_loop::contracts::plugin::AgentPlugin;
 use carve_agent_loop::contracts::runtime::{AgentEvent, StreamResult};
-use carve_agent_loop::contracts::state::{AgentState, Message, ToolCall};
+use carve_agent_loop::contracts::state::{Thread, Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
 use carve_agent_loop::contracts::ToolCallContext;
 use carve_agent_loop::runtime::loop_runner::{
@@ -90,7 +90,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         .build();
 
     let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = AgentState::with_initial_state("phoenix-e2e-state", json!({}))
+    let state = Thread::with_initial_state("phoenix-e2e-state", json!({}))
         .with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -149,7 +149,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         .build();
 
     let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = AgentState::with_initial_state("phoenix-e2e-state-err", json!({}))
+    let state = Thread::with_initial_state("phoenix-e2e-state-err", json!({}))
         .with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -184,7 +184,7 @@ async fn test_llmmetry_exports_tool_spans_to_phoenix_via_otlp() {
     let plugin = Arc::new(LLMMetryPlugin::new(sink).with_provider(provider_name.clone()))
         as Arc<dyn AgentPlugin>;
 
-    let thread = AgentState::with_initial_state("phoenix-tool-span-state", json!({}))
+    let thread = Thread::with_initial_state("phoenix-tool-span-state", json!({}))
         .with_message(Message::user("hi"));
     let result = StreamResult {
         text: "tools".into(),
@@ -262,7 +262,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .build();
 
     let config = AgentConfig::new(model_name.clone()).with_plugin(plugin);
-    let state = AgentState::with_initial_state("phoenix-stream-ok-state", json!({}))
+    let state = Thread::with_initial_state("phoenix-stream-ok-state", json!({}))
         .with_message(Message::user("hi"));
     let tools: HashMap<String, Arc<dyn Tool>> = HashMap::new();
 
@@ -312,7 +312,7 @@ async fn test_llmmetry_exports_tool_error_span_to_phoenix_via_otlp() {
     let plugin = Arc::new(LLMMetryPlugin::new(sink).with_provider(provider_name.clone()))
         as Arc<dyn AgentPlugin>;
 
-    let thread = AgentState::with_initial_state("phoenix-tool-err-state", json!({}))
+    let thread = Thread::with_initial_state("phoenix-tool-err-state", json!({}))
         .with_message(Message::user("hi"));
     let result = StreamResult {
         text: "tools".into(),

@@ -30,7 +30,7 @@ impl AgentOs {
     /// Prepare a request for execution.
     ///
     /// This handles all deterministic pre-run logic:
-    /// 1. AgentState loading/creation from storage
+    /// 1. Thread loading/creation from storage
     /// 2. Message deduplication and appending
     /// 3. Persisting pre-run state
     /// 4. Agent resolution and run-context creation
@@ -67,9 +67,9 @@ impl AgentOs {
             }
             None => {
                 let thread = if let Some(state) = frontend_state {
-                    AgentState::with_initial_state(thread_id.clone(), state)
+                    Thread::with_initial_state(thread_id.clone(), state)
                 } else {
-                    AgentState::new(thread_id.clone())
+                    Thread::new(thread_id.clone())
                 };
                 let committed = agent_state_store.create(&thread).await?;
                 (thread, committed.version)
@@ -178,7 +178,7 @@ impl AgentOs {
     /// Deduplicate incoming messages against existing thread messages.
     ///
     /// Skips messages whose ID or tool_call_id already exists in the thread.
-    fn dedup_messages(thread: &AgentState, incoming: Vec<Message>) -> Vec<Message> {
+    fn dedup_messages(thread: &Thread, incoming: Vec<Message>) -> Vec<Message> {
         use std::collections::HashSet;
 
         let existing_ids: HashSet<&str> = thread
@@ -217,7 +217,7 @@ impl AgentOs {
     pub(crate) fn run_stream_with_context(
         &self,
         agent_id: &str,
-        thread: AgentState,
+        thread: Thread,
         run_ctx: RunContext,
     ) -> Result<impl futures::Stream<Item = AgentEvent> + Send, AgentOsRunError> {
         let (cfg, tools, thread) = self.resolve(agent_id, thread)?;

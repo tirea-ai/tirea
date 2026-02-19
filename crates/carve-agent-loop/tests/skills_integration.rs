@@ -3,7 +3,7 @@
 use carve_agent_extension_skills::{
     FsSkill, LoadSkillResourceTool, Skill, SkillActivateTool, SkillScriptTool,
 };
-use carve_agent_loop::contracts::state::AgentState;
+use carve_agent_loop::contracts::state::Thread;
 use carve_agent_loop::contracts::state::{Message, ToolCall};
 use carve_agent_loop::contracts::tool::{Tool, ToolResult};
 use carve_agent_loop::engine::tool_execution::{
@@ -56,10 +56,10 @@ echo "hello"
 }
 
 async fn apply_tool(
-    thread: AgentState,
+    thread: Thread,
     tool: &dyn Tool,
     call: ToolCall,
-) -> (AgentState, ToolResult) {
+) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool(Some(tool), &call, &state).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -71,11 +71,11 @@ async fn apply_tool(
 }
 
 async fn apply_tool_with_scope(
-    thread: AgentState,
+    thread: Thread,
     tool: &dyn Tool,
     call: ToolCall,
     scope: &carve_agent_contract::RunConfig,
-) -> (AgentState, ToolResult) {
+) -> (Thread, ToolResult) {
     let state = thread.rebuild_state().unwrap();
     let exec = execute_single_tool_with_scope(Some(tool), &call, &state, Some(scope)).await;
     let thread = if let Some(patch) = exec.patch.clone() {
@@ -96,7 +96,7 @@ async fn test_skill_activation_delivers_instructions_via_append_user_messages() 
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, result) = apply_tool(
         thread,
@@ -122,7 +122,7 @@ async fn test_skill_activation_delivers_instructions_via_append_user_messages() 
 async fn test_skill_activation_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = carve_agent_contract::RunConfig::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
@@ -142,7 +142,7 @@ async fn test_skill_activation_respects_scope_skill_policy() {
 async fn test_load_skill_resource_respects_scope_skill_policy() {
     let (_td, skills) = make_skill_tree();
     let load = LoadSkillResourceTool::new(skills);
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let mut scope = carve_agent_contract::RunConfig::new();
     scope
         .set("__agent_policy_allowed_skills", vec!["other-skill"])
@@ -167,7 +167,7 @@ async fn test_load_reference_returns_content_in_tool_result() {
     let (_td, skills) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, result) = apply_tool(
         thread,
@@ -191,7 +191,7 @@ async fn test_script_result_is_persisted_in_state() {
     let activate = SkillActivateTool::new(skills.clone());
     let run_script = SkillScriptTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+    let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
 
     let (thread, _) = apply_tool(
         thread,
@@ -220,7 +220,7 @@ async fn test_load_asset_returns_metadata_in_tool_result() {
     let (_td, skills) = make_skill_tree();
     let load_asset = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, result) = apply_tool(
         thread,
@@ -243,7 +243,7 @@ async fn test_load_reference_rejects_escape() {
     let (_td, skills) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -263,7 +263,7 @@ async fn test_load_resource_requires_supported_prefix() {
     let (_td, skills) = make_skill_tree();
     let load_asset = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_asset,
@@ -283,7 +283,7 @@ async fn test_load_resource_kind_mismatch_is_error() {
     let (_td, skills) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_resource,
@@ -303,7 +303,7 @@ async fn test_load_resource_explicit_kind_asset_works() {
     let (_td, skills) = make_skill_tree();
     let load_resource = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_resource,
@@ -324,7 +324,7 @@ async fn test_skill_activation_requires_exact_skill_name() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -340,7 +340,7 @@ async fn test_skill_activation_unknown_skill_errors() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -356,7 +356,7 @@ async fn test_skill_activation_missing_skill_argument_is_error() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -372,7 +372,7 @@ async fn test_skill_activation_applies_allowed_tools_to_permission_state() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -390,7 +390,7 @@ async fn test_skill_activation_writes_append_user_messages_to_agent_state() {
     let (_td, skills) = make_skill_tree();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -417,7 +417,7 @@ async fn test_skill_activation_requires_skill_md_to_exist_at_activation_time() {
     fs::remove_file(td.path().join("skills").join("docx").join("SKILL.md")).unwrap();
 
     let activate = SkillActivateTool::new(skills);
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &activate,
@@ -433,7 +433,7 @@ async fn test_load_reference_requires_references_prefix() {
     let (_td, skills) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -453,7 +453,7 @@ async fn test_load_reference_missing_arguments_are_errors() {
     let (_td, skills) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, r1) = apply_tool(
         thread.clone(),
@@ -484,7 +484,7 @@ async fn test_load_reference_invalid_utf8_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BAD.bin"), vec![0xff, 0xfe, 0xfd]).unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -504,7 +504,7 @@ async fn test_load_reference_missing_file_is_error() {
     let (_td, skills) = make_skill_tree();
     let load_ref = LoadSkillResourceTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -533,7 +533,7 @@ async fn test_load_reference_symlink_escape_is_error() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     unix_fs::symlink(&outside, refs_dir.join("ESCAPE.md")).unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &load_ref,
@@ -553,7 +553,7 @@ async fn test_script_requires_scripts_prefix() {
     let (_td, skills) = make_skill_tree();
     let run_script = SkillScriptTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -573,7 +573,7 @@ async fn test_script_missing_arguments_are_errors() {
     let (_td, skills) = make_skill_tree();
     let run_script = SkillScriptTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, r1) = apply_tool(
         thread.clone(),
@@ -610,7 +610,7 @@ printf "%s" "$*"
     )
     .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, result) = apply_tool(
         thread,
@@ -641,7 +641,7 @@ exit 2
     )
     .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -666,7 +666,7 @@ async fn test_script_unsupported_runtime_is_error() {
     fs::write(scripts_dir.join("bad.rb"), "puts 'hi'\n").unwrap();
 
     let run_script = SkillScriptTool::new(skills);
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -691,7 +691,7 @@ async fn test_script_rejects_excessive_argument_count() {
         args.push(format!("arg-{i}"));
     }
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_thread, result) = apply_tool(
         thread,
         &run_script,
@@ -731,7 +731,7 @@ Body
         .collect();
     let activate = SkillActivateTool::new(skills);
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (thread, result) = apply_tool(
         thread,
         &activate,
@@ -761,7 +761,7 @@ async fn test_reference_truncation_flag_in_tool_result() {
     let refs_dir = td.path().join("skills").join("docx").join("references");
     fs::write(refs_dir.join("BIG.md"), big).unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, result) = apply_tool(
         thread,
@@ -793,7 +793,7 @@ head -c 40000 /dev/zero | tr '\0' 'a'
     )
     .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
 
     let (_thread, result) = apply_tool(
         thread,

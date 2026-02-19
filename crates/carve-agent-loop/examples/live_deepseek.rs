@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use carve_agent_loop::contracts::runtime::AgentEvent;
-use carve_agent_loop::contracts::state::AgentState as ConversationAgentState;
+use carve_agent_loop::contracts::state::Thread as ConversationAgentState;
 use carve_agent_loop::contracts::state::Message;
 use carve_agent_loop::contracts::storage::{AgentStateReader, AgentStateWriter};
 use carve_agent_loop::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
@@ -344,8 +344,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 6: Multi-run with Tools ---");
     test_multi_run_with_tools(&client).await?;
 
-    // Test 7: AgentState persistence and restore
-    println!("\n--- Test 7: AgentState Persistence & Restore ---");
+    // Test 7: Thread persistence and restore
+    println!("\n--- Test 7: Thread Persistence & Restore ---");
     test_session_persistence(&client).await?;
 
     // Test 8: Parallel tool calls
@@ -360,8 +360,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Test 10: Tool Failure Recovery ---");
     test_tool_failure_recovery(&client).await?;
 
-    // Test 11: AgentState snapshot continuation
-    println!("\n--- Test 11: AgentState Snapshot Continuation ---");
+    // Test 11: Thread snapshot continuation
+    println!("\n--- Test 11: Thread Snapshot Continuation ---");
     test_session_snapshot(&client).await?;
 
     // Test 12: State replay
@@ -674,7 +674,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
 
     // Save session
     storage.save(&thread).await?;
-    println!("\n✅ AgentState saved to disk");
+    println!("\n✅ Thread saved to disk");
     println!("   Messages: {}", thread.message_count());
     println!("   Patches: {}", thread.patch_count());
 
@@ -688,9 +688,9 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     let loaded_thread = storage
         .load_agent_state("persist-test")
         .await?
-        .ok_or("AgentState not found")?;
+        .ok_or("Thread not found")?;
 
-    println!("✅ AgentState loaded from disk");
+    println!("✅ Thread loaded from disk");
     println!("   Messages: {}", loaded_thread.message_count());
     println!("   Patches: {}", loaded_thread.patch_count());
 
@@ -744,7 +744,7 @@ async fn test_session_persistence(client: &Client) -> Result<(), Box<dyn std::er
     );
 
     if final_counter == 142 {
-        println!("✅ AgentState persistence and restore working correctly!");
+        println!("✅ Thread persistence and restore working correctly!");
     } else {
         println!("⚠️ Counter value unexpected");
     }
@@ -934,7 +934,7 @@ async fn test_tool_failure_recovery(client: &Client) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// Test 11: AgentState snapshot - collapse patches and continue
+/// Test 11: Thread snapshot - collapse patches and continue
 async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error::Error>> {
     let config = AgentConfig::new("deepseek-chat").with_max_rounds(5);
 
@@ -990,7 +990,7 @@ async fn test_session_snapshot(client: &Client) -> Result<(), Box<dyn std::error
         println!("✅ Snapshot collapsed patches to 0");
     }
     if final_counter >= 30 {
-        println!("✅ AgentState continued correctly after snapshot");
+        println!("✅ Thread continued correctly after snapshot");
     }
 
     Ok(())

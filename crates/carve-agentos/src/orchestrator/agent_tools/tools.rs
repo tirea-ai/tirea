@@ -30,11 +30,11 @@ fn scope_run_id(scope: Option<&carve_agent_contract::RunConfig>) -> Option<Strin
 }
 
 fn bind_child_lineage(
-    mut thread: crate::contracts::state::AgentState,
+    mut thread: crate::contracts::state::Thread,
     run_id: &str,
     parent_run_id: Option<&str>,
     parent_thread_id: Option<&str>,
-) -> crate::contracts::state::AgentState {
+) -> crate::contracts::state::Thread {
     if thread.parent_thread_id.is_none() {
         thread.parent_thread_id = parent_thread_id.map(str::to_string);
     }
@@ -140,7 +140,7 @@ struct RunLaunch {
     owner_thread_id: String,
     target_agent_id: String,
     parent_run_id: Option<String>,
-    thread: crate::contracts::state::AgentState,
+    thread: crate::contracts::state::Thread,
 }
 
 impl AgentRunTool {
@@ -471,13 +471,13 @@ impl Tool for AgentRunTool {
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             let mut forked =
-                crate::contracts::state::AgentState::with_initial_state(thread_id, fork_state);
+                crate::contracts::state::Thread::with_initial_state(thread_id, fork_state);
             if let Some(messages) = parse_caller_messages(Some(scope)) {
                 forked = forked.with_messages(filtered_fork_messages(messages));
             }
             forked
         } else {
-            crate::contracts::state::AgentState::new(thread_id)
+            crate::contracts::state::Thread::new(thread_id)
         };
         child_thread = child_thread.with_message(Message::user(prompt));
         child_thread = bind_child_lineage(

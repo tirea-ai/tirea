@@ -8,11 +8,11 @@ use super::*;
 // - delegates deterministic state-machine helpers to `stream_core`
 
 async fn drain_run_start_outbox_and_replay(
-    mut thread: AgentState,
+    mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
-) -> Result<(AgentState, Vec<AgentEvent>), String> {
+) -> Result<(Thread, Vec<AgentEvent>), String> {
     let (next_thread, outbox) =
         drain_agent_outbox(thread.clone(), "agent_outbox_run_start").map_err(|e| e.to_string())?;
     thread = next_thread;
@@ -121,7 +121,7 @@ async fn drain_run_start_outbox_and_replay(
     Ok((thread, events))
 }
 
-fn drain_loop_tick_outbox(thread: AgentState) -> Result<(AgentState, Vec<AgentEvent>), String> {
+fn drain_loop_tick_outbox(thread: Thread) -> Result<(Thread, Vec<AgentEvent>), String> {
     let (next_thread, outbox) =
         drain_agent_outbox(thread.clone(), "agent_outbox_loop_tick").map_err(|e| e.to_string())?;
 
@@ -246,7 +246,7 @@ fn event_type_name(event: &AgentEvent) -> &'static str {
 pub(super) fn run_loop_stream_impl_with_provider(
     provider: Arc<dyn ChatStreamProvider>,
     config: AgentConfig,
-    thread: AgentState,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {
@@ -758,7 +758,7 @@ pub(super) fn run_loop_stream_impl_with_provider(
                 }
             }
 
-            // Emit state snapshot when we mutated state (tool patches or AgentState pending/clear).
+            // Emit state snapshot when we mutated state (tool patches or Thread pending/clear).
             if let Some(snapshot) = applied.state_snapshot {
                 yield emitter.emit_existing(AgentEvent::StateSnapshot { snapshot });
             }

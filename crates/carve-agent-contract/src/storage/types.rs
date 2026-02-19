@@ -1,4 +1,4 @@
-use crate::state::AgentState;
+use crate::state::Thread;
 use crate::state::Version;
 use crate::Message;
 use crate::Visibility;
@@ -65,7 +65,7 @@ pub struct MessagePage {
     pub prev_cursor: Option<i64>,
 }
 
-/// Pagination query for AgentState lists.
+/// Pagination query for Thread lists.
 #[derive(Debug, Clone)]
 pub struct AgentStateListQuery {
     /// Number of items to skip (0-based).
@@ -89,7 +89,7 @@ impl Default for AgentStateListQuery {
     }
 }
 
-/// Paginated AgentState list response.
+/// Paginated Thread list response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStateListPage {
     pub items: Vec<String>,
@@ -168,8 +168,8 @@ pub fn paginate_in_memory(
 /// Storage-level errors.
 #[derive(Debug, Error)]
 pub enum AgentStateStoreError {
-    /// AgentState not found.
-    #[error("AgentState not found: {0}")]
+    /// Thread not found.
+    #[error("Thread not found: {0}")]
     NotFound(String),
 
     /// IO error.
@@ -180,12 +180,12 @@ pub enum AgentStateStoreError {
     #[error("Serialization error: {0}")]
     Serialization(String),
 
-    /// Invalid AgentState id (path traversal, control chars, etc.).
+    /// Invalid Thread id (path traversal, control chars, etc.).
     #[error("Invalid thread id: {0}")]
     InvalidId(String),
 
-    /// AgentState already exists.
-    #[error("AgentState already exists")]
+    /// Thread already exists.
+    #[error("Thread already exists")]
     AlreadyExists,
 
     /// Optimistic concurrency check failed.
@@ -210,9 +210,9 @@ pub struct Committed {
     pub version: Version,
 }
 
-/// AgentState plus current storage version.
+/// Thread plus current storage version.
 #[derive(Debug, Clone)]
 pub struct AgentStateHead {
-    pub agent_state: AgentState,
+    pub agent_state: Thread,
     pub version: Version,
 }

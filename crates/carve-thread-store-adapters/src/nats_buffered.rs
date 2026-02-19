@@ -29,7 +29,7 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, AgentState, CheckpointReason};
+use carve_agent_contract::{AgentChangeSet, Thread, CheckpointReason};
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -174,7 +174,7 @@ impl NatsBufferedThreadWriter {
 
         let mut thread = match self.inner.load(thread_id).await? {
             Some(head) => head.agent_state,
-            None => AgentState::new(thread_id.to_string()),
+            None => Thread::new(thread_id.to_string()),
         };
 
         for (delta, _) in &deltas_with_msgs {
@@ -236,7 +236,7 @@ impl NatsBufferedThreadWriter {
 
 #[async_trait]
 impl AgentStateWriter for NatsBufferedThreadWriter {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         self.inner.create(thread).await
     }
 
@@ -289,7 +289,7 @@ impl AgentStateWriter for NatsBufferedThreadWriter {
 
     /// Run-end flush: saves the final materialized thread to the inner storage
     /// and purges the corresponding NATS JetStream messages.
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         // Write to durable storage.
         self.inner.save(thread).await?;
 
@@ -318,7 +318,7 @@ impl AgentStateReader for NatsBufferedThreadWriter {
 
 /// Apply a delta to a thread in-place (same logic as agent_state_store::apply_delta but
 /// accessible here without depending on the private function).
-fn apply_delta(thread: &mut AgentState, delta: &AgentChangeSet) {
+fn apply_delta(thread: &mut Thread, delta: &AgentChangeSet) {
     let mut existing_message_ids: HashSet<String> = thread
         .messages
         .iter()

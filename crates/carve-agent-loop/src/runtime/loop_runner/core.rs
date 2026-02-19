@@ -1,7 +1,7 @@
 use super::AgentLoopError;
 use crate::contracts::runtime::phase::StepContext;
 use crate::contracts::runtime::{Interaction, InteractionResponse};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::Tool;
 use crate::runtime::control::{InferenceError, LoopControlExt, LoopControlState};
@@ -46,9 +46,9 @@ impl ThreadMutationBatch {
 }
 
 pub(super) fn reduce_thread_mutations(
-    thread: AgentState,
+    thread: Thread,
     batch: ThreadMutationBatch,
-) -> AgentState {
+) -> Thread {
     let mut thread = thread;
     if !batch.patches.is_empty() {
         thread = thread.with_patches(batch.patches);
@@ -59,7 +59,7 @@ pub(super) fn reduce_thread_mutations(
     thread
 }
 
-pub(super) fn apply_pending_patches(thread: AgentState, pending: Vec<TrackedPatch>) -> AgentState {
+pub(super) fn apply_pending_patches(thread: Thread, pending: Vec<TrackedPatch>) -> Thread {
     reduce_thread_mutations(thread, ThreadMutationBatch::default().with_patches(pending))
 }
 
@@ -135,7 +135,7 @@ pub(super) fn clear_agent_pending_interaction(state: &Value) -> TrackedPatch {
     ctx.take_tracked_patch("agent_loop")
 }
 
-pub(super) fn pending_interaction_from_thread(thread: &AgentState) -> Option<Interaction> {
+pub(super) fn pending_interaction_from_thread(thread: &Thread) -> Option<Interaction> {
     thread.pending_interaction()
 }
 
@@ -162,9 +162,9 @@ pub(super) struct AgentOutboxDrain {
 }
 
 pub(super) fn drain_agent_outbox(
-    mut thread: AgentState,
+    mut thread: Thread,
     _call_id: &str,
-) -> Result<(AgentState, AgentOutboxDrain), AgentLoopError> {
+) -> Result<(Thread, AgentOutboxDrain), AgentLoopError> {
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -229,10 +229,10 @@ pub(super) fn drain_agent_outbox(
 }
 
 pub(super) fn drain_agent_append_user_messages(
-    mut thread: AgentState,
+    mut thread: Thread,
     results: &[super::ToolExecutionResult],
     metadata: Option<&MessageMetadata>,
-) -> Result<(AgentState, usize), AgentLoopError> {
+) -> Result<(Thread, usize), AgentLoopError> {
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;

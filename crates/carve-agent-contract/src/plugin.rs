@@ -5,7 +5,7 @@
 //!
 //! # Phases
 //!
-//! - `RunStart` / `RunEnd` - AgentState lifecycle (called once)
+//! - `RunStart` / `RunEnd` - Thread lifecycle (called once)
 //! - `StepStart` / `StepEnd` - Step lifecycle
 //! - `BeforeInference` / `AfterInference` - LLM call lifecycle
 //! - `BeforeToolExecute` / `AfterToolExecute` - Tool execution lifecycle

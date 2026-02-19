@@ -2,7 +2,7 @@
 
 use carve_agent_contract::testing::TestFixture;
 use carve_agentos::contracts::runtime::AgentEvent;
-use carve_agentos::contracts::state::{AgentState as ConversationAgentState, ToolCall};
+use carve_agentos::contracts::state::{Thread as ConversationAgentState, ToolCall};
 use carve_agentos::contracts::tool::ToolDescriptor;
 use carve_agentos::engine::tool_execution::execute_single_tool;
 use carve_agentos::extensions::skills::{FsSkill, SkillSubsystem};

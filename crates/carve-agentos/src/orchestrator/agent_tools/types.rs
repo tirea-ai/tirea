@@ -3,7 +3,7 @@
 //! These types model the persisted state of delegated agent runs
 //! (created by `agent_run` / `agent_stop` tools).
 
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use carve_state::State;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,7 +49,7 @@ pub struct DelegationRecord {
     pub error: Option<String>,
     /// Last known child session snapshot for resume/recovery.
     #[serde(default, rename = "thread", skip_serializing_if = "Option::is_none")]
-    pub agent_state: Option<AgentState>,
+    pub agent_state: Option<Thread>,
 }
 
 /// Persisted sub-agent delegation state at `state["agent_runs"]`.

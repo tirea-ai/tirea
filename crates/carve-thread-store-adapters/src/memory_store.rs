@@ -3,10 +3,10 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateSync, AgentStateWriter, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, AgentState, Committed, Version};
+use carve_agent_contract::{AgentChangeSet, Thread, Committed, Version};
 
 struct MemoryEntry {
-    agent_state: AgentState,
+    agent_state: Thread,
     version: Version,
     deltas: Vec<AgentChangeSet>,
 }
@@ -26,7 +26,7 @@ impl MemoryStore {
 
 #[async_trait]
 impl AgentStateWriter for MemoryStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         if entries.contains_key(&thread.id) {
             return Err(AgentStateStoreError::AlreadyExists);
@@ -76,7 +76,7 @@ impl AgentStateWriter for MemoryStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         let mut entries = self.entries.write().await;
         let version = entries.get(&thread.id).map_or(0, |e| e.version + 1);
         entries.insert(

@@ -1,5 +1,5 @@
 use super::{AgentLoopError, StateCommitError, StateCommitter};
-use crate::contracts::state::{AgentState, CheckpointReason};
+use crate::contracts::state::{Thread, CheckpointReason};
 use crate::contracts::storage::VersionPrecondition;
 use crate::contracts::AgentChangeSet;
 use async_trait::async_trait;
@@ -36,7 +36,7 @@ impl StateCommitter for ChannelStateCommitter {
 }
 
 pub(super) async fn commit_pending_delta(
-    thread: &mut AgentState,
+    thread: &mut Thread,
     reason: CheckpointReason,
     force: bool,
     run_id: &str,
@@ -94,7 +94,7 @@ impl<'a> PendingDeltaCommitContext<'a> {
 
     pub(super) async fn commit(
         &self,
-        thread: &mut AgentState,
+        thread: &mut Thread,
         reason: CheckpointReason,
         force: bool,
     ) -> Result<(), AgentLoopError> {

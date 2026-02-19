@@ -12,7 +12,7 @@ pub(super) struct StreamRunIdentity {
     pub(super) parent_run_id: Option<String>,
 }
 
-pub(super) fn resolve_stream_run_identity(thread: &mut AgentState) -> StreamRunIdentity {
+pub(super) fn resolve_stream_run_identity(thread: &mut Thread) -> StreamRunIdentity {
     let run_id = thread
         .run_config
         .value("run_id")

@@ -188,7 +188,7 @@ async fn e2e_tensorzero_ai_sdk_sse() {
         "LLM did not answer '4' for 2+2. Got: {deltas}"
     );
 
-    // AgentState persistence.
+    // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load_agent_state("tz-sdk-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
@@ -273,7 +273,7 @@ async fn e2e_tensorzero_ag_ui_sse() {
         "LLM did not answer '6' for 3+3. Got: {content}"
     );
 
-    // AgentState persistence.
+    // Thread persistence.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let saved = storage.load_agent_state("tz-agui-1").await.unwrap();
     assert!(saved.is_some(), "thread not persisted");
@@ -1342,7 +1342,7 @@ async fn e2e_tensorzero_raw_message_history() {
     });
     let (status, thread_text) = get_json(app3, &format!("/v1/threads/{thread_id}")).await;
 
-    println!("=== AgentState Metadata ===\n{thread_text}");
+    println!("=== Thread Metadata ===\n{thread_text}");
     assert_eq!(status, StatusCode::OK);
 
     let thread: Value = serde_json::from_str(&thread_text).expect("invalid JSON");

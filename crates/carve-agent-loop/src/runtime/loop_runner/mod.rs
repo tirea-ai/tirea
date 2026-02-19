@@ -55,7 +55,7 @@ use crate::contracts::runtime::{
 };
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::state::{gen_message_id, Message, MessageMetadata};
-use crate::contracts::state::{ActivityManager, AgentState};
+use crate::contracts::state::{ActivityManager, Thread};
 use crate::contracts::tool::Tool;
 use crate::engine::convert::{assistant_message, assistant_tool_calls, tool_response};
 use crate::engine::stop_conditions::check_stop_policies;
@@ -127,21 +127,21 @@ pub use tool_exec::{
 /// `run_ctx` carries the run-scoped workspace (state, messages, patches, config),
 /// while `run_services` carries infrastructure (cancellation, state commit sink).
 ///
-/// Internally, `thread` bridges to the legacy `AgentState`-based loop functions.
+/// Internally, `thread` bridges to the legacy `Thread`-based loop functions.
 /// It will be removed once loop internals are fully migrated to `RunContext`.
 #[derive(Debug)]
 pub struct LoopRunInput {
     pub run_ctx: crate::contracts::RunContext,
     pub run_services: RunServices,
     /// Legacy bridge — the original thread for internal loop consumption.
-    pub(super) thread: AgentState,
+    pub(super) thread: Thread,
 }
 
 impl LoopRunInput {
-    /// Create from an `AgentState`, building both the new `RunContext` and
+    /// Create from an `Thread`, building both the new `RunContext` and
     /// keeping the thread for internal loop consumption.
     #[allow(deprecated)]
-    pub fn new(thread: AgentState) -> Result<Self, AgentLoopError> {
+    pub fn new(thread: Thread) -> Result<Self, AgentLoopError> {
         let rebuilt = thread
             .rebuild_thread_state()
             .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -176,12 +176,12 @@ fn uuid_v7() -> String {
     Uuid::now_v7().simple().to_string()
 }
 
-pub(super) fn agent_state_version(state: &AgentState) -> u64 {
+pub(super) fn agent_state_version(state: &Thread) -> u64 {
     state.metadata.version.unwrap_or(0)
 }
 
 pub fn set_agent_state_version(
-    state: &mut AgentState,
+    state: &mut Thread,
     version: u64,
     version_timestamp: Option<u64>,
 ) {
@@ -318,7 +318,7 @@ pub(super) fn llm_executor_for_run(config: &AgentConfig) -> Arc<dyn LlmExecutor>
 
 pub(super) async fn resolve_step_tool_snapshot(
     step_tool_provider: &Arc<dyn StepToolProvider>,
-    state: &AgentState,
+    state: &Thread,
 ) -> Result<StepToolSnapshot, AgentLoopError> {
     step_tool_provider.provide(StepToolInput { state }).await
 }
@@ -328,7 +328,7 @@ fn mark_step_completed(run_state: &mut RunState) {
 }
 
 fn build_loop_outcome(
-    state: AgentState,
+    state: Thread,
     termination: TerminationReason,
     response: Option<String>,
     run_state: &RunState,
@@ -347,7 +347,7 @@ fn build_loop_outcome(
 fn stop_reason_for_step(
     run_state: &RunState,
     result: &StreamResult,
-    state: &AgentState,
+    state: &Thread,
     stop_conditions: &[Arc<dyn StopPolicy>],
 ) -> Option<StopReason> {
     let stop_input = run_state.to_policy_input(result, state);
@@ -505,7 +505,7 @@ impl ChatStreamProvider for Client {
 }
 
 async fn run_step_prepare_phases(
-    thread: &AgentState,
+    thread: &Thread,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<
@@ -532,7 +532,7 @@ pub(super) struct PreparedStep {
 }
 
 pub(super) async fn prepare_step_execution(
-    thread: &AgentState,
+    thread: &Thread,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     config: &AgentConfig,
 ) -> Result<PreparedStep, AgentLoopError> {
@@ -547,7 +547,7 @@ pub(super) async fn prepare_step_execution(
 }
 
 pub(super) async fn apply_llm_error_cleanup(
-    thread: &mut AgentState,
+    thread: &mut Thread,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
     error_type: &'static str,
@@ -565,7 +565,7 @@ pub(super) async fn apply_llm_error_cleanup(
 }
 
 pub(super) async fn complete_step_after_inference(
-    thread: &mut AgentState,
+    thread: &mut Thread,
     result: &StreamResult,
     step_meta: MessageMetadata,
     assistant_message_id: Option<String>,
@@ -620,7 +620,7 @@ pub(super) struct ToolExecutionContext {
 }
 
 pub(super) fn prepare_tool_execution_context(
-    thread: &AgentState,
+    thread: &Thread,
     config: Option<&AgentConfig>,
 ) -> Result<ToolExecutionContext, AgentLoopError> {
     let state = thread
@@ -632,10 +632,10 @@ pub(super) fn prepare_tool_execution_context(
 }
 
 pub(super) async fn finalize_run_end(
-    thread: AgentState,
+    thread: Thread,
     tool_descriptors: &[crate::contracts::tool::ToolDescriptor],
     plugins: &[Arc<dyn crate::contracts::plugin::AgentPlugin>],
-) -> AgentState {
+) -> Thread {
     emit_run_end_phase(thread, tool_descriptors, plugins).await
 }
 
@@ -692,18 +692,18 @@ fn assistant_turn_message(
 pub async fn run_step(
     client: &Client,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(AgentState, StreamResult), AgentLoopError> {
+) -> Result<(Thread, StreamResult), AgentLoopError> {
     run_step_with_provider(client, config, state, tools).await
 }
 
 async fn run_step_with_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(AgentState, StreamResult), AgentLoopError> {
+) -> Result<(Thread, StreamResult), AgentLoopError> {
     let step_tool_provider = step_tool_provider_for_run(config, tools);
     let mut state = state;
     let step_tools = resolve_step_tool_snapshot(&step_tool_provider, &state).await?;
@@ -792,9 +792,9 @@ async fn run_step_with_provider(
 pub async fn run_loop(
     client: &Client,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     run_loop_with_context(client, config, state, tools, RunContext::default()).await
 }
 
@@ -806,7 +806,7 @@ pub async fn run_loop(
 pub async fn run_loop_with_input(
     config: &AgentConfig,
     input: LoopRunInput,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     let provider = ExecutorChatProvider {
         executor: llm_executor_for_run(config),
     };
@@ -828,16 +828,16 @@ pub async fn run_loop_with_input(
 pub async fn run_loop_with_context(
     client: &Client,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     run_loop_with_context_provider(client, config, state, tools, run_ctx).await
 }
 
 fn legacy_result_from_outcome(
     outcome: LoopOutcome,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     let LoopOutcome {
         state,
         termination,
@@ -882,10 +882,10 @@ fn legacy_result_from_outcome(
 async fn run_loop_with_context_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    state: AgentState,
+    state: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
-) -> Result<(AgentState, String), AgentLoopError> {
+) -> Result<(Thread, String), AgentLoopError> {
     let outcome =
         run_loop_outcome_with_context_provider(provider, config, state, tools, run_ctx).await;
     legacy_result_from_outcome(outcome)
@@ -894,7 +894,7 @@ async fn run_loop_with_context_provider(
 async fn run_loop_outcome_with_context_provider(
     provider: &dyn ChatProvider,
     config: &AgentConfig,
-    mut thread: AgentState,
+    mut thread: Thread,
     tools: &HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> LoopOutcome {
@@ -1172,7 +1172,7 @@ async fn run_loop_outcome_with_context_provider(
 pub fn run_loop_stream(
     client: Client,
     config: AgentConfig,
-    thread: AgentState,
+    thread: Thread,
     tools: HashMap<String, Arc<dyn Tool>>,
     run_ctx: RunContext,
 ) -> Pin<Box<dyn Stream<Item = AgentEvent> + Send>> {

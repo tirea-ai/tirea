@@ -2,7 +2,7 @@ use super::tool_exec::{ParallelToolExecutor, SequentialToolExecutor};
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{LlmExecutor, StopConditionSpec, StopPolicy, ToolExecutor};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::contracts::tool::{Tool, ToolDescriptor};
 use async_trait::async_trait;
 use genai::chat::ChatOptions;
@@ -36,8 +36,8 @@ impl Default for LlmRetryPolicy {
 
 /// Input context passed to per-step tool providers.
 pub struct StepToolInput<'a> {
-    /// Current AgentState at step boundary.
-    pub state: &'a AgentState,
+    /// Current Thread at step boundary.
+    pub state: &'a Thread,
 }
 
 /// Tool snapshot resolved for one step.

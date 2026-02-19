@@ -8,7 +8,7 @@ use genai::Client;
 
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::{AgentEvent, RunRequest};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::contracts::state::CheckpointReason;
 use crate::contracts::state::Message;
 use crate::contracts::storage::{
@@ -50,7 +50,7 @@ pub use composition::{
     ToolPluginBundle, ToolRegistry, ToolRegistryError,
 };
 
-type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, AgentState);
+type ResolvedAgentWiring = (AgentConfig, HashMap<String, Arc<dyn Tool>>, Thread);
 
 
 
@@ -316,7 +316,7 @@ pub struct PreparedRun {
     /// Resolved run ID (may have been auto-generated).
     pub run_id: String,
     config: AgentConfig,
-    thread: AgentState,
+    thread: Thread,
     run_ctx: RunContext,
 }
 

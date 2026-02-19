@@ -3,7 +3,7 @@ use carve_agent_contract::context::ToolCallContext;
 use carve_state::{DocCell, State};
 use std::sync::{Arc, Mutex};
 pub(super) fn parent_run_id_from_thread(
-    thread: Option<&crate::contracts::state::AgentState>,
+    thread: Option<&crate::contracts::state::Thread>,
 ) -> Option<String> {
     thread
         .and_then(|s| s.run_config.value(SCOPE_PARENT_RUN_ID_KEY))
@@ -13,7 +13,7 @@ pub(super) fn parent_run_id_from_thread(
 
 pub(super) fn as_delegation_record(
     summary: &AgentRunSummary,
-    thread: Option<crate::contracts::state::AgentState>,
+    thread: Option<crate::contracts::state::Thread>,
 ) -> DelegationRecord {
     let parent_run_id = parent_run_id_from_thread(thread.as_ref());
     DelegationRecord {

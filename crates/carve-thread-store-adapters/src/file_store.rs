@@ -3,7 +3,7 @@ use carve_agent_contract::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader,
     AgentStateStoreError, AgentStateWriter, Committed, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, AgentState, Version};
+use carve_agent_contract::{AgentChangeSet, Thread, Version};
 use serde::Deserialize;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
@@ -53,7 +53,7 @@ impl FileStore {
 
 #[async_trait]
 impl AgentStateWriter for FileStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         let path = self.thread_path(&thread.id)?;
         if path.exists() {
             return Err(AgentStateStoreError::AlreadyExists);
@@ -108,7 +108,7 @@ impl AgentStateWriter for FileStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         let next_version = self
             .load_head(&thread.id)
             .await?
@@ -207,14 +207,14 @@ impl FileStore {
         let content = tokio::fs::read_to_string(&path).await?;
         // Try to parse as AgentStateHead first (new format with version).
         if let Ok(head) = serde_json::from_str::<VersionedThread>(&content) {
-            let thread: AgentState = serde_json::from_str(&content)
+            let thread: Thread = serde_json::from_str(&content)
                 .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             Ok(Some(AgentStateHead {
                 agent_state: thread,
                 version: head._version.unwrap_or(0),
             }))
         } else {
-            let thread: AgentState = serde_json::from_str(&content)
+            let thread: Thread = serde_json::from_str(&content)
                 .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
             Ok(Some(AgentStateHead {
                 agent_state: thread,
@@ -289,8 +289,8 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    fn make_thread_with_messages(thread_id: &str, n: usize) -> AgentState {
-        let mut thread = AgentState::new(thread_id);
+    fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
+        let mut thread = Thread::new(thread_id);
         for i in 0..n {
             thread = thread.with_message(Message::user(format!("msg-{i}")));
         }
@@ -302,7 +302,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
 
-        let thread = AgentState::new("test-1").with_message(Message::user("hello"));
+        let thread = Thread::new("test-1").with_message(Message::user("hello"));
         storage.save(&thread).await.unwrap();
 
         let loaded = storage.load_agent_state("test-1").await.unwrap().unwrap();
@@ -315,9 +315,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let storage = FileStore::new(temp_dir.path());
 
-        storage.create(&AgentState::new("thread-a")).await.unwrap();
-        storage.create(&AgentState::new("thread-b")).await.unwrap();
-        storage.create(&AgentState::new("thread-c")).await.unwrap();
+        storage.create(&Thread::new("thread-a")).await.unwrap();
+        storage.create(&Thread::new("thread-b")).await.unwrap();
+        storage.create(&Thread::new("thread-c")).await.unwrap();
 
         let mut ids = storage.list().await.unwrap();
         ids.sort();
@@ -357,7 +357,7 @@ mod tests {
     async fn file_storage_append_and_versioning() {
         let temp_dir = TempDir::new().unwrap();
         let store = FileStore::new(temp_dir.path());
-        store.create(&AgentState::new("t1")).await.unwrap();
+        store.create(&Thread::new("t1")).await.unwrap();
 
         let d1 = AgentChangeSet {
             run_id: "run-1".to_string(),

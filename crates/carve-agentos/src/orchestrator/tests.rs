@@ -1,7 +1,7 @@
 use super::*;
 use crate::contracts::context::ToolCallContext;
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
@@ -90,7 +90,7 @@ impl crate::contracts::storage::AgentStateReader for FailOnNthAppendStorage {
 impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
     async fn create(
         &self,
-        thread: &AgentState,
+        thread: &Thread,
     ) -> Result<crate::contracts::storage::Committed, crate::contracts::storage::AgentStateStoreError>
     {
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::create(
@@ -137,7 +137,7 @@ impl crate::contracts::storage::AgentStateWriter for FailOnNthAppendStorage {
 
     async fn save(
         &self,
-        thread: &AgentState,
+        thread: &Thread,
     ) -> Result<(), crate::contracts::storage::AgentStateStoreError> {
         <carve_thread_store_adapters::MemoryStore as crate::contracts::storage::AgentStateWriter>::save(
             self.inner.as_ref(),
@@ -405,7 +405,7 @@ fn resolve_errors_if_agent_tools_plugin_already_installed() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -437,7 +437,7 @@ fn resolve_errors_if_agent_recovery_plugin_already_installed() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -450,7 +450,7 @@ fn resolve_errors_if_agent_recovery_plugin_already_installed() {
 #[test]
 fn resolve_errors_if_agent_missing() {
     let os = AgentOs::builder().build().unwrap();
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("missing", thread).err().unwrap();
     assert!(matches!(err, AgentOsResolveError::AgentNotFound(_)));
 }
@@ -492,7 +492,7 @@ async fn resolve_wires_skills_and_preserves_base_tools() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
 
     assert_eq!(cfg.id, "a1");
@@ -578,7 +578,7 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = AgentState::with_initial_state("freeze-1", json!({}));
+    let thread1 = Thread::with_initial_state("freeze-1", json!({}));
     let (_cfg1, tools_first_run, _thread1) = os.resolve("a1", thread1).expect("resolve #1");
     assert!(tools_first_run.contains_key("mcp__s1__echo"));
     assert!(!tools_first_run.contains_key("mcp__s1__sum"));
@@ -590,7 +590,7 @@ fn resolve_freezes_tool_snapshot_per_run_boundary() {
     assert!(!tools_first_run.contains_key("mcp__s1__sum"));
 
     // The next resolve picks up refreshed registry state.
-    let thread2 = AgentState::with_initial_state("freeze-2", json!({}));
+    let thread2 = Thread::with_initial_state("freeze-2", json!({}));
     let (_cfg2, tools_second_run, _thread2) = os.resolve("a1", thread2).expect("resolve #2");
     assert!(!tools_second_run.contains_key("mcp__s1__echo"));
     assert!(tools_second_run.contains_key("mcp__s1__sum"));
@@ -648,7 +648,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = AgentState::with_initial_state("freeze-agent-1", json!({}));
+    let thread1 = Thread::with_initial_state("freeze-agent-1", json!({}));
     let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
     let run_tool_first = tools_first_run
         .get("agent_run")
@@ -687,7 +687,7 @@ async fn resolve_freezes_agent_snapshot_per_run_boundary() {
     );
 
     // Next resolve should use refreshed source and reject worker_a.
-    let thread2 = AgentState::with_initial_state("freeze-agent-2", json!({}));
+    let thread2 = Thread::with_initial_state("freeze-agent-2", json!({}));
     let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
     let run_tool_second = tools_second_run
         .get("agent_run")
@@ -820,7 +820,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         .build()
         .expect("build agent os");
 
-    let thread1 = AgentState::with_initial_state("freeze-skill-1", json!({}));
+    let thread1 = Thread::with_initial_state("freeze-skill-1", json!({}));
     let (_cfg1, tools_first_run, _thread1) = os.resolve("root", thread1).expect("resolve #1");
     let activate_first = tools_first_run
         .get("skill")
@@ -839,7 +839,7 @@ async fn resolve_freezes_skill_snapshot_per_run_boundary() {
         "first run should use frozen skills"
     );
 
-    let thread2 = AgentState::with_initial_state("freeze-skill-2", json!({}));
+    let thread2 = Thread::with_initial_state("freeze-skill-2", json!({}));
     let (_cfg2, tools_second_run, _thread2) = os.resolve("root", thread2).expect("resolve #2");
     let activate_second = tools_second_run
         .get("skill")
@@ -960,7 +960,7 @@ fn resolve_sets_runtime_caller_agent_id() {
         )
         .build()
         .unwrap();
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (_cfg, _tools, thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(
         thread
@@ -1026,7 +1026,7 @@ async fn resolve_errors_on_skills_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1042,7 +1042,7 @@ async fn resolve_wires_agent_tools_by_default() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("agent_run"));
     assert!(tools.contains_key("agent_stop"));
@@ -1079,7 +1079,7 @@ async fn resolve_errors_on_agent_tools_tool_id_conflict() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1138,7 +1138,7 @@ async fn resolve_errors_if_models_registry_present_but_model_missing() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(err, AgentOsResolveError::ModelNotFound(ref id) if id == "missing_model_ref"));
 }
@@ -1152,7 +1152,7 @@ async fn resolve_rewrites_model_when_registry_present() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.model, "gpt-4o-mini");
 }
@@ -1184,7 +1184,7 @@ async fn resolve_wires_plugins_from_registry() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
@@ -1210,7 +1210,7 @@ async fn resolve_wires_policies_before_plugins() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert_eq!(cfg.plugins[0].id(), "agent_tools");
     assert_eq!(cfg.plugins[1].id(), "agent_recovery");
@@ -1241,7 +1241,7 @@ async fn resolve_wires_skills_before_policies_plugins_and_explicit_plugins() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let (cfg, tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(tools.contains_key("skill"));
     assert!(tools.contains_key("load_skill_resource"));
@@ -1302,7 +1302,7 @@ fn resolve_errors_on_duplicate_plugin_id() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1327,7 +1327,7 @@ fn resolve_errors_on_duplicate_plugin_id_between_policy_and_plugin_ref() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1384,7 +1384,7 @@ fn resolve_errors_on_reserved_plugin_id() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1406,7 +1406,7 @@ fn resolve_errors_on_reserved_policy_id() {
         .build()
         .unwrap();
 
-    let thread = AgentState::with_initial_state("s", json!({}));
+    let thread = Thread::with_initial_state("s", json!({}));
     let err = os.resolve("a1", thread).err().unwrap();
     assert!(matches!(
         err,
@@ -1467,7 +1467,7 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
         .unwrap();
 
     // Create thread with initial state {"counter": 0}
-    let thread = AgentState::with_initial_state("t1", json!({"counter": 0}));
+    let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
     storage.create(&thread).await.unwrap();
 
     // Verify initial state
@@ -1588,7 +1588,7 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
         .unwrap();
 
     // Create thread with initial state
-    let thread = AgentState::with_initial_state("t1", json!({"counter": 5}));
+    let thread = Thread::with_initial_state("t1", json!({"counter": 5}));
     storage.create(&thread).await.unwrap();
 
     // Run without frontend state — state should be preserved
@@ -1835,7 +1835,7 @@ async fn run_stream_checkpoint_failure_on_existing_thread_keeps_storage_unchange
     use futures::StreamExt;
 
     let storage = Arc::new(FailOnNthAppendStorage::new(1));
-    let initial = AgentState::with_initial_state("t-existing-fail", json!({"counter": 5}));
+    let initial = Thread::with_initial_state("t-existing-fail", json!({"counter": 5}));
     storage.create(&initial).await.unwrap();
 
     let os = AgentOs::builder()

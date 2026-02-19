@@ -4,7 +4,7 @@ use carve_agent_contract::storage::{
     AgentStateStoreError, AgentStateWriter, Committed, MessagePage, MessageQuery,
     MessageWithCursor, SortOrder, VersionPrecondition,
 };
-use carve_agent_contract::{AgentChangeSet, AgentState, Message, Visibility};
+use carve_agent_contract::{AgentChangeSet, Thread, Message, Visibility};
 use std::collections::HashSet;
 #[cfg(feature = "postgres")]
 use sqlx::{Postgres, QueryBuilder};
@@ -84,7 +84,7 @@ impl PostgresStore {
 #[cfg(feature = "postgres")]
 #[async_trait]
 impl AgentStateWriter for PostgresStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         let mut v = serde_json::to_value(thread)
             .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         if let Some(obj) = v.as_object_mut() {
@@ -259,7 +259,7 @@ impl AgentStateWriter for PostgresStore {
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         // Serialize session skeleton (without messages).
         let mut v = serde_json::to_value(thread)
             .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
@@ -372,7 +372,7 @@ impl AgentStateReader for PostgresStore {
             obj.remove("_version");
         }
 
-        let agent_state: AgentState = serde_json::from_value(v)
+        let agent_state: Thread = serde_json::from_value(v)
             .map_err(|e| AgentStateStoreError::Serialization(e.to_string()))?;
         Ok(Some(AgentStateHead {
             agent_state,

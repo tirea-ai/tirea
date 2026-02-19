@@ -1,5 +1,5 @@
 use crate::state::AgentChangeSet;
-use crate::state::AgentState;
+use crate::state::Thread;
 use crate::state::Version;
 use async_trait::async_trait;
 
@@ -10,18 +10,18 @@ use super::{
 
 #[async_trait]
 pub trait AgentStateReader: Send + Sync {
-    /// Load an AgentState and its current version.
+    /// Load an Thread and its current version.
     async fn load(&self, thread_id: &str) -> Result<Option<AgentStateHead>, AgentStateStoreError>;
 
-    /// Load an AgentState without version info. Convenience wrapper.
+    /// Load an Thread without version info. Convenience wrapper.
     async fn load_agent_state(
         &self,
         thread_id: &str,
-    ) -> Result<Option<AgentState>, AgentStateStoreError> {
+    ) -> Result<Option<Thread>, AgentStateStoreError> {
         Ok(self.load(thread_id).await?.map(|h| h.agent_state))
     }
 
-    /// Load paginated messages for an AgentState.
+    /// Load paginated messages for an Thread.
     async fn load_messages(
         &self,
         thread_id: &str,
@@ -34,13 +34,13 @@ pub trait AgentStateReader: Send + Sync {
         Ok(paginate_in_memory(&head.agent_state.messages, query))
     }
 
-    /// List AgentState ids.
+    /// List Thread ids.
     async fn list_agent_states(
         &self,
         query: &AgentStateListQuery,
     ) -> Result<AgentStateListPage, AgentStateStoreError>;
 
-    /// List all AgentState ids with default paging.
+    /// List all Thread ids with default paging.
     async fn list(&self) -> Result<Vec<String>, AgentStateStoreError> {
         let page = self
             .list_agent_states(&AgentStateListQuery {
@@ -53,7 +53,7 @@ pub trait AgentStateReader: Send + Sync {
         Ok(page.items)
     }
 
-    /// List AgentState ids with explicit query.
+    /// List Thread ids with explicit query.
     async fn list_paginated(
         &self,
         query: &AgentStateListQuery,
@@ -73,10 +73,10 @@ pub trait AgentStateReader: Send + Sync {
 
 #[async_trait]
 pub trait AgentStateWriter: AgentStateReader {
-    /// Create a new AgentState.
-    async fn create(&self, agent_state: &AgentState) -> Result<Committed, AgentStateStoreError>;
+    /// Create a new Thread.
+    async fn create(&self, agent_state: &Thread) -> Result<Committed, AgentStateStoreError>;
 
-    /// Append an AgentChangeSet to an existing AgentState.
+    /// Append an AgentChangeSet to an existing Thread.
     async fn append(
         &self,
         thread_id: &str,
@@ -84,13 +84,13 @@ pub trait AgentStateWriter: AgentStateReader {
         precondition: VersionPrecondition,
     ) -> Result<Committed, AgentStateStoreError>;
 
-    /// Delete an AgentState.
+    /// Delete an Thread.
     async fn delete(&self, thread_id: &str) -> Result<(), AgentStateStoreError>;
 
-    /// Upsert or replace the current persisted AgentState.
+    /// Upsert or replace the current persisted Thread.
     ///
     /// Implementations must provide atomic semantics suitable for their backend.
-    async fn save(&self, agent_state: &AgentState) -> Result<(), AgentStateStoreError>;
+    async fn save(&self, agent_state: &Thread) -> Result<(), AgentStateStoreError>;
 }
 
 #[async_trait]

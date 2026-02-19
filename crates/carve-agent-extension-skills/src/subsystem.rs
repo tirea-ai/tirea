@@ -130,7 +130,7 @@ mod tests {
     use crate::{FsSkill, SKILL_ACTIVATE_TOOL_ID, SKILL_LOAD_RESOURCE_TOOL_ID, SKILL_SCRIPT_TOOL_ID};
     use async_trait::async_trait;
     use carve_agent_contract::runtime::phase::{Phase, StepContext};
-    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::state::Thread;
     use carve_agent_contract::state::{Message, ToolCall};
     use carve_agent_contract::tool::{ToolDescriptor, ToolError, ToolResult};
     use carve_agent_contract::testing::TestFixture;
@@ -285,7 +285,7 @@ mod tests {
 
         // Activate the skill via the registered "skill" tool.
         let thread =
-            AgentState::with_initial_state("s", json!({})).with_message(Message::user("hi"));
+            Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
         let state = thread.rebuild_state().unwrap();
         let call = ToolCall::new("call_1", SKILL_ACTIVATE_TOOL_ID, json!({"skill": "docx"}));
         let activate_tool = tools.get(SKILL_ACTIVATE_TOOL_ID).unwrap().as_ref();

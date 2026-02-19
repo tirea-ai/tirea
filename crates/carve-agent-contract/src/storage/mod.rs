@@ -1,4 +1,4 @@
-//! Persistent AgentState storage contracts and abstractions.
+//! Persistent Thread storage contracts and abstractions.
 
 pub mod traits;
 pub mod types;

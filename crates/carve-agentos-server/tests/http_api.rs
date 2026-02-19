@@ -4,7 +4,7 @@ use axum::http::{Request, StatusCode};
 use carve_agentos::contracts::plugin::AgentPlugin;
 use carve_agentos::contracts::runtime::phase::Phase;
 use carve_agentos::contracts::runtime::phase::StepContext;
-use carve_agentos::contracts::state::AgentState;
+use carve_agentos::contracts::state::Thread;
 use carve_agentos::contracts::storage::{
     AgentStateHead, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStore,
     AgentStateStoreError, AgentStateWriter, Committed,
@@ -98,7 +98,7 @@ impl Tool for EchoTool {
 
 #[derive(Default)]
 struct RecordingStorage {
-    threads: RwLock<HashMap<String, AgentState>>,
+    threads: RwLock<HashMap<String, Thread>>,
     saves: AtomicUsize,
     notify: Notify,
 }
@@ -117,7 +117,7 @@ impl RecordingStorage {
 
 #[async_trait]
 impl AgentStateWriter for RecordingStorage {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         let mut threads = self.threads.write().await;
         if threads.contains_key(&thread.id) {
             return Err(AgentStateStoreError::AlreadyExists);
@@ -152,7 +152,7 @@ impl AgentStateWriter for RecordingStorage {
         Ok(())
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         let mut threads = self.threads.write().await;
         threads.insert(thread.id.clone(), thread.clone());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -199,7 +199,7 @@ async fn test_sessions_query_endpoints() {
     let storage = Arc::new(MemoryStore::new());
 
     let thread =
-        AgentState::new("s1").with_message(carve_agentos::contracts::state::Message::user("hello"));
+        Thread::new("s1").with_message(carve_agentos::contracts::state::Message::user("hello"));
     storage.save(&thread).await.unwrap();
 
     let app = router(AppState {
@@ -862,7 +862,7 @@ async fn test_agui_sse_session_id_mismatch() {
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
     // Pre-save a session with id "real-id".
-    storage.save(&AgentState::new("real-id")).await.unwrap();
+    storage.save(&Thread::new("real-id")).await.unwrap();
 
     let _app = make_app(os, read_store);
 
@@ -878,7 +878,7 @@ struct FailingStorage;
 
 #[async_trait]
 impl AgentStateWriter for FailingStorage {
-    async fn create(&self, _thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -904,7 +904,7 @@ impl AgentStateWriter for FailingStorage {
         )))
     }
 
-    async fn save(&self, _thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, _thread: &Thread) -> Result<(), AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -999,7 +999,7 @@ struct SaveFailStorage;
 
 #[async_trait]
 impl AgentStateWriter for SaveFailStorage {
-    async fn create(&self, _thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, _thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -1022,7 +1022,7 @@ impl AgentStateWriter for SaveFailStorage {
         Ok(())
     }
 
-    async fn save(&self, _thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, _thread: &Thread) -> Result<(), AgentStateStoreError> {
         Err(AgentStateStoreError::Io(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "disk write denied",
@@ -1087,8 +1087,8 @@ async fn test_agui_sse_storage_save_error() {
 // Message pagination tests
 // ============================================================================
 
-fn make_session_with_n_messages(id: &str, n: usize) -> AgentState {
-    let mut thread = AgentState::new(id);
+fn make_session_with_n_messages(id: &str, n: usize) -> Thread {
+    let mut thread = Thread::new(id);
     for i in 0..n {
         thread = thread.with_message(carve_agentos::contracts::state::Message::user(format!(
             "msg-{}",
@@ -1213,14 +1213,14 @@ async fn test_list_threads_filters_by_parent_thread_id() {
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
     storage
-        .save(&AgentState::new("t-parent-1").with_parent_thread_id("p-root"))
+        .save(&Thread::new("t-parent-1").with_parent_thread_id("p-root"))
         .await
         .unwrap();
     storage
-        .save(&AgentState::new("t-parent-2").with_parent_thread_id("p-root"))
+        .save(&Thread::new("t-parent-2").with_parent_thread_id("p-root"))
         .await
         .unwrap();
-    storage.save(&AgentState::new("t-other")).await.unwrap();
+    storage.save(&Thread::new("t-other")).await.unwrap();
 
     let app = make_app(os, read_store);
     let (status, body) = get_json(app, "/v1/threads?parent_thread_id=p-root").await;
@@ -1238,7 +1238,7 @@ async fn test_messages_filter_by_visibility_and_run_id() {
     let storage = Arc::new(MemoryStore::new());
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
-    let thread = AgentState::new("s-filter")
+    let thread = Thread::new("s-filter")
         .with_message(
             carve_agentos::contracts::state::Message::user("visible-run-1").with_metadata(
                 carve_agentos::contracts::state::MessageMetadata {
@@ -1304,7 +1304,7 @@ async fn test_protocol_history_endpoints_hide_internal_messages_by_default() {
     let storage = Arc::new(MemoryStore::new());
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
-    let thread = AgentState::new("s-internal-history")
+    let thread = Thread::new("s-internal-history")
         .with_message(carve_agentos::contracts::state::Message::user(
             "visible-user",
         ))
@@ -1346,7 +1346,7 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     let storage = Arc::new(MemoryStore::new());
     let read_store: Arc<dyn AgentStateReader> = storage.clone();
 
-    let mut thread = AgentState::new("s-run-cursor-boundary");
+    let mut thread = Thread::new("s-run-cursor-boundary");
     for i in 0..6usize {
         let run_id = if i % 2 == 0 { "run-a" } else { "run-b" };
         thread = thread.with_message(
@@ -1393,8 +1393,8 @@ async fn test_messages_run_id_cursor_order_combination_boundaries() {
     );
 }
 
-fn pending_echo_thread(id: &str, payload: &str) -> AgentState {
-    AgentState::with_initial_state(
+fn pending_echo_thread(id: &str, payload: &str) -> Thread {
+    Thread::with_initial_state(
         id,
         json!({
             "loop_control": {

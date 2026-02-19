@@ -151,7 +151,7 @@ impl FlakySaveStore {
 impl AgentStateWriter for FlakySaveStore {
     async fn create(
         &self,
-        thread: &carve_agentos::contracts::state::AgentState,
+        thread: &carve_agentos::contracts::state::Thread,
     ) -> Result<
         carve_agentos::contracts::storage::Committed,
         carve_agentos::contracts::storage::AgentStateStoreError,
@@ -180,7 +180,7 @@ impl AgentStateWriter for FlakySaveStore {
 
     async fn save(
         &self,
-        thread: &carve_agentos::contracts::state::AgentState,
+        thread: &carve_agentos::contracts::state::Thread,
     ) -> Result<(), carve_agentos::contracts::storage::AgentStateStoreError> {
         let remaining = self.fail_saves_remaining.load(Ordering::SeqCst);
         if remaining > 0 {
@@ -308,7 +308,7 @@ async fn e2e_nats_buffered_postgres_recover_replays_pending_deltas() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::AgentState::new("np-recover")
+    let thread = carve_agentos::contracts::state::Thread::new("np-recover")
         .with_message(carve_agentos::contracts::state::Message::user("hello"));
     storage
         .create(&thread)
@@ -508,7 +508,7 @@ async fn e2e_nats_buffered_postgres_recover_deduplicates_duplicate_message_ids()
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::AgentState::new("np-dedup")
+    let thread = carve_agentos::contracts::state::Thread::new("np-dedup")
         .with_message(carve_agentos::contracts::state::Message::user("seed"));
     storage
         .create(&thread)
@@ -582,7 +582,7 @@ async fn e2e_nats_buffered_postgres_flush_retry_after_transient_save_failure() {
         .await
         .expect("nats buffered store should initialize");
 
-    let thread = carve_agentos::contracts::state::AgentState::new("np-flaky")
+    let thread = carve_agentos::contracts::state::Thread::new("np-flaky")
         .with_message(carve_agentos::contracts::state::Message::user("seed"));
     storage
         .create(&thread)

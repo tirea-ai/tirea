@@ -4,7 +4,7 @@ use carve_agent_contract::storage::{
     VersionPrecondition,
 };
 use carve_agent_contract::{
-    AgentState, AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role,
+    Thread, AgentStateListQuery, CheckpointReason, Message, MessageMetadata, MessageQuery, Role,
 };
 use carve_state::{path, Op, Patch, TrackedPatch};
 use carve_thread_store_adapters::MemoryStore;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_memory_storage_save_load() {
     let storage = MemoryStore::new();
-    let thread = AgentState::new("test-1").with_message(Message::user("Hello"));
+    let thread = Thread::new("test-1").with_message(Message::user("Hello"));
 
     storage.save(&thread).await.unwrap();
     let loaded = storage.load_agent_state("test-1").await.unwrap();
@@ -35,7 +35,7 @@ async fn test_memory_storage_load_not_found() {
 #[tokio::test]
 async fn test_memory_storage_delete() {
     let storage = MemoryStore::new();
-    let thread = AgentState::new("test-1");
+    let thread = Thread::new("test-1");
 
     storage.save(&thread).await.unwrap();
     assert!(storage.load_agent_state("test-1").await.unwrap().is_some());
@@ -48,8 +48,8 @@ async fn test_memory_storage_delete() {
 async fn test_memory_storage_list() {
     let storage = MemoryStore::new();
 
-    storage.save(&AgentState::new("thread-1")).await.unwrap();
-    storage.save(&AgentState::new("thread-2")).await.unwrap();
+    storage.save(&Thread::new("thread-1")).await.unwrap();
+    storage.save(&Thread::new("thread-2")).await.unwrap();
 
     let mut ids = storage.list().await.unwrap();
     ids.sort();
@@ -64,7 +64,7 @@ async fn test_memory_storage_update_session() {
     let storage = MemoryStore::new();
 
     // Save initial session
-    let thread = AgentState::new("test-1").with_message(Message::user("Hello"));
+    let thread = Thread::new("test-1").with_message(Message::user("Hello"));
     storage.save(&thread).await.unwrap();
 
     // Update session
@@ -80,7 +80,7 @@ async fn test_memory_storage_update_session() {
 async fn test_memory_storage_with_state_and_patches() {
     let storage = MemoryStore::new();
 
-    let thread = AgentState::with_initial_state("test-1", json!({"counter": 0}))
+    let thread = Thread::with_initial_state("test-1", json!({"counter": 0}))
         .with_message(Message::user("Increment"))
         .with_patch(TrackedPatch::new(
             Patch::new().with_op(Op::set(path!("counter"), json!(5))),
@@ -122,7 +122,7 @@ async fn test_memory_storage_concurrent_access() {
         .map(|i| {
             let storage = Arc::clone(&storage);
             tokio::spawn(async move {
-                let thread = AgentState::new(format!("thread-{}", i));
+                let thread = Thread::new(format!("thread-{}", i));
                 storage.save(&thread).await.unwrap();
             })
         })
@@ -146,8 +146,8 @@ fn make_messages(n: usize) -> Vec<std::sync::Arc<Message>> {
         .collect()
 }
 
-fn make_thread_with_messages(thread_id: &str, n: usize) -> AgentState {
-    let mut thread = AgentState::new(thread_id);
+fn make_thread_with_messages(thread_id: &str, n: usize) -> Thread {
+    let mut thread = Thread::new(thread_id);
     for msg in make_messages(n) {
         // Deref Arc to get Message for with_message
         thread = thread.with_message((*msg).clone());
@@ -203,8 +203,8 @@ async fn test_memory_storage_message_count_not_found() {
 // Visibility tests
 // ========================================================================
 
-fn make_mixed_visibility_thread(thread_id: &str) -> AgentState {
-    AgentState::new(thread_id)
+fn make_mixed_visibility_thread(thread_id: &str) -> Thread {
+    Thread::new(thread_id)
         .with_message(Message::user("user-0"))
         .with_message(Message::assistant("assistant-1"))
         .with_message(Message::internal_system("reminder-2"))
@@ -240,8 +240,8 @@ async fn test_memory_storage_load_messages_filters_visibility() {
 // Run ID filtering tests
 // ========================================================================
 
-fn make_multi_run_thread(thread_id: &str) -> AgentState {
-    AgentState::new(thread_id)
+fn make_multi_run_thread(thread_id: &str) -> Thread {
+    Thread::new(thread_id)
         // User message (no run metadata)
         .with_message(Message::user("hello"))
         // Run A, step 0: assistant + tool
@@ -289,7 +289,7 @@ async fn test_memory_storage_load_messages_by_run_id() {
 }
 
 // ========================================================================
-// AgentState list pagination tests
+// Thread list pagination tests
 // ========================================================================
 
 #[tokio::test]
@@ -297,7 +297,7 @@ async fn test_list_paginated_default() {
     let storage = MemoryStore::new();
     for i in 0..5 {
         storage
-            .save(&AgentState::new(format!("s-{i:02}")))
+            .save(&Thread::new(format!("s-{i:02}")))
             .await
             .unwrap();
     }
@@ -315,7 +315,7 @@ async fn test_list_paginated_with_limit() {
     let storage = MemoryStore::new();
     for i in 0..10 {
         storage
-            .save(&AgentState::new(format!("s-{i:02}")))
+            .save(&Thread::new(format!("s-{i:02}")))
             .await
             .unwrap();
     }
@@ -339,7 +339,7 @@ async fn test_list_paginated_with_offset() {
     let storage = MemoryStore::new();
     for i in 0..5 {
         storage
-            .save(&AgentState::new(format!("s-{i:02}")))
+            .save(&Thread::new(format!("s-{i:02}")))
             .await
             .unwrap();
     }
@@ -362,7 +362,7 @@ async fn test_list_paginated_offset_beyond_total() {
     let storage = MemoryStore::new();
     for i in 0..3 {
         storage
-            .save(&AgentState::new(format!("s-{i:02}")))
+            .save(&Thread::new(format!("s-{i:02}")))
             .await
             .unwrap();
     }
@@ -411,7 +411,7 @@ async fn test_thread_store_trait_object_roundtrip() {
     use std::sync::Arc;
 
     let agent_state_store: Arc<dyn AgentStateStore> = Arc::new(MemoryStore::new());
-    let thread = AgentState::new("trait-object-t1").with_message(Message::user("hi"));
+    let thread = Thread::new("trait-object-t1").with_message(Message::user("hi"));
 
     agent_state_store.create(&thread).await.unwrap();
     let loaded = agent_state_store
@@ -427,7 +427,7 @@ async fn test_thread_store_trait_object_roundtrip() {
 #[tokio::test]
 async fn test_thread_store_create_and_load() {
     let store = MemoryStore::new();
-    let thread = AgentState::new("t1").with_message(Message::user("hi"));
+    let thread = Thread::new("t1").with_message(Message::user("hi"));
     let committed = store.create(&thread).await.unwrap();
     assert_eq!(committed.version, 0);
 
@@ -440,15 +440,15 @@ async fn test_thread_store_create_and_load() {
 #[tokio::test]
 async fn test_thread_store_create_already_exists() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
-    let err = store.create(&AgentState::new("t1")).await.unwrap_err();
+    store.create(&Thread::new("t1")).await.unwrap();
+    let err = store.create(&Thread::new("t1")).await.unwrap_err();
     assert!(matches!(err, AgentStateStoreError::AlreadyExists));
 }
 
 #[tokio::test]
 async fn test_thread_store_append() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
 
     let delta = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
     let committed = store
@@ -476,7 +476,7 @@ async fn test_thread_store_append_not_found() {
 #[tokio::test]
 async fn test_thread_store_delete() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
     AgentStateWriter::delete(&store, "t1").await.unwrap();
     assert!(AgentStateReader::load(&store, "t1")
         .await
@@ -487,7 +487,7 @@ async fn test_thread_store_delete() {
 #[tokio::test]
 async fn test_thread_store_append_with_snapshot() {
     let store = MemoryStore::new();
-    let thread = AgentState::with_initial_state("t1", json!({"counter": 0}));
+    let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
     store.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
@@ -511,7 +511,7 @@ async fn test_thread_store_append_with_snapshot() {
 #[tokio::test]
 async fn test_thread_sync_load_deltas() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
 
     let d1 = sample_delta("run-1", CheckpointReason::UserMessage);
     let d2 = sample_delta("run-1", CheckpointReason::AssistantTurnCommitted);
@@ -545,8 +545,8 @@ async fn test_thread_sync_load_deltas() {
 #[tokio::test]
 async fn test_thread_query_list_threads() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
-    store.create(&AgentState::new("t2")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
+    store.create(&Thread::new("t2")).await.unwrap();
 
     let page = store
         .list_agent_states(&AgentStateListQuery::default())
@@ -559,16 +559,16 @@ async fn test_thread_query_list_threads() {
 #[tokio::test]
 async fn test_thread_query_list_threads_by_parent() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("parent")).await.unwrap();
+    store.create(&Thread::new("parent")).await.unwrap();
     store
-        .create(&AgentState::new("child-1").with_parent_thread_id("parent"))
+        .create(&Thread::new("child-1").with_parent_thread_id("parent"))
         .await
         .unwrap();
     store
-        .create(&AgentState::new("child-2").with_parent_thread_id("parent"))
+        .create(&Thread::new("child-2").with_parent_thread_id("parent"))
         .await
         .unwrap();
-    store.create(&AgentState::new("unrelated")).await.unwrap();
+    store.create(&Thread::new("unrelated")).await.unwrap();
 
     let query = AgentStateListQuery {
         parent_thread_id: Some("parent".to_string()),
@@ -583,7 +583,7 @@ async fn test_thread_query_list_threads_by_parent() {
 #[tokio::test]
 async fn test_thread_query_load_messages() {
     let store = MemoryStore::new();
-    let thread = AgentState::new("t1")
+    let thread = Thread::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("hi"));
     store.create(&thread).await.unwrap();
@@ -604,17 +604,17 @@ async fn test_thread_query_load_messages() {
 
 #[tokio::test]
 async fn test_parent_thread_id_persisted() {
-    let thread = AgentState::new("child-1").with_parent_thread_id("parent-1");
+    let thread = Thread::new("child-1").with_parent_thread_id("parent-1");
     let json_str = serde_json::to_string(&thread).unwrap();
     assert!(json_str.contains("parent_thread_id"));
 
-    let restored: AgentState = serde_json::from_str(&json_str).unwrap();
+    let restored: Thread = serde_json::from_str(&json_str).unwrap();
     assert_eq!(restored.parent_thread_id.as_deref(), Some("parent-1"));
 }
 
 #[tokio::test]
 async fn test_parent_thread_id_none_omitted() {
-    let thread = AgentState::new("t1");
+    let thread = Thread::new("t1");
     let json_str = serde_json::to_string(&thread).unwrap();
     assert!(!json_str.contains("parent_thread_id"));
 }
@@ -630,7 +630,7 @@ async fn test_full_agent_run_via_append() {
     let store = MemoryStore::new();
 
     // 1. Create thread
-    let thread = AgentState::new("t1");
+    let thread = Thread::new("t1");
     let committed = store.create(&thread).await.unwrap();
     assert_eq!(committed.version, 0);
 
@@ -728,7 +728,7 @@ async fn test_full_agent_run_via_append() {
 #[tokio::test]
 async fn test_delta_replay_reconstructs_thread() {
     let store = MemoryStore::new();
-    let thread = AgentState::with_initial_state("t1", json!({"count": 0}));
+    let thread = Thread::with_initial_state("t1", json!({"count": 0}));
     store.create(&thread).await.unwrap();
 
     // Simulate 3 rounds of append
@@ -775,7 +775,7 @@ async fn test_delta_replay_reconstructs_thread() {
     assert_eq!(all_deltas.len(), 3);
 
     // Reconstruct thread from empty + deltas
-    let mut reconstructed = AgentState::with_initial_state("t1", json!({"count": 0}));
+    let mut reconstructed = Thread::with_initial_state("t1", json!({"count": 0}));
     for d in &all_deltas {
         for m in &d.messages {
             reconstructed.messages.push(m.clone());
@@ -795,7 +795,7 @@ async fn test_delta_replay_reconstructs_thread() {
 #[tokio::test]
 async fn test_partial_delta_replay() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
 
     for i in 0..5u64 {
         let delta = AgentChangeSet {
@@ -823,13 +823,13 @@ async fn test_partial_delta_replay() {
 #[tokio::test]
 async fn test_append_preserves_patch_provenance() {
     let store = MemoryStore::new();
-    store.create(&AgentState::new("t1")).await.unwrap();
+    store.create(&Thread::new("t1")).await.unwrap();
 
     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(path!("key"), json!("value"))))
         .with_source("tool:weather")
         .with_description("Set weather data");
 
-    let mut thread = AgentState::new("t1").with_patch(patch);
+    let mut thread = Thread::new("t1").with_patch(patch);
     let pending = thread.take_pending();
 
     let delta = AgentChangeSet {
@@ -867,7 +867,7 @@ async fn test_append_preserves_patch_provenance() {
 async fn test_append_preserves_parent_run_id() {
     let store = MemoryStore::new();
     store
-        .create(&AgentState::new("child").with_parent_thread_id("parent"))
+        .create(&Thread::new("child").with_parent_thread_id("parent"))
         .await
         .unwrap();
 
@@ -900,7 +900,7 @@ async fn test_append_preserves_parent_run_id() {
 async fn test_append_empty_delta() {
     let store = MemoryStore::new();
     store
-        .create(&AgentState::new("t1").with_message(Message::user("hi")))
+        .create(&Thread::new("t1").with_message(Message::user("hi")))
         .await
         .unwrap();
 
@@ -931,7 +931,7 @@ async fn frontend_state_replaces_existing_thread_state_in_user_message_delta() {
     let store = MemoryStore::new();
 
     // 1. Create thread with initial state + a patch
-    let thread = AgentState::with_initial_state("t1", json!({"counter": 0}));
+    let thread = Thread::with_initial_state("t1", json!({"counter": 0}));
     store.create(&thread).await.unwrap();
     let patch_delta = AgentChangeSet {
         run_id: "run-0".to_string(),

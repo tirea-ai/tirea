@@ -17,7 +17,7 @@
 //!         ToolDescriptor::new("my_tool", "My Tool", "Does something useful")
 //!     }
 //!
-//!     async fn execute(&self, args: Value, ctx: &AgentState) -> Result<ToolResult, ToolError> {
+//!     async fn execute(&self, args: Value, ctx: &Thread) -> Result<ToolResult, ToolError> {
 //!         // Extension traits are auto-imported
 //!         ctx.allow_tool("follow_up");           // PermissionContextExt
 //!         ctx.add_reminder("Remember to check"); // ReminderContextExt
@@ -34,7 +34,7 @@ pub use async_trait::async_trait;
 pub use serde_json::{json, Value};
 
 // Core execution state object (state + runtime metadata + activity wiring)
-pub use crate::contracts::AgentState;
+pub use crate::contracts::Thread;
 // Raw state-only context for lower-level integrations
 pub use carve_state::StateContext;
 
@@ -52,7 +52,7 @@ pub use crate::contracts::runtime::phase::{Phase, StepContext, StepOutcome, Tool
 pub use crate::contracts::runtime::{Interaction, InteractionResponse};
 pub use crate::extensions::permission::ToolPermissionBehavior;
 
-// Extension traits - these add helper methods to AgentState
+// Extension traits - these add helper methods to Thread
 pub use crate::extensions::interaction::{ContextCategory, ContextProvider};
 pub use crate::extensions::reminder::SystemReminder;
 pub use crate::extensions::{permission::PermissionContextExt, reminder::ReminderContextExt};

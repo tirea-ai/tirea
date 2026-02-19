@@ -1,8 +1,8 @@
 //! Execution context types for tools and plugins.
 //!
 //! `ToolCallContext` provides state access, run config, and identity for tool execution.
-//! It replaces direct `&AgentState` usage in tool signatures, keeping the persistent
-//! entity (`AgentState`) invisible to tools and plugins.
+//! It replaces direct `&Thread` usage in tool signatures, keeping the persistent
+//! entity (`Thread`) invisible to tools and plugins.
 
 use crate::state::transient::ActivityManager;
 use crate::state::Message;
@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 ///
 /// Provides typed state access (read/write), run config access, identity,
 /// message queuing, and activity tracking. Tools receive `&ToolCallContext`
-/// instead of `&AgentState`.
+/// instead of `&Thread`.
 pub struct ToolCallContext<'a> {
     doc: &'a DocCell,
     ops: &'a Mutex<Vec<Op>>,
@@ -204,7 +204,7 @@ impl<'a> ToolCallContext<'a> {
     /// Snapshot the current document state.
     ///
     /// Returns the current state including all write-through updates.
-    /// Equivalent to `AgentState::rebuild_state()` in transient contexts.
+    /// Equivalent to `Thread::rebuild_state()` in transient contexts.
     pub fn snapshot(&self) -> Value {
         self.doc.snapshot()
     }

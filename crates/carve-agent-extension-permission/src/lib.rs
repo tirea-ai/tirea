@@ -575,7 +575,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_no_state() {
-        // AgentState with no permission state at all — should default to Ask
+        // Thread with no permission state at all — should default to Ask
         let fixture = TestFixture::new();
         let mut step = fixture.step(vec![]);
 

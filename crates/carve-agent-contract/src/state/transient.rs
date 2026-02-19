@@ -17,7 +17,7 @@ pub trait ActivityManager: Send + Sync {
 #[cfg(test)]
 mod tests {
     use crate::runtime::control::LoopControlState;
-    use crate::state::AgentState;
+    use crate::state::Thread;
     use crate::testing::TestFixture;
     use carve_state::{path, Op};
     use serde_json::json;
@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_state_of_reads_see_overlay_via_rebuild() {
         let initial = json!({"loop_control": {"pending_interaction": null, "inference_error": null}});
-        let thread = AgentState::with_initial_state("t-1", initial);
+        let thread = Thread::with_initial_state("t-1", initial);
 
         // Write overlay ops directly
         thread.run_overlay.lock().unwrap().push(Op::set(

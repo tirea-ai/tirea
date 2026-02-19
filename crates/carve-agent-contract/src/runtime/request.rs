@@ -7,7 +7,7 @@ use serde_json::Value;
 pub struct RunRequest {
     /// Target agent identifier.
     pub agent_id: String,
-    /// AgentState (conversation) ID. `None` -> auto-generate.
+    /// Thread (conversation) ID. `None` -> auto-generate.
     pub thread_id: Option<String>,
     /// Run ID. `None` -> auto-generate.
     pub run_id: Option<String>,

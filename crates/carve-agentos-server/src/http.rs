@@ -6,7 +6,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use carve_agentos::contracts::runtime::AgentEvent;
-use carve_agentos::contracts::state::{AgentState, Visibility};
+use carve_agentos::contracts::state::{Thread, Visibility};
 use carve_agentos::contracts::storage::{
     AgentStateListPage, AgentStateListQuery, AgentStateReader, MessagePage, MessageQuery, SortOrder,
 };
@@ -138,7 +138,7 @@ async fn list_agent_states(
 async fn get_thread(
     State(st): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<AgentState>, ApiError> {
+) -> Result<Json<Thread>, ApiError> {
     let Some(thread) = st
         .read_store
         .load_agent_state(&id)

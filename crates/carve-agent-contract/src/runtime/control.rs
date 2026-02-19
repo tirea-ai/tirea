@@ -1,4 +1,4 @@
-//! Loop control-state schema stored under `AgentState.state["loop_control"]`.
+//! Loop control-state schema stored under `Thread.state["loop_control"]`.
 //!
 //! These types define durable loop-control state for cross-step and cross-run
 //! flow control (pending interactions, inference error envelope).

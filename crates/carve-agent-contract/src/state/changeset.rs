@@ -1,6 +1,6 @@
 //! Shared persistence change-set types shared by runtime and storage.
 
-use crate::state::{AgentState, Message};
+use crate::state::{Thread, Message};
 use carve_state::TrackedPatch;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -58,7 +58,7 @@ impl AgentChangeSet {
     }
 
     /// Apply this delta to a thread in place.
-    pub fn apply_to(&self, thread: &mut AgentState) {
+    pub fn apply_to(&self, thread: &mut Thread) {
         if let Some(ref snapshot) = self.snapshot {
             thread.state = snapshot.clone();
             thread.patches.clear();

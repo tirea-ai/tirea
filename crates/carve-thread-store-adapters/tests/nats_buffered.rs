@@ -10,7 +10,7 @@
 use carve_agent_contract::state::AgentChangeSet;
 use carve_agent_contract::storage::VersionPrecondition;
 use carve_agent_contract::{
-    AgentState, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
+    Thread, AgentStateListPage, AgentStateListQuery, AgentStateReader, AgentStateStoreError,
     AgentStateWriter, CheckpointReason, Committed, Message, MessageQuery,
 };
 use carve_thread_store_adapters::{MemoryStore, NatsBufferedThreadWriter};
@@ -96,7 +96,7 @@ impl AgentStateReader for CountingDelayStore {
 
 #[async_trait::async_trait]
 impl AgentStateWriter for CountingDelayStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         self.inner.create(thread).await
     }
 
@@ -117,7 +117,7 @@ impl AgentStateWriter for CountingDelayStore {
         self.inner.delete(thread_id).await
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         self.save_calls.fetch_add(1, Ordering::Relaxed);
         if !self.save_delay.is_zero() {
             tokio::time::sleep(self.save_delay).await;
@@ -166,7 +166,7 @@ impl AgentStateReader for FailFirstSaveStore {
 
 #[async_trait::async_trait]
 impl AgentStateWriter for FailFirstSaveStore {
-    async fn create(&self, thread: &AgentState) -> Result<Committed, AgentStateStoreError> {
+    async fn create(&self, thread: &Thread) -> Result<Committed, AgentStateStoreError> {
         self.inner.create(thread).await
     }
 
@@ -183,7 +183,7 @@ impl AgentStateWriter for FailFirstSaveStore {
         self.inner.delete(thread_id).await
     }
 
-    async fn save(&self, thread: &AgentState) -> Result<(), AgentStateStoreError> {
+    async fn save(&self, thread: &Thread) -> Result<(), AgentStateStoreError> {
         self.save_calls.fetch_add(1, Ordering::Relaxed);
         if self.fail_next_save.swap(false, Ordering::AcqRel) {
             return Err(AgentStateStoreError::Io(std::io::Error::other(
@@ -201,7 +201,7 @@ async fn test_create_delegates_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t1");
+    let thread = Thread::new("t1");
     storage.create(&thread).await.unwrap();
 
     let loaded = inner.load("t1").await.unwrap();
@@ -216,7 +216,7 @@ async fn test_append_does_not_write_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t1").with_message(Message::user("hello"));
+    let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
@@ -247,7 +247,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t1").with_message(Message::user("hello"));
+    let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     let delta = AgentChangeSet {
@@ -264,7 +264,7 @@ async fn test_save_flushes_to_inner_and_purges_nats() {
         .unwrap();
 
     // Build final thread with both messages
-    let final_thread = AgentState::new("t1")
+    let final_thread = Thread::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("world"));
 
@@ -286,7 +286,7 @@ async fn test_load_delegates_to_inner() {
 
     assert!(storage.load("nonexistent").await.unwrap().is_none());
 
-    let thread = AgentState::new("t1");
+    let thread = Thread::new("t1");
     inner.create(&thread).await.unwrap();
 
     let loaded = storage.load("t1").await.unwrap();
@@ -300,7 +300,7 @@ async fn test_delete_delegates_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t1");
+    let thread = Thread::new("t1");
     inner.create(&thread).await.unwrap();
 
     storage.delete("t1").await.unwrap();
@@ -316,7 +316,7 @@ async fn test_recover_replays_unacked_deltas() {
     let (inner, storage) = make_storage(&url).await;
 
     // Create thread in inner storage
-    let thread = AgentState::new("t1").with_message(Message::user("hello"));
+    let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     // Publish deltas via append (these go to NATS)
@@ -370,7 +370,7 @@ async fn test_query_returns_last_flush_snapshot_during_active_run() {
     let (inner, storage) = make_storage(&url).await;
 
     // Simulate a completed first run: thread with 1 user + 1 assistant msg.
-    let thread = AgentState::new("t1")
+    let thread = Thread::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("first reply"));
     inner.create(&thread).await.unwrap();
@@ -409,7 +409,7 @@ async fn test_load_messages_returns_last_flush_snapshot_during_active_run() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t1")
+    let thread = Thread::new("t1")
         .with_message(Message::user("msg-0"))
         .with_message(Message::assistant("msg-1"));
     inner.create(&thread).await.unwrap();
@@ -450,7 +450,7 @@ async fn test_query_accurate_after_run_end_flush() {
     let (inner, storage) = make_storage(&url).await;
 
     // First run: create thread with 1 message.
-    let thread = AgentState::new("t1").with_message(Message::user("hello"));
+    let thread = Thread::new("t1").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     // Run produces deltas buffered in NATS.
@@ -472,7 +472,7 @@ async fn test_query_accurate_after_run_end_flush() {
     assert_eq!(pre.agent_state.messages.len(), 1);
 
     // Run-end flush.
-    let final_thread = AgentState::new("t1")
+    let final_thread = Thread::new("t1")
         .with_message(Message::user("hello"))
         .with_message(Message::assistant("world"));
     storage.save(&final_thread).await.unwrap();
@@ -499,7 +499,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     let (inner, storage) = make_storage(&url).await;
 
     // === Run 1 ===
-    let thread = AgentState::new("t1").with_message(Message::user("q1"));
+    let thread = Thread::new("t1").with_message(Message::user("q1"));
     inner.create(&thread).await.unwrap();
 
     let delta1 = AgentChangeSet {
@@ -516,7 +516,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
         .unwrap();
 
     // Flush run 1.
-    let run1_thread = AgentState::new("t1")
+    let run1_thread = Thread::new("t1")
         .with_message(Message::user("q1"))
         .with_message(Message::assistant("a1"));
     storage.save(&run1_thread).await.unwrap();
@@ -546,7 +546,7 @@ async fn test_multi_run_query_sees_previous_run_data() {
     assert_eq!(head.agent_state.messages[1].content, "a1");
 
     // Flush run 2.
-    let run2_thread = AgentState::new("t1")
+    let run2_thread = Thread::new("t1")
         .with_message(Message::user("q1"))
         .with_message(Message::assistant("a1"))
         .with_message(Message::assistant("a2"));
@@ -564,7 +564,7 @@ async fn test_run_finished_append_auto_flushes_to_inner() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t-auto").with_message(Message::user("hello"));
+    let thread = Thread::new("t-auto").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     let delta1 = AgentChangeSet {
@@ -614,7 +614,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
 
     let direct = Arc::new(CountingDelayStore::new(write_delay, write_delay));
     direct
-        .create(&AgentState::new("direct").with_message(Message::user("u0")))
+        .create(&Thread::new("direct").with_message(Message::user("u0")))
         .await
         .unwrap();
     let t0 = Instant::now();
@@ -646,7 +646,7 @@ async fn test_buffered_vs_direct_write_latency_and_amplification() {
         .await
         .unwrap();
     buffered
-        .create(&AgentState::new("buffered").with_message(Message::user("u0")))
+        .create(&Thread::new("buffered").with_message(Message::user("u0")))
         .await
         .unwrap();
 
@@ -706,7 +706,7 @@ async fn test_run_finished_flush_failure_can_be_recovered() {
         .await
         .unwrap();
 
-    let thread = AgentState::new("t-fail").with_message(Message::user("hello"));
+    let thread = Thread::new("t-fail").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     let delta1 = AgentChangeSet {
@@ -763,7 +763,7 @@ async fn test_duplicate_run_finished_delta_is_idempotent_by_message_id() {
     };
     let (inner, storage) = make_storage(&url).await;
 
-    let thread = AgentState::new("t-idempotent").with_message(Message::user("hello"));
+    let thread = Thread::new("t-idempotent").with_message(Message::user("hello"));
     inner.create(&thread).await.unwrap();
 
     let run_finished = AgentChangeSet {
@@ -801,7 +801,7 @@ async fn test_concurrent_appends_flush_to_consistent_snapshot() {
     let storage = Arc::new(storage);
 
     inner
-        .create(&AgentState::new("t-concurrent").with_message(Message::user("u0")))
+        .create(&Thread::new("t-concurrent").with_message(Message::user("u0")))
         .await
         .unwrap();
 

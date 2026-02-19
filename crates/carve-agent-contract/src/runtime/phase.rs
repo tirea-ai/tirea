@@ -18,7 +18,7 @@ use std::sync::Arc;
 /// Execution phase in the agent loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Phase {
-    /// AgentState started (called once).
+    /// Thread started (called once).
     RunStart,
     /// Step started - prepare context.
     StepStart,
@@ -32,7 +32,7 @@ pub enum Phase {
     AfterToolExecute,
     /// Step ended.
     StepEnd,
-    /// AgentState ended (called once).
+    /// Thread ended (called once).
     RunEnd,
 }
 
@@ -101,7 +101,7 @@ impl Phase {
 pub enum StepOutcome {
     /// Continue to next step.
     Continue,
-    /// AgentState complete.
+    /// Thread complete.
     Complete,
     /// Pending user interaction.
     Pending(Interaction),
@@ -591,8 +591,8 @@ mod tests {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        ctx.thread("AgentState 1");
-        ctx.thread("AgentState 2");
+        ctx.thread("Thread 1");
+        ctx.thread("Thread 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }
@@ -602,7 +602,7 @@ mod tests {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        ctx.thread("AgentState 1");
+        ctx.thread("Thread 1");
         ctx.set_session("Replaced");
 
         assert_eq!(ctx.session_context.len(), 1);
@@ -878,8 +878,8 @@ mod tests {
         let fix = TestFixture::new();
         let mut ctx = fix.step(vec![]);
 
-        ctx.thread("AgentState 1");
-        ctx.thread("AgentState 2");
+        ctx.thread("Thread 1");
+        ctx.thread("Thread 2");
 
         assert_eq!(ctx.session_context.len(), 2);
     }

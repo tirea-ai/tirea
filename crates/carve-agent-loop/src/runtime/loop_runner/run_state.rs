@@ -1,7 +1,7 @@
 use super::outcome::{LoopStats, LoopUsage};
 use super::AgentConfig;
 use crate::contracts::runtime::{StopPolicy, StopPolicyInput, StopPolicyStats, StreamResult};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::engine::stop_conditions::condition_from_spec;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -103,7 +103,7 @@ impl RunState {
     pub(super) fn to_policy_input<'a>(
         &'a self,
         result: &'a StreamResult,
-        thread: &'a AgentState,
+        thread: &'a Thread,
     ) -> StopPolicyInput<'a> {
         StopPolicyInput {
             agent_state: thread,

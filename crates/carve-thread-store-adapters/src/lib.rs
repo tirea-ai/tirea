@@ -1,4 +1,4 @@
-//! AgentState store adapter implementations for carve-agent.
+//! Thread store adapter implementations for carve-agent.
 
 pub mod file_store;
 pub mod memory_store;

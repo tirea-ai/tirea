@@ -13,7 +13,7 @@ use uuid::Uuid;
 /// Maintains state needed for converting internal AgentEvents to AG-UI events.
 #[derive(Debug, Clone)]
 pub struct AGUIContext {
-    /// AgentState identifier (conversation context).
+    /// Thread identifier (conversation context).
     pub thread_id: String,
     /// Current run identifier.
     pub run_id: String,

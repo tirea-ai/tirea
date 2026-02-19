@@ -14,7 +14,7 @@ use crate::contracts::runtime::{
     ToolExecutor, ToolExecutorError,
 };
 use crate::engine::tool_filter::{SCOPE_ALLOWED_TOOLS_KEY, SCOPE_EXCLUDED_TOOLS_KEY};
-use crate::contracts::state::{ActivityManager, AgentState};
+use crate::contracts::state::{ActivityManager, Thread};
 use crate::contracts::state::{Message, MessageMetadata};
 use crate::contracts::tool::{Tool, ToolDescriptor, ToolResult};
 use crate::engine::convert::tool_response;
@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(super) struct AppliedToolResults {
-    pub(super) thread: AgentState,
+    pub(super) thread: Thread,
     pub(super) pending_interaction: Option<Interaction>,
     pub(super) state_snapshot: Option<Value>,
 }
@@ -157,7 +157,7 @@ fn validate_parallel_state_patch_conflicts(
 }
 
 pub(super) fn apply_tool_results_to_session(
-    thread: AgentState,
+    thread: Thread,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     check_parallel_patch_conflicts: bool,
@@ -172,7 +172,7 @@ pub(super) fn apply_tool_results_to_session(
 }
 
 pub(super) fn apply_tool_results_impl(
-    thread: AgentState,
+    thread: Thread,
     results: &[ToolExecutionResult],
     metadata: Option<MessageMetadata>,
     check_parallel_patch_conflicts: bool,
@@ -321,7 +321,7 @@ pub(super) fn apply_tool_results_impl(
     })
 }
 
-fn tool_result_metadata_from_session(thread: &AgentState) -> Option<MessageMetadata> {
+fn tool_result_metadata_from_session(thread: &Thread) -> Option<MessageMetadata> {
     let run_id = thread
         .run_config
         .value("run_id")
@@ -347,7 +347,7 @@ fn tool_result_metadata_from_session(thread: &AgentState) -> Option<MessageMetad
     }
 }
 
-pub(super) fn next_step_index(thread: &AgentState) -> u32 {
+pub(super) fn next_step_index(thread: &Thread) -> u32 {
     thread
         .messages
         .iter()
@@ -368,21 +368,21 @@ pub(super) fn step_metadata(run_id: Option<String>, step_index: u32) -> MessageM
 ///
 /// This is the simpler API for tests and cases where plugins aren't needed.
 pub async fn execute_tools(
-    thread: AgentState,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
-) -> Result<AgentState, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     execute_tools_with_plugins(thread, result, tools, parallel, &[]).await
 }
 
 /// Execute tool calls with phase-based plugin hooks.
 pub async fn execute_tools_with_config(
-    thread: AgentState,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     config: &AgentConfig,
-) -> Result<AgentState, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     execute_tools_with_plugins_and_executor(
         thread,
         result,
@@ -394,7 +394,7 @@ pub async fn execute_tools_with_config(
 }
 
 pub(super) fn scope_with_tool_caller_context(
-    thread: &AgentState,
+    thread: &Thread,
     state: &Value,
     _config: Option<&AgentConfig>,
 ) -> Result<carve_agent_contract::RunConfig, AgentLoopError> {
@@ -416,12 +416,12 @@ pub(super) fn scope_with_tool_caller_context(
 
 /// Execute tool calls with plugin hooks.
 pub async fn execute_tools_with_plugins(
-    thread: AgentState,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     parallel: bool,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<AgentState, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     let parallel_executor = ParallelToolExecutor;
     let sequential_executor = SequentialToolExecutor;
     let executor: &dyn ToolExecutor = if parallel {
@@ -433,12 +433,12 @@ pub async fn execute_tools_with_plugins(
 }
 
 pub async fn execute_tools_with_plugins_and_executor(
-    thread: AgentState,
+    thread: Thread,
     result: &StreamResult,
     tools: &HashMap<String, Arc<dyn Tool>>,
     executor: &dyn ToolExecutor,
     plugins: &[Arc<dyn AgentPlugin>],
-) -> Result<AgentState, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     if result.tool_calls.is_empty() {
         return Ok(thread);
     }
@@ -502,7 +502,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            state: Box::new(AgentState::new(thread_id.to_string())),
+            state: Box::new(Thread::new(thread_id.to_string())),
         });
     }
 
@@ -546,7 +546,7 @@ pub(super) async fn execute_tools_parallel_with_phases(
         tokio::select! {
             _ = token.cancelled() => {
                 return Err(AgentLoopError::Cancelled {
-                    state: Box::new(AgentState::new(thread_id.clone())),
+                    state: Box::new(Thread::new(thread_id.clone())),
                 });
             }
             results = join_future => results,
@@ -576,7 +576,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
 
     if cancellation_token.is_some_and(|token| token.is_cancelled()) {
         return Err(AgentLoopError::Cancelled {
-            state: Box::new(AgentState::new(thread_id.to_string())),
+            state: Box::new(Thread::new(thread_id.to_string())),
         });
     }
 
@@ -589,7 +589,7 @@ pub(super) async fn execute_tools_sequential_with_phases(
             tokio::select! {
                 _ = token.cancelled() => {
                     return Err(AgentLoopError::Cancelled {
-                        state: Box::new(AgentState::new(thread_id.to_string())),
+                        state: Box::new(Thread::new(thread_id.to_string())),
                     });
                 }
                 result = execute_single_tool_with_phases(

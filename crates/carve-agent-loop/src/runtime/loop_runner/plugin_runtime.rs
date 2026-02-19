@@ -5,7 +5,7 @@ use super::core::{
 use super::AgentLoopError;
 use crate::contracts::plugin::AgentPlugin;
 use crate::contracts::runtime::phase::{Phase, StepContext};
-use crate::contracts::state::AgentState;
+use crate::contracts::state::Thread;
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::ToolCallContext;
 use crate::runtime::control::InferenceError;
@@ -108,7 +108,7 @@ fn take_step_pending_patches(step: &mut StepContext<'_>) -> Vec<TrackedPatch> {
 }
 
 pub(super) async fn run_phase_block<R, Setup, Extract>(
-    thread: &AgentState,
+    thread: &Thread,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     phases: &[Phase],
@@ -156,7 +156,7 @@ where
 
 pub(super) async fn emit_phase_block<Setup>(
     phase: Phase,
-    thread: &AgentState,
+    thread: &Thread,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     setup: Setup,
@@ -170,12 +170,12 @@ where
 }
 
 pub(super) async fn emit_cleanup_phases_and_apply(
-    thread: AgentState,
+    thread: Thread,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
     error_type: &'static str,
     message: String,
-) -> Result<AgentState, AgentLoopError> {
+) -> Result<Thread, AgentLoopError> {
     let state = thread
         .rebuild_state()
         .map_err(|e| AgentLoopError::StateError(e.to_string()))?;
@@ -216,10 +216,10 @@ pub(super) async fn emit_cleanup_phases_and_apply(
 }
 
 pub(super) async fn emit_run_end_phase(
-    thread: AgentState,
+    thread: Thread,
     tool_descriptors: &[ToolDescriptor],
     plugins: &[Arc<dyn AgentPlugin>],
-) -> AgentState {
+) -> Thread {
     let pending = {
         let current_state = match thread.rebuild_state() {
             Ok(s) => s,
