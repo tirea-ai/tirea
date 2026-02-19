@@ -328,22 +328,66 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::context::ToolCallContext;
+    use carve_agent_contract::runtime::phase::StepContext;
     use carve_agent_contract::state::{Message, ToolCall};
-    use carve_agent_contract::AgentState as ContextAgentState;
-    use carve_state::apply_patches;
-    use serde_json::json;
+    use carve_agent_contract::tool::ToolDescriptor;
+    use carve_state::{DocCell, Op, ScopeState};
+    use serde_json::{json, Value};
+    use std::sync::{Arc, Mutex};
 
-    fn apply_ctx_patch(thread: &AgentState, ctx: &ContextAgentState) -> serde_json::Value {
-        if !ctx.has_changes() {
-            return thread.rebuild_state().unwrap();
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
         }
-        let patch = ctx.take_patch();
-        apply_patches(
-            &thread.rebuild_state().unwrap(),
-            std::iter::once(patch.patch()),
-        )
-        .expect("ctx patch should apply")
+
+        fn new_with_state(state: Value) -> Self {
+            Self {
+                doc: DocCell::new(state),
+                ..Self::new()
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
+
+        fn has_changes(&self) -> bool {
+            !self.ops.lock().unwrap().is_empty()
+        }
+
+        fn updated_state(&self) -> Value {
+            self.doc.snapshot()
+        }
     }
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
@@ -357,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_replays_tool_matching_pending_interaction() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
@@ -365,33 +409,24 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture {
+            doc: DocCell::new(state),
+            messages: vec![Arc::new(Message::assistant_with_tool_calls(
+                "tools",
+                vec![
+                    ToolCall::new("call_read", "read_file", json!({"path": "a.txt"})),
+                    ToolCall::new("call_write", "write_file", json!({"path": "b.txt"})),
+                ],
+            ))],
+            ..TestFixture::new()
+        };
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
-        let thread = AgentState::with_initial_state(
-            "s1",
-            json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "permission_write_file",
-                        "action": "confirm"
-                    }
-                }
-            }),
-        )
-        .with_message(Message::assistant_with_tool_calls(
-            "tools",
-            vec![
-                ToolCall::new("call_read", "read_file", json!({"path": "a.txt"})),
-                ToolCall::new("call_write", "write_file", json!({"path": "b.txt"})),
-            ],
-        ));
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].id, "call_write");
@@ -400,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_replay_does_not_require_prior_intent_channel() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
@@ -408,34 +443,25 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture {
+            doc: DocCell::new(state),
+            messages: vec![Arc::new(Message::assistant_with_tool_calls(
+                "tools",
+                vec![ToolCall::new(
+                    "call_write",
+                    "write_file",
+                    json!({"path": "b.txt"}),
+                )],
+            ))],
+            ..TestFixture::new()
+        };
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
 
-        let thread = AgentState::with_initial_state(
-            "s1",
-            json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "permission_write_file",
-                        "action": "confirm"
-                    }
-                }
-            }),
-        )
-        .with_message(Message::assistant_with_tool_calls(
-            "tools",
-            vec![ToolCall::new(
-                "call_write",
-                "write_file",
-                json!({"path": "b.txt"}),
-            )],
-        ));
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
@@ -444,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_works_without_prior_channel() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "call_copy_1",
@@ -452,32 +478,23 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture {
+            doc: DocCell::new(state),
+            messages: vec![Arc::new(Message::assistant_with_tool_calls(
+                "tools",
+                vec![
+                    ToolCall::new("call_search_1", "search", json!({"query": "x"})),
+                    ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "hello"})),
+                ],
+            ))],
+            ..TestFixture::new()
+        };
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
 
-        let thread = AgentState::with_initial_state(
-            "s1",
-            json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "call_copy_1",
-                        "action": "tool:copyToClipboard"
-                    }
-                }
-            }),
-        )
-        .with_message(Message::assistant_with_tool_calls(
-            "tools",
-            vec![
-                ToolCall::new("call_search_1", "search", json!({"query": "x"})),
-                ToolCall::new("call_copy_1", "copyToClipboard", json!({"text": "hello"})),
-            ],
-        ));
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_copy_1");
@@ -486,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_frontend_interaction_replay_without_history_uses_pending_payload() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "call_copy_1",
@@ -495,14 +512,13 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture::new_with_state(state);
         let plugin = InteractionResponsePlugin::new(vec!["call_copy_1".to_string()], vec![]);
-        let thread = AgentState::with_initial_state("s1", doc.clone());
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_copy_1");
@@ -512,7 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_permission_replay_without_history_uses_embedded_tool_call() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
@@ -529,15 +545,14 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture::new_with_state(state);
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
-        let thread = AgentState::with_initial_state("s1", doc.clone());
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
@@ -547,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_permission_replay_prefers_origin_tool_call_mapping() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "permission_write_file",
@@ -564,15 +579,14 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture::new_with_state(state);
         let plugin =
             InteractionResponsePlugin::new(vec!["permission_write_file".to_string()], vec![]);
-        let thread = AgentState::with_initial_state("s1", doc.clone());
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_after = replay_calls_from_state(&updated);
         assert_eq!(replay_after.len(), 1);
         assert_eq!(replay_after[0].id, "call_write");
@@ -582,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_recovery_approval_schedules_agent_run_replay() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "agent_recovery_run-1",
@@ -593,29 +607,14 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture::new_with_state(state);
         let plugin =
             InteractionResponsePlugin::new(vec!["agent_recovery_run-1".to_string()], vec![]);
 
-        let thread = AgentState::with_initial_state(
-            "s1",
-            json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "agent_recovery_run-1",
-                        "action": "recover_agent_run",
-                        "parameters": {
-                            "run_id": "run-1"
-                        }
-                    }
-                }
-            }),
-        );
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-
-        let updated = apply_ctx_patch(&thread, &ctx);
+        let updated = fixture.updated_state();
         let replay_calls = replay_calls_from_state(&updated);
         assert_eq!(replay_calls.len(), 1);
         assert_eq!(replay_calls[0].name, RECOVERY_RESUME_TOOL_ID);
@@ -625,7 +624,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_start_recovery_denial_clears_pending_interaction() {
-        let doc = json!({
+        let state = json!({
             "loop_control": {
                 "pending_interaction": {
                     "id": "agent_recovery_run-1",
@@ -636,40 +635,19 @@ mod tests {
                 }
             }
         });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let fixture = TestFixture::new_with_state(state);
         let plugin =
             InteractionResponsePlugin::new(vec![], vec!["agent_recovery_run-1".to_string()]);
 
-        let thread = AgentState::with_initial_state(
-            "s1",
-            json!({
-                "loop_control": {
-                    "pending_interaction": {
-                        "id": "agent_recovery_run-1",
-                        "action": "recover_agent_run",
-                        "parameters": {
-                            "run_id": "run-1"
-                        }
-                    }
-                }
-            }),
-        );
+        let mut step = fixture.step(vec![]);
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
-        let mut step = StepContext::new(&thread, vec![]);
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
-
-        // Plugin ops are collected in ctx; flush them
         assert!(
-            ctx.has_changes(),
+            fixture.has_changes(),
             "denied recovery must clear pending interaction state"
         );
-        let ctx_patch = ctx.take_patch();
 
-        let updated = apply_patches(
-            &thread.rebuild_state().unwrap(),
-            std::iter::once(ctx_patch.patch()),
-        )
-        .expect("pending patch should apply");
+        let updated = fixture.updated_state();
         let pending = updated
             .get("loop_control")
             .and_then(|a| a.get("pending_interaction"));

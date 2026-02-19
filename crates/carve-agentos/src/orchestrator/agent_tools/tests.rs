@@ -1,16 +1,71 @@
 use super::*;
+use crate::contracts::context::ToolCallContext;
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::ToolStatus;
-use crate::contracts::AgentState as ContextAgentState;
 use crate::orchestrator::InMemoryAgentRegistry;
 use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_MESSAGES_KEY, TOOL_SCOPE_CALLER_STATE_KEY,
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use carve_state::apply_patches;
+use carve_state::{apply_patches, DocCell, Op, ScopeState as CarveScopeState};
 use serde_json::json;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
+
+struct TestFixture {
+    doc: DocCell,
+    ops: StdMutex<Vec<Op>>,
+    overlay: Arc<StdMutex<Vec<Op>>>,
+    scope: CarveScopeState,
+    pending_messages: StdMutex<Vec<Arc<crate::contracts::state::Message>>>,
+    messages: Vec<Arc<crate::contracts::state::Message>>,
+}
+
+impl TestFixture {
+    fn new() -> Self {
+        Self {
+            doc: DocCell::new(json!({})),
+            ops: StdMutex::new(Vec::new()),
+            overlay: Arc::new(StdMutex::new(Vec::new())),
+            scope: CarveScopeState::default(),
+            pending_messages: StdMutex::new(Vec::new()),
+            messages: Vec::new(),
+        }
+    }
+
+    fn new_with_state(state: serde_json::Value) -> Self {
+        Self {
+            doc: DocCell::new(state),
+            ..Self::new()
+        }
+    }
+
+    fn ctx(&self) -> ToolCallContext<'_> {
+        ToolCallContext::new(
+            &self.doc,
+            &self.ops,
+            self.overlay.clone(),
+            "test",
+            "test",
+            &self.scope,
+            &self.pending_messages,
+            None,
+        )
+    }
+
+    fn step<'a>(&'a self, tools: Vec<crate::contracts::tool::ToolDescriptor>) -> StepContext<'a> {
+        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+    }
+
+    fn step_with_thread_id<'a>(
+        &'a self,
+        thread_id: &'a str,
+        tools: Vec<crate::contracts::tool::ToolDescriptor>,
+    ) -> StepContext<'a> {
+        StepContext::new(self.ctx(), thread_id, &self.messages, tools)
+    }
+}
 
 #[test]
 fn plugin_filters_out_caller_agent() {
@@ -41,8 +96,6 @@ fn plugin_filters_agents_by_scope_policy() {
 
 #[tokio::test]
 async fn plugin_adds_reminder_for_running_and_stopped_runs() {
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let mut reg = InMemoryAgentRegistry::new();
     reg.upsert("worker", crate::orchestrator::AgentDefinition::new("mock"));
     let manager = Arc::new(AgentRunManager::new());
@@ -60,10 +113,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
         .await;
     assert_eq!(epoch, 1);
 
-    let owner = AgentState::new("owner-1");
-    let mut step = StepContext::new(&owner, vec![]);
+    let fixture = TestFixture::new();
+    let mut step = fixture.step_with_thread_id("owner-1", vec![]);
     plugin
-        .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+        .on_phase(Phase::AfterToolExecute, &mut step)
         .await;
     let reminder = step
         .system_reminders
@@ -72,9 +125,10 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     assert!(reminder.contains("status=\"running\""));
 
     manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
-    let mut step2 = StepContext::new(&owner, vec![]);
+    let fixture2 = TestFixture::new();
+    let mut step2 = fixture2.step_with_thread_id("owner-1", vec![]);
     plugin
-        .on_phase(Phase::AfterToolExecute, &mut step2, &ctx)
+        .on_phase(Phase::AfterToolExecute, &mut step2)
         .await;
     let reminder2 = step2
         .system_reminders
@@ -215,7 +269,7 @@ impl AgentPlugin for SlowSkipPlugin {
         "slow_skip"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             tokio::time::sleep(Duration::from_millis(120)).await;
             step.skip_inference = true;
@@ -788,9 +842,9 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
     assert!(
         !step.pending_patches.is_empty(),
         "expected reconciliation + pending patches for orphan running entry"
@@ -816,9 +870,11 @@ async fn recovery_plugin_reconciles_orphan_running_and_requests_confirmation() {
     );
 
     let updated_thread = thread.clone().with_patches(step.pending_patches);
-    let mut before = StepContext::new(&updated_thread, vec![]);
+    let updated_doc = updated_thread.rebuild_state().unwrap();
+    let fixture2 = TestFixture::new_with_state(updated_doc);
+    let mut before = fixture2.step(vec![]);
     plugin
-        .on_phase(Phase::BeforeInference, &mut before, &ctx)
+        .on_phase(Phase::BeforeInference, &mut before)
         .await;
     assert!(
         before.skip_inference,
@@ -854,9 +910,9 @@ async fn recovery_plugin_does_not_override_existing_pending_interaction() {
     );
 
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
     assert!(
         !step.skip_inference,
         "existing pending interaction should not be replaced"
@@ -900,9 +956,9 @@ async fn recovery_plugin_auto_approve_when_permission_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let updated = thread
         .clone()
@@ -954,9 +1010,9 @@ async fn recovery_plugin_auto_deny_when_permission_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let updated = thread
         .clone()
@@ -1004,9 +1060,9 @@ async fn recovery_plugin_auto_approve_from_default_behavior_allow() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let updated = thread
         .clone()
@@ -1052,9 +1108,9 @@ async fn recovery_plugin_auto_deny_from_default_behavior_deny() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let updated = thread
         .clone()
@@ -1103,9 +1159,9 @@ async fn recovery_plugin_tool_rule_overrides_default_behavior() {
         }),
     );
     let doc = thread.rebuild_state().unwrap();
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-    let mut step = StepContext::new(&thread, vec![]);
-    plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+    let fixture = TestFixture::new_with_state(doc);
+    let mut step = fixture.step(vec![]);
+    plugin.on_phase(Phase::RunStart, &mut step).await;
 
     let updated = thread
         .clone()

@@ -10,13 +10,57 @@ use crate::contracts::ToolCallContext;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use carve_agent_extension_interaction::InteractionOutbox;
-use carve_state::{Op, Patch, State};
+use carve_state::{DocCell, Op, Patch, ScopeState, State};
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
+
+struct TestFixture {
+    doc: DocCell,
+    ops: Mutex<Vec<Op>>,
+    overlay: Arc<Mutex<Vec<Op>>>,
+    scope: ScopeState,
+    pending_messages: Mutex<Vec<Arc<Message>>>,
+    messages: Vec<Arc<Message>>,
+}
+
+impl TestFixture {
+    fn new() -> Self {
+        Self {
+            doc: DocCell::new(json!({})),
+            ops: Mutex::new(Vec::new()),
+            overlay: Arc::new(Mutex::new(Vec::new())),
+            scope: ScopeState::default(),
+            pending_messages: Mutex::new(Vec::new()),
+            messages: Vec::new(),
+        }
+    }
+
+    fn with_messages(mut self, thread: &AgentState) -> Self {
+        self.messages = thread.messages.clone();
+        self
+    }
+
+    fn ctx(&self) -> ToolCallContext<'_> {
+        ToolCallContext::new(
+            &self.doc,
+            &self.ops,
+            self.overlay.clone(),
+            "test",
+            "test",
+            &self.scope,
+            &self.pending_messages,
+            None,
+        )
+    }
+
+    fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
+        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct TestCounterState {
@@ -739,7 +783,7 @@ impl AgentPlugin for TestPhasePlugin {
         &self.id
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         match phase {
             Phase::StepStart => {
                 step.system("Test system context");
@@ -774,7 +818,7 @@ impl AgentPlugin for BlockingPhasePlugin {
         "blocker"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             step.block("Echo tool is blocked");
         }
@@ -820,7 +864,7 @@ impl AgentPlugin for InvalidAfterToolMutationPlugin {
         "invalid_after_tool_mutation"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::AfterToolExecute {
             step.block("too late");
         }
@@ -867,7 +911,7 @@ impl AgentPlugin for ReminderPhasePlugin {
         "reminder"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::AfterToolExecute {
             step.reminder("Tool execution completed");
         }
@@ -908,7 +952,8 @@ fn test_execute_tools_with_reminder_phase_plugin() {
 fn test_build_messages_with_context() {
     let thread = AgentState::new("test").with_message(Message::user("Hello"));
     let tool_descriptors = vec![ToolDescriptor::new("test", "Test", "Test tool")];
-    let mut step = StepContext::new(&thread, tool_descriptors);
+    let fixture = TestFixture::new().with_messages(&thread);
+    let mut step = fixture.step(tool_descriptors);
 
     step.system("System context 1");
     step.system("System context 2");
@@ -927,7 +972,8 @@ fn test_build_messages_with_context() {
 #[test]
 fn test_build_messages_empty_system() {
     let thread = AgentState::new("test").with_message(Message::user("Hello"));
-    let step = StepContext::new(&thread, vec![]);
+    let fixture = TestFixture::new().with_messages(&thread);
+    let step = fixture.step(vec![]);
 
     let messages = build_messages(&step, "");
 
@@ -943,7 +989,7 @@ impl AgentPlugin for ToolFilterPlugin {
         "filter"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.exclude("dangerous_tool");
         }
@@ -954,17 +1000,15 @@ impl AgentPlugin for ToolFilterPlugin {
 fn test_tool_filtering_via_plugin() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        let thread = AgentState::new("test");
         let tool_descriptors = vec![
             ToolDescriptor::new("safe_tool", "Safe", "Safe tool"),
             ToolDescriptor::new("dangerous_tool", "Dangerous", "Dangerous tool"),
         ];
-        let mut step = StepContext::new(&thread, tool_descriptors);
+        let fixture = TestFixture::new();
+        let mut step = fixture.step(tool_descriptors);
         let plugins: Vec<Arc<dyn AgentPlugin>> = vec![Arc::new(ToolFilterPlugin)];
-        let doc = serde_json::json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
 
-        emit_phase_checked(Phase::BeforeInference, &mut step, &ctx, &plugins)
+        emit_phase_checked(Phase::BeforeInference, &mut step, &plugins)
             .await
             .expect("BeforeInference should not fail");
 
@@ -987,22 +1031,16 @@ async fn test_plugin_state_channel_available_in_before_tool_execute() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::BeforeToolExecute {
                 return;
             }
 
-            let allow_exec = step
-                .thread
-                .rebuild_state()
-                .ok()
-                .and_then(|state| {
-                    state
-                        .get("plugin")
-                        .and_then(|p| p.get("allow_exec"))
-                        .and_then(|v| v.as_bool())
-                })
+            let state = step.snapshot();
+            let allow_exec = state
+                .get("plugin")
+                .and_then(|p| p.get("allow_exec"))
+                .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
             if !allow_exec {
@@ -1054,11 +1092,10 @@ async fn test_plugin_sees_real_session_id_and_scope_in_tool_phase() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeToolExecute {
-                assert_eq!(step.thread.id, "real-thread-42");
-                assert_eq!(step.thread.scope.value("user_id"), Some(&json!("u-abc")),);
+                assert_eq!(step.thread_id(), "real-thread-42");
+                assert_eq!(step.scope().value("user_id"), Some(&json!("u-abc")),);
                 VERIFIED.store(true, Ordering::SeqCst);
             }
         }
@@ -1108,7 +1145,6 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             match phase {
                 Phase::BeforeToolExecute => {
@@ -1120,16 +1156,11 @@ async fn test_plugin_state_patch_visible_in_next_step_before_inference() {
                     step.pending_patches.push(patch);
                 }
                 Phase::BeforeInference => {
-                    let seen_tool_execute = step
-                        .thread
-                        .rebuild_state()
-                        .ok()
-                        .and_then(|state| {
-                            state
-                                .get("debug")
-                                .and_then(|d| d.get("seen_tool_execute"))
-                                .and_then(|v| v.as_bool())
-                        })
+                    let state = step.snapshot();
+                    let seen_tool_execute = state
+                        .get("debug")
+                        .and_then(|d| d.get("seen_tool_execute"))
+                        .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     if seen_tool_execute {
                         let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
@@ -1184,7 +1215,6 @@ async fn test_run_phase_block_executes_phases_extracts_output_and_commits_pendin
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             self.phases.lock().unwrap().push(phase);
             match phase {
@@ -1253,12 +1283,11 @@ async fn test_emit_cleanup_phases_and_apply_runs_after_inference_and_step_end() 
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
         ) {
             self.phases.lock().unwrap().push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
+                    let agent = step.state_of::<crate::runtime::control::LoopControlState>();
                     let err = agent
                         .inference_error()
                         .ok()
@@ -1324,7 +1353,6 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             match phase {
                 Phase::RunStart => {
@@ -1336,16 +1364,11 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     step.pending_patches.push(patch);
                 }
                 Phase::StepStart => {
-                    let current = step
-                        .thread
-                        .rebuild_state()
-                        .ok()
-                        .and_then(|state| {
-                            state
-                                .get("debug")
-                                .and_then(|a| a.get("temp_counter"))
-                                .and_then(|v| v.as_i64())
-                        })
+                    let state = step.snapshot();
+                    let current = state
+                        .get("debug")
+                        .and_then(|a| a.get("temp_counter"))
+                        .and_then(|v| v.as_i64())
                         .unwrap_or(0);
                     let patch = TrackedPatch::new(Patch::new().with_op(Op::set(
                         carve_state::path!("debug", "temp_counter"),
@@ -1355,9 +1378,7 @@ async fn test_plugin_can_model_run_scoped_data_via_state_and_cleanup() {
                     step.pending_patches.push(patch);
                 }
                 Phase::RunEnd => {
-                    let Ok(state) = step.thread.rebuild_state() else {
-                        return;
-                    };
+                    let state = step.snapshot();
                     let run_count = state
                         .get("debug")
                         .and_then(|d| d.get("run_count"))
@@ -1460,7 +1481,6 @@ fn test_agent_config_with_plugins() {
             &self,
             _phase: Phase,
             _step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
         }
     }
@@ -1478,7 +1498,7 @@ impl AgentPlugin for PendingPhasePlugin {
         "pending"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_name() == Some("echo") {
             use crate::contracts::runtime::Interaction;
             step.pending(Interaction::new("confirm_1", "confirm").with_message("Execute echo?"));
@@ -2078,7 +2098,6 @@ fn test_execute_tools_sequential_propagates_intermediate_state_apply_errors() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::AfterToolExecute || step.tool_call_id() != Some("call_1") {
                 return;
@@ -2149,7 +2168,7 @@ impl AgentPlugin for RecordAndSkipPlugin {
     fn id(&self) -> &str {
         "record_and_skip"
     }
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         self.phases.lock().unwrap().push(phase);
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
@@ -2267,12 +2286,11 @@ async fn test_stream_skip_inference_with_pending_state_emits_pending_and_pauses(
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::BeforeInference {
                 return;
             }
-            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let state = step.snapshot();
             let patch = set_agent_pending_interaction(
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
@@ -2333,7 +2351,6 @@ async fn test_stream_emits_interaction_resolved_on_denied_response() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -2399,7 +2416,6 @@ async fn test_stream_permission_approval_replays_tool_and_appends_tool_result() 
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -2516,7 +2532,6 @@ async fn test_stream_permission_denied_does_not_replay_tool_call() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -2658,13 +2673,12 @@ async fn test_run_loop_skip_inference_with_pending_state_returns_pending_interac
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             self.phases.lock().unwrap().push(phase);
             if phase != Phase::BeforeInference {
                 return;
             }
-            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let state = step.snapshot();
             let patch = set_agent_pending_interaction(
                 &state,
                 Interaction::new("agent_recovery_run-1", "recover_agent_run")
@@ -2789,7 +2803,6 @@ async fn test_run_loop_rejects_skip_inference_mutation_outside_before_inference(
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
@@ -2829,7 +2842,6 @@ async fn test_stream_rejects_skip_inference_mutation_outside_before_inference() 
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::StepStart {
                 step.skip_inference = true;
@@ -3140,15 +3152,14 @@ async fn test_nonstream_llm_error_runs_cleanup_and_run_end_phases() {
         async fn on_phase(
             &self,
             phase: Phase,
-            _step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
+            step: &mut StepContext<'_>,
         ) {
             self.phases.lock().expect("lock poisoned").push(phase);
             if phase != Phase::AfterInference {
                 return;
             }
 
-            let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
+            let agent = step.state_of::<crate::runtime::control::LoopControlState>();
             let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
             assert_eq!(err_type.as_deref(), Some("llm_exec_error"));
         }
@@ -3564,12 +3575,11 @@ async fn test_golden_run_loop_and_stream_pending_resume_alignment() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::BeforeInference {
                 return;
             }
-            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let state = step.snapshot();
             let patch = set_agent_pending_interaction(
                 &state,
                 Interaction::new("golden_resume_1", "recover_agent_run").with_message("resume me"),
@@ -3651,7 +3661,6 @@ async fn test_stream_replay_is_idempotent_across_reruns() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -4366,7 +4375,6 @@ async fn test_stream_replay_invalid_payload_emits_error_and_finish() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::RunStart {
                 step.pending_patches.push(
@@ -4433,11 +4441,10 @@ async fn test_stream_replay_rebuild_state_failure_emits_error() {
         async fn on_phase(
             &self,
             phase: Phase,
-            _step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
+            step: &mut StepContext<'_>,
         ) {
             if phase == Phase::RunStart {
-                let outbox = ctx.state_of::<InteractionOutbox>();
+                let outbox = step.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -4499,11 +4506,10 @@ async fn test_stream_replay_tool_exec_respects_tool_phases() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
         ) {
             match phase {
                 Phase::RunStart => {
-                    let outbox = ctx.state_of::<InteractionOutbox>();
+                    let outbox = step.state_of::<InteractionOutbox>();
                     outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                         "replay_call_1",
                         "echo",
@@ -4569,11 +4575,10 @@ async fn test_stream_replay_without_placeholder_appends_tool_result_message() {
         async fn on_phase(
             &self,
             phase: Phase,
-            _step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
+            step: &mut StepContext<'_>,
         ) {
             if phase == Phase::RunStart {
-                let outbox = ctx.state_of::<InteractionOutbox>();
+                let outbox = step.state_of::<InteractionOutbox>();
                 outbox.replay_tool_calls_push(crate::contracts::state::ToolCall::new(
                     "replay_call_1",
                     "echo",
@@ -4633,7 +4638,6 @@ async fn test_stream_apply_error_still_runs_run_end_phase() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             match phase {
                 Phase::BeforeToolExecute => {
@@ -5415,7 +5419,6 @@ async fn test_sequential_tools_stop_after_first_pending_interaction() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::BeforeToolExecute {
                 return;
@@ -5485,7 +5488,7 @@ impl AgentPlugin for OrderTrackingPlugin {
         self.id
     }
 
-    async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, _step: &mut StepContext<'_>) {
         self.order_log
             .lock()
             .unwrap()
@@ -5564,7 +5567,7 @@ impl AgentPlugin for ConditionalBlockPlugin {
         "conditional_block"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeToolExecute && step.tool_pending() {
             step.block("Blocked because tool was pending".to_string());
         }
@@ -5842,12 +5845,11 @@ async fn test_run_step_skip_inference_with_pending_state_returns_pending_interac
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase != Phase::BeforeInference {
                 return;
             }
-            let state = step.thread.rebuild_state().expect("state should rebuild");
+            let state = step.snapshot();
             let patch = set_agent_pending_interaction(
                 &state,
                 Interaction::new("agent_recovery_step-1", "recover_agent_run")
@@ -5936,12 +5938,11 @@ async fn test_stream_startup_error_runs_cleanup_phases_and_persists_cleanup_patc
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            ctx: &ContextAgentState,
         ) {
             self.phases.lock().expect("lock poisoned").push(phase);
             match phase {
                 Phase::AfterInference => {
-                    let agent = ctx.state_of::<crate::runtime::control::LoopControlState>();
+                    let agent = step.state_of::<crate::runtime::control::LoopControlState>();
                     let err_type = agent.inference_error().ok().flatten().map(|e| e.error_type);
                     assert_eq!(err_type.as_deref(), Some("llm_stream_start_error"));
                 }

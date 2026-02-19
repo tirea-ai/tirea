@@ -305,11 +305,16 @@ mod tests {
 
         // Run the subsystem plugin and verify discovery catalog is injected.
         let plugin = sys.plugin();
-        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
+        let state = thread.rebuild_state().unwrap();
+        let transient_ctx = ContextAgentState::new_transient(&state, "test", "test");
+        let mut step = StepContext::new(
+            transient_ctx.as_tool_call_context(),
+            &thread.id,
+            &thread.messages,
+            vec![ToolDescriptor::new("t", "t", "t")],
+        );
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
 
         assert_eq!(step.system_context.len(), 1);

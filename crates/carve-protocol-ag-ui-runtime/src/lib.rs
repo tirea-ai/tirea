@@ -166,10 +166,51 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 mod tests {
     use super::*;
     use carve_agentos::contracts::runtime::phase::{Phase, ToolContext};
-    use carve_agentos::contracts::state::AgentState as ConversationAgentState;
-    use carve_agentos::contracts::state::ToolCall;
+    use carve_agentos::contracts::state::{Message, ToolCall};
+    use carve_agentos::contracts::ToolCallContext;
     use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
+    use std::sync::Mutex;
+
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
+    }
 
     #[test]
     fn builds_frontend_tool_registry_from_request() {
@@ -279,15 +320,13 @@ mod tests {
     async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
-        let state = json!({});
-        let ctx = RuntimeAgentState::new_transient(&state, "test-call", "agui_runtime_test");
-        let thread = ConversationAgentState::new("t1");
-        let mut step = StepContext::new(&thread, vec![]);
+        let fixture = TestFixture::new();
+        let mut step = fixture.step(vec![]);
         let call = ToolCall::new("call_1", "copyToClipboard", json!({"text":"hello"}));
         step.tool = Some(ToolContext::new(&call));
 
         plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .on_phase(Phase::BeforeToolExecute, &mut step)
             .await;
 
         assert!(step.tool_pending());
@@ -347,12 +386,10 @@ mod tests {
         let scope = build_agui_run_scope(&request);
         let plugin = scope.plugins.iter().find(|p| p.id() == "agui_context_injection").unwrap();
 
-        let state = json!({});
-        let ctx = RuntimeAgentState::new_transient(&state, "test-ctx", "agui_context_test");
-        let thread = ConversationAgentState::new("t1");
-        let mut step = StepContext::new(&thread, vec![]);
+        let fixture = TestFixture::new();
+        let mut step = fixture.step(vec![]);
 
-        plugin.on_phase(Phase::StepStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::StepStart, &mut step).await;
 
         assert!(!step.system_context.is_empty());
         let merged = step.system_context.join("\n");

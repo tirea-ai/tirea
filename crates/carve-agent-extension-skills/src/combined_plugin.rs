@@ -50,17 +50,63 @@ impl AgentPlugin for SkillPlugin {
 mod tests {
     use super::*;
     use crate::{FsSkill, Skill};
-    use carve_agent_contract::state::AgentState;
+    use carve_agent_contract::context::ToolCallContext;
+    use carve_agent_contract::state::Message;
     use carve_agent_contract::tool::ToolDescriptor;
-    use carve_agent_contract::AgentState as ContextAgentState;
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn new_with_state(state: serde_json::Value) -> Self {
+            Self {
+                doc: DocCell::new(state),
+                ..Self::new()
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
+    }
 
     #[tokio::test]
     async fn combined_plugin_injects_catalog_only() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
         let td = TempDir::new().unwrap();
         let root = td.path().join("skills");
         fs::create_dir_all(root.join("s1")).unwrap();
@@ -75,29 +121,26 @@ mod tests {
         let discovery = SkillDiscoveryPlugin::new(skills);
         let plugin = SkillPlugin::new(discovery);
 
-        let thread = AgentState::with_initial_state(
-            "s",
-            json!({
-                "skills": {
-                    "active": ["s1"],
-                    "instructions": {"s1": "Do X"},
-                    "references": {
-                        "s1:references/a.md": {
-                            "skill":"s1",
-                            "path":"references/a.md",
-                            "sha256":"x",
-                            "truncated":false,
-                            "content":"A",
-                            "bytes":1
-                        }
-                    },
-                    "scripts": {}
-                }
-            }),
-        );
-        let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+        let fixture = TestFixture::new_with_state(json!({
+            "skills": {
+                "active": ["s1"],
+                "instructions": {"s1": "Do X"},
+                "references": {
+                    "s1:references/a.md": {
+                        "skill":"s1",
+                        "path":"references/a.md",
+                        "sha256":"x",
+                        "truncated":false,
+                        "content":"A",
+                        "bytes":1
+                    }
+                },
+                "scripts": {}
+            }
+        }));
+        let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
 
         // Only discovery catalog is injected; runtime plugin no longer injects system context.

@@ -12,6 +12,7 @@ async-trait = "0.1"
 serde_json = { workspace = true }
 
 [dev-dependencies]
+carve-state = { path = "../carve-state" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [lints]

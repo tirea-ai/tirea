@@ -154,8 +154,67 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::AgentState as ContextAgentState;
+    use carve_agent_contract::runtime::phase::{Phase, StepContext};
+    use carve_agent_contract::state::Message;
+    use carve_agent_contract::tool::ToolDescriptor;
+    use carve_agent_contract::ToolCallContext;
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn new_with_state(state: serde_json::Value) -> Self {
+            Self {
+                doc: DocCell::new(state),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
+
+        fn has_changes(&self) -> bool {
+            !self.ops.lock().unwrap().is_empty()
+        }
+    }
 
     #[test]
     fn test_reminder_state_default() {
@@ -177,59 +236,61 @@ mod tests {
 
     #[test]
     fn test_add_reminder() {
-        let doc = json!({
+        let fixture = TestFixture::new_with_state(json!({
             "reminders": { "items": [] }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fixture.ctx();
 
-        ctx.add_reminder("Test reminder");
-        assert!(ctx.has_changes());
+        ctx.state_of::<ReminderState>().items_push("Test reminder".to_string());
+        assert!(fixture.has_changes());
     }
 
     #[test]
     fn test_reminders_empty() {
-        let doc = json!({
+        let fixture = TestFixture::new_with_state(json!({
             "reminders": { "items": [] }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fixture.ctx();
 
-        assert!(ctx.reminders().is_empty());
-        assert_eq!(ctx.reminder_count(), 0);
+        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        assert!(items.is_empty());
     }
 
     #[test]
     fn test_reminders_with_existing() {
-        let doc = json!({
+        let fixture = TestFixture::new_with_state(json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fixture.ctx();
 
-        let reminders = ctx.reminders();
-        assert_eq!(reminders.len(), 2);
-        assert_eq!(ctx.reminder_count(), 2);
+        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        assert_eq!(items.len(), 2);
     }
 
     #[test]
     fn test_clear_reminders() {
-        let doc = json!({
+        let fixture = TestFixture::new_with_state(json!({
             "reminders": { "items": ["Reminder 1", "Reminder 2"] }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fixture.ctx();
 
-        assert_eq!(ctx.reminder_count(), 2);
-        ctx.clear_reminders();
-        assert!(ctx.has_changes());
+        let items = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        assert_eq!(items.len(), 2);
+        ctx.state_of::<ReminderState>().set_items(Vec::new());
+        assert!(fixture.has_changes());
     }
 
     #[test]
     fn test_remove_reminder() {
-        let doc = json!({
+        let fixture = TestFixture::new_with_state(json!({
             "reminders": { "items": ["Keep", "Remove", "Keep2"] }
-        });
-        let ctx = ContextAgentState::new_transient(&doc, "call_1", "test");
+        }));
+        let ctx = fixture.ctx();
 
-        ctx.remove_reminder("Remove");
-        assert!(ctx.has_changes());
+        let reminders: Vec<String> = ctx.state_of::<ReminderState>().items().ok().unwrap_or_default();
+        let filtered: Vec<String> = reminders.into_iter().filter(|r| r != "Remove").collect();
+        ctx.state_of::<ReminderState>().set_items(filtered);
+        assert!(fixture.has_changes());
     }
 
     #[test]
@@ -246,21 +307,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_before_inference() {
-        let doc = json!({ "reminders": { "items": ["Test reminder"] } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext};
-        use carve_agent_contract::state::AgentState;
-
-        let plugin = ReminderPlugin::new();
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "reminders": { "items": ["Test reminder"] } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        let plugin = ReminderPlugin::new();
+        let mut step = fixture.step(vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert!(!step.session_context.is_empty());
         assert!(step.session_context[0].contains("Test reminder"));
@@ -268,50 +322,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_generates_clear_patch() {
-        let doc = json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext};
-        use carve_agent_contract::state::AgentState;
-
-        let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "reminders": { "items": ["Reminder A", "Reminder B"] } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        let plugin = ReminderPlugin::new(); // clear_after_llm_request = true
+        let mut step = fixture.step(vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         // Should have injected reminders as session context
         assert_eq!(step.session_context.len(), 2);
         assert!(step.session_context[0].contains("Reminder A"));
         assert!(step.session_context[1].contains("Reminder B"));
 
-        // Plugin ops are collected in ctx; flush them to verify
-        assert!(ctx.has_changes());
-        let patch = ctx.take_patch();
-        assert!(!patch.patch().is_empty());
+        // Plugin ops are collected in fixture; verify changes were made
+        assert!(fixture.has_changes());
     }
 
     #[tokio::test]
     async fn test_reminder_plugin_no_clear_when_disabled() {
-        let doc = json!({ "reminders": { "items": ["Reminder"] } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext};
-        use carve_agent_contract::state::AgentState;
-
-        let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "reminders": { "items": ["Reminder"] } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        let plugin = ReminderPlugin::new().with_clear_after_llm_request(false);
+        let mut step = fixture.step(vec![]);
+
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert!(!step.session_context.is_empty());
         // No pending patches when clearing is disabled
@@ -320,19 +358,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_empty_reminders() {
-        let doc = json!({ "reminders": { "items": [] } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext};
-        use carve_agent_contract::state::AgentState;
+        let fixture = TestFixture::new_with_state(
+            json!({ "reminders": { "items": [] } }),
+        );
 
         let plugin = ReminderPlugin::new();
-        let thread =
-            AgentState::with_initial_state("test", json!({ "reminders": { "items": [] } }));
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());
@@ -340,18 +373,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_reminder_plugin_no_state() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext};
-        use carve_agent_contract::state::AgentState;
+        let fixture = TestFixture::new();
 
         let plugin = ReminderPlugin::new();
-        let thread = AgentState::new("test");
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
-        plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeInference, &mut step).await;
 
         assert!(step.session_context.is_empty());
         assert!(step.pending_patches.is_empty());

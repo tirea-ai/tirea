@@ -234,13 +234,65 @@ impl AgentPlugin for PermissionPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use carve_agent_contract::context::ToolCallContext;
+    use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
+    use carve_agent_contract::state::Message;
+    use carve_agent_contract::state::ToolCall;
     use carve_agent_contract::AgentState as ContextAgentState;
+    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
     fn apply_interaction_intents(
         _step: &mut carve_agent_contract::runtime::phase::StepContext<'_>,
     ) {
         // No-op: permission plugin now sets pending interaction directly.
+    }
+
+    struct TestFixture {
+        doc: DocCell,
+        ops: Mutex<Vec<Op>>,
+        overlay: Arc<Mutex<Vec<Op>>>,
+        scope: ScopeState,
+        pending_messages: Mutex<Vec<Arc<Message>>>,
+        messages: Vec<Arc<Message>>,
+    }
+
+    impl TestFixture {
+        fn new() -> Self {
+            Self {
+                doc: DocCell::new(json!({})),
+                ops: Mutex::new(Vec::new()),
+                overlay: Arc::new(Mutex::new(Vec::new())),
+                scope: ScopeState::default(),
+                pending_messages: Mutex::new(Vec::new()),
+                messages: Vec::new(),
+            }
+        }
+
+        fn new_with_state(state: serde_json::Value) -> Self {
+            Self {
+                doc: DocCell::new(state),
+                ..Self::new()
+            }
+        }
+
+        fn ctx(&self) -> ToolCallContext<'_> {
+            ToolCallContext::new(
+                &self.doc,
+                &self.ops,
+                self.overlay.clone(),
+                "test",
+                "test",
+                &self.scope,
+                &self.pending_messages,
+                None,
+            )
+        }
+
+        fn step(&self, tools: Vec<carve_agent_contract::ToolDescriptor>) -> StepContext<'_> {
+            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+        }
     }
 
     #[test]
@@ -417,25 +469,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_allow() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
@@ -444,25 +487,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_deny() {
-        let doc = json!({ "permissions": { "default_behavior": "deny", "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "deny", "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
@@ -470,25 +504,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_ask() {
-        let doc = json!({ "permissions": { "default_behavior": "ask", "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "ask", "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "test_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -550,25 +575,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_allow() {
-        let doc = json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "deny", "tools": { "allowed_tool": "allow" } } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "allowed_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(!step.tool_blocked());
@@ -576,25 +592,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_deny() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": { "denied_tool": "deny" } } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "denied_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_blocked());
@@ -602,25 +609,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tool_specific_ask() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": { "ask_tool": "ask" } } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "ask_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -628,25 +626,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_tool_behavior() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": { "invalid_tool": "invalid_behavior" } } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "invalid_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // Should fall back to default "allow" behavior
@@ -656,25 +645,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_invalid_default_behavior() {
-        let doc = json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "invalid_default", "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         // Should fall back to Ask behavior
@@ -683,23 +663,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_no_state() {
-        let doc = json!({});
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // AgentState with no permission state at all — should default to Ask
-        let thread = AgentState::new("test");
-        let mut step = StepContext::new(&thread, vec![]);
+        let fixture = TestFixture::new();
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
         assert!(step.tool_pending());
@@ -711,30 +683,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_tools_is_string_not_object() {
-        let doc = json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // "tools" is a string instead of an object — should not panic,
         // falls back to default_behavior.
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": "corrupted" } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
-        // "tools" is not an object → tools.get(tool_id) returns None → falls
+        // "tools" is not an object -> tools.get(tool_id) returns None -> falls
         // back to default_behavior "allow"
         assert!(!step.tool_blocked());
         assert!(!step.tool_pending());
@@ -742,114 +705,80 @@ mod tests {
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_invalid_string() {
-        let doc = json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // "default_behavior" is an unrecognized string — should fall back to Ask
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "invalid_value", "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
-        // parse_behavior("invalid_value") returns None → unwrap_or(Ask)
+        // parse_behavior("invalid_value") returns None -> unwrap_or(Ask)
         assert!(step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_default_behavior_is_number() {
-        let doc = json!({ "permissions": { "default_behavior": 42, "tools": {} } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // "default_behavior" is a number instead of string — should fall back to Ask
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": 42, "tools": {} } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
-        // as_str() on a number returns None → parse_behavior not called → unwrap_or(Ask)
+        // as_str() on a number returns None -> parse_behavior not called -> unwrap_or(Ask)
         assert!(step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_tool_value_is_number() {
-        let doc =
-            json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // Tool permission value is a number — should fall back to default_behavior
-        let thread = AgentState::with_initial_state(
-            "test",
+        let fixture = TestFixture::new_with_state(
             json!({ "permissions": { "default_behavior": "allow", "tools": { "my_tool": 123 } } }),
         );
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "my_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
-        // tools.get("my_tool") returns Some(123), as_str() returns None →
-        // parse_behavior not called → falls to default_behavior "allow"
+        // tools.get("my_tool") returns Some(123), as_str() returns None ->
+        // parse_behavior not called -> falls to default_behavior "allow"
         assert!(!step.tool_blocked());
         assert!(!step.tool_pending());
     }
 
     #[tokio::test]
     async fn test_permission_plugin_permissions_is_array() {
-        let doc = json!({ "permissions": [1, 2, 3] });
-        let ctx = ContextAgentState::new_transient(&doc, "test", "test");
-        use carve_agent_contract::runtime::phase::{Phase, StepContext, ToolContext};
-        use carve_agent_contract::state::AgentState;
-        use carve_agent_contract::state::ToolCall;
-
         // "permissions" is an array instead of object — should fall back to Ask
-        let thread = AgentState::with_initial_state("test", json!({ "permissions": [1, 2, 3] }));
-        let mut step = StepContext::new(&thread, vec![]);
+        let fixture = TestFixture::new_with_state(
+            json!({ "permissions": [1, 2, 3] }),
+        );
+        let mut step = fixture.step(vec![]);
 
         let call = ToolCall::new("call_1", "any_tool", json!({}));
         step.tool = Some(ToolContext::new(&call));
 
         let plugin = PermissionPlugin;
-        plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
-            .await;
+        plugin.on_phase(Phase::BeforeToolExecute, &mut step).await;
         apply_interaction_intents(&mut step);
 
-        // Array can't .get("tools") → None → falls to default check →
-        // Array can't .get("default_behavior") → None → unwrap_or(Ask)
+        // Array can't .get("tools") -> None -> falls to default check ->
+        // Array can't .get("default_behavior") -> None -> unwrap_or(Ask)
         assert!(step.tool_pending());
     }
 }

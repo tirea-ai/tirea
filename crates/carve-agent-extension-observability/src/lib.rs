@@ -815,10 +815,10 @@ mod tests {
             .with_provider("openai");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
 
         step.response = Some(StreamResult {
@@ -828,7 +828,7 @@ mod tests {
         });
 
         plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .on_phase(Phase::AfterInference, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -851,10 +851,10 @@ mod tests {
             .with_provider("openai");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
 
         step.response = Some(StreamResult {
@@ -864,7 +864,7 @@ mod tests {
         });
 
         plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .on_phase(Phase::AfterInference, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -881,20 +881,20 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
         plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .on_phase(Phase::BeforeToolExecute, &mut step)
             .await;
 
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
 
         plugin
-            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .on_phase(Phase::AfterToolExecute, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -914,19 +914,19 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         let call = ToolCall::new("c1", "write", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
         plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .on_phase(Phase::BeforeToolExecute, &mut step)
             .await;
 
         step.tool.as_mut().unwrap().result = Some(ToolResult::error("write", "permission denied"));
 
         plugin
-            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .on_phase(Phase::AfterToolExecute, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -942,13 +942,13 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
-        plugin.on_phase(Phase::RunStart, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunStart, &mut step).await;
 
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-        plugin.on_phase(Phase::RunEnd, &mut step, &ctx).await;
+        plugin.on_phase(Phase::RunEnd, &mut step).await;
 
         let m = sink.metrics();
         assert!(m.session_duration_ms >= 10);
@@ -962,10 +962,10 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
         step.response = Some(StreamResult {
             text: "hi".into(),
@@ -973,7 +973,7 @@ mod tests {
             usage: None,
         });
         plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .on_phase(Phase::AfterInference, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -990,11 +990,11 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone()).with_model("m");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         for i in 0..3 {
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: format!("r{i}"),
@@ -1002,7 +1002,7 @@ mod tests {
                 usage: Some(usage(10 * (i + 1), 5 * (i + 1), 15 * (i + 1))),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
         }
 
@@ -1029,13 +1029,13 @@ mod tests {
             .with_provider("openai");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
         plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .on_phase(Phase::AfterInference, &mut step)
             .await;
 
         let m = sink.metrics();
@@ -1063,17 +1063,17 @@ mod tests {
             let plugin = plugin.clone();
             async move {
                 let thread = AgentState::new("test");
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
-                    .on_phase(Phase::BeforeToolExecute, &mut step, ctx)
+                    .on_phase(Phase::BeforeToolExecute, &mut step)
                     .await;
                 // Stagger completion to maximize the chance of cross-talk.
                 tokio::time::sleep(Duration::from_millis(5 * (3 - i) as u64)).await;
                 step.tool.as_mut().unwrap().result =
                     Some(ToolResult::success(&call.name, json!({"ok": true})));
                 plugin
-                    .on_phase(Phase::AfterToolExecute, &mut step, ctx)
+                    .on_phase(Phase::AfterToolExecute, &mut step)
                     .await;
             }
         });
@@ -1398,10 +1398,10 @@ mod tests {
             .with_provider("test-provider");
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         plugin
-            .on_phase(Phase::BeforeInference, &mut step, &ctx)
+            .on_phase(Phase::BeforeInference, &mut step)
             .await;
         step.response = Some(StreamResult {
             text: "hi".into(),
@@ -1409,7 +1409,7 @@ mod tests {
             usage: Some(usage(10, 20, 30)),
         });
         plugin
-            .on_phase(Phase::AfterInference, &mut step, &ctx)
+            .on_phase(Phase::AfterInference, &mut step)
             .await;
 
         let spans = captured.lock().unwrap();
@@ -1433,18 +1433,18 @@ mod tests {
         let plugin = LLMMetryPlugin::new(sink.clone());
 
         let thread = mock_thread();
-        let mut step = StepContext::new(&thread, vec![]);
+        let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
         let call = ToolCall::new("c1", "search", json!({}));
         step.tool = Some(PhaseToolContext::new(&call));
 
         plugin
-            .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+            .on_phase(Phase::BeforeToolExecute, &mut step)
             .await;
         step.tool.as_mut().unwrap().result =
             Some(ToolResult::success("search", json!({"found": true})));
         plugin
-            .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+            .on_phase(Phase::AfterToolExecute, &mut step)
             .await;
 
         let spans = captured.lock().unwrap();
@@ -1504,10 +1504,10 @@ mod tests {
                 .with_provider("test-provider");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hello".into(),
@@ -1515,7 +1515,7 @@ mod tests {
                 usage: Some(usage(100, 50, 150)),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -1579,13 +1579,13 @@ mod tests {
                 .with_provider("test-provider");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -1622,10 +1622,10 @@ mod tests {
             let _parent_guard = parent.enter();
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
 
             step.response = Some(StreamResult {
@@ -1634,7 +1634,7 @@ mod tests {
                 usage: Some(usage(100, 50, 150)),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             drop(_parent_guard);
@@ -1679,19 +1679,19 @@ mod tests {
             let _parent_guard = parent.enter();
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
 
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             drop(_parent_guard);
@@ -1732,10 +1732,10 @@ mod tests {
 
             // No parent span entered — should be a root span
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -1743,7 +1743,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -1775,9 +1775,9 @@ mod tests {
 
             // Inference span should be closed (exported) after AfterInference
             {
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 plugin
-                    .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                    .on_phase(Phase::BeforeInference, &mut step)
                     .await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
@@ -1785,21 +1785,21 @@ mod tests {
                     usage: None,
                 });
                 plugin
-                    .on_phase(Phase::AfterInference, &mut step, &ctx)
+                    .on_phase(Phase::AfterInference, &mut step)
                     .await;
             }
 
             // Tool span should be closed (exported) after AfterToolExecute
             {
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 let call = ToolCall::new("c1", "test", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
-                    .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                    .on_phase(Phase::BeforeToolExecute, &mut step)
                     .await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("test", json!({})));
                 plugin
-                    .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                    .on_phase(Phase::AfterToolExecute, &mut step)
                     .await;
             }
 
@@ -1831,9 +1831,9 @@ mod tests {
 
             // Inference phase
             {
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 plugin
-                    .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                    .on_phase(Phase::BeforeInference, &mut step)
                     .await;
                 step.response = Some(StreamResult {
                     text: "calling tool".into(),
@@ -1841,21 +1841,21 @@ mod tests {
                     usage: Some(usage(10, 5, 15)),
                 });
                 plugin
-                    .on_phase(Phase::AfterInference, &mut step, &ctx)
+                    .on_phase(Phase::AfterInference, &mut step)
                     .await;
             }
 
             // Tool phase
             {
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 let call = ToolCall::new("c1", "search", json!({}));
                 step.tool = Some(PhaseToolContext::new(&call));
                 plugin
-                    .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                    .on_phase(Phase::BeforeToolExecute, &mut step)
                     .await;
                 step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
                 plugin
-                    .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                    .on_phase(Phase::AfterToolExecute, &mut step)
                     .await;
             }
 
@@ -1918,18 +1918,18 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink);
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::success("search", json!({"found": true})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -1973,10 +1973,10 @@ mod tests {
                 .with_provider("openai");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -1984,7 +1984,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2012,17 +2012,17 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_provider("openai");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "web_search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("web_search", json!({})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2052,10 +2052,10 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2063,7 +2063,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2093,17 +2093,17 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2131,17 +2131,17 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_provider("anthropic");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2173,18 +2173,18 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "write", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result =
                 Some(ToolResult::error("write", "permission denied"));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2220,10 +2220,10 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "ok".into(),
@@ -2231,7 +2231,7 @@ mod tests {
                 usage: Some(usage(10, 5, 15)),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2264,10 +2264,10 @@ mod tests {
                 .with_provider("anthropic");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2275,7 +2275,7 @@ mod tests {
                 usage: Some(usage(100, 50, 150)),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2328,10 +2328,10 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_model("m").with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2339,7 +2339,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2374,9 +2374,9 @@ mod tests {
 
             // Test with cache tokens present
             {
-                let mut step = StepContext::new(&thread, vec![]);
+                let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
                 plugin
-                    .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                    .on_phase(Phase::BeforeInference, &mut step)
                     .await;
                 step.response = Some(StreamResult {
                     text: "hi".into(),
@@ -2384,7 +2384,7 @@ mod tests {
                     usage: Some(usage_with_cache(100, 50, 150, 30)),
                 });
                 plugin
-                    .on_phase(Phase::AfterInference, &mut step, &ctx)
+                    .on_phase(Phase::AfterInference, &mut step)
                     .await;
             }
 
@@ -2428,10 +2428,10 @@ mod tests {
                 .with_chat_options(&opts);
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2439,7 +2439,7 @@ mod tests {
                 usage: Some(usage(10, 5, 15)),
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let m = sink.metrics();
@@ -2467,10 +2467,10 @@ mod tests {
                 .with_chat_options(&opts);
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2478,7 +2478,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2514,10 +2514,10 @@ mod tests {
             // No with_chat_options → all request params are None
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             plugin
-                .on_phase(Phase::BeforeInference, &mut step, &ctx)
+                .on_phase(Phase::BeforeInference, &mut step)
                 .await;
             step.response = Some(StreamResult {
                 text: "hi".into(),
@@ -2525,7 +2525,7 @@ mod tests {
                 usage: None,
             });
             plugin
-                .on_phase(Phase::AfterInference, &mut step, &ctx)
+                .on_phase(Phase::AfterInference, &mut step)
                 .await;
 
             let _ = provider.force_flush();
@@ -2551,17 +2551,17 @@ mod tests {
             let plugin = LLMMetryPlugin::new(sink).with_provider("p");
 
             let thread = mock_thread();
-            let mut step = StepContext::new(&thread, vec![]);
+            let mut step = StepContext::new(ctx.as_tool_call_context(), &thread.id, &thread.messages, vec![]);
 
             let call = ToolCall::new("tc1", "search", json!({}));
             step.tool = Some(PhaseToolContext::new(&call));
 
             plugin
-                .on_phase(Phase::BeforeToolExecute, &mut step, &ctx)
+                .on_phase(Phase::BeforeToolExecute, &mut step)
                 .await;
             step.tool.as_mut().unwrap().result = Some(ToolResult::success("search", json!({})));
             plugin
-                .on_phase(Phase::AfterToolExecute, &mut step, &ctx)
+                .on_phase(Phase::AfterToolExecute, &mut step)
                 .await;
 
             let _ = provider.force_flush();

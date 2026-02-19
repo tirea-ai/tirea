@@ -1,11 +1,11 @@
 use super::*;
+use crate::contracts::context::ToolCallContext;
 use crate::contracts::runtime::phase::{Phase, StepContext};
 use crate::contracts::state::AgentState;
 use crate::contracts::storage::{AgentStateReader, AgentStateWriter};
 use crate::contracts::tool::ToolDescriptor;
 use crate::contracts::tool::{ToolError, ToolResult};
 use crate::contracts::AgentState as ContextAgentState;
-use crate::contracts::ToolCallContext;
 use crate::extensions::skills::{
     FsSkill, FsSkillRegistryManager, InMemorySkillRegistry, ScriptResult, Skill, SkillError,
     SkillMeta, SkillRegistry, SkillRegistryError, SkillResource, SkillResourceKind,
@@ -15,12 +15,60 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
+use carve_state::{DocCell, Op, ScopeState as CarveScopeState};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tempfile::TempDir;
+
+struct TestFixture {
+    doc: DocCell,
+    ops: StdMutex<Vec<Op>>,
+    overlay: Arc<std::sync::Mutex<Vec<Op>>>,
+    scope: CarveScopeState,
+    pending_messages: StdMutex<Vec<Arc<crate::contracts::state::Message>>>,
+    messages: Vec<Arc<crate::contracts::state::Message>>,
+}
+
+impl TestFixture {
+    fn new() -> Self {
+        Self {
+            doc: DocCell::new(json!({})),
+            ops: StdMutex::new(Vec::new()),
+            overlay: Arc::new(std::sync::Mutex::new(Vec::new())),
+            scope: CarveScopeState::default(),
+            pending_messages: StdMutex::new(Vec::new()),
+            messages: Vec::new(),
+        }
+    }
+
+    fn new_with_state(state: serde_json::Value) -> Self {
+        Self {
+            doc: DocCell::new(state),
+            ..Self::new()
+        }
+    }
+
+    fn ctx(&self) -> ToolCallContext<'_> {
+        ToolCallContext::new(
+            &self.doc,
+            &self.ops,
+            self.overlay.clone(),
+            "test",
+            "test",
+            &self.scope,
+            &self.pending_messages,
+            None,
+        )
+    }
+
+    fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
+        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
+    }
+}
 
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();
@@ -156,7 +204,7 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
         "skip_with_run_end_patch"
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.skip_inference = true;
         }
@@ -172,8 +220,6 @@ impl AgentPlugin for SkipWithRunEndPatchPlugin {
 
 #[tokio::test]
 async fn wire_skills_inserts_tools_and_plugin() {
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills(FsSkill::into_arc_skills(
@@ -198,20 +244,18 @@ async fn wire_skills_inserts_tools_and_plugin() {
     assert_eq!(cfg.plugins[0].id(), "skills");
 
     // Verify injection does not panic and includes catalog.
-    let thread = AgentState::with_initial_state(
-        "s",
-        json!({
-            "skills": {
-                "active": ["s1"],
-                "instructions": {"s1": "Do X"},
-                "references": {},
-                "scripts": {}
-            }
-        }),
-    );
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+    let state = json!({
+        "skills": {
+            "active": ["s1"],
+            "instructions": {"s1": "Do X"},
+            "references": {},
+            "scripts": {}
+        }
+    });
+    let fixture = TestFixture::new_with_state(state);
+    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
     cfg.plugins[0]
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
+        .on_phase(Phase::BeforeInference, &mut step)
         .await;
     let merged = step.system_context.join("\n");
     assert!(merged.contains("<available_skills>"));
@@ -223,8 +267,6 @@ async fn wire_skills_inserts_tools_and_plugin() {
 
 #[tokio::test]
 async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let (_td, root) = make_skills_root();
     let os = AgentOs::builder()
         .with_skills(FsSkill::into_arc_skills(
@@ -244,20 +286,18 @@ async fn wire_skills_runtime_only_injects_active_skills_without_catalog() {
     assert_eq!(cfg.plugins.len(), 1);
     assert_eq!(cfg.plugins[0].id(), "skills_runtime");
 
-    let thread = AgentState::with_initial_state(
-        "s",
-        json!({
-            "skills": {
-                "active": ["s1"],
-                "instructions": {"s1": "Do X"},
-                "references": {},
-                "scripts": {}
-            }
-        }),
-    );
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+    let state = json!({
+        "skills": {
+            "active": ["s1"],
+            "instructions": {"s1": "Do X"},
+            "references": {},
+            "scripts": {}
+        }
+    });
+    let fixture = TestFixture::new_with_state(state);
+    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
     cfg.plugins[0]
-        .on_phase(Phase::BeforeInference, &mut step, &ctx)
+        .on_phase(Phase::BeforeInference, &mut step)
         .await;
     let merged = step.system_context.join("\n");
     assert!(!merged.contains("<available_skills>"));
@@ -304,7 +344,6 @@ fn wire_plugins_into_orders_policy_then_plugin_then_explicit() {
             &self,
             _phase: Phase,
             _step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
         }
     }
@@ -340,7 +379,6 @@ fn wire_plugins_into_rejects_duplicate_plugin_ids_after_assembly() {
             &self,
             _phase: Phase,
             _step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
         }
     }
@@ -367,7 +405,7 @@ impl AgentPlugin for FakeSkillsPlugin {
         "skills"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
     }
 }
 
@@ -401,7 +439,7 @@ impl AgentPlugin for FakeAgentToolsPlugin {
         "agent_tools"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
     }
 }
 
@@ -433,7 +471,7 @@ impl AgentPlugin for FakeAgentRecoveryPlugin {
         "agent_recovery"
     }
 
-    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, _phase: Phase, _step: &mut StepContext<'_>) {
     }
 }
 
@@ -927,7 +965,6 @@ async fn run_and_run_stream_work_without_llm_when_skip_inference() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -1179,7 +1216,7 @@ impl AgentPlugin for TestPlugin {
         self.0
     }
 
-    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>, _ctx: &ContextAgentState) {
+    async fn on_phase(&self, phase: Phase, step: &mut StepContext<'_>) {
         if phase == Phase::BeforeInference {
             step.system(format!("<plugin id=\"{}\"/>", self.0));
         }
@@ -1188,8 +1225,6 @@ impl AgentPlugin for TestPlugin {
 
 #[tokio::test]
 async fn resolve_wires_plugins_from_registry() {
-    let doc = json!({});
-    let ctx = ContextAgentState::new_transient(&doc, "test", "test");
     let os = AgentOs::builder()
         .with_registered_plugin("p1", Arc::new(TestPlugin("p1")))
         .with_agent(
@@ -1200,12 +1235,13 @@ async fn resolve_wires_plugins_from_registry() {
         .unwrap();
 
     let thread = AgentState::with_initial_state("s", json!({}));
-    let (cfg, _tools, _thread) = os.resolve("a1", thread.clone()).unwrap();
+    let (cfg, _tools, _thread) = os.resolve("a1", thread).unwrap();
     assert!(cfg.plugins.iter().any(|p| p.id() == "p1"));
 
-    let mut step = StepContext::new(&thread, vec![ToolDescriptor::new("t", "t", "t")]);
+    let fixture = TestFixture::new();
+    let mut step = fixture.step(vec![ToolDescriptor::new("t", "t", "t")]);
     for p in &cfg.plugins {
-        p.on_phase(Phase::BeforeInference, &mut step, &ctx).await;
+        p.on_phase(Phase::BeforeInference, &mut step).await;
     }
     assert!(step.system_context.iter().any(|s| s.contains("p1")));
 }
@@ -1461,7 +1497,6 @@ async fn run_stream_applies_frontend_state_to_existing_thread() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -1527,7 +1562,6 @@ async fn run_stream_uses_state_as_initial_for_new_thread() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -1584,7 +1618,6 @@ async fn run_stream_preserves_state_when_no_frontend_state() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -1644,7 +1677,6 @@ async fn prepare_run_sets_identity_and_persists_user_delta_before_execution() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -1717,7 +1749,6 @@ async fn execute_prepared_runs_stream() {
             &self,
             phase: Phase,
             step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
             if phase == Phase::BeforeInference {
                 step.skip_inference = true;
@@ -2087,7 +2118,6 @@ async fn prepare_run_scope_appends_plugins() {
             &self,
             _phase: Phase,
             _step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
         }
     }
@@ -2137,7 +2167,6 @@ async fn prepare_run_scope_rejects_duplicate_plugin_id() {
             &self,
             _phase: Phase,
             _step: &mut StepContext<'_>,
-            _ctx: &ContextAgentState,
         ) {
         }
     }
