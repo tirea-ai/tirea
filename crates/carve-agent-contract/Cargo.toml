@@ -17,6 +17,9 @@ tokio-util = "0.7"
 unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 
+[features]
+test-support = []
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

@@ -29,6 +29,7 @@ default = []
 mcp = ["dep:carve-agent-extension-mcp"]
 
 [dev-dependencies]
+carve-agent-contract = { path = "../carve-agent-contract", features = ["test-support"] }
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
 tempfile = "3"

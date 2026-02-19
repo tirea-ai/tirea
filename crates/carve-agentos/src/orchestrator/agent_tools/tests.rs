@@ -1,5 +1,4 @@
 use super::*;
-use crate::contracts::context::ToolCallContext;
 use crate::contracts::state::AgentState;
 use crate::contracts::tool::ToolStatus;
 use crate::orchestrator::InMemoryAgentRegistry;
@@ -8,64 +7,10 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use carve_state::{apply_patches, DocCell, Op, ScopeState as CarveScopeState};
+use carve_agent_contract::testing::TestFixture;
+use carve_state::apply_patches;
 use serde_json::json;
-use std::sync::Mutex as StdMutex;
 use std::time::Duration;
-
-struct TestFixture {
-    doc: DocCell,
-    ops: StdMutex<Vec<Op>>,
-    overlay: Arc<StdMutex<Vec<Op>>>,
-    scope: CarveScopeState,
-    pending_messages: StdMutex<Vec<Arc<crate::contracts::state::Message>>>,
-    messages: Vec<Arc<crate::contracts::state::Message>>,
-}
-
-impl TestFixture {
-    fn new() -> Self {
-        Self {
-            doc: DocCell::new(json!({})),
-            ops: StdMutex::new(Vec::new()),
-            overlay: Arc::new(StdMutex::new(Vec::new())),
-            scope: CarveScopeState::default(),
-            pending_messages: StdMutex::new(Vec::new()),
-            messages: Vec::new(),
-        }
-    }
-
-    fn new_with_state(state: serde_json::Value) -> Self {
-        Self {
-            doc: DocCell::new(state),
-            ..Self::new()
-        }
-    }
-
-    fn ctx(&self) -> ToolCallContext<'_> {
-        ToolCallContext::new(
-            &self.doc,
-            &self.ops,
-            self.overlay.clone(),
-            "test",
-            "test",
-            &self.scope,
-            &self.pending_messages,
-            None,
-        )
-    }
-
-    fn step<'a>(&'a self, tools: Vec<crate::contracts::tool::ToolDescriptor>) -> StepContext<'a> {
-        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-    }
-
-    fn step_with_thread_id<'a>(
-        &'a self,
-        thread_id: &'a str,
-        tools: Vec<crate::contracts::tool::ToolDescriptor>,
-    ) -> StepContext<'a> {
-        StepContext::new(self.ctx(), thread_id, &self.messages, tools)
-    }
-}
 
 #[test]
 fn plugin_filters_out_caller_agent() {
@@ -114,7 +59,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
     assert_eq!(epoch, 1);
 
     let fixture = TestFixture::new();
-    let mut step = fixture.step_with_thread_id("owner-1", vec![]);
+    let mut step = StepContext::new(fixture.ctx(), "owner-1", &fixture.messages, vec![]);
     plugin
         .on_phase(Phase::AfterToolExecute, &mut step)
         .await;
@@ -126,7 +71,7 @@ async fn plugin_adds_reminder_for_running_and_stopped_runs() {
 
     manager.stop_owned_tree("owner-1", "run-1").await.unwrap();
     let fixture2 = TestFixture::new();
-    let mut step2 = fixture2.step_with_thread_id("owner-1", vec![]);
+    let mut step2 = StepContext::new(fixture2.ctx(), "owner-1", &fixture2.messages, vec![]);
     plugin
         .on_phase(Phase::AfterToolExecute, &mut step2)
         .await;

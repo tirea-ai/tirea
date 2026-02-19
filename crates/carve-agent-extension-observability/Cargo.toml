@@ -15,6 +15,7 @@ genai = "0.5"
 tracing = "0.1"
 
 [dev-dependencies]
+carve-agent-contract = { path = "../carve-agent-contract", features = ["test-support"] }
 futures = "0.3"
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 opentelemetry = "0.28"

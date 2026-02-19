@@ -22,6 +22,7 @@ tokio-util = "0.7"
 json-patch = "3"
 
 [dev-dependencies]
+carve-agent-contract = { path = "../carve-agent-contract", features = ["test-support"] }
 carve-state = { path = "../carve-state", features = ["derive"] }
 carve-agent-extension-interaction = { path = "../carve-agent-extension-interaction" }
 carve-agent-extension-observability = { path = "../carve-agent-extension-observability" }

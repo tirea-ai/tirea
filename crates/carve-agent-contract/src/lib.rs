@@ -107,6 +107,9 @@ macro_rules! impl_shared_agent_builder_methods {
     };
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
+
 pub mod context;
 pub mod plugin;
 pub mod protocol;

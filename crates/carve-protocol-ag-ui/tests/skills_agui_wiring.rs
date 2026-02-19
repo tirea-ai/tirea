@@ -1,57 +1,15 @@
 #![allow(missing_docs)]
 
-use carve_agentos::contracts::runtime::phase::StepContext;
+use carve_agent_contract::testing::TestFixture;
 use carve_agentos::contracts::runtime::AgentEvent;
-use carve_agentos::contracts::state::{AgentState as ConversationAgentState, Message, ToolCall};
+use carve_agentos::contracts::state::{AgentState as ConversationAgentState, ToolCall};
 use carve_agentos::contracts::tool::ToolDescriptor;
-use carve_agentos::contracts::ToolCallContext;
 use carve_agentos::engine::tool_execution::execute_single_tool;
 use carve_agentos::extensions::skills::{FsSkill, SkillSubsystem};
 use carve_protocol_ag_ui::{AGUIContext, AGUIEvent};
-use carve_state::{DocCell, Op, ScopeState};
 use serde_json::json;
 use std::fs;
-use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
-
-struct TestFixture {
-    doc: DocCell,
-    ops: Mutex<Vec<Op>>,
-    overlay: Arc<Mutex<Vec<Op>>>,
-    scope: ScopeState,
-    pending_messages: Mutex<Vec<Arc<Message>>>,
-    messages: Vec<Arc<Message>>,
-}
-
-impl TestFixture {
-    fn new() -> Self {
-        Self {
-            doc: DocCell::new(json!({})),
-            ops: Mutex::new(Vec::new()),
-            overlay: Arc::new(Mutex::new(Vec::new())),
-            scope: ScopeState::default(),
-            pending_messages: Mutex::new(Vec::new()),
-            messages: Vec::new(),
-        }
-    }
-
-    fn ctx(&self) -> ToolCallContext<'_> {
-        ToolCallContext::new(
-            &self.doc,
-            &self.ops,
-            self.overlay.clone(),
-            "test",
-            "test",
-            &self.scope,
-            &self.pending_messages,
-            None,
-        )
-    }
-
-    fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
-        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-    }
-}
 
 #[tokio::test]
 async fn test_skill_tool_result_is_emitted_as_agui_tool_call_result() {

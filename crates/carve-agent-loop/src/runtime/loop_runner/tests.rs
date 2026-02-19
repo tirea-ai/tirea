@@ -10,7 +10,8 @@ use crate::contracts::ToolCallContext;
 use crate::runtime::activity::ActivityHub;
 use async_trait::async_trait;
 use carve_agent_extension_interaction::InteractionOutbox;
-use carve_state::{DocCell, Op, Patch, ScopeState, State};
+use carve_agent_contract::testing::TestFixture;
+use carve_state::{Op, Patch, State};
 use genai::chat::{ChatStreamEvent, MessageContent, StreamChunk, StreamEnd, ToolChunk, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,49 +19,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokio::sync::Notify;
 
-struct TestFixture {
-    doc: DocCell,
-    ops: Mutex<Vec<Op>>,
-    overlay: Arc<Mutex<Vec<Op>>>,
-    scope: ScopeState,
-    pending_messages: Mutex<Vec<Arc<Message>>>,
-    messages: Vec<Arc<Message>>,
-}
-
-impl TestFixture {
-    fn new() -> Self {
-        Self {
-            doc: DocCell::new(json!({})),
-            ops: Mutex::new(Vec::new()),
-            overlay: Arc::new(Mutex::new(Vec::new())),
-            scope: ScopeState::default(),
-            pending_messages: Mutex::new(Vec::new()),
-            messages: Vec::new(),
-        }
-    }
-
-    fn with_messages(mut self, thread: &AgentState) -> Self {
-        self.messages = thread.messages.clone();
-        self
-    }
-
-    fn ctx(&self) -> ToolCallContext<'_> {
-        ToolCallContext::new(
-            &self.doc,
-            &self.ops,
-            self.overlay.clone(),
-            "test",
-            "test",
-            &self.scope,
-            &self.pending_messages,
-            None,
-        )
-    }
-
-    fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
-        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, State)]
 struct TestCounterState {
@@ -955,7 +913,8 @@ fn test_execute_tools_with_reminder_phase_plugin() {
 fn test_build_messages_with_context() {
     let thread = AgentState::new("test").with_message(Message::user("Hello"));
     let tool_descriptors = vec![ToolDescriptor::new("test", "Test", "Test tool")];
-    let fixture = TestFixture::new().with_messages(&thread);
+    let mut fixture = TestFixture::new();
+    fixture.messages = thread.messages.clone();
     let mut step = fixture.step(tool_descriptors);
 
     step.system("System context 1");
@@ -975,7 +934,8 @@ fn test_build_messages_with_context() {
 #[test]
 fn test_build_messages_empty_system() {
     let thread = AgentState::new("test").with_message(Message::user("Hello"));
-    let fixture = TestFixture::new().with_messages(&thread);
+    let mut fixture = TestFixture::new();
+    fixture.messages = thread.messages.clone();
     let step = fixture.step(vec![]);
 
     let messages = build_messages(&step, "");

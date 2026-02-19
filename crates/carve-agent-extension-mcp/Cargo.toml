@@ -12,3 +12,6 @@ serde_json = "1"
 thiserror = "2"
 mcp = { package = "model-context-protocol", version = "0.2", default-features = false, features = ["client"] }
 tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+carve-agent-contract = { path = "../carve-agent-contract", features = ["test-support"] }

@@ -452,49 +452,8 @@ impl<'a> StepContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ToolCallContext;
-    use carve_state::{DocCell, Op, ScopeState};
+    use crate::testing::TestFixture;
     use serde_json::json;
-    use std::sync::Mutex;
-
-    struct TestFixture {
-        doc: DocCell,
-        ops: Mutex<Vec<Op>>,
-        overlay: Arc<Mutex<Vec<Op>>>,
-        scope: ScopeState,
-        pending_messages: Mutex<Vec<Arc<Message>>>,
-        messages: Vec<Arc<Message>>,
-    }
-
-    impl TestFixture {
-        fn new() -> Self {
-            Self {
-                doc: DocCell::new(json!({})),
-                ops: Mutex::new(Vec::new()),
-                overlay: Arc::new(Mutex::new(Vec::new())),
-                scope: ScopeState::default(),
-                pending_messages: Mutex::new(Vec::new()),
-                messages: Vec::new(),
-            }
-        }
-
-        fn ctx(&self) -> ToolCallContext<'_> {
-            ToolCallContext::new(
-                &self.doc,
-                &self.ops,
-                self.overlay.clone(),
-                "test",
-                "test",
-                &self.scope,
-                &self.pending_messages,
-                None,
-            )
-        }
-
-        fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
-            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-        }
-    }
 
     fn mock_tools() -> Vec<ToolDescriptor> {
         vec![

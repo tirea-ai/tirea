@@ -33,51 +33,9 @@ impl AgentPlugin for SkillRuntimePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::context::ToolCallContext;
-    use carve_agent_contract::state::Message;
+    use carve_agent_contract::testing::TestFixture;
     use carve_agent_contract::tool::ToolDescriptor;
-    use carve_state::{DocCell, Op, ScopeState};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
-
-    struct TestFixture {
-        doc: DocCell,
-        ops: Mutex<Vec<Op>>,
-        overlay: Arc<Mutex<Vec<Op>>>,
-        scope: ScopeState,
-        pending_messages: Mutex<Vec<Arc<Message>>>,
-        messages: Vec<Arc<Message>>,
-    }
-
-    impl TestFixture {
-        fn new_with_state(state: serde_json::Value) -> Self {
-            Self {
-                doc: DocCell::new(state),
-                ops: Mutex::new(Vec::new()),
-                overlay: Arc::new(Mutex::new(Vec::new())),
-                scope: ScopeState::default(),
-                pending_messages: Mutex::new(Vec::new()),
-                messages: Vec::new(),
-            }
-        }
-
-        fn ctx(&self) -> ToolCallContext<'_> {
-            ToolCallContext::new(
-                &self.doc,
-                &self.ops,
-                self.overlay.clone(),
-                "test",
-                "test",
-                &self.scope,
-                &self.pending_messages,
-                None,
-            )
-        }
-
-        fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
-            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-        }
-    }
 
     #[tokio::test]
     async fn plugin_does_not_inject_system_context() {

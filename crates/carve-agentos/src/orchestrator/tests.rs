@@ -15,60 +15,13 @@ use crate::runtime::loop_runner::{
     TOOL_SCOPE_CALLER_AGENT_ID_KEY, TOOL_SCOPE_CALLER_THREAD_ID_KEY,
 };
 use async_trait::async_trait;
-use carve_state::{DocCell, Op, ScopeState as CarveScopeState};
+use carve_agent_contract::testing::TestFixture;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tempfile::TempDir;
-
-struct TestFixture {
-    doc: DocCell,
-    ops: StdMutex<Vec<Op>>,
-    overlay: Arc<std::sync::Mutex<Vec<Op>>>,
-    scope: CarveScopeState,
-    pending_messages: StdMutex<Vec<Arc<crate::contracts::state::Message>>>,
-    messages: Vec<Arc<crate::contracts::state::Message>>,
-}
-
-impl TestFixture {
-    fn new() -> Self {
-        Self {
-            doc: DocCell::new(json!({})),
-            ops: StdMutex::new(Vec::new()),
-            overlay: Arc::new(std::sync::Mutex::new(Vec::new())),
-            scope: CarveScopeState::default(),
-            pending_messages: StdMutex::new(Vec::new()),
-            messages: Vec::new(),
-        }
-    }
-
-    fn new_with_state(state: serde_json::Value) -> Self {
-        Self {
-            doc: DocCell::new(state),
-            ..Self::new()
-        }
-    }
-
-    fn ctx(&self) -> ToolCallContext<'_> {
-        ToolCallContext::new(
-            &self.doc,
-            &self.ops,
-            self.overlay.clone(),
-            "test",
-            "test",
-            &self.scope,
-            &self.pending_messages,
-            None,
-        )
-    }
-
-    fn step<'a>(&'a self, tools: Vec<ToolDescriptor>) -> StepContext<'a> {
-        StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-    }
-}
 
 fn make_skills_root() -> (TempDir, PathBuf) {
     let td = TempDir::new().unwrap();

@@ -154,67 +154,9 @@ impl AgentPlugin for ReminderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::runtime::phase::{Phase, StepContext};
-    use carve_agent_contract::state::Message;
-    use carve_agent_contract::tool::ToolDescriptor;
-    use carve_agent_contract::ToolCallContext;
-    use carve_state::{DocCell, Op, ScopeState};
+    use carve_agent_contract::runtime::phase::Phase;
+    use carve_agent_contract::testing::TestFixture;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
-
-    struct TestFixture {
-        doc: DocCell,
-        ops: Mutex<Vec<Op>>,
-        overlay: Arc<Mutex<Vec<Op>>>,
-        scope: ScopeState,
-        pending_messages: Mutex<Vec<Arc<Message>>>,
-        messages: Vec<Arc<Message>>,
-    }
-
-    impl TestFixture {
-        fn new() -> Self {
-            Self {
-                doc: DocCell::new(json!({})),
-                ops: Mutex::new(Vec::new()),
-                overlay: Arc::new(Mutex::new(Vec::new())),
-                scope: ScopeState::default(),
-                pending_messages: Mutex::new(Vec::new()),
-                messages: Vec::new(),
-            }
-        }
-
-        fn new_with_state(state: serde_json::Value) -> Self {
-            Self {
-                doc: DocCell::new(state),
-                ops: Mutex::new(Vec::new()),
-                overlay: Arc::new(Mutex::new(Vec::new())),
-                scope: ScopeState::default(),
-                pending_messages: Mutex::new(Vec::new()),
-                messages: Vec::new(),
-            }
-        }
-
-        fn ctx(&self) -> ToolCallContext<'_> {
-            ToolCallContext::new(
-                &self.doc,
-                &self.ops,
-                self.overlay.clone(),
-                "test",
-                "test",
-                &self.scope,
-                &self.pending_messages,
-                None,
-            )
-        }
-
-        fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
-            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-        }
-
-        fn has_changes(&self) -> bool {
-            !self.ops.lock().unwrap().is_empty()
-        }
-    }
 
     #[test]
     fn test_reminder_state_default() {

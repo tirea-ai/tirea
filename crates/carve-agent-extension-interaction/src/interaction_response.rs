@@ -328,67 +328,11 @@ impl AgentPlugin for InteractionResponsePlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use carve_agent_contract::context::ToolCallContext;
-    use carve_agent_contract::runtime::phase::StepContext;
     use carve_agent_contract::state::{Message, ToolCall};
-    use carve_agent_contract::tool::ToolDescriptor;
-    use carve_state::{DocCell, Op, ScopeState};
-    use serde_json::{json, Value};
-    use std::sync::{Arc, Mutex};
-
-    struct TestFixture {
-        doc: DocCell,
-        ops: Mutex<Vec<Op>>,
-        overlay: Arc<Mutex<Vec<Op>>>,
-        scope: ScopeState,
-        pending_messages: Mutex<Vec<Arc<Message>>>,
-        messages: Vec<Arc<Message>>,
-    }
-
-    impl TestFixture {
-        fn new() -> Self {
-            Self {
-                doc: DocCell::new(json!({})),
-                ops: Mutex::new(Vec::new()),
-                overlay: Arc::new(Mutex::new(Vec::new())),
-                scope: ScopeState::default(),
-                pending_messages: Mutex::new(Vec::new()),
-                messages: Vec::new(),
-            }
-        }
-
-        fn new_with_state(state: Value) -> Self {
-            Self {
-                doc: DocCell::new(state),
-                ..Self::new()
-            }
-        }
-
-        fn ctx(&self) -> ToolCallContext<'_> {
-            ToolCallContext::new(
-                &self.doc,
-                &self.ops,
-                self.overlay.clone(),
-                "test",
-                "test",
-                &self.scope,
-                &self.pending_messages,
-                None,
-            )
-        }
-
-        fn step(&self, tools: Vec<ToolDescriptor>) -> StepContext<'_> {
-            StepContext::new(self.ctx(), "test-thread", &self.messages, tools)
-        }
-
-        fn has_changes(&self) -> bool {
-            !self.ops.lock().unwrap().is_empty()
-        }
-
-        fn updated_state(&self) -> Value {
-            self.doc.snapshot()
-        }
-    }
+    use carve_agent_contract::testing::TestFixture;
+    use carve_state::DocCell;
+    use serde_json::json;
+    use std::sync::Arc;
 
     fn replay_calls_from_state(state: &serde_json::Value) -> Vec<ToolCall> {
         state
