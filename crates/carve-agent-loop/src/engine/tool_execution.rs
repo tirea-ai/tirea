@@ -49,14 +49,12 @@ pub async fn execute_single_tool_with_scope(
     // Create context for this tool call
     let doc = DocCell::new(state.clone());
     let ops = Mutex::new(Vec::new());
-    let overlay = Arc::new(Mutex::new(Vec::new()));
     let default_scope = RunConfig::default();
     let scope = scope.unwrap_or(&default_scope);
     let pending_messages = Mutex::new(Vec::new());
     let ctx = ToolCallContext::new(
         &doc,
         &ops,
-        overlay,
         &call.id,
         format!("tool:{}", call.name),
         scope,

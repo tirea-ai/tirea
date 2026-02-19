@@ -127,7 +127,6 @@ where
     let tool_call_ctx = ToolCallContext::new(
         &doc,
         &ops,
-        run_ctx.run_patch(),
         "phase",
         "plugin:phase",
         &run_ctx.run_config,
@@ -228,7 +227,6 @@ pub(super) async fn emit_run_end_phase(
         let tool_call_ctx = ToolCallContext::new(
             &doc,
             &ops,
-            run_ctx.run_patch(),
             "phase",
             "plugin:run_end",
             &run_ctx.run_config,

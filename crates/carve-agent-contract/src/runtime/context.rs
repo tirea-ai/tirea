@@ -6,8 +6,8 @@ use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
 use carve_state::{
-    apply_patch, apply_patches, get_at_path, parse_path, CarveResult, DeltaTracked, DocCell, Op,
-    Patch, State, TrackedPatch,
+    apply_patches, get_at_path, parse_path, CarveResult, DeltaTracked, DocCell, Op, State,
+    TrackedPatch,
 };
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,6 @@ pub struct RunContext {
     messages: DeltaTracked<Arc<Message>>,
     thread_patches: DeltaTracked<TrackedPatch>,
     pub run_config: RunConfig,
-    run_patch: Arc<Mutex<Vec<Op>>>,
     doc: DocCell,
     version: Option<u64>,
     version_timestamp: Option<u64>,
@@ -53,7 +52,6 @@ impl RunContext {
             messages: DeltaTracked::new(messages),
             thread_patches: DeltaTracked::empty(),
             run_config,
-            run_patch: Arc::new(Mutex::new(Vec::new())),
             doc,
             version: None,
             version_timestamp: None,
@@ -133,7 +131,7 @@ impl RunContext {
     // State / Patches
     // =========================================================================
 
-    /// The initial rebuilt state (base + thread patches, before run patch).
+    /// The initial rebuilt state (base + thread patches).
     pub fn thread_base(&self) -> &Value {
         &self.thread_base
     }
@@ -157,42 +155,16 @@ impl RunContext {
     // Doc (live document)
     // =========================================================================
 
-    /// Rebuild the live document from `thread_base + thread_patches + run_patch`.
-    ///
-    /// Call this when the doc needs to reflect newly added patches.
-    pub(crate) fn rebuild_doc(&mut self) {
-        let patches = self.thread_patches.as_slice();
-        let base = if patches.is_empty() {
-            self.thread_base.clone()
-        } else {
-            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))
-                .unwrap_or_else(|_| self.thread_base.clone())
-        };
-        let run_ops = self.run_patch.lock().unwrap();
-        let value = if run_ops.is_empty() {
-            base
-        } else {
-            apply_patch(&base, &Patch::with_ops(run_ops.clone())).unwrap_or(base)
-        };
-        self.doc = DocCell::new(value);
-    }
-
-    /// Rebuild the current run-visible state (thread_base + thread_patches + run_patch).
+    /// Rebuild the current run-visible state (thread_base + thread_patches).
     ///
     /// This is a pure computation that returns a new `Value` without
     /// touching the `DocCell`.
     pub fn snapshot(&self) -> CarveResult<Value> {
         let patches = self.thread_patches.as_slice();
-        let base = if patches.is_empty() {
-            self.thread_base.clone()
+        if patches.is_empty() {
+            Ok(self.thread_base.clone())
         } else {
-            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))?
-        };
-        let run_ops = self.run_patch.lock().unwrap();
-        if run_ops.is_empty() {
-            Ok(base)
-        } else {
-            apply_patch(&base, &Patch::with_ops(run_ops.clone()))
+            apply_patches(&self.thread_base, patches.iter().map(|p| p.patch()))
         }
     }
 
@@ -212,20 +184,6 @@ impl RunContext {
         let val = self.snapshot()?;
         let at = get_at_path(&val, &parse_path(path)).unwrap_or(&Value::Null);
         T::from_value(at)
-    }
-
-    /// Borrow the live document.
-    pub(crate) fn doc(&self) -> &DocCell {
-        &self.doc
-    }
-
-    // =========================================================================
-    // Run Patch
-    // =========================================================================
-
-    /// Clone the shared run patch handle.
-    pub fn run_patch(&self) -> Arc<Mutex<Vec<Op>>> {
-        self.run_patch.clone()
     }
 
     // =========================================================================
@@ -262,7 +220,6 @@ impl RunContext {
         ToolCallContext::new(
             &self.doc,
             ops,
-            self.run_patch.clone(),
             call_id,
             source,
             &self.run_config,
@@ -339,27 +296,6 @@ mod tests {
         let delta = ctx.take_delta();
         assert_eq!(delta.patches.len(), 1);
         assert!(!ctx.has_delta());
-    }
-
-    #[test]
-    fn rebuild_doc_reflects_patches() {
-        let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
-        ctx.add_thread_patch(TrackedPatch::new(
-            Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-        ));
-        ctx.rebuild_doc();
-        assert_eq!(ctx.doc().snapshot()["counter"], 5);
-    }
-
-    #[test]
-    fn snapshot_includes_run_patch() {
-        let ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
-        ctx.run_patch
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-        let state = ctx.snapshot().unwrap();
-        assert_eq!(state["counter"], 99);
     }
 
     #[test]
@@ -456,31 +392,6 @@ mod tests {
     }
 
     // =========================================================================
-    // Category 4: Run patch not leaking to delta
-    // =========================================================================
-
-    /// Run patch ops are visible in snapshot() but NOT in take_delta.
-    #[test]
-    fn run_patch_visible_in_snapshot_not_in_delta() {
-        let mut ctx = RunContext::new("t-1", json!({"counter": 0}), vec![], RunConfig::default());
-
-        // Add run patch op
-        ctx.run_patch
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(42)));
-
-        // Visible in snapshot()
-        let state = ctx.snapshot().unwrap();
-        assert_eq!(state["counter"], 42);
-
-        // NOT in delta (run patch ops are ephemeral)
-        let delta = ctx.take_delta();
-        assert!(delta.patches.is_empty(), "run patch ops must not appear in delta");
-        assert!(delta.messages.is_empty());
-    }
-
-    // =========================================================================
     // Category 6: Typed snapshot (snapshot_of / snapshot_at)
     // =========================================================================
 
@@ -519,45 +430,6 @@ mod tests {
 
         let ctx = RunContext::new("t-1", json!({}), vec![], RunConfig::default());
         assert!(ctx.snapshot_of::<LoopControlState>().is_err());
-    }
-
-    /// Run patch ops don't appear in thread_patches() either — they're separate.
-    #[test]
-    fn run_patch_not_in_thread_patches() {
-        let ctx = RunContext::new("t-1", json!({"x": 0}), vec![], RunConfig::default());
-        ctx.run_patch
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("x"), json!(99)));
-
-        assert!(ctx.thread_patches().is_empty(), "run patch must not appear in thread_patches()");
-        // But snapshot reflects it
-        assert_eq!(ctx.snapshot().unwrap()["x"], 99);
-    }
-
-    /// Run patch + thread patches coexist: thread patches in delta, run patch not.
-    #[test]
-    fn run_patch_and_thread_patches_coexist_only_thread_patches_in_delta() {
-        let mut ctx = RunContext::new("t-1", json!({"a": 0, "b": 0}), vec![], RunConfig::default());
-
-        // Durable patch on "a"
-        ctx.add_thread_patch(TrackedPatch::new(
-            Patch::new().with_op(Op::set(path!("a"), json!(10))),
-        ));
-        // Ephemeral run patch on "b"
-        ctx.run_patch
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("b"), json!(20)));
-
-        // Snapshot shows both
-        let state = ctx.snapshot().unwrap();
-        assert_eq!(state["a"], 10);
-        assert_eq!(state["b"], 20);
-
-        // Delta only has the durable patch
-        let delta = ctx.take_delta();
-        assert_eq!(delta.patches.len(), 1, "only durable patches in delta");
     }
 
     // =========================================================================

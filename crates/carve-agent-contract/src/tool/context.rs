@@ -21,7 +21,6 @@ use std::sync::{Arc, Mutex};
 pub struct ToolCallContext<'a> {
     doc: &'a DocCell,
     ops: &'a Mutex<Vec<Op>>,
-    run_patch: Arc<Mutex<Vec<Op>>>,
     call_id: String,
     source: String,
     run_config: &'a RunConfig,
@@ -34,7 +33,6 @@ impl<'a> ToolCallContext<'a> {
     pub fn new(
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
-        run_patch: Arc<Mutex<Vec<Op>>>,
         call_id: impl Into<String>,
         source: impl Into<String>,
         run_config: &'a RunConfig,
@@ -44,7 +42,6 @@ impl<'a> ToolCallContext<'a> {
         Self {
             doc,
             ops,
-            run_patch,
             call_id: call_id.into(),
             source: source.into(),
             run_config,
@@ -116,34 +113,6 @@ impl<'a> ToolCallContext<'a> {
             "State type has no bound path; use state::<T>(path) instead"
         );
         self.state::<T>(T::PATH)
-    }
-
-    /// Typed state reference that writes to the run overlay (not persisted).
-    ///
-    /// Reads from the shared `doc`; writes go to the run overlay instead of
-    /// thread ops but still update `doc` for immediate read-back.
-    pub fn run_state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        let base = parse_path(path);
-        let doc = self.doc;
-        let hook: Arc<dyn Fn(&Op) + Send + Sync + '_> = Arc::new(|op: &Op| {
-            doc.apply(op);
-        });
-        T::state_ref(
-            doc,
-            base,
-            PatchSink::new_with_hook(self.run_patch.as_ref(), hook),
-        )
-    }
-
-    /// Typed state reference at canonical path, writing to the run overlay.
-    ///
-    /// Panics if `T::PATH` is empty.
-    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
-        assert!(
-            !T::PATH.is_empty(),
-            "State type has no bound path; use run_state::<T>(path) instead"
-        );
-        self.run_state::<T>(T::PATH)
     }
 
     /// Typed state reference for current call (`tool_calls.<call_id>`).
@@ -321,22 +290,20 @@ mod tests {
     fn make_ctx<'a>(
         doc: &'a DocCell,
         ops: &'a Mutex<Vec<Op>>,
-        overlay: Arc<Mutex<Vec<Op>>>,
         run_config: &'a RunConfig,
         pending: &'a Mutex<Vec<Arc<Message>>>,
     ) -> ToolCallContext<'a> {
-        ToolCallContext::new(doc, ops, overlay, "call-1", "test", run_config, pending, None)
+        ToolCallContext::new(doc, ops, "call-1", "test", run_config, pending, None)
     }
 
     #[test]
     fn test_identity() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
         assert_eq!(ctx.call_id(), "call-1");
         assert_eq!(ctx.idempotency_key(), "call-1");
         assert_eq!(ctx.source(), "test");
@@ -346,12 +313,11 @@ mod tests {
     fn test_scope_access() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let mut scope = RunConfig::new();
         scope.set("user_id", "u1").unwrap();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
         assert_eq!(ctx.config_value("user_id"), Some(&json!("u1")));
         assert_eq!(ctx.config_value("missing"), None);
     }
@@ -362,11 +328,10 @@ mod tests {
             json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
         );
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay.clone(), &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write
         let ctrl = ctx.state_of::<LoopControlState>();
@@ -380,9 +345,8 @@ mod tests {
         assert!(err.is_some());
         assert_eq!(err.unwrap().error_type, "rate_limit");
 
-        // Ops captured in thread ops, not overlay
+        // Ops captured in thread ops
         assert!(!ops.lock().unwrap().is_empty());
-        assert!(overlay.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -391,11 +355,10 @@ mod tests {
             json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
         );
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         // Write via first ref
         ctx.state_of::<LoopControlState>()
@@ -410,45 +373,15 @@ mod tests {
     }
 
     #[test]
-    fn test_run_state_of_writes_to_overlay() {
-        let doc = DocCell::new(
-            json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
-        );
-        let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
-        let scope = RunConfig::default();
-        let pending = Mutex::new(Vec::new());
-
-        let ctx = make_ctx(&doc, &ops, overlay.clone(), &scope, &pending);
-
-        ctx.run_state_of::<LoopControlState>()
-            .set_inference_error(Some(crate::runtime::control::InferenceError {
-                error_type: "overridden".into(),
-                message: "from overlay".into(),
-            }));
-
-        assert!(ops.lock().unwrap().is_empty(), "thread ops must be empty");
-        assert!(
-            !overlay.lock().unwrap().is_empty(),
-            "overlay must have ops"
-        );
-
-        // Readable via state_of (write-through to shared doc)
-        let err = ctx.state_of::<LoopControlState>().inference_error().unwrap();
-        assert_eq!(err.unwrap().error_type, "overridden");
-    }
-
-    #[test]
     fn test_take_patch() {
         let doc = DocCell::new(
             json!({"loop_control": {"pending_interaction": null, "inference_error": null}}),
         );
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         ctx.state_of::<LoopControlState>()
             .set_inference_error(Some(crate::runtime::control::InferenceError {
@@ -470,11 +403,10 @@ mod tests {
     fn test_add_messages() {
         let doc = DocCell::new(json!({}));
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         ctx.add_message(Message::user("hello"));
         ctx.add_messages(vec![Message::assistant("hi"), Message::user("bye")]);
@@ -486,11 +418,10 @@ mod tests {
     fn test_call_state() {
         let doc = DocCell::new(json!({"tool_calls": {}}));
         let ops = Mutex::new(Vec::new());
-        let overlay = Arc::new(Mutex::new(Vec::new()));
         let scope = RunConfig::default();
         let pending = Mutex::new(Vec::new());
 
-        let ctx = make_ctx(&doc, &ops, overlay, &scope, &pending);
+        let ctx = make_ctx(&doc, &ops, &scope, &pending);
 
         let ctrl = ctx.call_state::<LoopControlState>();
         ctrl.set_inference_error(Some(crate::runtime::control::InferenceError {

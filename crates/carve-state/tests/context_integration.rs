@@ -666,36 +666,3 @@ fn test_state_context_write_through_read_cross_ref() {
     assert_eq!(counter2.label().unwrap(), "Updated");
 }
 
-#[test]
-fn test_state_context_overlay_write_visible_to_state_read() {
-    let doc = DocCell::new(json!({
-        "counter": {"value": 0, "label": "Init"}
-    }));
-    let overlay = std::sync::Mutex::new(Vec::new());
-    let ctx = StateContext::with_overlay(&doc, &overlay);
-
-    // Write via override
-    let counter_override = ctx.override_state::<CounterState>("counter");
-    counter_override.set_value(999);
-
-    // Read via normal state — must see the override write
-    let counter = ctx.state::<CounterState>("counter");
-    assert_eq!(counter.value().unwrap(), 999, "state read must see override write");
-}
-
-#[test]
-fn test_state_context_state_write_visible_to_override_read() {
-    let doc = DocCell::new(json!({
-        "counter": {"value": 0, "label": "Init"}
-    }));
-    let overlay = std::sync::Mutex::new(Vec::new());
-    let ctx = StateContext::with_overlay(&doc, &overlay);
-
-    // Write via normal state
-    let counter = ctx.state::<CounterState>("counter");
-    counter.set_value(55);
-
-    // Read via override — must see the state write
-    let counter_override = ctx.override_state::<CounterState>("counter");
-    assert_eq!(counter_override.value().unwrap(), 55, "override read must see state write");
-}

@@ -68,7 +68,6 @@ impl ToolExecutor for ParallelToolExecutor {
             request.thread_messages,
             request.state_version,
             request.cancellation_token,
-            request.run_patch,
         )
         .await
         .map_err(map_tool_executor_error)
@@ -105,7 +104,6 @@ impl ToolExecutor for SequentialToolExecutor {
             request.thread_messages,
             request.state_version,
             request.cancellation_token,
-            request.run_patch,
         )
         .await
         .map_err(map_tool_executor_error)
@@ -462,7 +460,6 @@ pub async fn execute_tools_with_plugins_and_executor(
             thread_messages: run_ctx.messages(),
             state_version: run_ctx.version(),
             cancellation_token: None,
-            run_patch: Arc::new(std::sync::Mutex::new(Vec::new())),
         })
         .await?;
 
@@ -503,7 +500,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
     thread_messages: &[Arc<Message>],
     state_version: u64,
     cancellation_token: Option<&RunCancellationToken>,
-    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use futures::future::join_all;
 
@@ -531,7 +527,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
         let rt = scope_owned.clone();
         let sid = thread_id.clone();
         let thread_messages = thread_messages.clone();
-        let run_patch = run_patch.clone();
 
         async move {
             execute_single_tool_with_phases(
@@ -545,7 +540,6 @@ pub(super) async fn execute_tools_parallel_with_phases(
                 &sid,
                 thread_messages.as_slice(),
                 state_version,
-                run_patch,
             )
             .await
         }
@@ -583,7 +577,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
     thread_messages: &[Arc<Message>],
     state_version: u64,
     cancellation_token: Option<&RunCancellationToken>,
-    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<Vec<ToolExecutionResult>, AgentLoopError> {
     use carve_state::apply_patch;
 
@@ -622,7 +615,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
                     thread_id,
                     thread_messages,
                     state_version,
-                    run_patch.clone(),
                 ) => result?
             }
         } else {
@@ -637,7 +629,6 @@ pub(super) async fn execute_tools_sequential_with_phases(
                 thread_id,
                 thread_messages,
                 state_version,
-                run_patch.clone(),
             )
             .await?
         };
@@ -687,7 +678,6 @@ pub(super) async fn execute_single_tool_with_phases(
     thread_id: &str,
     thread_messages: &[Arc<Message>],
     _state_version: u64,
-    run_patch: Arc<std::sync::Mutex<Vec<carve_state::Op>>>,
 ) -> Result<ToolExecutionResult, AgentLoopError> {
     // Create ToolCallContext for plugin phases
     let doc = carve_state::DocCell::new(state.clone());
@@ -698,7 +688,6 @@ pub(super) async fn execute_single_tool_with_phases(
     let plugin_tool_call_ctx = crate::contracts::ToolCallContext::new(
         &doc,
         &ops,
-        run_patch.clone(),
         "plugin_phase",
         "plugin:tool_phase",
         plugin_scope,
@@ -776,12 +765,10 @@ pub(super) async fn execute_single_tool_with_phases(
         // Execute the tool with its own ToolCallContext
         let tool_doc = carve_state::DocCell::new(state.clone());
         let tool_ops = std::sync::Mutex::new(Vec::new());
-        let tool_run_patch = run_patch.clone();
         let tool_pending_msgs = std::sync::Mutex::new(Vec::new());
         let tool_ctx = crate::contracts::ToolCallContext::new(
             &tool_doc,
             &tool_ops,
-            tool_run_patch,
             &call.id,
             format!("tool:{}", call.name),
             plugin_scope,

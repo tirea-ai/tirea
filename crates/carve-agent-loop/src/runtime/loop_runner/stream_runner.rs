@@ -52,7 +52,6 @@ async fn drain_run_start_outbox_and_replay(
             run_ctx.thread_id(),
             run_ctx.messages(),
             run_ctx.version(),
-            run_ctx.run_patch(),
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -655,7 +654,6 @@ pub(super) fn run_loop_stream_impl(
                         thread_messages: &thread_messages_for_tools,
                         state_version: thread_version_for_tools,
                         cancellation_token: run_cancellation_token.as_ref(),
-                        run_patch: tool_context.run_patch.clone(),
                     })
                     .await
                     .map_err(AgentLoopError::from)

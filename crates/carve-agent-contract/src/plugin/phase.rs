@@ -258,16 +258,6 @@ impl<'a> StepContext<'a> {
         self.ctx.state::<T>(path)
     }
 
-    /// Typed state reference at path, writing to run patch (not persisted).
-    pub fn run_state<T: State>(&self, path: &str) -> T::Ref<'_> {
-        self.ctx.run_state::<T>(path)
-    }
-
-    /// Typed state reference writing to run patch (not persisted).
-    pub fn run_state_of<T: State>(&self) -> T::Ref<'_> {
-        self.ctx.run_state_of::<T>()
-    }
-
     /// Borrow the run config.
     pub fn run_config(&self) -> &RunConfig {
         self.ctx.run_config()

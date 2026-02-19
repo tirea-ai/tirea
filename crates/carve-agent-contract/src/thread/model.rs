@@ -4,10 +4,10 @@
 //! message history and patches.
 
 use crate::thread::message::Message;
-use carve_state::{apply_patch, apply_patches, CarveError, CarveResult, Op, Patch, TrackedPatch};
+use carve_state::{apply_patches, CarveError, CarveResult, TrackedPatch};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Accumulated new messages and patches since the last `take_pending()`.
 ///
@@ -32,8 +32,8 @@ impl PendingDelta {
 /// `Thread` uses an owned builder pattern: `with_*` methods consume `self`
 /// and return a new `Thread` (e.g., `thread.with_message(msg)`).
 ///
-/// Runtime fields (`pending`, `run_overlay`) are transient —
-/// not serialized. They exist for backward compatibility and will be removed
+/// Runtime field (`pending`) is transient — not serialized.
+/// It exists for backward compatibility and will be removed
 /// once all callers migrate to `RunContext`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
@@ -58,19 +58,6 @@ pub struct Thread {
     /// Deprecated: use `RunContext.take_delta()` instead.
     #[serde(skip)]
     pub(crate) pending: PendingDelta,
-    /// Run-scoped overlay ops shared across tool calls within a single run (not persisted).
-    /// Deprecated: use `RunContext.run_patch()` instead.
-    #[serde(skip)]
-    pub(crate) run_overlay: Arc<Mutex<Vec<Op>>>,
-}
-
-impl Thread {
-    /// Borrow the run-scoped overlay ops (not persisted).
-    ///
-    /// Used by the loop runner to share the overlay across tool calls within a run.
-    pub fn run_overlay(&self) -> Arc<Mutex<Vec<Op>>> {
-        self.run_overlay.clone()
-    }
 }
 
 /// Thread metadata.
@@ -105,7 +92,6 @@ impl Thread {
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
             pending: PendingDelta::default(),
-            run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -120,7 +106,6 @@ impl Thread {
             patches: Vec::new(),
             metadata: ThreadMetadata::default(),
             pending: PendingDelta::default(),
-            run_overlay: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -183,25 +168,8 @@ impl Thread {
         std::mem::take(&mut self.pending)
     }
 
-    /// Rebuild the current run-visible state (base + thread patches + run overlay).
+    /// Rebuild the current state (base + thread patches).
     pub fn rebuild_state(&self) -> CarveResult<Value> {
-        let base = if self.patches.is_empty() {
-            self.state.clone()
-        } else {
-            apply_patches(&self.state, self.patches.iter().map(|p| p.patch()))?
-        };
-        let overlay_ops = self.run_overlay.lock().unwrap();
-        if overlay_ops.is_empty() {
-            Ok(base)
-        } else {
-            apply_patch(&base, &Patch::with_ops(overlay_ops.clone()))
-        }
-    }
-
-    /// Rebuild state from base + thread patches only (no run overlay).
-    ///
-    /// Use for persistence (snapshot). Most callers should use `rebuild_state()`.
-    pub fn rebuild_thread_state(&self) -> CarveResult<Value> {
         if self.patches.is_empty() {
             return Ok(self.state.clone());
         }
@@ -232,9 +200,8 @@ impl Thread {
     /// Create a snapshot, collapsing patches into the base state.
     ///
     /// Returns a new Thread with the current state as base and empty patches.
-    /// Uses `rebuild_thread_state()` to exclude run overlay from the snapshot.
     pub fn snapshot(self) -> CarveResult<Self> {
-        let current_state = self.rebuild_thread_state()?;
+        let current_state = self.rebuild_state()?;
         Ok(Self {
             id: self.id,
             resource_id: self.resource_id,
@@ -244,7 +211,6 @@ impl Thread {
             patches: Vec::new(),
             metadata: self.metadata,
             pending: self.pending,
-            run_overlay: self.run_overlay,
         })
     }
 
@@ -586,106 +552,6 @@ mod tests {
         assert!(err
             .to_string()
             .contains("replay index 0 out of bounds (history len: 0)"));
-    }
-
-    // --- Run overlay tests ---
-
-    #[test]
-    fn test_rebuild_state_with_empty_overlay() {
-        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
-
-        // Empty overlay should not change the result
-        let rebuilt = thread.rebuild_state().unwrap();
-        assert_eq!(rebuilt, json!({"counter": 5}));
-    }
-
-    #[test]
-    fn test_rebuild_state_with_overlay() {
-        let thread = Thread::with_initial_state("t-1", json!({"counter": 0, "name": "alice"}))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
-
-        // Add overlay ops
-        thread
-            .run_overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-
-        let rebuilt = thread.rebuild_state().unwrap();
-        assert_eq!(rebuilt["counter"], 99, "overlay should shadow thread state");
-        assert_eq!(rebuilt["name"], "alice", "non-overlaid fields unchanged");
-    }
-
-    #[test]
-    fn test_rebuild_thread_state_ignores_overlay() {
-        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
-
-        thread
-            .run_overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-
-        let thread_state = thread.rebuild_thread_state().unwrap();
-        assert_eq!(
-            thread_state["counter"], 5,
-            "rebuild_thread_state must ignore overlay"
-        );
-    }
-
-    #[test]
-    fn test_snapshot_excludes_overlay() {
-        let thread = Thread::with_initial_state("t-1", json!({"counter": 0}))
-            .with_patch(TrackedPatch::new(
-                Patch::new().with_op(Op::set(path!("counter"), json!(5))),
-            ));
-
-        thread
-            .run_overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-
-        let snapshotted = thread.snapshot().unwrap();
-        assert_eq!(
-            snapshotted.state["counter"], 5,
-            "snapshot must not bake in overlay values"
-        );
-        assert!(snapshotted.patches.is_empty());
-    }
-
-    #[test]
-    fn test_take_patch_does_not_drain_overlay() {
-        use crate::testing::TestFixture;
-
-        let fix = TestFixture::new_with_state(json!({"counter": 0}));
-
-        // Add ops to both thread ops and overlay
-        fix.ops
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(1)));
-        fix.overlay
-            .lock()
-            .unwrap()
-            .push(Op::set(path!("counter"), json!(99)));
-
-        let patch = fix.ctx_with("call-1", "test").take_patch();
-        assert_eq!(patch.patch().len(), 1, "take_patch drains thread ops");
-
-        assert_eq!(
-            fix.overlay.lock().unwrap().len(),
-            1,
-            "overlay must survive take_patch"
-        );
     }
 
 }

@@ -2244,7 +2244,7 @@ async fn test_activity_context_emits_snapshot_on_update() {
     let hub = Arc::new(ActivityHub::new(tx));
     let fix = TestFixture::new();
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops, fix.overlay.clone(),
+        &fix.doc, &fix.ops,
         "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
@@ -2292,7 +2292,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     let fix = TestFixture::new();
 
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops, fix.overlay.clone(),
+        &fix.doc, &fix.ops,
         "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub.clone()),
     );
@@ -2301,7 +2301,7 @@ async fn test_activity_context_snapshot_reused_across_contexts() {
     progress.set_progress(0.9);
 
     let ctx2 = ToolCallContext::new(
-        &fix.doc, &fix.ops, fix.overlay.clone(),
+        &fix.doc, &fix.ops,
         "call_2", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
@@ -2321,7 +2321,7 @@ async fn test_activity_context_multiple_streams_emit_separately() {
     let fix = TestFixture::new();
 
     let ctx = ToolCallContext::new(
-        &fix.doc, &fix.ops, fix.overlay.clone(),
+        &fix.doc, &fix.ops,
         "call_1", "tool:test", &fix.run_config, &fix.pending_messages,
         Some(hub),
     );
