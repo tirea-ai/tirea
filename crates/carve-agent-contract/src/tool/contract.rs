@@ -4,6 +4,7 @@
 
 use crate::tool::context::ToolCallContext;
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -274,6 +275,14 @@ pub trait Tool: Send + Sync {
     /// Get the tool descriptor.
     fn descriptor(&self) -> ToolDescriptor;
 
+    /// Validate tool arguments against the descriptor's JSON Schema before execution.
+    ///
+    /// The default implementation uses [`validate_against_schema`] with
+    /// `descriptor().parameters`. Override to customise or skip validation.
+    fn validate_args(&self, args: &Value) -> Result<(), ToolError> {
+        validate_against_schema(&self.descriptor().parameters, args)
+    }
+
     /// Execute the tool.
     ///
     /// # Arguments
@@ -287,6 +296,125 @@ pub trait Tool: Send + Sync {
     ///
     /// Tool result or error
     async fn execute(&self, args: Value, ctx: &ToolCallContext<'_>) -> Result<ToolResult, ToolError>;
+}
+
+/// Validate a JSON value against a JSON Schema.
+///
+/// Returns `Ok(())` if the value conforms to the schema, or
+/// `Err(ToolError::InvalidArguments)` with a description of all violations.
+pub fn validate_against_schema(schema: &Value, args: &Value) -> Result<(), ToolError> {
+    let validator = jsonschema::Validator::new(schema).map_err(|e| {
+        ToolError::Internal(format!("invalid tool schema: {e}"))
+    })?;
+    if validator.is_valid(args) {
+        return Ok(());
+    }
+    let errors: Vec<String> = validator
+        .iter_errors(args)
+        .map(|e| e.to_string())
+        .collect();
+    Err(ToolError::InvalidArguments(errors.join("; ")))
+}
+
+// ---------------------------------------------------------------------------
+// TypedTool – strongly-typed tool with automatic schema generation
+// ---------------------------------------------------------------------------
+
+/// Strongly-typed variant of [`Tool`] with automatic JSON Schema generation.
+///
+/// Implement this trait instead of [`Tool`] when your tool has a fixed
+/// parameter shape. A blanket impl provides [`Tool`] automatically.
+///
+/// # Example
+///
+/// ```ignore
+/// use serde::Deserialize;
+/// use schemars::JsonSchema;
+///
+/// #[derive(Deserialize, JsonSchema)]
+/// struct GreetArgs {
+///     name: String,
+/// }
+///
+/// struct GreetTool;
+///
+/// #[async_trait]
+/// impl TypedTool for GreetTool {
+///     type Args = GreetArgs;
+///     fn tool_id(&self) -> &str { "greet" }
+///     fn name(&self) -> &str { "Greet" }
+///     fn description(&self) -> &str { "Greet a user" }
+///
+///     async fn execute(&self, args: GreetArgs, _ctx: &ToolCallContext<'_>)
+///         -> Result<ToolResult, ToolError>
+///     {
+///         Ok(ToolResult::success("greet", json!({"greeting": format!("Hello, {}!", args.name)})))
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait TypedTool: Send + Sync {
+    /// Argument type — must derive `Deserialize` and `JsonSchema`.
+    type Args: for<'de> Deserialize<'de> + JsonSchema + Send;
+
+    /// Unique tool id (snake_case).
+    fn tool_id(&self) -> &str;
+
+    /// Human-readable tool name.
+    fn name(&self) -> &str;
+
+    /// Tool description shown to the LLM.
+    fn description(&self) -> &str;
+
+    /// Optional business-logic validation after deserialization.
+    ///
+    /// Return `Err(message)` to reject with [`ToolError::InvalidArguments`].
+    fn validate(&self, _args: &Self::Args) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Execute with typed arguments.
+    async fn execute(
+        &self,
+        args: Self::Args,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError>;
+}
+
+#[async_trait]
+impl<T: TypedTool> Tool for T {
+    fn descriptor(&self) -> ToolDescriptor {
+        let schema = typed_tool_schema::<T::Args>();
+        ToolDescriptor::new(self.tool_id(), self.name(), self.description())
+            .with_parameters(schema)
+    }
+
+    /// Skips JSON Schema validation — `from_value` deserialization covers it.
+    fn validate_args(&self, _args: &Value) -> Result<(), ToolError> {
+        Ok(())
+    }
+
+    async fn execute(
+        &self,
+        args: Value,
+        ctx: &ToolCallContext<'_>,
+    ) -> Result<ToolResult, ToolError> {
+        let typed: T::Args = serde_json::from_value(args)
+            .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
+        self.validate(&typed).map_err(ToolError::InvalidArguments)?;
+        TypedTool::execute(self, typed, ctx).await
+    }
+}
+
+/// Generate a JSON Schema `Value` from a type implementing `JsonSchema`.
+fn typed_tool_schema<T: JsonSchema>() -> Value {
+    let mut v = serde_json::to_value(schemars::schema_for!(T))
+        .unwrap_or_else(|_| serde_json::json!({"type": "object", "properties": {}}));
+    // Strip the $schema key — LLM providers don't need it.
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("$schema");
+    }
+    v
 }
 
 #[cfg(test)]
@@ -616,5 +744,301 @@ mod tests {
         let debug = format!("{:?}", desc);
         assert!(debug.contains("ToolDescriptor"));
         assert!(debug.contains("tool"));
+    }
+
+    // =============================================================================
+    // validate_against_schema tests
+    // =============================================================================
+
+    #[test]
+    fn test_validate_against_schema_valid() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        assert!(validate_against_schema(&schema, &json!({"name": "Alice"})).is_ok());
+    }
+
+    #[test]
+    fn test_validate_against_schema_missing_required() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        let err = validate_against_schema(&schema, &json!({})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[test]
+    fn test_validate_against_schema_wrong_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        });
+        let err = validate_against_schema(&schema, &json!({"count": "not_a_number"})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[test]
+    fn test_validate_against_schema_empty_schema_accepts_object() {
+        let schema = json!({"type": "object", "properties": {}});
+        assert!(validate_against_schema(&schema, &json!({"anything": true})).is_ok());
+    }
+
+    #[test]
+    fn test_validate_against_schema_multiple_errors_joined() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age":  { "type": "integer" }
+            },
+            "required": ["name", "age"]
+        });
+        let err = validate_against_schema(&schema, &json!({})).unwrap_err();
+        let msg = err.to_string();
+        // Both missing-field errors should be present, joined by "; "
+        assert!(msg.contains("; "), "expected multiple errors joined by '; ', got: {msg}");
+        assert!(msg.contains("name"), "expected 'name' in error: {msg}");
+        assert!(msg.contains("age"), "expected 'age' in error: {msg}");
+    }
+
+    #[test]
+    fn test_validate_against_schema_null_args_rejected() {
+        let schema = json!({"type": "object", "properties": {}});
+        let err = validate_against_schema(&schema, &json!(null)).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[test]
+    fn test_validate_against_schema_invalid_schema_returns_internal() {
+        // "type" must be a string — passing an integer makes the schema itself invalid.
+        let bad_schema = json!({"type": 123});
+        let err = validate_against_schema(&bad_schema, &json!({})).unwrap_err();
+        assert!(
+            matches!(err, ToolError::Internal(_)),
+            "expected Internal error for invalid schema, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_against_schema_nested_object() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "address": {
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    },
+                    "required": ["city"]
+                }
+            },
+            "required": ["address"]
+        });
+        // Valid nested
+        assert!(validate_against_schema(&schema, &json!({"address": {"city": "Berlin"}})).is_ok());
+        // Missing nested required field
+        let err = validate_against_schema(&schema, &json!({"address": {}})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+        // Wrong nested type
+        let err = validate_against_schema(&schema, &json!({"address": {"city": 42}})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    // =============================================================================
+    // TypedTool tests
+    // =============================================================================
+
+    #[derive(Deserialize, JsonSchema)]
+    struct GreetArgs {
+        name: String,
+    }
+
+    struct GreetTool;
+
+    #[async_trait]
+    impl TypedTool for GreetTool {
+        type Args = GreetArgs;
+        fn tool_id(&self) -> &str { "greet" }
+        fn name(&self) -> &str { "Greet" }
+        fn description(&self) -> &str { "Greet a user" }
+
+        async fn execute(
+            &self,
+            args: GreetArgs,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("greet", json!({"greeting": format!("Hello, {}!", args.name)})))
+        }
+    }
+
+    #[test]
+    fn test_typed_tool_descriptor_schema() {
+        let tool = GreetTool;
+        let desc = Tool::descriptor(&tool);
+        assert_eq!(desc.id, "greet");
+        assert_eq!(desc.name, "Greet");
+        assert_eq!(desc.description, "Greet a user");
+
+        let props = desc.parameters.get("properties").unwrap();
+        assert!(props.get("name").is_some());
+        let required = desc.parameters.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|v| v == "name"));
+        // No $schema key
+        assert!(desc.parameters.get("$schema").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_execute_success() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        let result = Tool::execute(&tool, json!({"name": "World"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["greeting"], "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_execute_deser_failure() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        let err = Tool::execute(&tool, json!({"name": 123}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+    }
+
+    #[derive(Deserialize, JsonSchema)]
+    struct PositiveArgs {
+        value: i64,
+    }
+
+    struct PositiveTool;
+
+    #[async_trait]
+    impl TypedTool for PositiveTool {
+        type Args = PositiveArgs;
+        fn tool_id(&self) -> &str { "positive" }
+        fn name(&self) -> &str { "Positive" }
+        fn description(&self) -> &str { "Requires positive value" }
+
+        fn validate(&self, args: &PositiveArgs) -> Result<(), String> {
+            if args.value <= 0 {
+                return Err("value must be positive".into());
+            }
+            Ok(())
+        }
+
+        async fn execute(
+            &self,
+            args: PositiveArgs,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("positive", json!({"value": args.value})))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_validate_rejection() {
+        let tool = PositiveTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        let err = Tool::execute(&tool, json!({"value": -1}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
+        assert!(err.to_string().contains("positive"));
+    }
+
+    #[test]
+    fn test_typed_tool_as_arc_dyn_tool() {
+        let tool: std::sync::Arc<dyn Tool> = std::sync::Arc::new(GreetTool);
+        let desc = tool.descriptor();
+        assert_eq!(desc.id, "greet");
+    }
+
+    #[test]
+    fn test_typed_tool_skips_schema_validation() {
+        let tool = GreetTool;
+        // validate_args should always return Ok for TypedTool
+        assert!(tool.validate_args(&json!({})).is_ok());
+        assert!(tool.validate_args(&json!({"wrong": 123})).is_ok());
+        assert!(tool.validate_args(&json!(null)).is_ok());
+    }
+
+    // -- TypedTool edge cases --------------------------------------------------
+
+    #[derive(Deserialize, JsonSchema)]
+    struct OptionalArgs {
+        required_field: String,
+        optional_field: Option<i64>,
+    }
+
+    struct OptionalTool;
+
+    #[async_trait]
+    impl TypedTool for OptionalTool {
+        type Args = OptionalArgs;
+        fn tool_id(&self) -> &str { "optional" }
+        fn name(&self) -> &str { "Optional" }
+        fn description(&self) -> &str { "Tool with optional field" }
+
+        async fn execute(
+            &self,
+            args: OptionalArgs,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult::success("optional", json!({
+                "required": args.required_field,
+                "optional": args.optional_field,
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_optional_field_absent() {
+        let tool = OptionalTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        let result = Tool::execute(&tool, json!({"required_field": "hi"}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["optional"], json!(null));
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_extra_fields_ignored() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        // serde ignores unknown fields by default
+        let result = Tool::execute(&tool, json!({"name": "World", "extra": 999}), &ctx)
+            .await
+            .unwrap();
+        assert!(result.is_success());
+        assert_eq!(result.data["greeting"], "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_typed_tool_empty_json_all_required() {
+        let tool = GreetTool;
+        let fixture = crate::testing::TestFixture::new();
+        let ctx = fixture.ctx_with("call_1", "test");
+        let err = Tool::execute(&tool, json!({}), &ctx).await.unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments(_)));
     }
 }

@@ -62,6 +62,15 @@ pub async fn execute_single_tool_with_scope(
         None,
     );
 
+    // Validate arguments against the tool's JSON Schema
+    if let Err(e) = tool.validate_args(&call.arguments) {
+        return ToolExecution {
+            call: call.clone(),
+            result: ToolResult::error(&call.name, e.to_string()),
+            patch: None,
+        };
+    }
+
     // Execute the tool
     let result = match tool.execute(call.arguments.clone(), &ctx).await {
         Ok(r) => r,
@@ -354,5 +363,95 @@ mod tests {
         assert!(exec.result.is_success());
         assert_eq!(exec.result.data["token_len"], 18);
         assert_eq!(exec.result.data["is_sensitive"], true);
+    }
+
+    // =========================================================================
+    // validate_args integration: strict schema blocks invalid args at exec path
+    // =========================================================================
+
+    /// Tool with a strict schema — execute should never be reached on invalid args.
+    struct StrictSchemaTool {
+        executed: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Tool for StrictSchemaTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::new("strict", "Strict", "Requires a string 'name'")
+                .with_parameters(json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "required": ["name"]
+                }))
+        }
+
+        async fn execute(
+            &self,
+            args: Value,
+            _ctx: &ToolCallContext<'_>,
+        ) -> Result<ToolResult, ToolError> {
+            self.executed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult::success("strict", args))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_args_blocks_invalid_before_execute() {
+        let tool = StrictSchemaTool {
+            executed: std::sync::atomic::AtomicBool::new(false),
+        };
+        // Missing required "name" field
+        let call = ToolCall::new("call_1", "strict", json!({}));
+        let state = json!({});
+
+        let exec = execute_single_tool(Some(&tool), &call, &state).await;
+
+        assert!(exec.result.is_error());
+        assert!(
+            exec.result.message.as_ref().unwrap().contains("name"),
+            "error should mention the missing field"
+        );
+        assert!(
+            !tool.executed.load(std::sync::atomic::Ordering::SeqCst),
+            "execute() must NOT be called when validate_args fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_args_passes_valid_to_execute() {
+        let tool = StrictSchemaTool {
+            executed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let call = ToolCall::new("call_1", "strict", json!({"name": "Alice"}));
+        let state = json!({});
+
+        let exec = execute_single_tool(Some(&tool), &call, &state).await;
+
+        assert!(exec.result.is_success());
+        assert!(
+            tool.executed.load(std::sync::atomic::Ordering::SeqCst),
+            "execute() should be called for valid args"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_args_wrong_type_blocks_execute() {
+        let tool = StrictSchemaTool {
+            executed: std::sync::atomic::AtomicBool::new(false),
+        };
+        // "name" should be string, not integer
+        let call = ToolCall::new("call_1", "strict", json!({"name": 42}));
+        let state = json!({});
+
+        let exec = execute_single_tool(Some(&tool), &call, &state).await;
+
+        assert!(exec.result.is_error());
+        assert!(
+            !tool.executed.load(std::sync::atomic::Ordering::SeqCst),
+            "execute() must NOT be called when validate_args fails"
+        );
     }
 }
