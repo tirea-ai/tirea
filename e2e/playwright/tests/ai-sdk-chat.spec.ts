@@ -271,4 +271,234 @@ test.describe("AI SDK Chat", () => {
     await expect(agentMsg).toBeVisible({ timeout: 45_000 });
     await expect(sendButton).toBeEnabled({ timeout: 30_000 });
   });
+
+  test("renders reasoning, sources, files and tool-invocation from history payload", async ({
+    page,
+  }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          messages: [
+            {
+              id: "u1",
+              role: "user",
+              parts: [{ type: "text", text: "show me details" }],
+            },
+            {
+              id: "a1",
+              role: "assistant",
+              parts: [
+                { type: "reasoning", text: "internal chain", state: "done" },
+                {
+                  type: "source-url",
+                  sourceId: "s1",
+                  url: "https://example.com",
+                  title: "Example Source",
+                },
+                {
+                  type: "source-document",
+                  sourceId: "d1",
+                  mediaType: "application/pdf",
+                  title: "Spec",
+                  filename: "spec.pdf",
+                },
+                {
+                  type: "file",
+                  url: "https://example.com/report.csv",
+                  mediaType: "text/csv",
+                },
+                {
+                  type: "tool-invocation",
+                  toolCallId: "call_1",
+                  toolName: "serverInfo",
+                  state: "output-available",
+                  output: { name: "tirea-agentos" },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    await expect(page.getByTestId("reasoning-part")).toBeVisible();
+    await expect(page.getByTestId("source-url-part")).toContainText("Example Source");
+    await expect(page.getByTestId("source-document-part")).toContainText("spec.pdf");
+    await expect(page.getByTestId("file-part")).toContainText("report.csv");
+    await expect(page.locator("main")).toContainText("Tool: serverInfo");
+  });
+
+  test("parses streamed reasoning/source/file/tool events from ai-sdk protocol", async ({
+    page,
+  }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    await page.route("**/api/chat", async (route) => {
+      const sse = [
+        'data: {"type":"start","messageId":"m_stream"}',
+        "",
+        'data: {"type":"reasoning-start","id":"r_1"}',
+        "",
+        'data: {"type":"reasoning-delta","id":"r_1","delta":"thinking"}',
+        "",
+        'data: {"type":"reasoning-end","id":"r_1"}',
+        "",
+        'data: {"type":"source-url","sourceId":"s_1","url":"https://example.com","title":"Example"}',
+        "",
+        'data: {"type":"source-document","sourceId":"d_1","mediaType":"application/pdf","title":"Spec","filename":"spec.pdf"}',
+        "",
+        'data: {"type":"file","url":"https://example.com/report.csv","mediaType":"text/csv"}',
+        "",
+        'data: {"type":"tool-input-start","toolCallId":"call_1","toolName":"serverInfo"}',
+        "",
+        'data: {"type":"tool-input-available","toolCallId":"call_1","toolName":"serverInfo","input":{"scope":"name"}}',
+        "",
+        'data: {"type":"tool-output-available","toolCallId":"call_1","output":{"name":"tirea-agentos"}}',
+        "",
+        'data: {"type":"text-start","id":"txt_1"}',
+        "",
+        'data: {"type":"text-delta","id":"txt_1","delta":"Server is tirea-agentos."}',
+        "",
+        'data: {"type":"text-end","id":"txt_1"}',
+        "",
+        'data: {"type":"data-inference-complete","data":{"model":"deepseek-chat","usage":{"prompt_tokens":10,"completion_tokens":5},"duration_ms":123}}',
+        "",
+        'data: {"type":"finish","finishReason":"stop"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    await page.getByPlaceholder("Type a message...").fill("show rich events");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    await expect(page.locator("main")).toContainText("Server is tirea-agentos.");
+    await expect(page.getByTestId("reasoning-part")).toBeVisible();
+    await expect(page.getByTestId("source-url-part")).toContainText("Example");
+    await expect(page.getByTestId("source-document-part")).toContainText("spec.pdf");
+    await expect(page.getByTestId("file-part")).toContainText("report.csv");
+    await expect(page.locator("main")).toContainText("Tool: serverInfo");
+    await expect(page.getByTestId("metrics-panel")).toBeVisible();
+  });
+
+  test("handles ai-sdk abort event and keeps partial output", async ({ page }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    await page.route("**/api/chat", async (route) => {
+      const sse = [
+        'data: {"type":"start","messageId":"m_abort"}',
+        "",
+        'data: {"type":"text-start","id":"txt_abort"}',
+        "",
+        'data: {"type":"text-delta","id":"txt_abort","delta":"partial answer"}',
+        "",
+        'data: {"type":"text-end","id":"txt_abort"}',
+        "",
+        'data: {"type":"abort","reason":"cancelled"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    const input = page.getByPlaceholder("Type a message...");
+    const sendButton = page.getByRole("button", { name: "Send" });
+
+    await input.fill("trigger abort");
+    await sendButton.click();
+
+    await expect(page.locator("main")).toContainText("partial answer");
+    await expect(sendButton).toBeEnabled({ timeout: 10_000 });
+    await expect(page.locator("main")).not.toContainText("Error:");
+  });
+
+  test("surfaces ai-sdk error event in UI", async ({ page }) => {
+    await page.route("**/api/history?**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: [] }),
+      });
+    });
+
+    await page.route("**/api/chat", async (route) => {
+      const sse = [
+        'data: {"type":"start","messageId":"m_error"}',
+        "",
+        'data: {"type":"error","errorText":"upstream failure"}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n");
+
+      await route.fulfill({
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-vercel-ai-ui-message-stream": "v1",
+        },
+        body: sse,
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.locator("h1")).toHaveText("Tirea Chat", {
+      timeout: 15_000,
+    });
+
+    await page.getByPlaceholder("Type a message...").fill("trigger error");
+    await page.getByRole("button", { name: "Send" }).click();
+
+    await expect(page.locator("main")).toContainText("Error: upstream failure", {
+      timeout: 10_000,
+    });
+  });
 });

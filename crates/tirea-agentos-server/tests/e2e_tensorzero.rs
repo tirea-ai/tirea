@@ -18,16 +18,17 @@
 
 use axum::body::to_bytes;
 use axum::http::{Request, StatusCode};
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 use tirea_agentos::contracts::storage::{AgentStateReader, AgentStateStore};
 use tirea_agentos::contracts::tool::Tool;
 use tirea_agentos::orchestrator::AgentDefinition;
 use tirea_agentos::orchestrator::{AgentOsBuilder, ModelDefinition};
 use tirea_agentos_server::http::{router, AppState};
 use tirea_store_adapters::MemoryStore;
-use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use tokio::sync::OnceCell;
 use tower::ServiceExt;
 
 mod common;
@@ -41,6 +42,7 @@ use common::{
 const TENSORZERO_ENDPOINT: &str = "http://localhost:3000/openai/v1/";
 const TENSORZERO_CHAT_URL: &str = "http://localhost:3000/openai/v1/chat/completions";
 const TENSORZERO_FEEDBACK_URL: &str = "http://localhost:3000/feedback";
+static TENSORZERO_READINESS: OnceCell<Result<(), String>> = OnceCell::const_new();
 
 fn has_deepseek_key() -> bool {
     std::env::var("DEEPSEEK_API_KEY").is_ok()
@@ -66,6 +68,37 @@ async fn tensorzero_chat_endpoint_ready() -> Result<(), String> {
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(format!(
             "{TENSORZERO_CHAT_URL} returned 404; OpenAI-compatible chat route is not available"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn tensorzero_chat_smoke_ready() -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+    let payload = json!({
+        "model": "tensorzero::function_name::agent_chat",
+        "messages": [{"role":"user","content":"Reply with OK"}],
+        "max_tokens": 8,
+        "temperature": 0
+    });
+
+    let resp = client
+        .post(TENSORZERO_CHAT_URL)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("POST {TENSORZERO_CHAT_URL} failed: {e}"))?;
+    let status = resp.status();
+
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "{TENSORZERO_CHAT_URL} smoke request failed: status={status}, body={body}"
         ));
     }
 
@@ -98,18 +131,28 @@ fn make_os(write_store: Arc<dyn AgentStateStore>) -> tirea_agentos::orchestrator
 }
 
 async fn skip_unless_ready() -> bool {
-    if !has_deepseek_key() {
-        eprintln!("DEEPSEEK_API_KEY not set, skipping");
+    let readiness = TENSORZERO_READINESS
+        .get_or_init(|| async {
+            if !has_deepseek_key() {
+                return Err("DEEPSEEK_API_KEY not set".to_string());
+            }
+            if !tensorzero_reachable() {
+                return Err(
+                    "TensorZero not reachable at :3000. Run: docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait"
+                        .to_string(),
+                );
+            }
+            tensorzero_chat_endpoint_ready().await?;
+            tensorzero_chat_smoke_ready().await?;
+            Ok(())
+        })
+        .await;
+
+    if let Err(err) = readiness {
+        eprintln!("TensorZero not ready, skipping: {err}");
         return true;
     }
-    if !tensorzero_reachable() {
-        eprintln!("TensorZero not reachable at :3000, skipping. Run: docker compose -f e2e/tensorzero/docker-compose.yml up -d --wait");
-        return true;
-    }
-    if let Err(err) = tensorzero_chat_endpoint_ready().await {
-        eprintln!("TensorZero route not ready, skipping: {err}");
-        return true;
-    }
+
     false
 }
 
@@ -1459,6 +1502,10 @@ async fn e2e_tensorzero_tool_call_history() {
     assert!(
         has_text_part,
         "assistant history should include text response"
+    );
+    assert!(
+        has_tool_part,
+        "assistant history should include tool-invocation parts"
     );
 
     // Load AG-UI history for comparison.
