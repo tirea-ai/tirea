@@ -97,11 +97,11 @@ async fn drain_run_start_outbox_and_replay(
                 )
             })?;
             let patch =
-                set_agent_pending_interaction(&state, new_interaction.clone(), new_frontend_invocation);
+                set_agent_pending_interaction(&state, new_interaction.clone(), new_frontend_invocation.clone());
             if !patch.patch().is_empty() {
                 run_ctx.add_thread_patch(patch);
             }
-            for event in interaction_requested_pending_events(&new_interaction) {
+            for event in pending_tool_events(&new_interaction, new_frontend_invocation.as_ref()) {
                 events.push(event);
             }
             let snapshot = run_ctx
@@ -452,7 +452,8 @@ pub(super) fn run_loop_stream_impl(
             if prepared.skip_inference {
                 let pending_interaction = pending_interaction_from_ctx(&run_ctx);
                 if let Some(interaction) = pending_interaction.clone() {
-                    for event in interaction_requested_pending_events(&interaction) {
+                    let frontend_inv = pending_frontend_invocation_from_ctx(&run_ctx);
+                    for event in pending_tool_events(&interaction, frontend_inv.as_ref()) {
                         yield emitter.emit_existing(event);
                     }
                 }
@@ -718,7 +719,10 @@ pub(super) fn run_loop_stream_impl(
             // Emit pending interaction event(s) first.
             for exec_result in &results {
                 if let Some(ref interaction) = exec_result.pending_interaction {
-                    for event in interaction_requested_pending_events(interaction) {
+                    for event in pending_tool_events(
+                        interaction,
+                        exec_result.pending_frontend_invocation.as_ref(),
+                    ) {
                         yield emitter.emit_existing(event);
                     }
                 }

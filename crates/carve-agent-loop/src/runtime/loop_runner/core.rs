@@ -96,6 +96,12 @@ pub(super) fn pending_interaction_from_ctx(run_ctx: &RunContext) -> Option<Inter
     run_ctx.pending_interaction()
 }
 
+pub(super) fn pending_frontend_invocation_from_ctx(
+    run_ctx: &RunContext,
+) -> Option<crate::contracts::FrontendToolInvocation> {
+    run_ctx.pending_frontend_invocation()
+}
+
 pub(super) fn set_agent_inference_error(state: &Value, error: InferenceError) -> TrackedPatch {
     let doc = DocCell::new(state.clone());
     let ctx = StateContext::new(&doc);

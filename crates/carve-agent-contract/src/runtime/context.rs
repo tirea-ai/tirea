@@ -1,7 +1,7 @@
 use crate::tool::context::ToolCallContext;
 use crate::runtime::delta::RunDelta;
 use crate::runtime::control::LoopControlState;
-use crate::event::interaction::Interaction;
+use crate::event::interaction::{FrontendToolInvocation, Interaction};
 use crate::runtime::activity::ActivityManager;
 use crate::thread::Message;
 use crate::RunConfig;
@@ -106,6 +106,19 @@ impl RunContext {
                     .cloned()
             })
             .and_then(|value| serde_json::from_value::<Interaction>(value).ok())
+    }
+
+    /// Read pending frontend invocation from durable control state.
+    pub fn pending_frontend_invocation(&self) -> Option<FrontendToolInvocation> {
+        self.snapshot()
+            .ok()
+            .and_then(|state| {
+                state
+                    .get(LoopControlState::PATH)
+                    .and_then(|lc| lc.get("pending_frontend_invocation"))
+                    .cloned()
+            })
+            .and_then(|value| serde_json::from_value::<FrontendToolInvocation>(value).ok())
     }
 
     // =========================================================================

@@ -49,7 +49,7 @@ mod stream_runner;
 mod tool_exec;
 
 use crate::contracts::plugin::phase::Phase;
-use crate::contracts::{AgentEvent, Interaction, TerminationReason};
+use crate::contracts::{AgentEvent, FrontendToolInvocation, Interaction, TerminationReason};
 use crate::contracts::runtime::{
     StopPolicy, StreamResult, ToolExecutionRequest,
     ToolExecutionResult,
@@ -92,8 +92,8 @@ use config::StaticStepToolProvider;
 use core::build_messages;
 use core::{
     build_request_for_filtered_tools, clear_agent_pending_interaction,
-    drain_agent_outbox, inference_inputs_from_step, pending_interaction_from_ctx,
-    set_agent_pending_interaction,
+    drain_agent_outbox, inference_inputs_from_step, pending_frontend_invocation_from_ctx,
+    pending_interaction_from_ctx, set_agent_pending_interaction,
 };
 pub use outcome::{tool_map, tool_map_from_arc, AgentLoopError};
 pub use outcome::{LoopOutcome, LoopStats, LoopUsage};
@@ -454,6 +454,35 @@ pub(super) fn interaction_requested_pending_events(interaction: &Interaction) ->
             interaction: interaction.clone(),
         },
     ]
+}
+
+/// Emit events for a pending frontend tool invocation.
+///
+/// When a `FrontendToolInvocation` is available, emits standard `ToolCallStart` +
+/// `ToolCallReady` events using the frontend invocation's identity. This makes
+/// frontend tools appear as regular tool calls in the event stream.
+///
+/// Falls back to legacy `InteractionRequested` + `Pending` events when no
+/// `FrontendToolInvocation` is provided.
+pub(super) fn pending_tool_events(
+    interaction: &Interaction,
+    frontend_invocation: Option<&FrontendToolInvocation>,
+) -> Vec<AgentEvent> {
+    if let Some(inv) = frontend_invocation {
+        vec![
+            AgentEvent::ToolCallStart {
+                id: inv.call_id.clone(),
+                name: inv.tool_name.clone(),
+            },
+            AgentEvent::ToolCallReady {
+                id: inv.call_id.clone(),
+                name: inv.tool_name.clone(),
+                arguments: inv.arguments.clone(),
+            },
+        ]
+    } else {
+        interaction_requested_pending_events(interaction).to_vec()
+    }
 }
 
 pub(super) struct ToolExecutionContext {
