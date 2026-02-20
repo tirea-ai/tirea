@@ -9,4 +9,4 @@ build-dir = "../../target/book"
 
 [output.html]
 default-theme = "rust"
-git-repository-url = "https://github.com/user/tirea"
+git-repository-url = "https://github.com/chaizhenhua/tirea"
