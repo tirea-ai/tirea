@@ -53,8 +53,8 @@ pub struct PermissionState {
     pub tools: HashMap<String, ToolPermissionBehavior>,
 }
 
-/// Unified frontend ask tool name used for user interaction prompts.
-pub const ASK_USER_TOOL_NAME: &str = "AskUserQuestion";
+/// Frontend tool name for permission confirmation prompts.
+pub const PERMISSION_CONFIRM_TOOL_NAME: &str = "PermissionConfirm";
 
 /// Extension trait for permission management on Context.
 pub trait PermissionContextExt {
@@ -153,25 +153,14 @@ impl AgentPlugin for PermissionPlugin {
                 step.block(format!("Tool '{}' is denied", tool_id));
             }
             ToolPermissionBehavior::Ask => {
-                let question = format!("Allow tool '{}' to execute?", tool_id);
+                let tool_args = step
+                    .tool
+                    .as_ref()
+                    .map(|t| t.args.clone())
+                    .unwrap_or_default();
                 let arguments = json!({
-                    "questions": [
-                        {
-                            "question": question,
-                            "header": "Permission",
-                            "options": [
-                                {
-                                    "label": "Allow",
-                                    "description": format!("Allow '{}' to run.", tool_id)
-                                },
-                                {
-                                    "label": "Deny",
-                                    "description": format!("Deny '{}' from running.", tool_id)
-                                }
-                            ],
-                            "multiSelect": false
-                        }
-                    ]
+                    "tool_name": tool_id,
+                    "tool_args": tool_args,
                 });
                 let routing = ResponseRouting::ReplayOriginalTool {
                     state_patches: vec![Op::set(
@@ -182,7 +171,7 @@ impl AgentPlugin for PermissionPlugin {
                         json!("allow"),
                     )],
                 };
-                step.invoke_frontend_tool(ASK_USER_TOOL_NAME, arguments, routing);
+                step.invoke_frontend_tool(PERMISSION_CONFIRM_TOOL_NAME, arguments, routing);
             }
         }
     }
@@ -435,7 +424,7 @@ mod tests {
             .as_ref()
             .and_then(|t| t.pending_interaction.as_ref())
             .expect("pending interaction should exist");
-        assert_eq!(interaction.action, format!("tool:{}", ASK_USER_TOOL_NAME));
+        assert_eq!(interaction.action, format!("tool:{}", PERMISSION_CONFIRM_TOOL_NAME));
 
         // Should have first-class FrontendToolInvocation
         let inv = step
@@ -443,8 +432,9 @@ mod tests {
             .as_ref()
             .and_then(|t| t.pending_frontend_invocation.as_ref())
             .expect("pending frontend invocation should exist");
-        assert_eq!(inv.tool_name, ASK_USER_TOOL_NAME);
-        assert!(inv.arguments.get("questions").is_some());
+        assert_eq!(inv.tool_name, PERMISSION_CONFIRM_TOOL_NAME);
+        assert_eq!(inv.arguments["tool_name"], "test_tool");
+        assert_eq!(inv.arguments["tool_args"]["path"], "a.txt");
 
         // Origin should be ToolCallIntercepted with original backend tool info
         match &inv.origin {

@@ -1169,8 +1169,8 @@ mod tests {
         ctx.tool = Some(ToolContext::new(&call));
 
         let call_id = ctx.invoke_frontend_tool(
-            "AskUserQuestion",
-            json!({"question": "Allow write_file?"}),
+            "PermissionConfirm",
+            json!({"tool_name": "write_file", "tool_args": {"path": "a.txt"}}),
             ResponseRouting::ReplayOriginalTool { state_patches: vec![] },
         );
 
@@ -1182,7 +1182,7 @@ mod tests {
 
         let invocation = ctx.tool.as_ref().unwrap().pending_frontend_invocation.as_ref().unwrap();
         assert_eq!(invocation.call_id, call_id);
-        assert_eq!(invocation.tool_name, "AskUserQuestion");
+        assert_eq!(invocation.tool_name, "PermissionConfirm");
         assert!(matches!(invocation.routing, ResponseRouting::ReplayOriginalTool { .. }));
         match &invocation.origin {
             InvocationOrigin::ToolCallIntercepted { backend_call_id, backend_tool_name, .. } => {
@@ -1199,7 +1199,7 @@ mod tests {
         let mut ctx = fix.step(vec![]);
 
         let result = ctx.invoke_frontend_tool(
-            "AskUserQuestion",
+            "PermissionConfirm",
             json!({}),
             ResponseRouting::UseAsToolResult,
         );

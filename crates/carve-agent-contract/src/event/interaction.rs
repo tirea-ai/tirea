@@ -140,7 +140,7 @@ impl InteractionResponse {
 pub struct FrontendToolInvocation {
     /// Unique ID for this frontend tool call (sent to frontend as `toolCallId`).
     pub call_id: String,
-    /// Frontend tool name (e.g. "copyToClipboard", "AskUserQuestion").
+    /// Frontend tool name (e.g. "copyToClipboard", "PermissionConfirm").
     pub tool_name: String,
     /// Frontend tool arguments.
     #[serde(default, skip_serializing_if = "Value::is_null")]

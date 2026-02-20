@@ -70,20 +70,26 @@ function TaskPanel() {
     },
   });
 
-  // AskUserQuestion: handles Permission plugin prompts for backend tool approval
+  // PermissionConfirm: handles Permission plugin prompts for backend tool approval
   useCopilotAction({
-    name: "AskUserQuestion",
-    description: "Ask the user a question with options",
+    name: "PermissionConfirm",
+    description: "Confirm permission for a backend tool to execute",
     parameters: [
       {
-        name: "questions",
-        type: "object[]",
-        description: "Array of questions to ask",
+        name: "tool_name",
+        type: "string",
+        description: "Name of the tool requesting permission",
         required: true,
+      },
+      {
+        name: "tool_args",
+        type: "object",
+        description: "Arguments the tool will be called with",
+        required: false,
       },
     ],
     renderAndWaitForResponse: ({ args, respond, status }) => {
-      const questions = (args as { questions?: Array<{ question: string; header: string; options: Array<{ label: string; description: string }> }> }).questions ?? [];
+      const { tool_name, tool_args } = args as { tool_name?: string; tool_args?: Record<string, unknown> };
       const isExecuting = status === "executing";
 
       if (status === "complete") {
@@ -105,40 +111,48 @@ function TaskPanel() {
             background: "#f9f9f9",
           }}
         >
-          {questions.map((q, i) => (
-            <div key={i}>
-              <p style={{ fontWeight: 600, marginBottom: 8 }}>{q.question}</p>
-              <div style={{ display: "flex", gap: 8 }}>
-                {q.options.map((opt, j) => (
-                  <button
-                    key={j}
-                    disabled={!isExecuting}
-                    data-testid={`permission-${opt.label.toLowerCase()}`}
-                    onClick={() => {
-                      const answers: Record<string, string> = {};
-                      answers[q.question] = opt.label;
-                      respond?.(JSON.stringify({ answers }));
-                    }}
-                    style={{
-                      padding: "6px 16px",
-                      background: !isExecuting
-                        ? "#d1d5db"
-                        : opt.label === "Allow"
-                          ? "#2563eb"
-                          : "#dc2626",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: 4,
-                      cursor: !isExecuting ? "not-allowed" : "pointer",
-                      opacity: !isExecuting ? 0.6 : 1,
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
+          <p style={{ fontWeight: 600, marginBottom: 8 }}>
+            Allow tool &apos;{tool_name}&apos; to execute?
+          </p>
+          {tool_args && Object.keys(tool_args).length > 0 && (
+            <pre style={{ fontSize: 12, marginBottom: 8, color: "#666" }}>
+              {JSON.stringify(tool_args, null, 2)}
+            </pre>
+          )}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              disabled={!isExecuting}
+              data-testid="permission-allow"
+              onClick={() => respond?.(JSON.stringify({ approved: true }))}
+              style={{
+                padding: "6px 16px",
+                background: !isExecuting ? "#d1d5db" : "#2563eb",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                cursor: !isExecuting ? "not-allowed" : "pointer",
+                opacity: !isExecuting ? 0.6 : 1,
+              }}
+            >
+              Allow
+            </button>
+            <button
+              disabled={!isExecuting}
+              data-testid="permission-deny"
+              onClick={() => respond?.(JSON.stringify({ approved: false }))}
+              style={{
+                padding: "6px 16px",
+                background: !isExecuting ? "#d1d5db" : "#dc2626",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                cursor: !isExecuting ? "not-allowed" : "pointer",
+                opacity: !isExecuting ? 0.6 : 1,
+              }}
+            >
+              Deny
+            </button>
+          </div>
         </div>
       );
     },

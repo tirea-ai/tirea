@@ -150,6 +150,35 @@ test.describe("CopilotKit Chat", () => {
     await expect(taskList.locator("li")).toHaveCount(3, { timeout: 5_000 });
   });
 
+  // SKIPPED: DeepSeek does not reliably call toggleTask after addTask in
+  // sequential turns via CopilotKit. The LLM frequently completes the second
+  // turn with a text-only response instead of invoking the tool. Re-enable
+  // when using a more instruction-following model or parallel tool calling.
+  test.skip("sequential multi-tool calls: add task then toggle in two turns", async ({
+    page,
+  }) => {
+    // Turn 1: add a task.
+    await sendChatMessage(page, 'Add a task called "Run benchmarks".');
+
+    const actionLog = page.getByTestId("action-log");
+    await expect(actionLog).toContainText("Added:", { timeout: 45_000 });
+
+    const taskList = page.getByTestId("task-list");
+    await expect(taskList).toContainText("Run benchmarks", { timeout: 5_000 });
+
+    // Turn 2: toggle a different task.
+    await sendChatMessage(page, 'Mark "Review PR" as completed.');
+
+    await expect(actionLog).toContainText("Toggled:", { timeout: 45_000 });
+
+    const taskSpan = page.locator(
+      '[data-testid="task-list"] span:has-text("Review PR")',
+    );
+    await expect(taskSpan).toHaveAttribute("data-completed", "true", {
+      timeout: 5_000,
+    });
+  });
+
   // --- HITL (Human-in-the-Loop) tests for deleteTask ---
 
   test("HITL: approval dialog appears for deleteTask", async ({ page }) => {

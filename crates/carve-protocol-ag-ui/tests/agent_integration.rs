@@ -5840,13 +5840,13 @@ async fn test_scenario_e2e_permission_to_response_flow() {
         .pending_interaction
         .clone()
         .unwrap();
-    // Frontend tool invocation: id = fc_<uuid>, action = "tool:AskUserQuestion"
+    // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
     assert!(
         interaction.id.starts_with("fc_"),
         "Permission interaction should use frontend call_id, got: {}",
         interaction.id
     );
-    assert_eq!(interaction.action, "tool:AskUserQuestion");
+    assert_eq!(interaction.action, "tool:PermissionConfirm");
 
     // Step 2: Client approves
     let response_request = RunAgentRequest::new("t1".to_string(), "r1".to_string())
@@ -6244,13 +6244,13 @@ async fn test_permission_flow_approval_e2e() {
         .pending_interaction
         .clone()
         .unwrap();
-    // Frontend tool invocation: id = fc_<uuid>, action = "tool:AskUserQuestion"
+    // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
     assert!(
         interaction.id.starts_with("fc_"),
         "Permission interaction should use frontend call_id, got: {}",
         interaction.id
     );
-    assert_eq!(interaction.action, "tool:AskUserQuestion");
+    assert_eq!(interaction.action, "tool:PermissionConfirm");
 
     // Phase 2: Convert to AG-UI events (client would receive these)
     let ag_ui_events = interaction_to_ag_ui_events(&interaction);
@@ -6472,13 +6472,13 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         other => panic!("Expected PendingInteraction, got: {:?}", other),
     };
 
-    // Frontend tool invocation: id = fc_<uuid>, action = "tool:AskUserQuestion"
+    // Frontend tool invocation: id = fc_<uuid>, action = "tool:PermissionConfirm"
     assert!(
         interaction.id.starts_with("fc_"),
         "Permission interaction should use frontend call_id, got: {}",
         interaction.id
     );
-    assert_eq!(interaction.action, "tool:AskUserQuestion");
+    assert_eq!(interaction.action, "tool:PermissionConfirm");
 
     // Placeholder tool result keeps LLM message sequence valid while awaiting approval.
     assert_eq!(
@@ -6500,7 +6500,7 @@ async fn test_e2e_permission_suspend_with_real_tool() {
         pending["id"].as_str().unwrap().starts_with("fc_"),
         "Persisted interaction should use frontend call_id"
     );
-    assert_eq!(pending["action"], "tool:AskUserQuestion");
+    assert_eq!(pending["action"], "tool:PermissionConfirm");
 
     // Counter should NOT have been modified
     assert!(

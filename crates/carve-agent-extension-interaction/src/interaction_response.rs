@@ -682,8 +682,8 @@ mod tests {
                 },
                 "pending_frontend_invocation": {
                     "call_id": "fc_ask_1",
-                    "tool_name": "AskUserQuestion",
-                    "arguments": { "question": "Allow write?" },
+                    "tool_name": "PermissionConfirm",
+                    "arguments": { "tool_name": "write_file", "tool_args": { "path": "a.txt" } },
                     "origin": {
                         "type": "tool_call_intercepted",
                         "backend_call_id": "call_write",

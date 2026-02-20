@@ -38,7 +38,7 @@ fn agui_context_interaction_requested_emits_tool_call_events_for_new_ids() {
 
     // InteractionRequested with a never-seen ID → should emit TOOL_CALL_START/ARGS/END
     let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
-        interaction: Interaction::new("new_call_1", "tool:AskUserQuestion")
+        interaction: Interaction::new("new_call_1", "tool:PermissionConfirm")
             .with_message("Allow this?")
             .with_parameters(serde_json::json!({ "question": "ok?" })),
     });
@@ -80,7 +80,7 @@ fn agui_context_interaction_requested_closes_open_text_stream() {
 
     // InteractionRequested for new ID with open text → closes text first
     let events = ctx.on_agent_event(&AgentEvent::InteractionRequested {
-        interaction: Interaction::new("new_int_1", "tool:AskUserQuestion")
+        interaction: Interaction::new("new_int_1", "tool:PermissionConfirm")
             .with_parameters(serde_json::json!({})),
     });
 
