@@ -1,13 +1,21 @@
 error[E0432]: unresolved import `carve_agent::ag_ui`
- --> tests/ui/no_agui_reexports.rs:1:18
+ --> tests/ui/no_agui_reexports.rs:2:18
   |
-1 | use carve_agent::ag_ui::AGUIContext;
+2 | use carve_agent::ag_ui::AGUIContext;
   |                  ^^^^^ could not find `ag_ui` in `carve_agent`
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "ag-ui")]
+  |       ----------------- the item is gated behind the `ag-ui` feature
+  | pub use carve_protocol_ag_ui as ag_ui;
+  |                                 ^^^^^
 
 error[E0432]: unresolved imports `carve_agent::AGUIEvent`, `carve_agent::RunAgentRequest`
- --> tests/ui/no_agui_reexports.rs:2:19
+ --> tests/ui/no_agui_reexports.rs:3:19
   |
-2 | use carve_agent::{AGUIEvent, RunAgentRequest};
+3 | use carve_agent::{AGUIEvent, RunAgentRequest};
   |                   ^^^^^^^^^  ^^^^^^^^^^^^^^^ no `RunAgentRequest` in the root
   |                   |
   |                   no `AGUIEvent` in the root

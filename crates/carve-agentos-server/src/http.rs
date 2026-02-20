@@ -13,9 +13,9 @@ use carve_agentos::contracts::storage::{
 use carve_agentos::orchestrator::{AgentOs, AgentOsRunError, RunStream};
 use carve_agentos::runtime::loop_runner::RunCancellationToken;
 use carve_protocol_ag_ui::{
-    AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
+    apply_agui_extensions, AgUiHistoryEncoder, AgUiInputAdapter, AgUiProtocolEncoder,
+    RunAgentRequest,
 };
-use carve_protocol_ag_ui_runtime::apply_agui_extensions;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6HistoryEncoder, AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest,
     AI_SDK_VERSION,

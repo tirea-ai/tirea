@@ -1,21 +1,22 @@
 //! Runtime wiring for AG-UI requests.
 //!
-//! This crate applies AG-UI–specific extensions to a [`ResolvedRun`]:
+//! Applies AG-UI–specific extensions to a [`ResolvedRun`]:
 //! frontend tool descriptor stubs, frontend pending interaction strategy,
 //! and interaction-response replay plugin wiring.
 
 use async_trait::async_trait;
-use carve_agentos::contracts::event::interaction::ResponseRouting;
-use carve_agentos::contracts::plugin::AgentPlugin;
-use carve_agentos::contracts::plugin::phase::{Phase, StepContext};
-use carve_agentos::contracts::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
-use carve_agentos::contracts::ToolCallContext;
+use carve_agent_contract::event::interaction::ResponseRouting;
+use carve_agent_contract::plugin::AgentPlugin;
+use carve_agent_contract::plugin::phase::{Phase, StepContext};
+use carve_agent_contract::tool::{Tool, ToolDescriptor, ToolError, ToolResult};
+use carve_agent_contract::ToolCallContext;
 use carve_agentos::extensions::interaction::InteractionPlugin;
 use carve_agentos::orchestrator::ResolvedRun;
-use carve_protocol_ag_ui::{build_context_addendum, RunAgentRequest};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+use crate::{build_context_addendum, RunAgentRequest};
 
 /// Apply AG-UI–specific extensions to a [`ResolvedRun`].
 ///
@@ -161,10 +162,10 @@ impl AgentPlugin for FrontendToolPendingPlugin {
 mod tests {
     use super::*;
     use carve_agent_contract::testing::TestFixture;
-    use carve_agentos::contracts::plugin::phase::{Phase, ToolContext};
-    use carve_agentos::contracts::thread::ToolCall;
+    use carve_agent_contract::plugin::phase::{Phase, ToolContext};
+    use carve_agent_contract::thread::ToolCall;
     use carve_agentos::runtime::loop_runner::AgentConfig;
-    use carve_protocol_ag_ui::{AGUIMessage, AGUIToolDef, ToolExecutionLocation};
+    use crate::{AGUIMessage, AGUIToolDef, ToolExecutionLocation, AGUIContextEntry};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -172,7 +173,7 @@ mod tests {
         ResolvedRun {
             config: AgentConfig::default(),
             tools: HashMap::new(),
-            run_config: carve_agentos::contracts::RunConfig::new(),
+            run_config: carve_agent_contract::RunConfig::new(),
         }
     }
 
@@ -280,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn frontend_pending_plugin_marks_frontend_call_as_pending() {
-        use carve_agentos::contracts::event::interaction::{InvocationOrigin, ResponseRouting};
+        use carve_agent_contract::event::interaction::{InvocationOrigin, ResponseRouting};
 
         let plugin =
             FrontendToolPendingPlugin::new(["copyToClipboard".to_string()].into_iter().collect());
@@ -318,8 +319,6 @@ mod tests {
 
     #[test]
     fn injects_context_injection_plugin_when_context_present() {
-        use carve_protocol_ag_ui::AGUIContextEntry;
-
         let request = RunAgentRequest {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),
@@ -343,8 +342,6 @@ mod tests {
 
     #[tokio::test]
     async fn context_injection_plugin_adds_system_context() {
-        use carve_protocol_ag_ui::AGUIContextEntry;
-
         let request = RunAgentRequest {
             thread_id: "t1".to_string(),
             run_id: "r1".to_string(),

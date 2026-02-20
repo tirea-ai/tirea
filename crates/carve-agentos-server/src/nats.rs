@@ -1,7 +1,8 @@
 use carve_agentos::contracts::{AgentEvent, RunRequest};
 use carve_agentos::orchestrator::{AgentOs, ResolvedRun};
-use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
-use carve_protocol_ag_ui_runtime::apply_agui_extensions;
+use carve_protocol_ag_ui::{
+    apply_agui_extensions, AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest,
+};
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };

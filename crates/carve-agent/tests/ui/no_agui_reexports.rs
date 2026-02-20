@@ -1,3 +1,4 @@
+// Verify AG-UI types are NOT available without the "ag-ui" feature.
 use carve_agent::ag_ui::AGUIContext;
 use carve_agent::{AGUIEvent, RunAgentRequest};
 

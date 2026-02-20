@@ -1,4 +1,4 @@
-//! AG-UI protocol support and adapters.
+//! AG-UI protocol support, adapters, and runtime wiring.
 #![allow(missing_docs)]
 
 mod context;
@@ -7,6 +7,7 @@ mod input_adapter;
 mod output_encoder;
 mod protocol;
 mod request;
+pub mod runtime;
 
 pub use context::AGUIContext;
 pub use history_encoder::AgUiHistoryEncoder;
@@ -17,3 +18,4 @@ pub use request::{
     build_context_addendum, convert_agui_messages, core_message_from_ag_ui, AGUIContextEntry,
     AGUIMessage, AGUIToolDef, RequestError, RunAgentRequest, ToolExecutionLocation,
 };
+pub use runtime::apply_agui_extensions;

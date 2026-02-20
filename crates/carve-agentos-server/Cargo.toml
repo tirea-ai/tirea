@@ -10,7 +10,6 @@ carve-agent-contract = { path = "../carve-agent-contract" }
 carve-agent-extension-permission = { path = "../carve-agent-extension-permission" }
 carve-agentos = { path = "../carve-agentos" }
 carve-protocol-ag-ui = { path = "../carve-protocol-ag-ui" }
-carve-protocol-ag-ui-runtime = { path = "../carve-protocol-ag-ui-runtime" }
 carve-protocol-ai-sdk-v6 = { path = "../carve-protocol-ai-sdk-v6" }
 carve-thread-store-adapters = { path = "../carve-thread-store-adapters", features = ["nats", "postgres"] }
 serde = { workspace = true, features = ["derive"] }
