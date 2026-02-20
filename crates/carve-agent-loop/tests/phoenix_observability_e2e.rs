@@ -96,7 +96,7 @@ async fn test_llmmetry_exports_to_phoenix_via_otlp() {
         .with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let _ = run_loop(&config, run_ctx, None, None).await;
+    let _ = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
 
     let _ = provider.force_flush();
 
@@ -155,7 +155,7 @@ async fn test_llmmetry_exports_error_span_to_phoenix_via_otlp() {
         .with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
     assert!(matches!(outcome.termination, carve_agent_loop::contracts::TerminationReason::Error));
 
     let _ = provider.force_flush();
@@ -267,7 +267,7 @@ async fn test_llmmetry_exports_streaming_success_span_to_phoenix_via_otlp() {
         .with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
+    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None)
         .collect()
         .await;
     assert!(

@@ -245,7 +245,7 @@ async fn test_run_step_non_streaming_propagates_usage_and_exports_tokens_to_otel
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
     let usage = outcome.usage;
     assert_eq!(usage.prompt_tokens, 10);
     assert_eq!(usage.completion_tokens, 5);
@@ -299,7 +299,7 @@ async fn test_run_step_llm_error_closes_inference_span_and_sets_error_type() {
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let outcome = run_loop(&config, run_ctx, None, None).await;
+    let outcome = run_loop(&config, HashMap::new(), run_ctx, None, None).await;
     assert!(matches!(outcome.termination, carve_agent_loop::contracts::TerminationReason::Error));
 
     // Metrics should record the failed inference.
@@ -363,7 +363,7 @@ async fn test_run_loop_stream_http_error_closes_inference_span() {
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
+    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -429,7 +429,7 @@ async fn test_run_loop_stream_success_exports_tokens_to_otel() {
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
+    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None)
         .collect()
         .await;
 
@@ -514,7 +514,7 @@ async fn test_run_loop_stream_connection_refused_closes_inference_span() {
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
+    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
@@ -630,7 +630,7 @@ async fn test_run_loop_stream_parse_error_closes_inference_span() {
     let thread = Thread::with_initial_state("s", json!({})).with_message(Message::user("hi"));
     let run_ctx = RunContext::from_thread(&thread, carve_agent_contract::RunConfig::default()).unwrap();
 
-    let events: Vec<_> = run_loop_stream(config, run_ctx, None, None)
+    let events: Vec<_> = run_loop_stream(config, HashMap::new(), run_ctx, None, None)
         .collect()
         .await;
     assert!(events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));

@@ -1,7 +1,7 @@
 use carve_agentos::contracts::{AgentEvent, RunRequest};
-use carve_agentos::orchestrator::{AgentOs, RunScope};
+use carve_agentos::orchestrator::{AgentOs, ResolvedRun};
 use carve_protocol_ag_ui::{AGUIEvent, AgUiInputAdapter, AgUiProtocolEncoder, RunAgentRequest};
-use carve_protocol_ag_ui_runtime::build_agui_run_scope;
+use carve_protocol_ag_ui_runtime::apply_agui_extensions;
 use carve_protocol_ai_sdk_v6::{
     AiSdkV6InputAdapter, AiSdkV6ProtocolEncoder, AiSdkV6RunRequest, UIStreamEvent,
 };
@@ -103,11 +103,25 @@ impl NatsGateway {
             ));
         };
 
-        let scope = build_agui_run_scope(&req.request);
+        let resolved = match self.os.resolve(&req.agent_id) {
+            Ok(r) => r,
+            Err(err) => {
+                let event = AGUIEvent::run_error(err.to_string(), None);
+                let payload = serde_json::to_vec(&event)
+                    .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                    .into();
+                if let Err(publish_err) = self.client.publish(reply, payload).await {
+                    return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                }
+                return Ok(());
+            }
+        };
+        let mut resolved = resolved;
+        apply_agui_extensions(&mut resolved, &req.request);
         let run_request = AgUiInputAdapter::to_run_request(req.agent_id, req.request);
         self.run_and_publish(
             run_request,
-            scope,
+            resolved,
             reply,
             |run| AgUiProtocolEncoder::new(run.thread_id.clone(), run.run_id.clone()),
             |msg| AGUIEvent::run_error(msg, None),
@@ -147,6 +161,19 @@ impl NatsGateway {
             ));
         };
 
+        let resolved = match self.os.resolve(&req.agent_id) {
+            Ok(r) => r,
+            Err(err) => {
+                let event = UIStreamEvent::error(err.to_string());
+                let payload = serde_json::to_vec(&event)
+                    .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                    .into();
+                if let Err(publish_err) = self.client.publish(reply, payload).await {
+                    return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                }
+                return Ok(());
+            }
+        };
         let run_request = AiSdkV6InputAdapter::to_run_request(
             req.agent_id,
             AiSdkV6RunRequest {
@@ -155,10 +182,9 @@ impl NatsGateway {
                 run_id: req.run_id,
             },
         );
-
         self.run_and_publish(
             run_request,
-            RunScope::default(),
+            resolved,
             reply,
             |run| AiSdkV6ProtocolEncoder::new(run.run_id.clone(), Some(run.thread_id.clone())),
             UIStreamEvent::error,
@@ -169,7 +195,7 @@ impl NatsGateway {
     async fn run_and_publish<E, ErrEvent, BuildEncoder, BuildErrorEvent>(
         &self,
         run_request: RunRequest,
-        scope: RunScope,
+        resolved: ResolvedRun,
         reply: async_nats::Subject,
         build_encoder: BuildEncoder,
         build_error_event: BuildErrorEvent,
@@ -181,12 +207,20 @@ impl NatsGateway {
         BuildEncoder: FnOnce(&carve_agentos::orchestrator::RunStream) -> E,
         BuildErrorEvent: FnOnce(String) -> ErrEvent,
     {
-        let run = match self
-            .os
-            .run_stream_with_scope(run_request, scope)
-            .await
-        {
-            Ok(run) => run,
+        let run = match self.os.prepare_run(run_request, resolved).await {
+            Ok(prepared) => match AgentOs::execute_prepared(prepared) {
+                Ok(run) => run,
+                Err(err) => {
+                    let event = build_error_event(err.to_string());
+                    let payload = serde_json::to_vec(&event)
+                        .map_err(|e| NatsGatewayError::Run(format!("serialize error event failed: {e}")))?
+                        .into();
+                    if let Err(publish_err) = self.client.publish(reply, payload).await {
+                        return Err(NatsGatewayError::Run(format!("publish error event failed: {publish_err}")));
+                    }
+                    return Ok(());
+                }
+            },
             Err(err) => {
                 let event = build_error_event(err.to_string());
                 let payload = serde_json::to_vec(&event)
